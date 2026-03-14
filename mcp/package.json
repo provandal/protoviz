@@ -1,0 +1,14 @@
+{
+  "name": "protoviz-mcp",
+  "version": "0.1.0",
+  "description": "ProtoViz MCP Server — protocol education tools for AI agents",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "js-yaml": "^4.1.0"
+  }
+}

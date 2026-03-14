@@ -1,0 +1,199 @@
+import { L_COLOR, PHASE_COLORS } from './constants';
+
+/**
+ * Normalizes a parsed YAML scenario (schema format) into the viewer's internal format.
+ *
+ * Key transforms:
+ *   - topology.actors[] → actors[] (position→pos, hardware→hw)
+ *   - osi_layers state_schema.*.initial → fields{}, adds color
+ *   - frames[] library + frame_id refs → inline frame on timeline events
+ *   - state_after[{actor_id, layers}] → state{actorId: {layerNum: fields}}
+ *   - annotation.text/detail → label/detail
+ *   - spec_refs→spec, kernel_ref→kernel, description→desc
+ *   - Phase inferred from annotation text + event ID
+ */
+export function normalizeScenario(raw) {
+  const frameMap = {};
+  for (const frame of raw.frames || []) {
+    frameMap[frame.id] = frame;
+  }
+
+  const actors = normalizeActors(raw.topology?.actors || []);
+  const actorIds = new Set(actors.map(a => a.id));
+  const endpointIds = actors.filter(a => a.type !== 'switch').map(a => a.id);
+
+  const osiLayers = normalizeOsiLayers(raw.osi_layers || {});
+
+  let lastPhase = null;
+  const timeline = (raw.timeline || []).map((ev, idx) => {
+    const phase = inferPhase(ev, lastPhase);
+    lastPhase = phase;
+    return normalizeTimelineEvent(ev, idx, phase, frameMap, endpointIds);
+  });
+
+  const meta = {
+    title: raw.meta.title,
+    protocol: raw.meta.protocol,
+    description: typeof raw.meta.description === 'string'
+      ? raw.meta.description.trim()
+      : raw.meta.description,
+    difficulty: raw.meta.difficulty,
+    tags: raw.meta.tags || [],
+  };
+
+  return { meta, actors, osi_layers: osiLayers, timeline };
+}
+
+function normalizeActors(rawActors) {
+  return rawActors.map(a => ({
+    id: a.id,
+    label: a.label,
+    type: a.type,
+    ip: a.ip,
+    mac: a.mac,
+    hw: a.hardware,
+    pos: a.position,
+  }));
+}
+
+function normalizeOsiLayers(rawLayers) {
+  const result = {};
+  for (const [actorId, layers] of Object.entries(rawLayers)) {
+    result[actorId] = layers.map(l => ({
+      layer: l.layer,
+      name: l.name,
+      color: L_COLOR[l.layer] || '#475569',
+      fields: extractInitialValues(l.state_schema),
+    }));
+  }
+  return result;
+}
+
+function extractInitialValues(stateSchema) {
+  const fields = {};
+  if (!stateSchema) return fields;
+  for (const [key, def] of Object.entries(stateSchema)) {
+    fields[key] = def.initial !== undefined ? def.initial : null;
+  }
+  return fields;
+}
+
+function normalizeTimelineEvent(ev, idx, phase, frameMap, endpointIds) {
+  const normalized = {
+    id: ev.id,
+    t: idx,
+    phase,
+    type: ev.type,
+    label: ev.annotation?.text || ev.id,
+    detail: typeof ev.annotation?.detail === 'string'
+      ? ev.annotation.detail.trim()
+      : (ev.annotation?.detail || ''),
+    color: PHASE_COLORS[phase] || '#475569',
+  };
+
+  // For frame_tx, resolve frame reference and copy from/to/via
+  if (ev.type === 'frame_tx' && ev.frame_id) {
+    const frame = frameMap[ev.frame_id];
+    if (frame) {
+      // Resolve "broadcast" to the first endpoint that isn't the sender
+      let to = frame.to;
+      if (to === 'broadcast') {
+        to = endpointIds.find(id => id !== frame.from) || frame.to;
+      }
+
+      normalized.from = frame.from;
+      normalized.to = to;
+      normalized.via = frame.via || [];
+      normalized.color = frame.color || normalized.color;
+      normalized.frame = {
+        name: frame.name,
+        bytes: frame.total_bytes,
+        headers: (frame.headers || []).map(normalizeHeader),
+      };
+    }
+  }
+
+  // State delta: state_after[{actor_id, layers}] → state{actorId: {layerNum: fields}}
+  if (ev.state_after && ev.state_after.length > 0) {
+    normalized.state = {};
+    for (const snap of ev.state_after) {
+      normalized.state[snap.actor_id] = {};
+      for (const layer of snap.layers) {
+        if (layer.state_fields) {
+          normalized.state[snap.actor_id][layer.layer] = { ...layer.state_fields };
+        }
+      }
+    }
+  }
+
+  return normalized;
+}
+
+function normalizeHeader(hdr) {
+  return {
+    name: hdr.name,
+    layer: hdr.layer,
+    fields: (hdr.fields || []).map(normalizeField),
+  };
+}
+
+function normalizeField(field) {
+  const f = {
+    name: field.name,
+    abbrev: field.abbrev,
+    bits: field.bits,
+    value: field.value,
+    desc: field.description || '',
+  };
+
+  if (field.spec_refs && field.spec_refs.length > 0) {
+    f.spec = field.spec_refs.map(s => ({
+      doc: s.document,
+      sec: s.section,
+      url: s.url || s.alt_url || '',
+    }));
+  }
+
+  if (field.kernel_ref) {
+    f.kernel = {
+      file: field.kernel_ref.file,
+      fn: field.kernel_ref.function,
+      note: field.kernel_ref.notes,
+    };
+  }
+
+  // Recurse for sub-fields
+  if (field.fields && field.fields.length > 0) {
+    f.fields = field.fields.map(normalizeField);
+  }
+
+  return f;
+}
+
+/**
+ * Infer phase from annotation text and event ID.
+ * Falls back to previous phase if no match.
+ */
+function inferPhase(event, lastPhase) {
+  const text = (event.annotation?.text || '').toLowerCase();
+  const id = event.id.toLowerCase();
+
+  // CM takes priority (CM events also mention QP transitions)
+  if (/\bcm\b/.test(text) || /cm[_ ]/.test(id)) return 'CM';
+
+  // RDMA operations
+  if (/rdma\s*write|\bwrite\b.*ack|\bwrite\b.*complete|\bwrite\b.*posted|\bwrite\b.*push/i.test(text)
+      || /write/.test(id)) return 'RDMA Write';
+  if (/rdma\s*read|\bread\b.*response|\bread\b.*posted/i.test(text)
+      || /read/.test(id)) return 'RDMA Read';
+
+  // Infrastructure
+  if (/\barp\b/.test(text) || /arp/.test(id)) return 'ARP';
+  if (/physical|link|auto.?neg|fec|signal/i.test(text)
+      || /^evt_(phy|an_|link)/.test(id)) return 'Link';
+  if (/memory region|ibv_reg_mr|\bqp\b|modify_qp/i.test(text)
+      || /^evt_(mr|qp)/.test(id)) return 'Setup';
+
+  // Fallback to previous phase
+  return lastPhase || 'Other';
+}

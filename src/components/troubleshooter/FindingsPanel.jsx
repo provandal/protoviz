@@ -1,0 +1,51 @@
+const SEVERITY_STYLES = {
+  error: { bg: '#450a0a', border: '#dc2626', color: '#fca5a5', label: 'ERROR' },
+  warning: { bg: '#451a03', border: '#d97706', color: '#fde68a', label: 'WARN' },
+  info: { bg: '#0c1929', border: '#2563eb', color: '#93c5fd', label: 'INFO' },
+};
+
+export default function FindingsPanel({ findings }) {
+  return (
+    <div style={{ padding: 12 }}>
+      <div style={{
+        color: '#475569', fontSize: 9, fontWeight: 700,
+        textTransform: 'uppercase', letterSpacing: '0.1em',
+        marginBottom: 12, padding: '0 4px',
+      }}>
+        Findings ({findings.length})
+      </div>
+      {findings.map((f, i) => {
+        const sev = SEVERITY_STYLES[f.severity] || SEVERITY_STYLES.info;
+        return (
+          <div
+            key={i}
+            style={{
+              background: sev.bg, border: `1px solid ${sev.border}44`,
+              borderRadius: 6, padding: '10px 12px', marginBottom: 8,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+              <span style={{
+                background: `${sev.border}33`, color: sev.color,
+                fontSize: 8, fontWeight: 800, padding: '1px 5px', borderRadius: 2,
+              }}>
+                {sev.label}
+              </span>
+              <span style={{ color: '#475569', fontSize: 9 }}>
+                Packet #{f.packetIndex + 1}
+              </span>
+            </div>
+            <div style={{ color: sev.color, fontSize: 11, lineHeight: 1.5 }}>
+              {f.description}
+            </div>
+            {f.spec_ref && (
+              <div style={{ color: '#475569', fontSize: 9, marginTop: 4 }}>
+                Ref: {f.spec_ref}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}

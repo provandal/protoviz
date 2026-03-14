@@ -1,0 +1,14 @@
+{
+  "scenarios": [
+    {
+      "slug": "roce-v2-rc-connection-rdma-write-read",
+      "title": "RoCEv2 RC: Link Training \u2192 QP Connection \u2192 RDMA WRITE \u2192 RDMA READ",
+      "protocol": "RoCEv2",
+      "protocol_family": "RDMA",
+      "difficulty": "advanced",
+      "description": "Complete RoCEv2 Reliable Connected exchange over 100GbE: physical link, ARP, CM bring-up, RDMA WRITE, RDMA READ.",
+      "tags": ["RDMA", "RoCEv2", "InfiniBand", "100GbE", "PFC", "SNIA"],
+      "path": "roce/roce-v2-rc-connection-rdma-write-read.yaml"
+    }
+  ]
+}

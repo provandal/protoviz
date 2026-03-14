@@ -1,0 +1,310 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://proto-viz.org/schemas/scenario.schema.json",
+  "title": "ProtoViz Protocol Scenario",
+  "description": "Schema for protocol interaction scenarios used by the ProtoViz visualizer. Each scenario defines a complete protocol exchange including actors, topology, timeline events, frame definitions, and host state transitions.",
+  "type": "object",
+  "required": ["meta", "topology", "osi_layers", "timeline"],
+  "additionalProperties": false,
+
+  "definitions": {
+    "spec_reference": {
+      "type": "object",
+      "required": ["document", "section"],
+      "properties": {
+        "document": { "type": "string", "description": "Short name of the specification document, e.g. 'IBTA Vol1', 'RFC 7871', 'IEEE 802.1Qbb'" },
+        "section": { "type": "string", "description": "Section or clause number" },
+        "title": { "type": "string", "description": "Section title for display" },
+        "url": { "type": "string", "format": "uri", "description": "Direct URL to spec or closest open-access equivalent" },
+        "alt_url": { "type": "string", "format": "uri", "description": "Alternative open-access explanation (e.g. linux kernel docs, RDMA consortium)" }
+      }
+    },
+
+    "frame_field": {
+      "type": "object",
+      "required": ["name", "bits", "value", "description"],
+      "properties": {
+        "name": { "type": "string" },
+        "abbrev": { "type": "string", "description": "Wireshark-style abbreviated field name" },
+        "bits": {
+          "oneOf": [
+            { "type": "integer", "description": "Field width in bits" },
+            { "type": "string", "description": "e.g. '24-31' for multi-byte span description" }
+          ]
+        },
+        "offset_bits": { "type": "integer", "description": "Bit offset from start of this header" },
+        "value": { "description": "Actual value for this frame instance" },
+        "value_hex": { "type": "string", "description": "Hex representation" },
+        "description": { "type": "string", "description": "What this field means in context of this frame" },
+        "spec_refs": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/spec_reference" }
+        },
+        "kernel_ref": {
+          "type": "object",
+          "description": "Reference to Linux kernel source where this field is set/consumed",
+          "properties": {
+            "file": { "type": "string" },
+            "function": { "type": "string" },
+            "line_hint": { "type": "integer" },
+            "notes": { "type": "string" }
+          }
+        },
+        "fields": {
+          "type": "array",
+          "description": "Sub-fields (for nested headers)",
+          "items": { "$ref": "#/definitions/frame_field" }
+        }
+      }
+    },
+
+    "header_block": {
+      "type": "object",
+      "required": ["name", "layer", "fields"],
+      "properties": {
+        "name": { "type": "string", "description": "Header name e.g. 'Ethernet II', 'IPv4', 'UDP', 'BTH', 'RETH'" },
+        "abbrev": { "type": "string" },
+        "layer": { "type": "integer", "minimum": 1, "maximum": 7, "description": "OSI layer this header belongs to" },
+        "total_bytes": { "type": "integer" },
+        "fields": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/frame_field" }
+        }
+      }
+    },
+
+    "frame": {
+      "type": "object",
+      "required": ["id", "name", "from", "to", "headers"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string", "description": "Human-readable frame name e.g. 'CM REQ', 'RDMA WRITE First'" },
+        "description": { "type": "string" },
+        "from": { "type": "string", "description": "Actor ID of sender" },
+        "to": { "type": "string", "description": "Actor ID of receiver (or 'broadcast')" },
+        "via": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Actor IDs of intermediate nodes (switches)"
+        },
+        "timestamp_ns": { "type": "number", "description": "Relative timestamp in nanoseconds from scenario start" },
+        "total_bytes": { "type": "integer" },
+        "color": { "type": "string", "description": "Hex color for display differentiation" },
+        "headers": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/header_block" }
+        }
+      }
+    },
+
+    "osi_layer_state": {
+      "type": "object",
+      "required": ["layer", "name"],
+      "properties": {
+        "layer": { "type": "integer", "minimum": 1, "maximum": 7 },
+        "name": { "type": "string" },
+        "state_fields": {
+          "type": "object",
+          "description": "Key-value pairs of state variables at this layer",
+          "additionalProperties": {
+            "type": ["string", "number", "boolean", "null"]
+          }
+        }
+      }
+    },
+
+    "host_state_snapshot": {
+      "type": "object",
+      "required": ["actor_id", "layers"],
+      "properties": {
+        "actor_id": { "type": "string" },
+        "layers": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/osi_layer_state" }
+        }
+      }
+    },
+
+    "timeline_event": {
+      "type": "object",
+      "required": ["id", "type", "t_ns"],
+      "properties": {
+        "id": { "type": "string" },
+        "type": {
+          "type": "string",
+          "enum": ["frame_tx", "state_change", "annotation", "error", "pause_frame", "ecn_mark"]
+        },
+        "t_ns": { "type": "number", "description": "Nanoseconds from scenario start" },
+        "frame_id": { "type": "string", "description": "Reference to frame definition (for frame_tx events)" },
+        "state_after": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/host_state_snapshot" },
+          "description": "Full OSI stack state for all relevant actors after this event"
+        },
+        "annotation": {
+          "type": "object",
+          "properties": {
+            "text": { "type": "string" },
+            "detail": { "type": "string" },
+            "spec_refs": { "type": "array", "items": { "$ref": "#/definitions/spec_reference" } }
+          }
+        }
+      }
+    },
+
+    "actor": {
+      "type": "object",
+      "required": ["id", "type", "label"],
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string", "enum": ["host", "switch", "router", "target", "initiator"] },
+        "label": { "type": "string" },
+        "description": { "type": "string" },
+        "hardware": { "type": "string", "description": "e.g. 'Mellanox ConnectX-6 Dx 100GbE RNIC'" },
+        "os": { "type": "string" },
+        "kernel_version": { "type": "string" },
+        "ip": { "type": "string" },
+        "gid": { "type": "string", "description": "IB/RoCE Global Identifier" },
+        "mac": { "type": "string" },
+        "position": {
+          "type": "string",
+          "enum": ["left", "center", "right"],
+          "description": "Display position in sequence diagram"
+        }
+      }
+    }
+  },
+
+  "properties": {
+    "meta": {
+      "type": "object",
+      "required": ["id", "title", "protocol", "version", "description", "authors"],
+      "properties": {
+        "id": { "type": "string", "description": "Unique slug e.g. 'roce-v2-rc-connection-rdma-write-read'" },
+        "title": { "type": "string" },
+        "protocol": { "type": "string", "description": "Primary protocol e.g. 'RoCEv2', 'NVMe-oF/TCP', 'iWARP'" },
+        "protocol_family": { "type": "string" },
+        "version": { "type": "string", "description": "Scenario schema version" },
+        "description": { "type": "string" },
+        "learning_objectives": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "difficulty": { "type": "string", "enum": ["beginner", "intermediate", "advanced", "expert"] },
+        "authors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "org": { "type": "string" },
+              "github": { "type": "string" }
+            }
+          }
+        },
+        "created": { "type": "string", "format": "date" },
+        "updated": { "type": "string", "format": "date" },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "primary_specs": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/spec_reference" }
+        },
+        "source_references": {
+          "type": "array",
+          "description": "Linux kernel or other source files referenced in this scenario",
+          "items": {
+            "type": "object",
+            "properties": {
+              "repo": { "type": "string" },
+              "path": { "type": "string" },
+              "commit": { "type": "string" },
+              "description": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+
+    "topology": {
+      "type": "object",
+      "required": ["actors", "links"],
+      "properties": {
+        "actors": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/actor" }
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["from", "to", "speed_gbps"],
+            "properties": {
+              "id": { "type": "string" },
+              "from": { "type": "string" },
+              "to": { "type": "string" },
+              "speed_gbps": { "type": "number" },
+              "media": { "type": "string", "enum": ["copper_dac", "fiber_sr", "fiber_lr", "fiber_dr", "backplane"] },
+              "fec": { "type": "string", "description": "FEC mode e.g. 'RS(544,514)', 'FC-FEC'" },
+              "autoneg": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+
+    "osi_layers": {
+      "type": "object",
+      "description": "Per-actor OSI layer definitions — what each layer represents for this protocol stack",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["layer", "name", "components"],
+          "properties": {
+            "layer": { "type": "integer" },
+            "name": { "type": "string" },
+            "components": { "type": "array", "items": { "type": "string" } },
+            "state_schema": {
+              "type": "object",
+              "description": "Defines the state variables tracked at this layer",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "type": { "type": "string" },
+                  "description": { "type": "string" },
+                  "initial": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "frames": {
+      "type": "array",
+      "description": "Library of all frames referenced in the timeline",
+      "items": { "$ref": "#/definitions/frame" }
+    },
+
+    "timeline": {
+      "type": "array",
+      "description": "Ordered sequence of events in the scenario",
+      "items": { "$ref": "#/definitions/timeline_event" }
+    },
+
+    "glossary": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["term", "definition"],
+        "properties": {
+          "term": { "type": "string" },
+          "abbrev": { "type": "string" },
+          "definition": { "type": "string" },
+          "spec_refs": { "type": "array", "items": { "$ref": "#/definitions/spec_reference" } }
+        }
+      }
+    }
+  }
+}

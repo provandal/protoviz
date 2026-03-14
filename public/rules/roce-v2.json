@@ -1,0 +1,38 @@
+{
+  "name": "RoCEv2 Compliance Rules",
+  "version": "1.0.0",
+  "rules": [
+    {
+      "id": "roce_udp_port",
+      "type": "field_value",
+      "layer_match": "udp",
+      "field": "dst_port",
+      "description": "RoCEv2 traffic should use UDP destination port 4791",
+      "spec_ref": "IB Spec Annex A17, §A17.4.1",
+      "severity": "info"
+    },
+    {
+      "id": "psn_continuity",
+      "type": "psn_sequence",
+      "description": "Packet Sequence Numbers should be contiguous within a QP stream",
+      "spec_ref": "IB Spec Vol 1, §9.5.1",
+      "severity": "error"
+    },
+    {
+      "id": "rdma_write_ack",
+      "type": "sequence_pattern",
+      "expected_sequence": ["RDMA Write", "Acknowledge"],
+      "description": "RDMA Write should be followed by an ACK",
+      "spec_ref": "IB Spec Vol 1, §9.7.5.2.1",
+      "severity": "warning"
+    },
+    {
+      "id": "rdma_read_response",
+      "type": "sequence_pattern",
+      "expected_sequence": ["RDMA Read Request", "RDMA Read Response"],
+      "description": "RDMA Read Request should be followed by Read Response",
+      "spec_ref": "IB Spec Vol 1, §9.7.5.2.2",
+      "severity": "warning"
+    }
+  ]
+}
