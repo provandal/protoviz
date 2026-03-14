@@ -7,7 +7,7 @@
       "protocol_family": "RDMA",
       "difficulty": "advanced",
       "description": "Complete RoCEv2 Reliable Connected exchange over 100GbE: physical link, ARP, CM bring-up, RDMA WRITE, RDMA READ.",
-      "tags": ["RDMA", "RoCEv2", "InfiniBand", "100GbE", "PFC", "SNIA"],
+      "tags": ["RDMA", "RoCEv2", "InfiniBand", "100GbE", "PFC"],
       "path": "roce/roce-v2-rc-connection-rdma-write-read.yaml"
     }
   ]

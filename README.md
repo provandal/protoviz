@@ -164,13 +164,12 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines. We welcome new scenarios,
 ## Authors
 
 **Created by:** [Erik Smith](https://www.linkedin.com/in/erik-smith-a899ba3/)
-Dell | Chair, SNIA Data, Storage & Networking (DSN) Community
+Distinguished Engineer - Dell Technologies
 
 **AI Contributors:** Built with [Claude.AI](https://claude.ai) and [Claude Code](https://claude.ai/claude-code) by Anthropic
 
 ## Acknowledgments
 
-- SNIA (Storage Networking Industry Association) — education mission
 - Linux RDMA community (`rdma-core`, `drivers/infiniband/`)
 - InfiniBand Trade Association — IBTA specifications
 

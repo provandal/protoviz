@@ -45,7 +45,7 @@ export default function AboutPanel() {
               Erik Smith
             </a>
             <div style={{ color: '#64748b', fontSize: 11 }}>
-              Dell &middot; Chair, SNIA Data, Storage &amp; Networking (DSN) Community
+              Distinguished Engineer - Dell Technologies
             </div>
           </div>
           <div style={{ borderTop: '1px solid #1e293b', paddingTop: 10 }}>

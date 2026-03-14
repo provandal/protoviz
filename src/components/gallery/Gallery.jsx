@@ -55,19 +55,31 @@ export default function Gallery() {
           Interactive protocol visualizations for network engineers, students,
           and anyone curious about what happens on the wire.
         </div>
-        <button
-          onClick={() => navigate('/troubleshooter')}
-          style={{
-            background: '#1e293b', border: '1px solid #334155', color: '#94a3b8',
-            padding: '8px 20px', borderRadius: 6, cursor: 'pointer',
-            fontSize: 12, fontWeight: 600,
-            transition: 'border-color 0.2s, color 0.2s',
-          }}
-          onMouseEnter={e => { e.currentTarget.style.borderColor = '#3b82f6'; e.currentTarget.style.color = '#e2e8f0'; }}
-          onMouseLeave={e => { e.currentTarget.style.borderColor = '#334155'; e.currentTarget.style.color = '#94a3b8'; }}
-        >
-          PCAP Troubleshooter
-        </button>
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+          <button
+            onClick={() => navigate('/create')}
+            style={{
+              background: 'linear-gradient(135deg, #1e40af, #7c3aed)', border: 'none', color: '#fff',
+              padding: '8px 20px', borderRadius: 6, cursor: 'pointer',
+              fontSize: 12, fontWeight: 600,
+            }}
+          >
+            Create Scenario
+          </button>
+          <button
+            onClick={() => navigate('/troubleshooter')}
+            style={{
+              background: '#1e293b', border: '1px solid #334155', color: '#94a3b8',
+              padding: '8px 20px', borderRadius: 6, cursor: 'pointer',
+              fontSize: 12, fontWeight: 600,
+              transition: 'border-color 0.2s, color 0.2s',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = '#3b82f6'; e.currentTarget.style.color = '#e2e8f0'; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = '#334155'; e.currentTarget.style.color = '#94a3b8'; }}
+          >
+            PCAP Troubleshooter
+          </button>
+        </div>
       </div>
 
       {/* Filter bar */}
@@ -135,7 +147,7 @@ export default function Gallery() {
                 Erik Smith
               </a>
               <div style={{ color: '#64748b', fontSize: 10 }}>
-                Dell &middot; Chair, SNIA DSN Community
+                Distinguished Engineer - Dell Technologies
               </div>
             </div>
             <div>
