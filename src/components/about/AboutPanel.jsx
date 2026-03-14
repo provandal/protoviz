@@ -79,6 +79,13 @@ export default function AboutPanel() {
           MIT License
         </span>
       </div>
+
+      {/* Disclaimer */}
+      <div style={{ color: '#334155', fontSize: 9, textAlign: 'center', lineHeight: 1.6, maxWidth: 420 }}>
+        Protocol descriptions are based on open-source implementations (Linux kernel, rdma-core)
+        and public RFCs. Specification references are citations for further reading — no proprietary
+        text has been reproduced.
+      </div>
     </div>
   );
 }

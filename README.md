@@ -173,6 +173,10 @@ Distinguished Engineer - Dell Technologies
 - Linux RDMA community (`rdma-core`, `drivers/infiniband/`)
 - InfiniBand Trade Association — IBTA specifications
 
+## Protocol Content Disclaimer
+
+Protocol descriptions in ProtoViz scenarios are based on open-source implementations (Linux kernel, rdma-core, Wireshark) and public RFCs. No proprietary specification text has been reproduced. IBTA, IEEE, and other specification references are provided as citations for further reading — the explanatory content is original. If you believe any content inadvertently reproduces copyrighted material, please [open an issue](https://github.com/provandal/protoviz/issues).
+
 ---
 
 ## License

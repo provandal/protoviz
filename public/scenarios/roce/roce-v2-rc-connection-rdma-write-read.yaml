@@ -47,7 +47,7 @@ meta:
     - "PFC"
     - "DCQCN"
     - "queue-pair"
-    - "SNIA"
+    - "education"
 
   primary_specs:
     - document: "IBTA Vol1"
@@ -75,6 +75,12 @@ meta:
       title: "100GBASE-KR4 Auto-Negotiation and Link Training"
       url: "https://standards.ieee.org/ieee/802.3cd/7387/"
       alt_url: ""
+
+  content_disclaimer: >
+    Protocol descriptions in this scenario are based on open-source implementations
+    (Linux kernel, rdma-core, Wireshark) and public RFCs. No proprietary specification
+    text has been reproduced. IBTA, IEEE, and other specification references are provided
+    as citations for further reading.
 
   source_references:
     - repo: "torvalds/linux"
