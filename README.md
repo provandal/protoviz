@@ -1,6 +1,10 @@
-# ProtoViz
+<p align="center">
+  <img src="assets/protoviz_repo_logo.svg" alt="ProtoViz" width="680">
+</p>
 
-**Interactive protocol visualization for network engineers, students, and anyone curious about what happens on the wire.**
+<p align="center">
+  <strong>Interactive protocol visualization for network engineers, students, and anyone curious about what happens on the wire.</strong>
+</p>
 
 [![Deploy to GitHub Pages](https://github.com/provandal/protoviz/actions/workflows/deploy.yml/badge.svg)](https://github.com/provandal/protoviz/actions/workflows/deploy.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
