@@ -2,6 +2,24 @@ import { useRef, useEffect, useMemo } from 'react';
 import { PHASE_COLORS } from '../../utils/constants';
 import useViewerStore from '../../store/viewerStore';
 
+/**
+ * Determine the visual span of a state_change event based on which actors it affects.
+ * Returns: 'left' (initiator + switch only), 'right' (switch + target only),
+ *          'full' (both endpoints or all three), 'center' (switch only)
+ */
+function getStateChangeSpan(ev) {
+  if (!ev.state) return 'full';
+  const actors = Object.keys(ev.state);
+  const hasInit = actors.includes('initiator');
+  const hasTarget = actors.includes('target');
+  const hasSwitch = actors.includes('switch');
+
+  if (hasInit && !hasTarget) return 'left';
+  if (hasTarget && !hasInit) return 'right';
+  if (hasSwitch && !hasInit && !hasTarget) return 'center';
+  return 'full';
+}
+
 export default function SequenceDiagram({ timeline, currentStep, onStepSelect }) {
   const phases = [...new Set(timeline.map(e => e.phase))];
   const phaseGroups = phases.map(p => ({ phase: p, events: timeline.filter(e => e.phase === p) }));
@@ -39,6 +57,7 @@ export default function SequenceDiagram({ timeline, currentStep, onStepSelect })
             const color = ev.color || '#475569';
             const isFrame = ev.type === 'frame_tx';
             const dir = isFrame ? (ev.from === 'initiator' ? 'right' : 'left') : null;
+            const span = !isFrame ? getStateChangeSpan(ev) : null;
             return (
               <div
                 key={ev.id}
@@ -89,9 +108,7 @@ export default function SequenceDiagram({ timeline, currentStep, onStepSelect })
                       {ev.frame && <div style={{ color: '#475569', fontSize: 9 }}>{ev.frame.bytes} bytes</div>}
                     </div>
                   ) : (
-                    <div style={{ color: isPast ? '#334155' : isCurrent ? '#f1f5f9' : '#64748b', fontSize: 10, fontWeight: isCurrent ? 700 : 400, padding: '4px 0', transition: 'color 0.2s' }}>
-                      ⟳ {ev.label}
-                    </div>
+                    <StateChangeRow ev={ev} span={span} isCurrent={isCurrent} isPast={isPast} />
                   )}
                 </div>
                 {/* Right actor column */}
@@ -108,6 +125,41 @@ export default function SequenceDiagram({ timeline, currentStep, onStepSelect })
           })}
         </div>
       ))}
+    </div>
+  );
+}
+
+/**
+ * Renders a state_change event with visual span indicating which actors are involved.
+ * 'left' = initiator↔switch, 'right' = switch↔target, 'full' = end-to-end, 'center' = switch only
+ */
+function StateChangeRow({ ev, span, isCurrent, isPast }) {
+  const textColor = isPast ? '#334155' : isCurrent ? '#f1f5f9' : '#64748b';
+  const lineColor = isPast ? '#334155' : isCurrent ? '#475569' : '#1e293b';
+
+  // Determine alignment and width based on span
+  const alignment = span === 'left' ? 'flex-start' : span === 'right' ? 'flex-end' : 'center';
+  const widthPct = (span === 'left' || span === 'right') ? '55%' : span === 'center' ? '30%' : '100%';
+
+  return (
+    <div style={{ display: 'flex', justifyContent: alignment, width: '100%' }}>
+      <div style={{ width: widthPct, position: 'relative' }}>
+        {/* Thin dashed line showing the span */}
+        <div style={{
+          height: 1, borderTop: `1px dashed ${lineColor}`,
+          margin: '8px 0',
+          transition: 'all 0.3s',
+        }} />
+        <div style={{
+          color: textColor, fontSize: 10,
+          fontWeight: isCurrent ? 700 : 400,
+          padding: '0 4px',
+          transition: 'color 0.2s',
+          textAlign: 'center',
+        }}>
+          ⟳ {ev.label}
+        </div>
+      </div>
     </div>
   );
 }
