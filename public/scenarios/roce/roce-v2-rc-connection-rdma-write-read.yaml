@@ -16,7 +16,7 @@ meta:
     and cross-referenced to Linux kernel source (rdma-core, drivers/infiniband/hw/mlx5).
 
   learning_objectives:
-    - "Understand how 100GbE physical link comes up via Auto-Negotiation and Link Training"
+    - "Understand how 100GbE physical links come up independently (host↔switch) via Auto-Negotiation and Link Training"
     - "Trace ARP resolution and IP addressing for RoCEv2 (which runs over UDP/IP, unlike RoCEv1)"
     - "Follow IB Connection Manager MAD exchange to bring a Queue Pair from RESET to RTS"
     - "Observe QP state machine transitions: RESET → INIT → RTR → RTS"
@@ -314,15 +314,15 @@ osi_layers:
       state_schema:
         phy_state:
           type: "string"
-          description: "Physical layer state"
+          description: "Physical layer state (point-to-point link to switch)"
           initial: "down"
         an_state:
           type: "string"
-          description: "Auto-Negotiation state"
+          description: "Auto-Negotiation state (with switch port A)"
           initial: "idle"
         lt_state:
           type: "string"
-          description: "Link Training state"
+          description: "Link Training state (with switch port A)"
           initial: "idle"
         fec_mode:
           type: "string"
@@ -438,12 +438,15 @@ osi_layers:
       state_schema:
         phy_state:
           type: "string"
+          description: "Physical layer state (point-to-point link to switch)"
           initial: "down"
         an_state:
           type: "string"
+          description: "Auto-Negotiation state (with switch port B)"
           initial: "idle"
         lt_state:
           type: "string"
+          description: "Link Training state (with switch port B)"
           initial: "idle"
         speed:
           type: "string"
@@ -453,30 +456,70 @@ osi_layers:
           initial: false
 
   switch:
+    - layer: 3
+      name: "IP Forwarding / ECN"
+      components: ["L3 forwarding (optional)", "ECN/WRED marking"]
+      state_schema:
+        ecn_marking_enabled:
+          type: "boolean"
+          description: "ECN CE marking enabled for congestion notification (DCQCN)"
+          initial: true
+        wred_threshold_bytes:
+          type: "integer"
+          description: "WRED threshold before ECN CE marking on priority 3"
+          initial: 153600
     - layer: 2
       name: "Ethernet Switching / PFC"
-      components: ["802.1Q bridge", "802.1Qbb PFC", "ECN/WRED"]
+      components: ["802.1Q bridge", "802.1Qbb PFC", "MAC forwarding table"]
       state_schema:
         fwd_table_entries:
           type: "integer"
+          description: "Number of learned MAC addresses in forwarding table"
           initial: 0
-        pfc_priority_3_xoff:
+        port_a_pfc_xoff:
           type: "boolean"
+          description: "PFC XOFF asserted toward initiator (priority 3)"
           initial: false
-        egress_queue_depth_p3:
+        port_b_pfc_xoff:
+          type: "boolean"
+          description: "PFC XOFF asserted toward target (priority 3)"
+          initial: false
+        port_a_egress_queue_p3:
           type: "integer"
-          description: "Bytes in egress queue for PFC priority 3"
+          description: "Bytes queued for egress on port A (toward initiator), priority 3"
+          initial: 0
+        port_b_egress_queue_p3:
+          type: "integer"
+          description: "Bytes queued for egress on port B (toward target), priority 3"
           initial: 0
     - layer: 1
-      name: "Physical"
-      components: ["100GBASE-SR4"]
+      name: "Physical (per-port)"
+      components: ["100GBASE-SR4", "RS(544,514) FEC"]
       state_schema:
-        port_a_state:
+        port_a_phy:
           type: "string"
+          description: "Physical state of port facing initiator (Host A)"
           initial: "down"
-        port_b_state:
+        port_a_an:
           type: "string"
+          description: "Auto-Negotiation state on port A"
+          initial: "idle"
+        port_a_lt:
+          type: "string"
+          description: "Link Training state on port A"
+          initial: "idle"
+        port_b_phy:
+          type: "string"
+          description: "Physical state of port facing target (Host B)"
           initial: "down"
+        port_b_an:
+          type: "string"
+          description: "Auto-Negotiation state on port B"
+          initial: "idle"
+        port_b_lt:
+          type: "string"
+          description: "Link Training state on port B"
+          initial: "idle"
 
 # ─────────────────────────────────────────────────────────────────
 # FRAME LIBRARY
@@ -1668,12 +1711,18 @@ frames:
 timeline:
 
   # ── Phase 1: Link Training ──────────────────────────────────────
-  - id: "evt_phy_signal"
+  # Physical layer is point-to-point: each host↔switch link comes up independently.
+  # The switch operates at L2 (forwarding, PFC) and L3 (ECN marking).
+
+  - id: "evt_phy_signal_link_a"
     type: "state_change"
     t_ns: 0
     annotation:
-      text: "Physical layer: signal detected on both ends"
-      detail: "Optical transceiver detects light. Begins Auto-Negotiation (AN) per IEEE 802.3cd clause 73."
+      text: "Link A: signal detected — Initiator ↔ Switch port A"
+      detail: >
+        Optical transceiver on initiator detects light from switch port A.
+        Auto-Negotiation (AN) begins per IEEE 802.3cd clause 73. L1 is point-to-point —
+        this is independent of the switch↔target link.
       spec_refs:
         - document: "IEEE 802.3cd"
           section: "73"
@@ -1688,6 +1737,23 @@ timeline:
               phy_state: "AN_IN_PROGRESS"
               signal_detect: true
               an_state: "ABILITY_DETECT"
+      - actor_id: "switch"
+        layers:
+          - layer: 1
+            name: "Physical (per-port)"
+            state_fields:
+              port_a_phy: "AN_IN_PROGRESS"
+              port_a_an: "ABILITY_DETECT"
+
+  - id: "evt_phy_signal_link_b"
+    type: "state_change"
+    t_ns: 500000
+    annotation:
+      text: "Link B: signal detected — Switch port B ↔ Target"
+      detail: >
+        Optical transceiver on target detects light from switch port B.
+        AN begins independently on this link.
+    state_after:
       - actor_id: "target"
         layers:
           - layer: 1
@@ -1699,20 +1765,20 @@ timeline:
       - actor_id: "switch"
         layers:
           - layer: 1
-            name: "Physical"
+            name: "Physical (per-port)"
             state_fields:
-              port_a_state: "AN_IN_PROGRESS"
-              port_b_state: "AN_IN_PROGRESS"
+              port_b_phy: "AN_IN_PROGRESS"
+              port_b_an: "ABILITY_DETECT"
 
-  - id: "evt_an_complete"
+  - id: "evt_an_complete_link_a"
     type: "state_change"
     t_ns: 2000000
     annotation:
-      text: "Auto-Negotiation complete: 100GbE agreed, RS-FEC required"
+      text: "Link A: AN complete — 100GbE agreed, Link Training begins"
       detail: >
-        AN exchanges technology ability pages. Both ends agree on 100GBASE-SR4.
-        RS(544,514) FEC is mandatory for 100G. Link Training begins to equalize the
-        channel (pre-emphasis, post-cursor, etc).
+        AN exchanges technology ability pages between initiator and switch port A.
+        Both agree on 100GBASE-SR4. RS(544,514) FEC is mandatory for 100G.
+        Link Training begins to equalize the channel (pre-emphasis, post-cursor).
     state_after:
       - actor_id: "initiator"
         layers:
@@ -1723,6 +1789,23 @@ timeline:
               lt_state: "IN_PROGRESS"
               fec_mode: "RS(544,514)"
               speed: "100Gbps"
+      - actor_id: "switch"
+        layers:
+          - layer: 1
+            name: "Physical (per-port)"
+            state_fields:
+              port_a_an: "COMPLETE"
+              port_a_lt: "IN_PROGRESS"
+
+  - id: "evt_an_complete_link_b"
+    type: "state_change"
+    t_ns: 2200000
+    annotation:
+      text: "Link B: AN complete — 100GbE agreed, Link Training begins"
+      detail: >
+        AN completes on switch port B ↔ target. Same negotiation: 100GBASE-SR4
+        with RS(544,514) FEC. Link Training begins independently on this link.
+    state_after:
       - actor_id: "target"
         layers:
           - layer: 1
@@ -1731,16 +1814,23 @@ timeline:
               an_state: "COMPLETE"
               lt_state: "IN_PROGRESS"
               speed: "100Gbps"
+      - actor_id: "switch"
+        layers:
+          - layer: 1
+            name: "Physical (per-port)"
+            state_fields:
+              port_b_an: "COMPLETE"
+              port_b_lt: "IN_PROGRESS"
 
-  - id: "evt_link_up"
+  - id: "evt_link_up_a"
     type: "state_change"
-    t_ns: 4000000
+    t_ns: 3800000
     annotation:
-      text: "Link Training complete — link is UP at 100Gbps with RS-FEC"
+      text: "Link A UP — Initiator ↔ Switch at 100Gbps with RS-FEC"
       detail: >
-        Both sides declare link up. PFC (802.1Qbb) is enabled for priority 3
-        (the standard RoCEv2 traffic class) via DCBX negotiation (not shown).
-        Ethernet frames can now flow.
+        Link Training complete on initiator↔switch. PFC (802.1Qbb) is enabled for
+        priority 3 via DCBX negotiation (not shown). Ethernet frames can now flow
+        on this link segment.
     state_after:
       - actor_id: "initiator"
         layers:
@@ -1755,6 +1845,24 @@ timeline:
               link_state: "up"
               pfc_enabled: true
               pfc_priority: 3
+      - actor_id: "switch"
+        layers:
+          - layer: 1
+            name: "Physical (per-port)"
+            state_fields:
+              port_a_phy: "UP"
+              port_a_lt: "COMPLETE"
+
+  - id: "evt_link_up_b"
+    type: "state_change"
+    t_ns: 4000000
+    annotation:
+      text: "Link B UP — Switch ↔ Target at 100Gbps with RS-FEC"
+      detail: >
+        Link Training complete on switch↔target. PFC enabled. Both links are now up —
+        the switch can forward L2 frames between its ports. End-to-end L2 connectivity
+        is established.
+    state_after:
       - actor_id: "target"
         layers:
           - layer: 1
@@ -1770,10 +1878,10 @@ timeline:
       - actor_id: "switch"
         layers:
           - layer: 1
-            name: "Physical"
+            name: "Physical (per-port)"
             state_fields:
-              port_a_state: "up"
-              port_b_state: "up"
+              port_b_phy: "UP"
+              port_b_lt: "COMPLETE"
           - layer: 2
             name: "Ethernet Switching / PFC"
             state_fields:
@@ -2187,7 +2295,8 @@ timeline:
     annotation:
       text: "Scenario complete"
       detail: >
-        Summary: The initiator established a 100GbE RoCEv2 RC connection, performed
+        Summary: Two independent 100GbE links came up (host↔switch each), the switch
+        provided L2 forwarding, the initiator established an RoCEv2 RC connection, performed
         an RDMA WRITE of 4KB to remote memory (zero remote CPU involvement), then
         read that same data back with an RDMA READ (also zero remote CPU involvement).
         Total data frames: 2. Total control frames: 5 (ARP×2, CM×3).
