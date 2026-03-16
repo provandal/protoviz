@@ -19,6 +19,16 @@
       "description": "Complete Fibre Channel SAN login sequence through a fabric switch: physical link, FLOGI, Name Server discovery, PLOGI, PRLI, then SCSI INQUIRY, WRITE(10), and READ(10).",
       "tags": ["Fibre Channel", "SAN", "SCSI", "FCP", "storage", "education"],
       "path": "fc/fc-fabric-login-scsi-io.yaml"
+    },
+    {
+      "slug": "nvme-tcp-cdc-discovery-io",
+      "title": "NVMe/TCP: mDNS → CDC Discovery → DIM → Subsystem Connect → I/O",
+      "protocol": "NVMe-oF/TCP",
+      "protocol_family": "NVMe-oF",
+      "difficulty": "advanced",
+      "description": "Complete NVMe over TCP flow: mDNS CDC discovery, DIM registration (TP8013), Discovery Log retrieval, IO Controller connection, Identify Controller/Namespace, NVMe Write and Read.",
+      "tags": ["NVMe", "NVMe-oF", "NVMe/TCP", "CDC", "DIM", "storage", "TP8009", "TP8013", "education"],
+      "path": "nvme-tcp/nvme-tcp-cdc-discovery-io.yaml"
     }
   ]
 }

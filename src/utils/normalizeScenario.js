@@ -178,6 +178,28 @@ function inferPhase(event, lastPhase) {
   const text = (event.annotation?.text || '').toLowerCase();
   const id = event.id.toLowerCase();
 
+  // NVMe-oF/TCP phases (check before generic patterns)
+  if (/\bmdns\b|_nvme-disc/i.test(text) || /mdns/.test(id)) return 'mDNS Discovery';
+  if (/\bicreq\b|\bicresp\b|initialize connection/i.test(text)
+      || /icreq|icresp/.test(id)) return 'NVMe/TCP Init';
+  if (/\bdim\b.*register|\bdim\b.*deregister|discovery information/i.test(text)
+      || /dim_/.test(id)) return 'DIM';
+  if (/discovery log|log page.*discovery|lid.*0x70/i.test(text)
+      || /get_log_page/.test(id)) return 'Discovery Log';
+  if (/io queue|fabrics connect.*io queue/i.test(text)
+      || /connect_ioq/.test(id)) return 'IO Queue Setup';
+  if (/fabrics connect|fabrics.*connect/i.test(text)
+      || /fabrics_connect/.test(id)) return 'Fabrics Connect';
+  if (/identify controller|identify namespace|\bcns\b/i.test(text)
+      || /identify_/.test(id)) return 'Identify';
+  if (/\bnvme write\b|h2cdata.*write|write command|write completion/i.test(text)
+      || /nvme_write/.test(id)) return 'NVMe Write';
+  if (/\bnvme read\b|c2hdata.*read|read command|read completion/i.test(text)
+      || /nvme_read/.test(id)) return 'NVMe Read';
+  if (/\br2t\b|ready.?to.?transfer/i.test(text)
+      || /write_r2t/.test(id)) return 'NVMe Write';
+  if (/\bc2hdata\b/i.test(text) || /read_c2h/.test(id)) return 'NVMe Read';
+
   // FC-specific phases (check before generic patterns)
   if (/\bflogi\b/.test(text) || /flogi/.test(id)) return 'FLOGI';
   if (/name.?server|gid_ft|gnn_id|gpn_id|ga_nxt/i.test(text)

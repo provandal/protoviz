@@ -23,6 +23,16 @@ export const PHASE_COLORS = {
   'SCSI Discovery': '#6d28d9',
   'SCSI Write': '#991b1b',
   'SCSI Read': '#6b21a8',
+  // NVMe-oF/TCP scenario phases
+  'mDNS Discovery': '#b45309',
+  'NVMe/TCP Init': '#0f766e',
+  'Fabrics Connect': '#1e40af',
+  'DIM': '#6d28d9',
+  'Discovery Log': '#0369a1',
+  'Identify': '#0369a1',
+  'IO Queue Setup': '#1e40af',
+  'NVMe Write': '#991b1b',
+  'NVMe Read': '#6b21a8',
   // PCAP conversation phases
   'TCP Handshake': '#0f766e',
   'TCP Data': '#0369a1',

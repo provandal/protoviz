@@ -1,0 +1,2765 @@
+meta:
+  id: "nvme-tcp-cdc-discovery-io"
+  title: "NVMe/TCP: mDNS → CDC Discovery → DIM → Subsystem Connect → I/O"
+  protocol: "NVMe-oF/TCP"
+  protocol_family: "NVMe-oF"
+  version: "1.0.0"
+  description: >
+    A complete NVMe over TCP (NVMe-oF/TCP) exchange from initial service discovery
+    through I/O operations. A Linux host running nvme-stas discovers a Centralized
+    Discovery Controller (CDC) via mDNS, establishes an NVMe-oF/TCP connection,
+    registers with the CDC using DIM (TP8013), retrieves Discovery Log Pages to
+    learn accessible subsystems, then connects to a storage subsystem's IO Controller
+    to perform NVMe Write and Read operations. Covers TP8009 (CDC architecture),
+    TP8010 (Discovery enhancements), and TP8013 (Discovery Information Management).
+
+  learning_objectives:
+    - "Understand how nvme-stas (stafd) discovers CDCs via mDNS service advertisement (_nvme-disc._tcp)"
+    - "Follow NVMe-oF/TCP connection initialization: ICReq/ICResp PDU exchange and parameter negotiation"
+    - "Observe Fabrics Connect command establishing an Admin queue to a Discovery Controller"
+    - "See how DIM (Discovery Information Management, TP8013) registers a host with a CDC"
+    - "Understand Discovery Log Pages: how hosts learn which subsystems and controllers are available"
+    - "Trace the full IO Controller connection: Fabrics Connect → Identify Controller → Identify Namespace"
+    - "Watch NVMe Write and Read commands flow over TCP with CapsuleCmd, R2T, H2CData, and C2HData PDUs"
+    - "Understand the CDC → DDC → IOC controller hierarchy in NVMe-oF discovery architecture"
+
+  difficulty: "advanced"
+
+  authors:
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+    - name: "Generated via NVMe specification and Linux kernel source analysis"
+      org: "proto-viz"
+      github: ""
+
+  created: "2026-03-16"
+  updated: "2026-03-16"
+
+  tags:
+    - "NVMe"
+    - "NVMe-oF"
+    - "NVMe/TCP"
+    - "NVMe-oF/TCP"
+    - "storage"
+    - "CDC"
+    - "discovery"
+    - "DIM"
+    - "mDNS"
+    - "TP8009"
+    - "TP8013"
+    - "education"
+
+  primary_specs:
+    - document: "NVMe Base Spec 2.1"
+      section: "5"
+      title: "Admin Command Set"
+      url: "https://nvmexpress.org/specifications/"
+      alt_url: "https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.1-2024.08.05-Ratified.pdf"
+    - document: "NVMe-oF Spec 1.1a"
+      section: "3"
+      title: "NVMe over Fabrics Architecture"
+      url: "https://nvmexpress.org/specifications/"
+      alt_url: ""
+    - document: "NVMe/TCP Transport Spec"
+      section: "3"
+      title: "NVMe/TCP Transport Binding"
+      url: "https://nvmexpress.org/specifications/"
+      alt_url: ""
+    - document: "TP8009"
+      section: ""
+      title: "Centralized Discovery Controller (CDC)"
+      url: "https://nvmexpress.org/specifications/"
+      alt_url: ""
+    - document: "TP8010"
+      section: ""
+      title: "Discovery Controller Enhancements"
+      url: "https://nvmexpress.org/specifications/"
+      alt_url: ""
+    - document: "TP8013"
+      section: ""
+      title: "Discovery Information Management (DIM)"
+      url: "https://nvmexpress.org/specifications/"
+      alt_url: ""
+    - document: "RFC 6762"
+      section: ""
+      title: "Multicast DNS"
+      url: "https://datatracker.ietf.org/doc/html/rfc6762"
+      alt_url: ""
+    - document: "RFC 6763"
+      section: ""
+      title: "DNS-Based Service Discovery"
+      url: "https://datatracker.ietf.org/doc/html/rfc6763"
+      alt_url: ""
+
+  content_disclaimer: >
+    Protocol descriptions in this scenario are based on open-source implementations
+    (Linux kernel nvme-tcp driver, libnvme, nvme-stas, nvme-cli) and public NVMe
+    specifications. No proprietary specification text has been reproduced. NVMe,
+    TP8009/8010/8013, and other specification references are provided as citations
+    for further reading.
+
+  source_references:
+    - repo: "torvalds/linux"
+      path: "drivers/nvme/host/tcp.c"
+      description: "NVMe-oF/TCP host driver — ICReq/ICResp, PDU send/recv, queue management"
+    - repo: "torvalds/linux"
+      path: "drivers/nvme/host/fabrics.c"
+      description: "NVMe Fabrics Connect, Property Get/Set, discovery log page retrieval"
+    - repo: "torvalds/linux"
+      path: "drivers/nvme/target/tcp.c"
+      description: "NVMe-oF/TCP target driver — controller-side PDU handling"
+    - repo: "torvalds/linux"
+      path: "drivers/nvme/target/discovery.c"
+      description: "Discovery controller target — log page generation, DIM handling"
+    - repo: "torvalds/linux"
+      path: "include/linux/nvme-tcp.h"
+      description: "NVMe/TCP PDU type definitions, ICReq/ICResp/CapsuleCmd/CapsuleResp structs"
+    - repo: "torvalds/linux"
+      path: "include/linux/nvme.h"
+      description: "NVMe command structures, admin/IO opcodes, fabrics command types, discovery log"
+    - repo: "linux-nvme/nvme-stas"
+      path: "staslib/avahi.py"
+      description: "stafd mDNS discovery — Avahi integration for _nvme-disc._tcp service browsing"
+    - repo: "linux-nvme/libnvme"
+      path: "src/nvme/fabrics.c"
+      description: "nvmf_register_ctrl() — DIM register/deregister, discovery log page retrieval"
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "initiator"
+      type: "initiator"
+      label: "Linux Host (nvme-stas)"
+      description: "NVMe-oF host running nvme-stas (stafd + stacd) for automated discovery and connection"
+      hardware: "25GbE NIC"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "192.168.100.10"
+      mac: "00:50:56:a1:b2:c3"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "25GbE Ethernet Switch"
+      description: "Data center Ethernet switch connecting host to storage network"
+      hardware: "25GbE Ethernet switch"
+      position: "center"
+
+    - id: "target"
+      type: "target"
+      label: "Storage Infrastructure"
+      description: "CDC and NVMe-oF/TCP storage array providing discovery services and NVMe namespaces"
+      hardware: "NVMe-oF/TCP storage array"
+      os: "Linux 6.x / Storage OS"
+      ip: "192.168.100.50"
+      mac: "00:50:56:d4:e5:f6"
+      position: "right"
+
+  links:
+    - id: "link-host-sw"
+      from: "initiator"
+      to: "switch"
+      speed_gbps: 25
+      media: "fiber_sr"
+    - id: "link-sw-storage"
+      from: "switch"
+      to: "target"
+      speed_gbps: 25
+      media: "fiber_sr"
+
+# ─────────────────────────────────────────────────────────────────
+# OSI LAYER DEFINITIONS (per actor)
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  initiator:
+    - layer: 7
+      name: "NVMe Host / nvme-stas"
+      components: ["nvme-stas (stafd + stacd)", "nvme-cli", "libnvme"]
+      state_schema:
+        stafd_state:
+          type: "string"
+          description: "stafd daemon state"
+          initial: "running"
+        stacd_state:
+          type: "string"
+          description: "stacd daemon state"
+          initial: "running"
+        discovered_controllers:
+          type: "integer"
+          description: "Number of discovered controllers"
+          initial: 0
+        connected_subsystems:
+          type: "integer"
+          description: "Number of connected NVMe subsystems"
+          initial: 0
+        namespaces:
+          type: "integer"
+          description: "Number of available namespaces"
+          initial: 0
+
+    - layer: 6
+      name: "NVMe Fabrics"
+      components: ["drivers/nvme/host/fabrics.c", "libnvme fabrics"]
+      state_schema:
+        fabrics_state:
+          type: "string"
+          description: "Fabrics connection state"
+          initial: "idle"
+        controller_type:
+          type: "string"
+          description: "Connected controller type (CDC, DDC, IOC)"
+          initial: "none"
+        cntlid:
+          type: "string"
+          description: "Assigned controller ID"
+          initial: "none"
+        kato_ms:
+          type: "integer"
+          description: "Keep Alive Timeout (ms)"
+          initial: 120000
+        hostnqn:
+          type: "string"
+          description: "Host NQN"
+          initial: "nqn.2014-08.org.nvmexpress:uuid:host-01"
+
+    - layer: 5
+      name: "NVMe-oF/TCP Transport"
+      components: ["drivers/nvme/host/tcp.c", "include/linux/nvme-tcp.h"]
+      state_schema:
+        tcp_transport_state:
+          type: "string"
+          description: "NVMe/TCP transport state"
+          initial: "idle"
+        pfv:
+          type: "string"
+          description: "PDU Format Version"
+          initial: "0x0000"
+        hdgst:
+          type: "boolean"
+          description: "Header digest enabled"
+          initial: false
+        ddgst:
+          type: "boolean"
+          description: "Data digest enabled"
+          initial: false
+        maxr2t:
+          type: "integer"
+          description: "Maximum outstanding R2Ts"
+          initial: 1
+        admin_qid:
+          type: "integer"
+          description: "Admin queue ID"
+          initial: 0
+        io_queues:
+          type: "integer"
+          description: "Number of IO queues established"
+          initial: 0
+
+    - layer: 4
+      name: "TCP"
+      components: ["kernel TCP stack"]
+      state_schema:
+        tcp_state:
+          type: "string"
+          description: "TCP connection state"
+          initial: "CLOSED"
+        src_port:
+          type: "integer"
+          description: "TCP source port (ephemeral)"
+          initial: 0
+        dst_port:
+          type: "integer"
+          description: "TCP destination port"
+          initial: 0
+        seq:
+          type: "string"
+          description: "Current sequence number"
+          initial: "0"
+        mss:
+          type: "integer"
+          description: "Maximum Segment Size"
+          initial: 1460
+
+    - layer: 3
+      name: "IP / Routing"
+      components: ["kernel IP stack"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "192.168.100.10"
+        dst_ip:
+          type: "string"
+          initial: "unresolved"
+        ttl:
+          type: "integer"
+          initial: 64
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver", "IEEE 802.3"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+        mac:
+          type: "string"
+          initial: "00:50:56:a1:b2:c3"
+
+    - layer: 1
+      name: "Physical"
+      components: ["25GBASE-SR", "SFP28"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "up"
+        speed:
+          type: "string"
+          initial: "25Gbps"
+
+  target:
+    - layer: 7
+      name: "NVMe Target / CDC"
+      components: ["drivers/nvme/target/discovery.c", "nvmet configfs"]
+      state_schema:
+        cdc_state:
+          type: "string"
+          description: "CDC service state"
+          initial: "listening"
+        registered_hosts:
+          type: "integer"
+          description: "Number of hosts registered via DIM"
+          initial: 0
+        subsystem_count:
+          type: "integer"
+          description: "Number of subsystems in CDC database"
+          initial: 3
+        io_controller_state:
+          type: "string"
+          description: "IO Controller state"
+          initial: "idle"
+        nvme_ns_count:
+          type: "integer"
+          description: "Number of NVMe namespaces"
+          initial: 4
+
+    - layer: 6
+      name: "NVMe Fabrics (Target)"
+      components: ["drivers/nvme/target/fabrics-cmd.c"]
+      state_schema:
+        fabrics_state:
+          type: "string"
+          initial: "listening"
+        controller_type:
+          type: "string"
+          description: "Active controller type serving this connection"
+          initial: "CDC"
+        assigned_cntlid:
+          type: "string"
+          description: "Controller ID assigned to host"
+          initial: "none"
+
+    - layer: 5
+      name: "NVMe-oF/TCP Transport"
+      components: ["drivers/nvme/target/tcp.c"]
+      state_schema:
+        tcp_transport_state:
+          type: "string"
+          initial: "listening"
+        hdgst:
+          type: "boolean"
+          initial: false
+        ddgst:
+          type: "boolean"
+          initial: false
+        maxdata:
+          type: "integer"
+          description: "Max data capsules per R2T"
+          initial: 131072
+
+    - layer: 4
+      name: "TCP"
+      components: ["kernel TCP stack"]
+      state_schema:
+        tcp_state:
+          type: "string"
+          initial: "LISTEN"
+        listen_port:
+          type: "integer"
+          description: "TCP listening port"
+          initial: 8009
+
+    - layer: 3
+      name: "IP / Routing"
+      components: ["kernel IP stack"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "192.168.100.50"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver", "IEEE 802.3"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+        mac:
+          type: "string"
+          initial: "00:50:56:d4:e5:f6"
+
+    - layer: 1
+      name: "Physical"
+      components: ["25GBASE-SR", "SFP28"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "up"
+        speed:
+          type: "string"
+          initial: "25Gbps"
+
+  switch:
+    - layer: 3
+      name: "IP Forwarding"
+      components: ["L3 switch forwarding"]
+      state_schema:
+        routing_state:
+          type: "string"
+          initial: "active"
+    - layer: 2
+      name: "Ethernet Switching"
+      components: ["802.1Q bridge", "MAC forwarding table"]
+      state_schema:
+        fwd_table_entries:
+          type: "integer"
+          initial: 0
+        port_a_state:
+          type: "string"
+          initial: "forwarding"
+        port_b_state:
+          type: "string"
+          initial: "forwarding"
+
+# ─────────────────────────────────────────────────────────────────
+# FRAME DEFINITIONS
+# ─────────────────────────────────────────────────────────────────
+frames:
+  # ── mDNS Discovery ──
+  - id: "mdns_query"
+    name: "mDNS Query (_nvme-disc._tcp)"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    total_bytes: 78
+    color: "#b45309"
+    headers:
+      - name: "Ethernet"
+        layer: 2
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "01:00:5e:00:00:fb"
+            description: "IPv4 multicast MAC for 224.0.0.251"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:50:56:a1:b2:c3"
+            description: "Host NIC MAC address"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800 (IPv4)"
+      - name: "IPv4"
+        layer: 3
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.100.10"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "224.0.0.251"
+            description: "mDNS multicast group address (RFC 6762)"
+            spec_refs:
+              - document: "RFC 6762"
+                section: "3"
+                title: "Multicast DNS Addresses"
+                url: "https://datatracker.ietf.org/doc/html/rfc6762#section-3"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: "255"
+            description: "mDNS requires TTL=255 for link-local scope"
+      - name: "UDP"
+        layer: 4
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: "5353"
+            description: "mDNS port (RFC 6762)"
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: "5353"
+      - name: "mDNS Query"
+        layer: 7
+        fields:
+          - name: "Transaction ID"
+            abbrev: "dns.id"
+            bits: 16
+            value: "0x0000"
+            description: "mDNS queries use ID 0 (RFC 6762 §18.1)"
+          - name: "Flags"
+            abbrev: "dns.flags"
+            bits: 16
+            value: "0x0000 (Standard Query)"
+          - name: "Questions"
+            abbrev: "dns.count.queries"
+            bits: 16
+            value: "1"
+          - name: "Query Name"
+            abbrev: "dns.qry.name"
+            bits: 0
+            value: "_nvme-disc._tcp.local"
+            description: "DNS-SD service type for NVMe discovery controllers (TP8009)"
+            spec_refs:
+              - document: "TP8009"
+                section: ""
+                title: "mDNS Service Type for NVMe Discovery"
+                url: "https://nvmexpress.org/specifications/"
+              - document: "RFC 6763"
+                section: "7"
+                title: "DNS-SD Service Names"
+                url: "https://datatracker.ietf.org/doc/html/rfc6763#section-7"
+            kernel_ref:
+              file: "staslib/avahi.py"
+              function: "Avahi._service_browser"
+              notes: "stafd registers with Avahi to browse for _nvme-disc._tcp service type"
+          - name: "Query Type"
+            abbrev: "dns.qry.type"
+            bits: 16
+            value: "PTR (12)"
+            description: "PTR query for service instance enumeration"
+
+  - id: "mdns_response"
+    name: "mDNS Response (CDC advertisement)"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    total_bytes: 210
+    color: "#b45309"
+    headers:
+      - name: "Ethernet"
+        layer: 2
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "01:00:5e:00:00:fb"
+            description: "mDNS multicast response"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:50:56:d4:e5:f6"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800 (IPv4)"
+      - name: "IPv4"
+        layer: 3
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.100.50"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "224.0.0.251"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: "255"
+      - name: "UDP"
+        layer: 4
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: "5353"
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: "5353"
+      - name: "mDNS Response"
+        layer: 7
+        fields:
+          - name: "Flags"
+            abbrev: "dns.flags"
+            bits: 16
+            value: "0x8400 (Response, Authoritative)"
+          - name: "Answers"
+            abbrev: "dns.count.answers"
+            bits: 16
+            value: "3"
+          - name: "PTR Record"
+            abbrev: "dns.resp.name"
+            bits: 0
+            value: "CDC-Storage._nvme-disc._tcp.local"
+            description: "Service instance name for the CDC"
+          - name: "SRV Record Target"
+            abbrev: "dns.srv.target"
+            bits: 0
+            value: "cdc.storage.local"
+            description: "Hostname of the CDC"
+          - name: "SRV Record Port"
+            abbrev: "dns.srv.port"
+            bits: 16
+            value: "8009"
+            description: "NVMe discovery port (default trsvcid)"
+            spec_refs:
+              - document: "TP8009"
+                section: ""
+                title: "CDC Discovery Port"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "TXT Record"
+            abbrev: "dns.txt"
+            bits: 0
+            value: "p=tcp nqn=nqn.2014-08.org.nvmexpress.discovery"
+            description: "Transport type and NQN. p=tcp indicates NVMe/TCP transport. nqn= is the discovery subsystem NQN."
+            kernel_ref:
+              file: "staslib/avahi.py"
+              function: "Avahi._resolved_cb"
+              notes: "stafd parses TXT record for transport type (p=) and NQN (nqn=)"
+
+  # ── TCP Handshake to CDC ──
+  - id: "tcp_syn_cdc"
+    name: "TCP SYN (→ CDC port 8009)"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    total_bytes: 74
+    color: "#0f766e"
+    headers:
+      - name: "Ethernet"
+        layer: 2
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:50:56:d4:e5:f6"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:50:56:a1:b2:c3"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800 (IPv4)"
+      - name: "IPv4"
+        layer: 3
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.100.10"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.100.50"
+      - name: "TCP"
+        layer: 4
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: "49152"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: "8009"
+            description: "NVMe discovery service port"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "SYN"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: "0 (relative)"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: "65535"
+          - name: "MSS"
+            abbrev: "tcp.options.mss"
+            bits: 16
+            value: "1460"
+
+  - id: "tcp_synack_cdc"
+    name: "TCP SYN-ACK (CDC → Host)"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    total_bytes: 74
+    color: "#0f766e"
+    headers:
+      - name: "TCP"
+        layer: 4
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: "8009"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: "49152"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "SYN, ACK"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: "0 (relative)"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: "1"
+
+  - id: "tcp_ack_cdc"
+    name: "TCP ACK (3-way handshake complete)"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    total_bytes: 66
+    color: "#0f766e"
+    headers:
+      - name: "TCP"
+        layer: 4
+        fields:
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "ACK"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: "1"
+
+  # ── NVMe-oF/TCP Initialization to CDC ──
+  - id: "icreq_cdc"
+    name: "ICReq (Initialize Connection Request)"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    total_bytes: 194
+    color: "#1e40af"
+    headers:
+      - name: "TCP"
+        layer: 4
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: "49152"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: "8009"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "PSH, ACK"
+      - name: "NVMe-oF/TCP PDU Header"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x00 (ICReq)"
+            description: "Initialize Connection Request — first NVMe/TCP PDU after TCP handshake"
+            spec_refs:
+              - document: "NVMe/TCP Transport Spec"
+                section: "3.5"
+                title: "Initialize Connection Request PDU"
+                url: "https://nvmexpress.org/specifications/"
+            kernel_ref:
+              file: "drivers/nvme/host/tcp.c"
+              function: "nvme_tcp_init_connection"
+              notes: "Host sends ICReq after TCP connect completes"
+          - name: "Flags"
+            abbrev: "nvme-tcp.flags"
+            bits: 8
+            value: "0x00"
+          - name: "Header Length"
+            abbrev: "nvme-tcp.hlen"
+            bits: 8
+            value: "128"
+            description: "ICReq PDU is always 128 bytes"
+          - name: "PDU Data Offset"
+            abbrev: "nvme-tcp.pdo"
+            bits: 8
+            value: "0"
+          - name: "PDU Length"
+            abbrev: "nvme-tcp.plen"
+            bits: 32
+            value: "128"
+      - name: "ICReq Parameters"
+        layer: 5
+        fields:
+          - name: "PDU Format Version"
+            abbrev: "nvme-tcp.icreq.pfv"
+            bits: 16
+            value: "0x0000"
+            description: "Only version 0 is defined"
+          - name: "Host PDU Data Alignment"
+            abbrev: "nvme-tcp.icreq.hpda"
+            bits: 8
+            value: "0"
+            description: "Dword alignment for PDU data (0 = no constraint)"
+          - name: "Digest Types"
+            abbrev: "nvme-tcp.icreq.digest"
+            bits: 8
+            value: "0x00"
+            description: "Bit 0: Header Digest, Bit 1: Data Digest. 0x00 = no digests requested."
+            kernel_ref:
+              file: "drivers/nvme/host/tcp.c"
+              function: "nvme_tcp_init_connection"
+              notes: "Digest negotiation — host requests, controller accepts/rejects in ICResp"
+          - name: "Max Outstanding R2Ts"
+            abbrev: "nvme-tcp.icreq.maxr2t"
+            bits: 32
+            value: "1"
+            description: "Maximum number of outstanding Ready-to-Transfer PDUs per command"
+
+  - id: "icresp_cdc"
+    name: "ICResp (Initialize Connection Response)"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    total_bytes: 194
+    color: "#1e40af"
+    headers:
+      - name: "TCP"
+        layer: 4
+        fields:
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "PSH, ACK"
+      - name: "NVMe-oF/TCP PDU Header"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x01 (ICResp)"
+            description: "Initialize Connection Response — controller accepts connection parameters"
+            spec_refs:
+              - document: "NVMe/TCP Transport Spec"
+                section: "3.6"
+                title: "Initialize Connection Response PDU"
+                url: "https://nvmexpress.org/specifications/"
+            kernel_ref:
+              file: "drivers/nvme/target/tcp.c"
+              function: "nvmet_tcp_handle_icreq"
+              notes: "Target validates ICReq and sends ICResp with negotiated parameters"
+          - name: "Header Length"
+            abbrev: "nvme-tcp.hlen"
+            bits: 8
+            value: "128"
+          - name: "PDU Length"
+            abbrev: "nvme-tcp.plen"
+            bits: 32
+            value: "128"
+      - name: "ICResp Parameters"
+        layer: 5
+        fields:
+          - name: "PDU Format Version"
+            abbrev: "nvme-tcp.icresp.pfv"
+            bits: 16
+            value: "0x0000"
+          - name: "Controller PDU Data Alignment"
+            abbrev: "nvme-tcp.icresp.cpda"
+            bits: 8
+            value: "0"
+          - name: "Digest Types"
+            abbrev: "nvme-tcp.icresp.digest"
+            bits: 8
+            value: "0x00"
+            description: "Controller accepted: no digests"
+          - name: "Max Data Capsules"
+            abbrev: "nvme-tcp.icresp.maxdata"
+            bits: 32
+            value: "131072"
+            description: "Maximum data per R2T the controller supports (bytes)"
+
+  # ── Fabrics Connect to CDC ──
+  - id: "fabrics_connect_cdc"
+    name: "Fabrics Connect (Admin Queue → CDC)"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    total_bytes: 1154
+    color: "#1e40af"
+    headers:
+      - name: "TCP"
+        layer: 4
+        fields:
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "PSH, ACK"
+      - name: "NVMe-oF/TCP CapsuleCmd"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x04 (CapsuleCmd)"
+            description: "Command Capsule PDU — carries an NVMe command SQE"
+          - name: "PDU Length"
+            abbrev: "nvme-tcp.plen"
+            bits: 32
+            value: "1096"
+            description: "72 bytes header + 1024 bytes Connect data"
+      - name: "NVMe Fabrics Connect Command"
+        layer: 6
+        fields:
+          - name: "Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x7F (Fabrics)"
+            description: "Generic Fabrics command opcode — fctype field specifies the actual command"
+            spec_refs:
+              - document: "NVMe-oF Spec 1.1a"
+                section: "3.3"
+                title: "Fabrics Command Set"
+                url: "https://nvmexpress.org/specifications/"
+            kernel_ref:
+              file: "drivers/nvme/host/fabrics.c"
+              function: "nvmf_connect_admin_queue"
+              notes: "Creates admin queue association with Fabrics Connect"
+          - name: "Fabrics Command Type"
+            abbrev: "nvme.fabrics.fctype"
+            bits: 8
+            value: "0x01 (Connect)"
+            description: "Create association between host and controller"
+          - name: "Command ID"
+            abbrev: "nvme.cmd.cid"
+            bits: 16
+            value: "0"
+          - name: "Queue ID"
+            abbrev: "nvme.fabrics.connect.qid"
+            bits: 16
+            value: "0"
+            description: "QID 0 = Admin queue. First queue established for controller management."
+          - name: "SQ Size"
+            abbrev: "nvme.fabrics.connect.sqsize"
+            bits: 16
+            value: "31"
+            description: "Submission Queue size (0's based) — 32 entries"
+          - name: "Keep Alive Timeout"
+            abbrev: "nvme.fabrics.connect.kato"
+            bits: 32
+            value: "120000"
+            description: "Keep Alive Timeout in milliseconds (2 minutes)"
+      - name: "Connect Data (1024 bytes)"
+        layer: 6
+        fields:
+          - name: "Host ID"
+            abbrev: "nvme.fabrics.connect.hostid"
+            bits: 128
+            value: "a1b2c3d4-e5f6-7890-abcd-ef0123456789"
+            description: "Unique host identifier (UUID)"
+          - name: "Controller ID"
+            abbrev: "nvme.fabrics.connect.cntlid"
+            bits: 16
+            value: "0xFFFF (Dynamic)"
+            description: "NVMF_CNTLID_DYNAMIC — request dynamic controller ID assignment"
+            kernel_ref:
+              file: "include/linux/nvme.h"
+              function: "NVME_CNTLID_DYNAMIC"
+              notes: "0xFFFF indicates the controller should assign a dynamic CNTLID"
+          - name: "Subsystem NQN"
+            abbrev: "nvme.fabrics.connect.subnqn"
+            bits: 0
+            value: "nqn.2014-08.org.nvmexpress.discovery"
+            description: "Well-known discovery subsystem NQN — connects to the Discovery Controller"
+            spec_refs:
+              - document: "NVMe-oF Spec 1.1a"
+                section: "4.3"
+                title: "Discovery Service"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "Host NQN"
+            abbrev: "nvme.fabrics.connect.hostnqn"
+            bits: 0
+            value: "nqn.2014-08.org.nvmexpress:uuid:host-01"
+            description: "Host's NVMe Qualified Name — identifies this host to the controller"
+
+  - id: "fabrics_connect_cdc_resp"
+    name: "Fabrics Connect Response (CDC → Host)"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    total_bytes: 90
+    color: "#1e40af"
+    headers:
+      - name: "TCP"
+        layer: 4
+        fields:
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "PSH, ACK"
+      - name: "NVMe-oF/TCP CapsuleResp"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x05 (CapsuleResp)"
+            description: "Response Capsule PDU — carries an NVMe completion CQE"
+      - name: "NVMe Completion (CQE)"
+        layer: 6
+        fields:
+          - name: "Status"
+            abbrev: "nvme.cqe.status"
+            bits: 16
+            value: "0x0000 (Success)"
+            description: "Fabrics Connect succeeded — admin queue established"
+          - name: "Controller ID (Result)"
+            abbrev: "nvme.cqe.result"
+            bits: 32
+            value: "0x0041 (CNTLID=65)"
+            description: "CDC assigned controller ID 65 to this host"
+            kernel_ref:
+              file: "drivers/nvme/target/fabrics-cmd.c"
+              function: "nvmet_execute_connect"
+              notes: "Target assigns CNTLID from its controller ID pool"
+          - name: "Command ID"
+            abbrev: "nvme.cqe.cid"
+            bits: 16
+            value: "0"
+
+  # ── DIM Register ──
+  - id: "dim_register"
+    name: "DIM Register (Host → CDC)"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    total_bytes: 322
+    color: "#6d28d9"
+    headers:
+      - name: "TCP"
+        layer: 4
+        fields:
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "PSH, ACK"
+      - name: "NVMe-oF/TCP CapsuleCmd"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x04 (CapsuleCmd)"
+      - name: "DIM Command (TP8013)"
+        layer: 6
+        fields:
+          - name: "Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x7F (Fabrics)"
+            spec_refs:
+              - document: "TP8013"
+                section: ""
+                title: "Discovery Information Management"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "Fabrics Command Type"
+            abbrev: "nvme.fabrics.fctype"
+            bits: 8
+            value: "DIM"
+            description: "Discovery Information Management command"
+          - name: "Task"
+            abbrev: "nvme.dim.tas"
+            bits: 8
+            value: "0x00 (Register)"
+            description: "Register this host with the CDC. Host identity and capabilities are sent in the data portion."
+            kernel_ref:
+              file: "src/nvme/fabrics.c"
+              function: "nvmf_register_ctrl"
+              notes: "libnvme sends DIM with TAS=Register to add host to CDC database"
+          - name: "Entity Type"
+            abbrev: "nvme.dim.etype"
+            bits: 8
+            value: "Host"
+            description: "Entity registering is an NVMe Host"
+          - name: "Command ID"
+            abbrev: "nvme.cmd.cid"
+            bits: 16
+            value: "1"
+      - name: "DIM Registration Data"
+        layer: 6
+        fields:
+          - name: "Host NQN"
+            abbrev: "nvme.dim.hostnqn"
+            bits: 0
+            value: "nqn.2014-08.org.nvmexpress:uuid:host-01"
+          - name: "Host ID"
+            abbrev: "nvme.dim.hostid"
+            bits: 128
+            value: "a1b2c3d4-e5f6-7890-abcd-ef0123456789"
+          - name: "Hostname"
+            abbrev: "nvme.dim.hostname"
+            bits: 0
+            value: "nvme-host-01"
+            description: "System hostname for identification in CDC database"
+          - name: "OS Version"
+            abbrev: "nvme.dim.osver"
+            bits: 0
+            value: "Linux 6.8.0-generic"
+
+  - id: "dim_register_resp"
+    name: "DIM Register Response (Success)"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    total_bytes: 90
+    color: "#6d28d9"
+    headers:
+      - name: "NVMe-oF/TCP CapsuleResp"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x05 (CapsuleResp)"
+      - name: "NVMe Completion (CQE)"
+        layer: 6
+        fields:
+          - name: "Status"
+            abbrev: "nvme.cqe.status"
+            bits: 16
+            value: "0x0000 (Success)"
+            description: "Host successfully registered with CDC. CDC will now include zoned subsystems in discovery log pages for this host."
+          - name: "Command ID"
+            abbrev: "nvme.cqe.cid"
+            bits: 16
+            value: "1"
+
+  # ── Get Discovery Log Page ──
+  - id: "get_log_page_discovery"
+    name: "Get Log Page — Discovery Log (LID 0x70)"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    total_bytes: 138
+    color: "#0369a1"
+    headers:
+      - name: "NVMe-oF/TCP CapsuleCmd"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x04 (CapsuleCmd)"
+      - name: "NVMe Get Log Page Command"
+        layer: 6
+        fields:
+          - name: "Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x02 (Get Log Page)"
+            description: "Admin command to retrieve a log page from the controller"
+            spec_refs:
+              - document: "NVMe Base Spec 2.1"
+                section: "5.16"
+                title: "Get Log Page Command"
+                url: "https://nvmexpress.org/specifications/"
+            kernel_ref:
+              file: "drivers/nvme/host/fabrics.c"
+              function: "nvmf_get_discovery_log"
+              notes: "Host retrieves discovery log, re-reads if generation counter changes"
+          - name: "Log Page ID"
+            abbrev: "nvme.get_log.lid"
+            bits: 8
+            value: "0x70 (Discovery)"
+            description: "Discovery Log Page — lists subsystems accessible to this host"
+            spec_refs:
+              - document: "NVMe-oF Spec 1.1a"
+                section: "5.3"
+                title: "Discovery Log Page"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "Number of Dwords"
+            abbrev: "nvme.get_log.numd"
+            bits: 32
+            value: "8192"
+            description: "Request 32KB — enough for header + multiple discovery entries"
+          - name: "Command ID"
+            abbrev: "nvme.cmd.cid"
+            bits: 16
+            value: "2"
+
+  - id: "get_log_page_discovery_resp"
+    name: "Discovery Log Page Response (3 entries)"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    total_bytes: 3210
+    color: "#0369a1"
+    headers:
+      - name: "NVMe-oF/TCP C2HData"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x07 (C2HData)"
+            description: "Controller-to-Host Data PDU — carries discovery log page data"
+          - name: "Data Length"
+            abbrev: "nvme-tcp.c2hdata.datalen"
+            bits: 32
+            value: "3096"
+            description: "1024-byte header + 3 × 1024-byte entries"
+      - name: "Discovery Log Page Header"
+        layer: 6
+        fields:
+          - name: "Generation Counter"
+            abbrev: "nvme.disc.genctr"
+            bits: 64
+            value: "7"
+            description: "Increments when log page content changes. Host must re-read if this changes during retrieval."
+          - name: "Number of Records"
+            abbrev: "nvme.disc.numrec"
+            bits: 64
+            value: "3"
+            description: "Three subsystems accessible to this host based on CDC zoning configuration"
+          - name: "Record Format"
+            abbrev: "nvme.disc.recfmt"
+            bits: 16
+            value: "0"
+      - name: "Entry 1: DDC (Referral)"
+        layer: 6
+        fields:
+          - name: "Transport Type"
+            abbrev: "nvme.disc.entry.trtype"
+            bits: 8
+            value: "3 (TCP)"
+          - name: "Address Family"
+            abbrev: "nvme.disc.entry.adrfam"
+            bits: 8
+            value: "1 (IPv4)"
+          - name: "Subsystem Type"
+            abbrev: "nvme.disc.entry.subtype"
+            bits: 8
+            value: "1 (Discovery Subsystem)"
+            description: "Referral to a Direct Discovery Controller (DDC) on the storage array"
+          - name: "Controller ID"
+            abbrev: "nvme.disc.entry.cntlid"
+            bits: 16
+            value: "0xFFFF"
+          - name: "Transport Address"
+            abbrev: "nvme.disc.entry.traddr"
+            bits: 0
+            value: "192.168.100.51"
+            description: "IP address of the DDC on the storage array"
+          - name: "Transport Service ID"
+            abbrev: "nvme.disc.entry.trsvcid"
+            bits: 0
+            value: "8009"
+          - name: "Subsystem NQN"
+            abbrev: "nvme.disc.entry.subnqn"
+            bits: 0
+            value: "nqn.2014-08.org.nvmexpress.discovery"
+            description: "Discovery subsystem NQN — this is a DDC referral"
+      - name: "Entry 2: NVM Subsystem A"
+        layer: 6
+        fields:
+          - name: "Transport Type"
+            abbrev: "nvme.disc.entry.trtype"
+            bits: 8
+            value: "3 (TCP)"
+          - name: "Subsystem Type"
+            abbrev: "nvme.disc.entry.subtype"
+            bits: 8
+            value: "2 (NVM Subsystem)"
+            description: "IO subsystem — host can connect to perform NVMe I/O"
+          - name: "Transport Address"
+            abbrev: "nvme.disc.entry.traddr"
+            bits: 0
+            value: "192.168.100.51"
+          - name: "Transport Service ID"
+            abbrev: "nvme.disc.entry.trsvcid"
+            bits: 0
+            value: "4420"
+            description: "IANA-assigned NVMe-oF port"
+          - name: "Subsystem NQN"
+            abbrev: "nvme.disc.entry.subnqn"
+            bits: 0
+            value: "nqn.2024-01.com.storage:subsys-alpha"
+            description: "Target subsystem NQN for Storage Subsystem A"
+      - name: "Entry 3: NVM Subsystem B"
+        layer: 6
+        fields:
+          - name: "Transport Type"
+            abbrev: "nvme.disc.entry.trtype"
+            bits: 8
+            value: "3 (TCP)"
+          - name: "Subsystem Type"
+            abbrev: "nvme.disc.entry.subtype"
+            bits: 8
+            value: "2 (NVM Subsystem)"
+          - name: "Transport Address"
+            abbrev: "nvme.disc.entry.traddr"
+            bits: 0
+            value: "192.168.100.52"
+          - name: "Transport Service ID"
+            abbrev: "nvme.disc.entry.trsvcid"
+            bits: 0
+            value: "4420"
+          - name: "Subsystem NQN"
+            abbrev: "nvme.disc.entry.subnqn"
+            bits: 0
+            value: "nqn.2024-01.com.storage:subsys-beta"
+      - name: "CapsuleResp (Completion)"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x05 (CapsuleResp)"
+          - name: "Status"
+            abbrev: "nvme.cqe.status"
+            bits: 16
+            value: "0x0000 (Success)"
+
+  # ── TCP Handshake to IO Controller ──
+  - id: "tcp_syn_ioc"
+    name: "TCP SYN (→ IOC port 4420)"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    total_bytes: 74
+    color: "#0f766e"
+    headers:
+      - name: "TCP"
+        layer: 4
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: "49200"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: "4420"
+            description: "IANA-assigned NVMe-oF port"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "SYN"
+
+  - id: "tcp_synack_ioc"
+    name: "TCP SYN-ACK (IOC → Host)"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    total_bytes: 74
+    color: "#0f766e"
+    headers:
+      - name: "TCP"
+        layer: 4
+        fields:
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "SYN, ACK"
+
+  - id: "tcp_ack_ioc"
+    name: "TCP ACK (handshake complete)"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    total_bytes: 66
+    color: "#0f766e"
+    headers:
+      - name: "TCP"
+        layer: 4
+        fields:
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "ACK"
+
+  # ── NVMe-oF/TCP Initialization to IOC ──
+  - id: "icreq_ioc"
+    name: "ICReq (→ IO Controller)"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    total_bytes: 194
+    color: "#1e40af"
+    headers:
+      - name: "NVMe-oF/TCP PDU Header"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x00 (ICReq)"
+          - name: "PDU Length"
+            abbrev: "nvme-tcp.plen"
+            bits: 32
+            value: "128"
+      - name: "ICReq Parameters"
+        layer: 5
+        fields:
+          - name: "PDU Format Version"
+            abbrev: "nvme-tcp.icreq.pfv"
+            bits: 16
+            value: "0x0000"
+          - name: "Digest Types"
+            abbrev: "nvme-tcp.icreq.digest"
+            bits: 8
+            value: "0x00"
+          - name: "Max Outstanding R2Ts"
+            abbrev: "nvme-tcp.icreq.maxr2t"
+            bits: 32
+            value: "1"
+
+  - id: "icresp_ioc"
+    name: "ICResp (IO Controller → Host)"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    total_bytes: 194
+    color: "#1e40af"
+    headers:
+      - name: "NVMe-oF/TCP PDU Header"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x01 (ICResp)"
+      - name: "ICResp Parameters"
+        layer: 5
+        fields:
+          - name: "Max Data Capsules"
+            abbrev: "nvme-tcp.icresp.maxdata"
+            bits: 32
+            value: "131072"
+
+  # ── Fabrics Connect to IO Controller ──
+  - id: "fabrics_connect_ioc"
+    name: "Fabrics Connect (Admin Queue → IO Controller)"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    total_bytes: 1154
+    color: "#1e40af"
+    headers:
+      - name: "NVMe-oF/TCP CapsuleCmd"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x04 (CapsuleCmd)"
+      - name: "NVMe Fabrics Connect Command"
+        layer: 6
+        fields:
+          - name: "Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x7F (Fabrics)"
+          - name: "Fabrics Command Type"
+            abbrev: "nvme.fabrics.fctype"
+            bits: 8
+            value: "0x01 (Connect)"
+          - name: "Queue ID"
+            abbrev: "nvme.fabrics.connect.qid"
+            bits: 16
+            value: "0"
+            description: "Admin queue to the IO Controller"
+          - name: "SQ Size"
+            abbrev: "nvme.fabrics.connect.sqsize"
+            bits: 16
+            value: "31"
+          - name: "Keep Alive Timeout"
+            abbrev: "nvme.fabrics.connect.kato"
+            bits: 32
+            value: "120000"
+      - name: "Connect Data"
+        layer: 6
+        fields:
+          - name: "Controller ID"
+            abbrev: "nvme.fabrics.connect.cntlid"
+            bits: 16
+            value: "0xFFFF (Dynamic)"
+          - name: "Subsystem NQN"
+            abbrev: "nvme.fabrics.connect.subnqn"
+            bits: 0
+            value: "nqn.2024-01.com.storage:subsys-alpha"
+            description: "IO subsystem NQN from Discovery Log — connecting to Subsystem A"
+            kernel_ref:
+              file: "drivers/nvme/host/fabrics.c"
+              function: "nvmf_connect_admin_queue"
+              notes: "stacd uses subnqn from discovery log entry to connect to IO controller"
+          - name: "Host NQN"
+            abbrev: "nvme.fabrics.connect.hostnqn"
+            bits: 0
+            value: "nqn.2014-08.org.nvmexpress:uuid:host-01"
+
+  - id: "fabrics_connect_ioc_resp"
+    name: "Fabrics Connect Response (IO Controller)"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    total_bytes: 90
+    color: "#1e40af"
+    headers:
+      - name: "NVMe Completion (CQE)"
+        layer: 6
+        fields:
+          - name: "Status"
+            abbrev: "nvme.cqe.status"
+            bits: 16
+            value: "0x0000 (Success)"
+          - name: "Controller ID (Result)"
+            abbrev: "nvme.cqe.result"
+            bits: 32
+            value: "0x0001 (CNTLID=1)"
+            description: "IO Controller assigned CNTLID 1"
+
+  # ── Identify Controller ──
+  - id: "identify_controller"
+    name: "Identify Controller"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    total_bytes: 138
+    color: "#0369a1"
+    headers:
+      - name: "NVMe-oF/TCP CapsuleCmd"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x04 (CapsuleCmd)"
+      - name: "NVMe Identify Command"
+        layer: 6
+        fields:
+          - name: "Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x06 (Identify)"
+            description: "Retrieve controller or namespace identification data"
+            spec_refs:
+              - document: "NVMe Base Spec 2.1"
+                section: "5.17"
+                title: "Identify Command"
+                url: "https://nvmexpress.org/specifications/"
+            kernel_ref:
+              file: "drivers/nvme/host/core.c"
+              function: "nvme_identify_ctrl"
+              notes: "Host reads controller capabilities, model, serial, firmware revision"
+          - name: "CNS (Controller or Namespace Structure)"
+            abbrev: "nvme.identify.cns"
+            bits: 8
+            value: "0x01 (Identify Controller)"
+            description: "CNS=1 returns 4096-byte Identify Controller data structure"
+          - name: "Command ID"
+            abbrev: "nvme.cmd.cid"
+            bits: 16
+            value: "1"
+
+  - id: "identify_controller_resp"
+    name: "Identify Controller Response (4096 bytes)"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    total_bytes: 4230
+    color: "#0369a1"
+    headers:
+      - name: "NVMe-oF/TCP C2HData"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x07 (C2HData)"
+          - name: "Data Length"
+            abbrev: "nvme-tcp.c2hdata.datalen"
+            bits: 32
+            value: "4096"
+      - name: "Identify Controller Data"
+        layer: 7
+        fields:
+          - name: "PCI Vendor ID"
+            abbrev: "nvme.id.ctrl.vid"
+            bits: 16
+            value: "0x1234"
+          - name: "Serial Number"
+            abbrev: "nvme.id.ctrl.sn"
+            bits: 160
+            value: "SN-SUBSYS-ALPHA-001"
+          - name: "Model Number"
+            abbrev: "nvme.id.ctrl.mn"
+            bits: 320
+            value: "NVMe-oF/TCP Storage Array"
+          - name: "Firmware Revision"
+            abbrev: "nvme.id.ctrl.fr"
+            bits: 64
+            value: "v2.1.0"
+          - name: "Max Data Transfer Size"
+            abbrev: "nvme.id.ctrl.mdts"
+            bits: 8
+            value: "6"
+            description: "MDTS=6 → max transfer = 2^6 × 4KB = 256KB"
+          - name: "Controller ID"
+            abbrev: "nvme.id.ctrl.cntlid"
+            bits: 16
+            value: "1"
+          - name: "NVMe Version"
+            abbrev: "nvme.id.ctrl.ver"
+            bits: 32
+            value: "2.1.0"
+          - name: "Number of Namespaces"
+            abbrev: "nvme.id.ctrl.nn"
+            bits: 32
+            value: "4"
+            description: "4 namespaces available on this subsystem"
+          - name: "SQ Entry Size"
+            abbrev: "nvme.id.ctrl.sqes"
+            bits: 8
+            value: "6/6"
+            description: "Min/Max SQE size = 2^6 = 64 bytes"
+          - name: "CQ Entry Size"
+            abbrev: "nvme.id.ctrl.cqes"
+            bits: 8
+            value: "4/4"
+            description: "Min/Max CQE size = 2^4 = 16 bytes"
+
+  # ── Identify Namespace ──
+  - id: "identify_namespace"
+    name: "Identify Namespace (NSID=1)"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    total_bytes: 138
+    color: "#0369a1"
+    headers:
+      - name: "NVMe-oF/TCP CapsuleCmd"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x04 (CapsuleCmd)"
+      - name: "NVMe Identify Command"
+        layer: 6
+        fields:
+          - name: "Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x06 (Identify)"
+          - name: "CNS"
+            abbrev: "nvme.identify.cns"
+            bits: 8
+            value: "0x00 (Identify Namespace)"
+            description: "CNS=0 returns namespace-specific data"
+            kernel_ref:
+              file: "drivers/nvme/host/core.c"
+              function: "nvme_identify_ns"
+              notes: "Host reads namespace size, LBA format, capabilities"
+          - name: "Namespace ID"
+            abbrev: "nvme.cmd.nsid"
+            bits: 32
+            value: "1"
+          - name: "Command ID"
+            abbrev: "nvme.cmd.cid"
+            bits: 16
+            value: "2"
+
+  - id: "identify_namespace_resp"
+    name: "Identify Namespace Response (NSID=1)"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    total_bytes: 4230
+    color: "#0369a1"
+    headers:
+      - name: "NVMe-oF/TCP C2HData"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x07 (C2HData)"
+          - name: "Data Length"
+            abbrev: "nvme-tcp.c2hdata.datalen"
+            bits: 32
+            value: "4096"
+      - name: "Identify Namespace Data"
+        layer: 7
+        fields:
+          - name: "Namespace Size"
+            abbrev: "nvme.id.ns.nsze"
+            bits: 64
+            value: "1,953,525,168 LBAs"
+            description: "~1TB at 512-byte LBAs"
+          - name: "Namespace Capacity"
+            abbrev: "nvme.id.ns.ncap"
+            bits: 64
+            value: "1,953,525,168 LBAs"
+          - name: "Namespace Utilization"
+            abbrev: "nvme.id.ns.nuse"
+            bits: 64
+            value: "487,200,000 LBAs"
+            description: "~25% utilized"
+          - name: "Number of LBA Formats"
+            abbrev: "nvme.id.ns.nlbaf"
+            bits: 8
+            value: "1"
+            description: "One LBA format supported (0's based → 2 formats)"
+          - name: "Formatted LBA Size"
+            abbrev: "nvme.id.ns.flbas"
+            bits: 8
+            value: "0"
+            description: "Currently using LBA format 0"
+          - name: "LBA Format 0"
+            abbrev: "nvme.id.ns.lbaf.0"
+            bits: 32
+            value: "ms=0 ds=9 rp=0"
+            description: "No metadata, 2^9 = 512 bytes per LBA, best performance"
+          - name: "Namespace GUID"
+            abbrev: "nvme.id.ns.nguid"
+            bits: 128
+            value: "e8c7b6a5-d4e3-f2a1-b0c9-d8e7f6a5b4c3"
+
+  # ── Fabrics Connect IO Queue ──
+  - id: "fabrics_connect_ioq"
+    name: "Fabrics Connect (IO Queue 1)"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    total_bytes: 1154
+    color: "#1e40af"
+    headers:
+      - name: "NVMe Fabrics Connect Command"
+        layer: 6
+        fields:
+          - name: "Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x7F (Fabrics)"
+          - name: "Fabrics Command Type"
+            abbrev: "nvme.fabrics.fctype"
+            bits: 8
+            value: "0x01 (Connect)"
+          - name: "Queue ID"
+            abbrev: "nvme.fabrics.connect.qid"
+            bits: 16
+            value: "1"
+            description: "IO Queue 1 — used for NVMe Read/Write commands"
+            kernel_ref:
+              file: "drivers/nvme/host/tcp.c"
+              function: "nvme_tcp_alloc_io_queues"
+              notes: "Host creates IO queues after admin queue is established"
+          - name: "SQ Size"
+            abbrev: "nvme.fabrics.connect.sqsize"
+            bits: 16
+            value: "127"
+            description: "128 entries (0's based)"
+
+  - id: "fabrics_connect_ioq_resp"
+    name: "Fabrics Connect Response (IO Queue 1)"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    total_bytes: 90
+    color: "#1e40af"
+    headers:
+      - name: "NVMe Completion (CQE)"
+        layer: 6
+        fields:
+          - name: "Status"
+            abbrev: "nvme.cqe.status"
+            bits: 16
+            value: "0x0000 (Success)"
+            description: "IO Queue 1 established — host can now submit IO commands"
+
+  # ── NVMe Write ──
+  - id: "nvme_write_cmd"
+    name: "NVMe Write Command (4KB)"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    total_bytes: 138
+    color: "#991b1b"
+    headers:
+      - name: "NVMe-oF/TCP CapsuleCmd"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x04 (CapsuleCmd)"
+            description: "Command capsule on IO Queue 1"
+      - name: "NVMe Write Command"
+        layer: 7
+        fields:
+          - name: "Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x01 (Write)"
+            description: "NVMe IO Write command"
+            spec_refs:
+              - document: "NVMe Base Spec 2.1"
+                section: "7.1"
+                title: "Write Command"
+                url: "https://nvmexpress.org/specifications/"
+            kernel_ref:
+              file: "drivers/nvme/host/core.c"
+              function: "nvme_setup_rw"
+              notes: "Sets up NVMe Read/Write SQE from block layer request"
+          - name: "Namespace ID"
+            abbrev: "nvme.cmd.nsid"
+            bits: 32
+            value: "1"
+          - name: "Starting LBA"
+            abbrev: "nvme.cmd.write.slba"
+            bits: 64
+            value: "0x0000000000001000"
+            description: "LBA 4096 — write starts at 2MB offset"
+          - name: "Number of Logical Blocks"
+            abbrev: "nvme.cmd.write.nlb"
+            bits: 16
+            value: "7"
+            description: "8 LBAs (0's based) × 512 bytes = 4KB write"
+          - name: "Force Unit Access"
+            abbrev: "nvme.cmd.write.fua"
+            bits: 1
+            value: "0"
+            description: "FUA=0 — controller may use volatile write cache"
+          - name: "Command ID"
+            abbrev: "nvme.cmd.cid"
+            bits: 16
+            value: "0"
+
+  - id: "nvme_write_r2t"
+    name: "R2T (Ready to Transfer)"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    total_bytes: 90
+    color: "#991b1b"
+    headers:
+      - name: "NVMe-oF/TCP R2T PDU"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x09 (R2T)"
+            description: "Ready-to-Transfer — controller requests write data from host"
+            spec_refs:
+              - document: "NVMe/TCP Transport Spec"
+                section: "3.10"
+                title: "Ready to Transfer PDU"
+                url: "https://nvmexpress.org/specifications/"
+            kernel_ref:
+              file: "drivers/nvme/host/tcp.c"
+              function: "nvme_tcp_handle_r2t"
+              notes: "Host processes R2T and sends H2CData with the requested data"
+          - name: "Command ID"
+            abbrev: "nvme-tcp.r2t.cid"
+            bits: 16
+            value: "0"
+          - name: "Transfer Tag"
+            abbrev: "nvme-tcp.r2t.ttag"
+            bits: 16
+            value: "1"
+          - name: "R2T Offset"
+            abbrev: "nvme-tcp.r2t.offset"
+            bits: 32
+            value: "0"
+            description: "Start of data region"
+          - name: "R2T Length"
+            abbrev: "nvme-tcp.r2t.length"
+            bits: 32
+            value: "4096"
+            description: "Controller requests all 4KB of write data"
+
+  - id: "nvme_write_h2cdata"
+    name: "H2CData (4KB write data)"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    total_bytes: 4162
+    color: "#991b1b"
+    headers:
+      - name: "NVMe-oF/TCP H2CData PDU"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x06 (H2CData)"
+            description: "Host-to-Controller Data — carries the write payload"
+            kernel_ref:
+              file: "drivers/nvme/host/tcp.c"
+              function: "nvme_tcp_send_h2c_data"
+              notes: "Host transmits write data in response to R2T"
+          - name: "Command ID"
+            abbrev: "nvme-tcp.h2cdata.cid"
+            bits: 16
+            value: "0"
+          - name: "Transfer Tag"
+            abbrev: "nvme-tcp.h2cdata.ttag"
+            bits: 16
+            value: "1"
+          - name: "Data Offset"
+            abbrev: "nvme-tcp.h2cdata.offset"
+            bits: 32
+            value: "0"
+          - name: "Data Length"
+            abbrev: "nvme-tcp.h2cdata.datalen"
+            bits: 32
+            value: "4096"
+            description: "4KB of write data"
+          - name: "Last PDU"
+            abbrev: "nvme-tcp.h2cdata.last"
+            bits: 1
+            value: "1"
+            description: "LAST flag set — this is the final data PDU for this command"
+
+  - id: "nvme_write_resp"
+    name: "Write Completion (Success)"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    total_bytes: 90
+    color: "#991b1b"
+    headers:
+      - name: "NVMe-oF/TCP CapsuleResp"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x05 (CapsuleResp)"
+      - name: "NVMe Completion (CQE)"
+        layer: 7
+        fields:
+          - name: "Status"
+            abbrev: "nvme.cqe.status"
+            bits: 16
+            value: "0x0000 (Success)"
+            description: "Write completed successfully — 4KB written to LBA 0x1000 on Namespace 1"
+          - name: "SQ Head Pointer"
+            abbrev: "nvme.cqe.sqhd"
+            bits: 16
+            value: "1"
+          - name: "Command ID"
+            abbrev: "nvme.cqe.cid"
+            bits: 16
+            value: "0"
+
+  # ── NVMe Read ──
+  - id: "nvme_read_cmd"
+    name: "NVMe Read Command (4KB)"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    total_bytes: 138
+    color: "#6b21a8"
+    headers:
+      - name: "NVMe-oF/TCP CapsuleCmd"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x04 (CapsuleCmd)"
+      - name: "NVMe Read Command"
+        layer: 7
+        fields:
+          - name: "Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x02 (Read)"
+            description: "NVMe IO Read command"
+            spec_refs:
+              - document: "NVMe Base Spec 2.1"
+                section: "7.2"
+                title: "Read Command"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "Namespace ID"
+            abbrev: "nvme.cmd.nsid"
+            bits: 32
+            value: "1"
+          - name: "Starting LBA"
+            abbrev: "nvme.cmd.read.slba"
+            bits: 64
+            value: "0x0000000000001000"
+            description: "Read back the same 4KB we just wrote"
+          - name: "Number of Logical Blocks"
+            abbrev: "nvme.cmd.read.nlb"
+            bits: 16
+            value: "7"
+            description: "8 LBAs × 512 bytes = 4KB read"
+          - name: "Command ID"
+            abbrev: "nvme.cmd.cid"
+            bits: 16
+            value: "1"
+
+  - id: "nvme_read_c2hdata"
+    name: "C2HData (4KB read data)"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    total_bytes: 4162
+    color: "#6b21a8"
+    headers:
+      - name: "NVMe-oF/TCP C2HData PDU"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x07 (C2HData)"
+            description: "Controller-to-Host Data — carries read payload"
+            kernel_ref:
+              file: "drivers/nvme/target/tcp.c"
+              function: "nvmet_tcp_send_c2h_data"
+              notes: "Target sends read data to host via C2HData PDU"
+          - name: "Command ID"
+            abbrev: "nvme-tcp.c2hdata.cid"
+            bits: 16
+            value: "1"
+          - name: "Data Offset"
+            abbrev: "nvme-tcp.c2hdata.offset"
+            bits: 32
+            value: "0"
+          - name: "Data Length"
+            abbrev: "nvme-tcp.c2hdata.datalen"
+            bits: 32
+            value: "4096"
+            description: "4KB of read data from Namespace 1, LBA 0x1000"
+          - name: "Last PDU"
+            abbrev: "nvme-tcp.c2hdata.last"
+            bits: 1
+            value: "1"
+
+  - id: "nvme_read_resp"
+    name: "Read Completion (Success)"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    total_bytes: 90
+    color: "#6b21a8"
+    headers:
+      - name: "NVMe-oF/TCP CapsuleResp"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x05 (CapsuleResp)"
+      - name: "NVMe Completion (CQE)"
+        layer: 7
+        fields:
+          - name: "Status"
+            abbrev: "nvme.cqe.status"
+            bits: 16
+            value: "0x0000 (Success)"
+            description: "Read completed — 4KB returned from LBA 0x1000"
+          - name: "Command ID"
+            abbrev: "nvme.cqe.cid"
+            bits: 16
+            value: "1"
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+  # ── Phase: mDNS Discovery ──
+  - id: "evt_mdns_query"
+    type: "frame_tx"
+    frame_id: "mdns_query"
+    annotation:
+      text: "mDNS Query: _nvme-disc._tcp.local"
+      detail: >
+        The host's stafd daemon (part of nvme-stas) queries mDNS for NVMe discovery
+        controllers. It sends a multicast DNS query to 224.0.0.251:5353 looking for
+        PTR records matching the _nvme-disc._tcp service type. This is the DNS-SD
+        (DNS-Based Service Discovery, RFC 6763) mechanism specified in TP8009 for
+        automated CDC discovery. stafd uses Avahi (Linux mDNS/DNS-SD implementation)
+        to register a service browser for this service type.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 7
+            state_fields:
+              stafd_state: "discovering"
+          - layer: 3
+            state_fields:
+              dst_ip: "224.0.0.251"
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            state_fields:
+              fwd_table_entries: 1
+
+  - id: "evt_mdns_response"
+    type: "frame_tx"
+    frame_id: "mdns_response"
+    annotation:
+      text: "mDNS Response: CDC at 192.168.100.50:8009"
+      detail: >
+        The CDC responds with mDNS records advertising its discovery service.
+        The PTR record maps _nvme-disc._tcp.local to the service instance name.
+        The SRV record provides the target hostname and port (8009).
+        The TXT record carries key-value pairs: p=tcp (transport type) and
+        nqn=nqn.2014-08.org.nvmexpress.discovery (the well-known discovery NQN).
+        stafd's Avahi callback parses these records and assembles a controller
+        dictionary with transport, traddr, trsvcid, and subsysnqn.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 7
+            state_fields:
+              stafd_state: "CDC found"
+              discovered_controllers: 1
+          - layer: 3
+            state_fields:
+              dst_ip: "192.168.100.50"
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            state_fields:
+              fwd_table_entries: 2
+
+  # ── Phase: TCP Handshake to CDC ──
+  - id: "evt_tcp_syn_cdc"
+    type: "frame_tx"
+    frame_id: "tcp_syn_cdc"
+    annotation:
+      text: "TCP SYN → CDC port 8009"
+      detail: >
+        stafd initiates a TCP connection to the CDC at 192.168.100.50:8009.
+        Port 8009 is the default trsvcid (Transport Service ID) for NVMe
+        discovery controllers. The TCP 3-way handshake establishes the
+        reliable transport that NVMe-oF/TCP will run over.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "SYN_SENT"
+              src_port: 49152
+              dst_port: 8009
+
+  - id: "evt_tcp_synack_cdc"
+    type: "frame_tx"
+    frame_id: "tcp_synack_cdc"
+    annotation:
+      text: "TCP SYN-ACK ← CDC"
+      detail: >
+        The CDC's TCP stack responds with SYN-ACK, acknowledging the host's
+        SYN and sending its own sequence number.
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "SYN_RCVD"
+
+  - id: "evt_tcp_ack_cdc"
+    type: "frame_tx"
+    frame_id: "tcp_ack_cdc"
+    annotation:
+      text: "TCP ACK — connection established to CDC"
+      detail: >
+        The host completes the 3-way handshake. TCP connection to the CDC is
+        now established. The NVMe-oF/TCP layer will send ICReq next.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "ESTABLISHED"
+      - actor_id: "target"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "ESTABLISHED"
+
+  # ── Phase: NVMe-oF/TCP Initialization to CDC ──
+  - id: "evt_icreq_cdc"
+    type: "frame_tx"
+    frame_id: "icreq_cdc"
+    annotation:
+      text: "ICReq → CDC (Initialize NVMe/TCP Connection)"
+      detail: >
+        First NVMe-oF/TCP PDU after TCP handshake. The host sends an Initialize
+        Connection Request (ICReq) to negotiate NVMe/TCP parameters. Key fields:
+        PDU Format Version (only v0 defined), digest types requested (header and/or
+        data digests for integrity), Host PDU Data Alignment, and max outstanding
+        R2Ts. The 128-byte ICReq is the first thing the NVMe/TCP driver sends after
+        TCP connect completes (nvme_tcp_init_connection).
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 5
+            state_fields:
+              tcp_transport_state: "ICReq sent"
+
+  - id: "evt_icresp_cdc"
+    type: "frame_tx"
+    frame_id: "icresp_cdc"
+    annotation:
+      text: "ICResp ← CDC (Connection parameters accepted)"
+      detail: >
+        The CDC responds with ICResp confirming the negotiated parameters.
+        The controller's CPDA (Controller PDU Data Alignment) and accepted digest
+        types are returned. MaxData indicates the maximum data the controller can
+        handle per R2T. With ICReq/ICResp complete, the NVMe/TCP transport layer
+        is initialized and ready for NVMe commands.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 5
+            state_fields:
+              tcp_transport_state: "connected"
+      - actor_id: "target"
+        layers:
+          - layer: 5
+            state_fields:
+              tcp_transport_state: "connected"
+
+  # ── Phase: Fabrics Connect to CDC ──
+  - id: "evt_fabrics_connect_cdc"
+    type: "frame_tx"
+    frame_id: "fabrics_connect_cdc"
+    annotation:
+      text: "Fabrics Connect → CDC (Admin Queue, Discovery NQN)"
+      detail: >
+        The host sends an NVMe Fabrics Connect command to establish an Admin queue
+        association with the CDC. The command uses opcode 0x7F (Fabrics) with
+        fctype=0x01 (Connect). Queue ID 0 indicates the Admin queue. The Connect
+        data (1024 bytes) carries the host identity: Host ID (UUID), Host NQN,
+        and the target Subsystem NQN (nqn.2014-08.org.nvmexpress.discovery —
+        the well-known discovery subsystem NQN). Controller ID is set to 0xFFFF
+        (dynamic) so the CDC assigns one.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 6
+            state_fields:
+              fabrics_state: "connecting"
+              controller_type: "CDC"
+
+  - id: "evt_fabrics_connect_cdc_resp"
+    type: "frame_tx"
+    frame_id: "fabrics_connect_cdc_resp"
+    annotation:
+      text: "Fabrics Connect Response ← CDC (CNTLID=65)"
+      detail: >
+        The CDC accepts the Fabrics Connect and assigns Controller ID 65 to
+        this host. The admin queue is now established — the host can send
+        admin commands to the CDC, including DIM and Get Log Page.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 6
+            state_fields:
+              fabrics_state: "connected"
+              cntlid: "65"
+      - actor_id: "target"
+        layers:
+          - layer: 6
+            state_fields:
+              fabrics_state: "connected"
+              assigned_cntlid: "65"
+
+  # ── Phase: DIM Registration ──
+  - id: "evt_dim_register"
+    type: "frame_tx"
+    frame_id: "dim_register"
+    annotation:
+      text: "DIM Register → CDC (TP8013)"
+      detail: >
+        The host sends a Discovery Information Management (DIM) command to
+        register with the CDC. DIM is defined in TP8013 and allows hosts to
+        register/deregister with discovery controllers. The registration
+        includes the host's NQN, Host ID (UUID), hostname, and OS version.
+        Once registered, the CDC includes this host in its zoning calculations
+        and will send Asynchronous Event Notifications when the discovery
+        log changes (e.g., new subsystems come online). In nvme-stas, this
+        is handled by libnvme's nvmf_register_ctrl() function.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 6
+            state_fields:
+              fabrics_state: "DIM registering"
+
+  - id: "evt_dim_register_resp"
+    type: "frame_tx"
+    frame_id: "dim_register_resp"
+    annotation:
+      text: "DIM Register Response ← CDC (Success)"
+      detail: >
+        The CDC confirms the host's registration. The host is now in the
+        CDC's database and will receive discovery log pages filtered by
+        the zoning configuration — only subsystems this host is authorized
+        to access will appear. The CDC will also send AENs (Asynchronous
+        Event Notifications) if the discovery log changes.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 6
+            state_fields:
+              fabrics_state: "registered"
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            state_fields:
+              registered_hosts: 1
+
+  # ── Phase: Discovery Log Page ──
+  - id: "evt_get_log_page"
+    type: "frame_tx"
+    frame_id: "get_log_page_discovery"
+    annotation:
+      text: "Get Log Page → CDC (Discovery Log, LID 0x70)"
+      detail: >
+        The host requests the Discovery Log Page (LID 0x70) from the CDC.
+        This is a standard NVMe Get Log Page admin command. The discovery
+        log contains entries for all subsystems accessible to this host,
+        filtered by the CDC's zoning configuration. Each entry provides
+        the transport type, address family, transport address (IP), port,
+        subsystem NQN, and subsystem type (NVM or Discovery referral).
+        The host reads the generation counter before and after — if it
+        changes, the log must be re-read.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 7
+            state_fields:
+              stafd_state: "reading discovery log"
+
+  - id: "evt_get_log_page_resp"
+    type: "frame_tx"
+    frame_id: "get_log_page_discovery_resp"
+    annotation:
+      text: "Discovery Log Page ← CDC (3 entries)"
+      detail: >
+        The CDC returns the discovery log with 3 entries:
+        1) A DDC referral (subtype=1, Discovery Subsystem) at 192.168.100.51:8009
+           — this is the Direct Discovery Controller on the storage array.
+        2) NVM Subsystem A (subtype=2) at 192.168.100.51:4420 with NQN
+           nqn.2024-01.com.storage:subsys-alpha.
+        3) NVM Subsystem B (subtype=2) at 192.168.100.52:4420 with NQN
+           nqn.2024-01.com.storage:subsys-beta.
+        stafd publishes these entries via D-Bus. stacd reads them and
+        automatically connects to each NVM subsystem.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 7
+            state_fields:
+              stafd_state: "discovery complete"
+              discovered_controllers: 3
+
+  # ── Phase: TCP Handshake to IO Controller ──
+  - id: "evt_tcp_syn_ioc"
+    type: "frame_tx"
+    frame_id: "tcp_syn_ioc"
+    annotation:
+      text: "TCP SYN → IO Controller port 4420"
+      detail: >
+        stacd initiates a TCP connection to the IO controller at
+        192.168.100.51:4420 (Subsystem A from the discovery log).
+        Port 4420 is the IANA-assigned port for NVMe over Fabrics.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "SYN_SENT"
+              src_port: 49200
+              dst_port: 4420
+          - layer: 6
+            state_fields:
+              fabrics_state: "connecting"
+              controller_type: "IOC"
+              cntlid: "none"
+
+  - id: "evt_tcp_synack_ioc"
+    type: "frame_tx"
+    frame_id: "tcp_synack_ioc"
+    annotation:
+      text: "TCP SYN-ACK ← IO Controller"
+      detail: "IO Controller acknowledges the TCP connection attempt."
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "SYN_RCVD"
+              listen_port: 4420
+          - layer: 6
+            state_fields:
+              controller_type: "IOC"
+
+  - id: "evt_tcp_ack_ioc"
+    type: "frame_tx"
+    frame_id: "tcp_ack_ioc"
+    annotation:
+      text: "TCP ACK — connection established to IO Controller"
+      detail: "TCP handshake to the IO Controller is complete."
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "ESTABLISHED"
+      - actor_id: "target"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "ESTABLISHED"
+
+  # ── Phase: NVMe-oF/TCP Initialization to IOC ──
+  - id: "evt_icreq_ioc"
+    type: "frame_tx"
+    frame_id: "icreq_ioc"
+    annotation:
+      text: "ICReq → IO Controller"
+      detail: "NVMe/TCP initialization — same ICReq/ICResp exchange as with the CDC."
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 5
+            state_fields:
+              tcp_transport_state: "ICReq sent"
+
+  - id: "evt_icresp_ioc"
+    type: "frame_tx"
+    frame_id: "icresp_ioc"
+    annotation:
+      text: "ICResp ← IO Controller"
+      detail: "IO Controller accepts NVMe/TCP transport parameters."
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 5
+            state_fields:
+              tcp_transport_state: "connected"
+      - actor_id: "target"
+        layers:
+          - layer: 5
+            state_fields:
+              tcp_transport_state: "connected"
+
+  # ── Phase: Fabrics Connect to IO Controller ──
+  - id: "evt_fabrics_connect_ioc"
+    type: "frame_tx"
+    frame_id: "fabrics_connect_ioc"
+    annotation:
+      text: "Fabrics Connect → IO Controller (subsys-alpha)"
+      detail: >
+        The host connects to the IO Controller using the subsystem NQN
+        learned from the CDC's discovery log (nqn.2024-01.com.storage:subsys-alpha).
+        This creates the Admin queue association. Unlike the CDC connection which
+        used the well-known discovery NQN, this uses the actual storage subsystem NQN.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 6
+            state_fields:
+              fabrics_state: "connecting"
+
+  - id: "evt_fabrics_connect_ioc_resp"
+    type: "frame_tx"
+    frame_id: "fabrics_connect_ioc_resp"
+    annotation:
+      text: "Fabrics Connect Response ← IO Controller (CNTLID=1)"
+      detail: >
+        IO Controller accepts the connection and assigns CNTLID=1. The admin
+        queue is established — the host can now identify the controller and
+        its namespaces.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 6
+            state_fields:
+              fabrics_state: "connected"
+              cntlid: "1"
+      - actor_id: "target"
+        layers:
+          - layer: 6
+            state_fields:
+              fabrics_state: "connected"
+              assigned_cntlid: "1"
+          - layer: 7
+            state_fields:
+              io_controller_state: "connected"
+
+  # ── Phase: Controller & Namespace Identification ──
+  - id: "evt_identify_controller"
+    type: "frame_tx"
+    frame_id: "identify_controller"
+    annotation:
+      text: "Identify Controller (CNS=0x01)"
+      detail: >
+        The host sends Identify Controller (admin opcode 0x06, CNS=1) to learn
+        the controller's capabilities: serial number, model, firmware version,
+        maximum data transfer size (MDTS), number of namespaces, and supported
+        features. This 4096-byte response is essential for the host driver to
+        configure itself properly.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 7
+            state_fields:
+              stacd_state: "identifying controller"
+
+  - id: "evt_identify_controller_resp"
+    type: "frame_tx"
+    frame_id: "identify_controller_resp"
+    annotation:
+      text: "Identify Controller Response (4 namespaces, MDTS=256KB)"
+      detail: >
+        The IO Controller returns its identity: model "NVMe-oF/TCP Storage Array",
+        firmware v2.1.0, MDTS=6 (max transfer 256KB), and 4 namespaces. The host
+        driver uses MDTS to cap I/O request sizes and nn (Number of Namespaces) to
+        know how many namespaces to enumerate.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 7
+            state_fields:
+              stacd_state: "controller identified"
+
+  - id: "evt_identify_namespace"
+    type: "frame_tx"
+    frame_id: "identify_namespace"
+    annotation:
+      text: "Identify Namespace (NSID=1, CNS=0x00)"
+      detail: >
+        The host identifies Namespace 1 to learn its size, LBA format, and
+        capabilities. CNS=0 with a specific NSID returns the namespace's
+        identity data including total size (nsze), capacity (ncap), current
+        utilization (nuse), and LBA format (sector size, metadata).
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 7
+            state_fields:
+              stacd_state: "identifying namespaces"
+
+  - id: "evt_identify_namespace_resp"
+    type: "frame_tx"
+    frame_id: "identify_namespace_resp"
+    annotation:
+      text: "Identify Namespace Response (NSID=1, ~1TB, 512B LBAs)"
+      detail: >
+        Namespace 1 has ~1TB capacity (1,953,525,168 × 512-byte LBAs), 25% utilized.
+        LBA format 0: 512 bytes per LBA, no metadata, best relative performance.
+        The host's block layer will present this as /dev/nvmeXnY (e.g., /dev/nvme0n1).
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 7
+            state_fields:
+              stacd_state: "namespace identified"
+              namespaces: 1
+              connected_subsystems: 1
+
+  # ── Phase: IO Queue Setup ──
+  - id: "evt_fabrics_connect_ioq"
+    type: "frame_tx"
+    frame_id: "fabrics_connect_ioq"
+    annotation:
+      text: "Fabrics Connect IO Queue 1"
+      detail: >
+        The host creates IO Queue 1 via Fabrics Connect with QID=1. IO queues
+        are used for NVMe Read/Write commands (admin commands use QID=0).
+        SQ Size is set to 128 entries. Multiple IO queues can be created
+        (typically one per CPU core for best performance).
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 5
+            state_fields:
+              io_queues: 1
+
+  - id: "evt_fabrics_connect_ioq_resp"
+    type: "frame_tx"
+    frame_id: "fabrics_connect_ioq_resp"
+    annotation:
+      text: "IO Queue 1 established — ready for I/O"
+      detail: >
+        IO Queue 1 is established. The host can now submit NVMe Read and Write
+        commands. The block device /dev/nvme0n1 is now fully operational.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 5
+            state_fields:
+              io_queues: 1
+          - layer: 7
+            state_fields:
+              stacd_state: "IO ready"
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            state_fields:
+              io_controller_state: "IO active"
+
+  # ── Phase: NVMe Write ──
+  - id: "evt_nvme_write_cmd"
+    type: "frame_tx"
+    frame_id: "nvme_write_cmd"
+    annotation:
+      text: "NVMe Write Command (4KB to LBA 0x1000)"
+      detail: >
+        The host submits a 4KB NVMe Write command to Namespace 1 at LBA 0x1000.
+        The Write SQE (64 bytes) is sent as a CapsuleCmd PDU on IO Queue 1.
+        The command specifies 8 LBAs (0's based NLB=7) × 512 bytes = 4096 bytes.
+        Over NVMe/TCP, the write data is not sent inline with the command — the
+        controller must first send an R2T (Ready to Transfer) PDU requesting the data.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 7
+            state_fields:
+              stacd_state: "writing"
+
+  - id: "evt_nvme_write_r2t"
+    type: "frame_tx"
+    frame_id: "nvme_write_r2t"
+    annotation:
+      text: "R2T ← Controller (request 4KB write data)"
+      detail: >
+        The IO Controller sends a Ready-to-Transfer (R2T) PDU requesting the
+        write data from the host. The R2T specifies the transfer tag, data offset
+        (0 = start), and length (4096 bytes). This is the NVMe/TCP flow control
+        mechanism — the controller controls when and how much data the host sends.
+        This differs from RDMA where the host can push data directly.
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            state_fields:
+              io_controller_state: "awaiting write data"
+
+  - id: "evt_nvme_write_h2cdata"
+    type: "frame_tx"
+    frame_id: "nvme_write_h2cdata"
+    annotation:
+      text: "H2CData → Controller (4KB write payload)"
+      detail: >
+        The host sends the 4KB write data in an H2CData (Host-to-Controller Data)
+        PDU. The transfer tag matches the R2T. The LAST flag indicates this is
+        the final data PDU for this command. For larger writes, multiple R2T/H2CData
+        exchanges may occur (controlled by maxr2t from ICReq).
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            state_fields:
+              io_controller_state: "writing to media"
+
+  - id: "evt_nvme_write_resp"
+    type: "frame_tx"
+    frame_id: "nvme_write_resp"
+    annotation:
+      text: "Write Completion ← Controller (Success)"
+      detail: >
+        The IO Controller completes the write and returns a CapsuleResp with
+        status 0x0000 (Success). The 4KB has been written to LBA 0x1000 on
+        Namespace 1. The host driver completes the block I/O request.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 7
+            state_fields:
+              stacd_state: "write complete"
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            state_fields:
+              io_controller_state: "IO active"
+
+  # ── Phase: NVMe Read ──
+  - id: "evt_nvme_read_cmd"
+    type: "frame_tx"
+    frame_id: "nvme_read_cmd"
+    annotation:
+      text: "NVMe Read Command (4KB from LBA 0x1000)"
+      detail: >
+        The host reads back the same 4KB from LBA 0x1000. The Read SQE is sent
+        as a CapsuleCmd on IO Queue 1. Unlike Write, the Read command does not
+        require an R2T — the controller sends data directly via C2HData PDUs.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 7
+            state_fields:
+              stacd_state: "reading"
+
+  - id: "evt_nvme_read_c2hdata"
+    type: "frame_tx"
+    frame_id: "nvme_read_c2hdata"
+    annotation:
+      text: "C2HData ← Controller (4KB read payload)"
+      detail: >
+        The IO Controller sends the 4KB read data in a C2HData (Controller-to-Host
+        Data) PDU. For reads, data flows from controller to host without an R2T
+        handshake — the controller sends data as soon as it's available from the
+        media. The LAST flag marks this as the final data PDU.
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            state_fields:
+              io_controller_state: "sending read data"
+
+  - id: "evt_nvme_read_resp"
+    type: "frame_tx"
+    frame_id: "nvme_read_resp"
+    annotation:
+      text: "Read Completion ← Controller (Success)"
+      detail: >
+        Read completed successfully. The 4KB data from LBA 0x1000 has been
+        delivered to the host. The full NVMe/TCP lifecycle is now demonstrated:
+        mDNS discovery → CDC registration → subsystem discovery → controller
+        identification → namespace enumeration → IO queue setup → Write → Read.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 7
+            state_fields:
+              stacd_state: "read complete"
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            state_fields:
+              io_controller_state: "IO active"
