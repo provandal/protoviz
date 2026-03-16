@@ -28,6 +28,8 @@ export const PHASE_COLORS = {
   'NVMe/TCP Init': '#0f766e',
   'Fabrics Connect': '#1e40af',
   'DIM': '#6d28d9',
+  'DDC Discovery': '#0e7490',
+  'IOC Connect': '#15803d',
   'Discovery Log': '#0369a1',
   'Identify': '#0369a1',
   'IO Queue Setup': '#1e40af',

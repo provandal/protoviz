@@ -7,11 +7,12 @@ meta:
   description: >
     A complete NVMe over TCP (NVMe-oF/TCP) exchange from initial service discovery
     through I/O operations. A Linux host running nvme-stas discovers a Centralized
-    Discovery Controller (CDC) via mDNS, establishes an NVMe-oF/TCP connection,
-    registers with the CDC using DIM (TP8013), retrieves Discovery Log Pages to
-    learn accessible subsystems, then connects to a storage subsystem's IO Controller
-    to perform NVMe Write and Read operations. Covers TP8009 (CDC architecture),
-    TP8010 (Discovery enhancements), and TP8013 (Discovery Information Management).
+    Discovery Controller (CDC) via mDNS, registers with DIM (TP8013), retrieves
+    CDC Discovery Log Pages containing DDC referrals, connects to the Direct
+    Discovery Controller (DDC) on the storage array to learn IO Controller details,
+    then connects to the IO Controller to perform NVMe Write and Read operations.
+    Demonstrates the full three-tier discovery hierarchy: CDC → DDC → IOC.
+    Covers TP8009 (CDC architecture), TP8010, and TP8013 (DIM).
 
   learning_objectives:
     - "Understand how nvme-stas (stafd) discovers CDCs via mDNS service advertisement (_nvme-disc._tcp)"
@@ -152,7 +153,7 @@ topology:
     - id: "target"
       type: "target"
       label: "NVMe-oF/TCP Storage Array"
-      description: "NVMe-oF/TCP storage array providing IO Controllers and NVMe namespaces"
+      description: "NVMe-oF/TCP storage array with Direct Discovery Controller (DDC) and IO Controllers"
       hardware: "NVMe-oF/TCP storage array"
       os: "Linux 6.x / Storage OS"
       ip: "192.168.100.51"
@@ -322,9 +323,13 @@ osi_layers:
 
   target:
     - layer: 7
-      name: "NVMe IO Controller"
-      components: ["drivers/nvme/target/core.c", "nvmet configfs"]
+      name: "NVMe Controllers (DDC + IOC)"
+      components: ["drivers/nvme/target/core.c", "drivers/nvme/target/discovery.c", "nvmet configfs"]
       state_schema:
+        ddc_state:
+          type: "string"
+          description: "Direct Discovery Controller state"
+          initial: "idle"
         io_controller_state:
           type: "string"
           description: "IO Controller state"
@@ -365,9 +370,13 @@ osi_layers:
         tcp_state:
           type: "string"
           initial: "LISTEN"
-        listen_port:
+        listen_port_ddc:
           type: "integer"
-          description: "TCP listening port"
+          description: "DDC TCP listening port"
+          initial: 8009
+        listen_port_ioc:
+          type: "integer"
+          description: "IOC TCP listening port"
           initial: 4420
 
     - layer: 3
@@ -1214,10 +1223,10 @@ frames:
             value: "2"
 
   - id: "get_log_page_discovery_resp"
-    name: "Discovery Log Page Response (3 entries)"
+    name: "Discovery Log Page Response (2 DDC referrals)"
     from: "switch"
     to: "initiator"
-    total_bytes: 3210
+    total_bytes: 2186
     color: "#0369a1"
     headers:
       - name: "NVMe-oF/TCP C2HData"
@@ -1231,8 +1240,8 @@ frames:
           - name: "Data Length"
             abbrev: "nvme-tcp.c2hdata.datalen"
             bits: 32
-            value: "3096"
-            description: "1024-byte header + 3 × 1024-byte entries"
+            value: "2072"
+            description: "1024-byte header + 2 × 1024-byte entries"
       - name: "Discovery Log Page Header"
         layer: 6
         fields:
@@ -1244,13 +1253,13 @@ frames:
           - name: "Number of Records"
             abbrev: "nvme.disc.numrec"
             bits: 64
-            value: "3"
-            description: "Three subsystems accessible to this host based on CDC zoning configuration"
+            value: "2"
+            description: "Two DDC referrals — the CDC directs the host to per-array DDCs for detailed subsystem information"
           - name: "Record Format"
             abbrev: "nvme.disc.recfmt"
             bits: 16
             value: "0"
-      - name: "Entry 1: DDC (Referral)"
+      - name: "Entry 1: DDC Referral (Storage Array 1)"
         layer: 6
         fields:
           - name: "Transport Type"
@@ -1265,7 +1274,12 @@ frames:
             abbrev: "nvme.disc.entry.subtype"
             bits: 8
             value: "1 (Discovery Subsystem)"
-            description: "Referral to a Direct Discovery Controller (DDC) on the storage array"
+            description: "Referral to a Direct Discovery Controller (DDC) on storage array 1. The host should connect to this DDC to learn which IO Controllers are available."
+            spec_refs:
+              - document: "NVMe-oF Spec 1.1a"
+                section: "5.3"
+                title: "Discovery Log Page — Referral Entries"
+                url: "https://nvmexpress.org/specifications/"
           - name: "Controller ID"
             abbrev: "nvme.disc.entry.cntlid"
             bits: 16
@@ -1274,7 +1288,42 @@ frames:
             abbrev: "nvme.disc.entry.traddr"
             bits: 0
             value: "192.168.100.51"
-            description: "IP address of the DDC on the storage array"
+            description: "IP address of the DDC on storage array 1"
+          - name: "Transport Service ID"
+            abbrev: "nvme.disc.entry.trsvcid"
+            bits: 0
+            value: "8009"
+            description: "Discovery port — DDC listens on the same port as CDC"
+          - name: "Subsystem NQN"
+            abbrev: "nvme.disc.entry.subnqn"
+            bits: 0
+            value: "nqn.2014-08.org.nvmexpress.discovery"
+            description: "Well-known discovery NQN — DDC referral uses the same discovery NQN as CDC"
+      - name: "Entry 2: DDC Referral (Storage Array 2)"
+        layer: 6
+        fields:
+          - name: "Transport Type"
+            abbrev: "nvme.disc.entry.trtype"
+            bits: 8
+            value: "3 (TCP)"
+          - name: "Address Family"
+            abbrev: "nvme.disc.entry.adrfam"
+            bits: 8
+            value: "1 (IPv4)"
+          - name: "Subsystem Type"
+            abbrev: "nvme.disc.entry.subtype"
+            bits: 8
+            value: "1 (Discovery Subsystem)"
+            description: "Referral to DDC on storage array 2"
+          - name: "Controller ID"
+            abbrev: "nvme.disc.entry.cntlid"
+            bits: 16
+            value: "0xFFFF"
+          - name: "Transport Address"
+            abbrev: "nvme.disc.entry.traddr"
+            bits: 0
+            value: "192.168.100.52"
+            description: "IP address of the DDC on storage array 2"
           - name: "Transport Service ID"
             abbrev: "nvme.disc.entry.trsvcid"
             bits: 0
@@ -1283,19 +1332,384 @@ frames:
             abbrev: "nvme.disc.entry.subnqn"
             bits: 0
             value: "nqn.2014-08.org.nvmexpress.discovery"
-            description: "Discovery subsystem NQN — this is a DDC referral"
-      - name: "Entry 2: NVM Subsystem A"
+      - name: "CapsuleResp (Completion)"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x05 (CapsuleResp)"
+          - name: "Status"
+            abbrev: "nvme.cqe.status"
+            bits: 16
+            value: "0x0000 (Success)"
+
+  # ── TCP Handshake to DDC (Direct Discovery Controller on Storage) ──
+  - id: "tcp_syn_ddc"
+    name: "TCP SYN (→ DDC port 8009)"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    total_bytes: 74
+    color: "#0e7490"
+    headers:
+      - name: "TCP"
+        layer: 4
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: "49180"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: "8009"
+            description: "Discovery service port on storage array DDC"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "SYN"
+
+  - id: "tcp_synack_ddc"
+    name: "TCP SYN-ACK (DDC → Host)"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    total_bytes: 74
+    color: "#0e7490"
+    headers:
+      - name: "TCP"
+        layer: 4
+        fields:
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "SYN, ACK"
+
+  - id: "tcp_ack_ddc"
+    name: "TCP ACK (handshake complete)"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    total_bytes: 66
+    color: "#0e7490"
+    headers:
+      - name: "TCP"
+        layer: 4
+        fields:
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "ACK"
+
+  # ── NVMe-oF/TCP Initialization to DDC ──
+  - id: "icreq_ddc"
+    name: "ICReq (→ DDC)"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    total_bytes: 194
+    color: "#0e7490"
+    headers:
+      - name: "NVMe-oF/TCP PDU Header"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x00 (ICReq)"
+          - name: "PDU Length"
+            abbrev: "nvme-tcp.plen"
+            bits: 32
+            value: "128"
+      - name: "ICReq Parameters"
+        layer: 5
+        fields:
+          - name: "PDU Format Version"
+            abbrev: "nvme-tcp.icreq.pfv"
+            bits: 16
+            value: "0x0000"
+          - name: "Digest Types"
+            abbrev: "nvme-tcp.icreq.digest"
+            bits: 8
+            value: "0x00"
+          - name: "Max Outstanding R2Ts"
+            abbrev: "nvme-tcp.icreq.maxr2t"
+            bits: 32
+            value: "1"
+
+  - id: "icresp_ddc"
+    name: "ICResp (DDC → Host)"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    total_bytes: 194
+    color: "#0e7490"
+    headers:
+      - name: "NVMe-oF/TCP PDU Header"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x01 (ICResp)"
+      - name: "ICResp Parameters"
+        layer: 5
+        fields:
+          - name: "Max Data Capsules"
+            abbrev: "nvme-tcp.icresp.maxdata"
+            bits: 32
+            value: "131072"
+
+  # ── Fabrics Connect to DDC ──
+  - id: "fabrics_connect_ddc"
+    name: "Fabrics Connect (Admin Queue → DDC)"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    total_bytes: 1154
+    color: "#0e7490"
+    headers:
+      - name: "NVMe-oF/TCP CapsuleCmd"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x04 (CapsuleCmd)"
+      - name: "NVMe Fabrics Connect Command"
+        layer: 6
+        fields:
+          - name: "Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x7F (Fabrics)"
+          - name: "Fabrics Command Type"
+            abbrev: "nvme.fabrics.fctype"
+            bits: 8
+            value: "0x01 (Connect)"
+          - name: "Queue ID"
+            abbrev: "nvme.fabrics.connect.qid"
+            bits: 16
+            value: "0"
+            description: "Admin queue to the DDC"
+          - name: "SQ Size"
+            abbrev: "nvme.fabrics.connect.sqsize"
+            bits: 16
+            value: "31"
+          - name: "Keep Alive Timeout"
+            abbrev: "nvme.fabrics.connect.kato"
+            bits: 32
+            value: "120000"
+      - name: "Connect Data"
+        layer: 6
+        fields:
+          - name: "Controller ID"
+            abbrev: "nvme.fabrics.connect.cntlid"
+            bits: 16
+            value: "0xFFFF (Dynamic)"
+          - name: "Subsystem NQN"
+            abbrev: "nvme.fabrics.connect.subnqn"
+            bits: 0
+            value: "nqn.2014-08.org.nvmexpress.discovery"
+            description: "Well-known discovery NQN — same as CDC, since the DDC is also a Discovery Controller"
+          - name: "Host NQN"
+            abbrev: "nvme.fabrics.connect.hostnqn"
+            bits: 0
+            value: "nqn.2014-08.org.nvmexpress:uuid:host-01"
+
+  - id: "fabrics_connect_ddc_resp"
+    name: "Fabrics Connect Response (DDC → Host)"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    total_bytes: 90
+    color: "#0e7490"
+    headers:
+      - name: "NVMe Completion (CQE)"
+        layer: 6
+        fields:
+          - name: "Status"
+            abbrev: "nvme.cqe.status"
+            bits: 16
+            value: "0x0000 (Success)"
+            description: "DDC admin queue established"
+          - name: "Controller ID (Result)"
+            abbrev: "nvme.cqe.result"
+            bits: 32
+            value: "0x0001 (CNTLID=1)"
+            description: "DDC assigned controller ID 1"
+
+  # ── DIM Register with DDC ──
+  - id: "dim_register_ddc"
+    name: "DIM Register (Host → DDC)"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    total_bytes: 322
+    color: "#0e7490"
+    headers:
+      - name: "NVMe-oF/TCP CapsuleCmd"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x04 (CapsuleCmd)"
+      - name: "DIM Command (TP8013)"
+        layer: 6
+        fields:
+          - name: "Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x7F (Fabrics)"
+          - name: "Fabrics Command Type"
+            abbrev: "nvme.fabrics.fctype"
+            bits: 8
+            value: "DIM"
+            description: "Discovery Information Management — register with DDC"
+          - name: "Task"
+            abbrev: "nvme.dim.tas"
+            bits: 8
+            value: "0x00 (Register)"
+            description: "Register this host with the DDC so it returns accurate discovery log entries"
+          - name: "Entity Type"
+            abbrev: "nvme.dim.etype"
+            bits: 8
+            value: "Host"
+          - name: "Command ID"
+            abbrev: "nvme.cmd.cid"
+            bits: 16
+            value: "1"
+      - name: "DIM Registration Data"
+        layer: 6
+        fields:
+          - name: "Host NQN"
+            abbrev: "nvme.dim.hostnqn"
+            bits: 0
+            value: "nqn.2014-08.org.nvmexpress:uuid:host-01"
+          - name: "Host ID"
+            abbrev: "nvme.dim.hostid"
+            bits: 128
+            value: "a1b2c3d4-e5f6-7890-abcd-ef0123456789"
+
+  - id: "dim_register_ddc_resp"
+    name: "DIM Register Response (DDC → Host, Success)"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    total_bytes: 90
+    color: "#0e7490"
+    headers:
+      - name: "NVMe-oF/TCP CapsuleResp"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x05 (CapsuleResp)"
+      - name: "NVMe Completion (CQE)"
+        layer: 6
+        fields:
+          - name: "Status"
+            abbrev: "nvme.cqe.status"
+            bits: 16
+            value: "0x0000 (Success)"
+            description: "Host registered with DDC — discovery log will reflect zoned subsystems for this host"
+          - name: "Command ID"
+            abbrev: "nvme.cqe.cid"
+            bits: 16
+            value: "1"
+
+  # ── Get Discovery Log Page from DDC ──
+  - id: "get_log_page_ddc"
+    name: "Get Log Page — Discovery Log from DDC (LID 0x70)"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    total_bytes: 138
+    color: "#0e7490"
+    headers:
+      - name: "NVMe-oF/TCP CapsuleCmd"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x04 (CapsuleCmd)"
+      - name: "NVMe Get Log Page Command"
+        layer: 6
+        fields:
+          - name: "Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x02 (Get Log Page)"
+          - name: "Log Page ID"
+            abbrev: "nvme.get_log.lid"
+            bits: 8
+            value: "0x70 (Discovery)"
+            description: "Discovery Log from the DDC — reveals IO Controllers on this storage array"
+          - name: "Number of Dwords"
+            abbrev: "nvme.get_log.numd"
+            bits: 32
+            value: "8192"
+          - name: "Command ID"
+            abbrev: "nvme.cmd.cid"
+            bits: 16
+            value: "1"
+
+  - id: "get_log_page_ddc_resp"
+    name: "DDC Discovery Log Response (1 IO subsystem)"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    total_bytes: 2186
+    color: "#0e7490"
+    headers:
+      - name: "NVMe-oF/TCP C2HData"
+        layer: 5
+        fields:
+          - name: "PDU Type"
+            abbrev: "nvme-tcp.type"
+            bits: 8
+            value: "0x07 (C2HData)"
+          - name: "Data Length"
+            abbrev: "nvme-tcp.c2hdata.datalen"
+            bits: 32
+            value: "2048"
+            description: "1024-byte header + 1 × 1024-byte entry"
+      - name: "Discovery Log Page Header"
+        layer: 6
+        fields:
+          - name: "Generation Counter"
+            abbrev: "nvme.disc.genctr"
+            bits: 64
+            value: "3"
+          - name: "Number of Records"
+            abbrev: "nvme.disc.numrec"
+            bits: 64
+            value: "1"
+            description: "One IO subsystem on this storage array accessible to this host"
+      - name: "Entry 1: NVM Subsystem A (IO Controller)"
         layer: 6
         fields:
           - name: "Transport Type"
             abbrev: "nvme.disc.entry.trtype"
             bits: 8
             value: "3 (TCP)"
+          - name: "Address Family"
+            abbrev: "nvme.disc.entry.adrfam"
+            bits: 8
+            value: "1 (IPv4)"
           - name: "Subsystem Type"
             abbrev: "nvme.disc.entry.subtype"
             bits: 8
             value: "2 (NVM Subsystem)"
-            description: "IO subsystem — host can connect to perform NVMe I/O"
+            description: "IO subsystem — host can connect to this NQN for NVMe I/O operations"
+          - name: "Controller ID"
+            abbrev: "nvme.disc.entry.cntlid"
+            bits: 16
+            value: "0xFFFF"
           - name: "Transport Address"
             abbrev: "nvme.disc.entry.traddr"
             bits: 0
@@ -1309,30 +1723,11 @@ frames:
             abbrev: "nvme.disc.entry.subnqn"
             bits: 0
             value: "nqn.2024-01.com.storage:subsys-alpha"
-            description: "Target subsystem NQN for Storage Subsystem A"
-      - name: "Entry 3: NVM Subsystem B"
-        layer: 6
-        fields:
-          - name: "Transport Type"
-            abbrev: "nvme.disc.entry.trtype"
-            bits: 8
-            value: "3 (TCP)"
-          - name: "Subsystem Type"
-            abbrev: "nvme.disc.entry.subtype"
-            bits: 8
-            value: "2 (NVM Subsystem)"
-          - name: "Transport Address"
-            abbrev: "nvme.disc.entry.traddr"
-            bits: 0
-            value: "192.168.100.52"
-          - name: "Transport Service ID"
-            abbrev: "nvme.disc.entry.trsvcid"
-            bits: 0
-            value: "4420"
-          - name: "Subsystem NQN"
-            abbrev: "nvme.disc.entry.subnqn"
-            bits: 0
-            value: "nqn.2024-01.com.storage:subsys-beta"
+            description: "IO subsystem NQN — stacd will use this to connect to the IO Controller"
+            kernel_ref:
+              file: "drivers/nvme/target/discovery.c"
+              function: "nvmet_execute_disc_get_log_page"
+              notes: "DDC generates discovery log entries for locally-attached NVM subsystems"
       - name: "CapsuleResp (Completion)"
         layer: 5
         fields:
@@ -1513,11 +1908,11 @@ frames:
             abbrev: "nvme.fabrics.connect.subnqn"
             bits: 0
             value: "nqn.2024-01.com.storage:subsys-alpha"
-            description: "IO subsystem NQN from Discovery Log — connecting to Subsystem A"
+            description: "IO subsystem NQN from DDC's Discovery Log — connecting to Subsystem A"
             kernel_ref:
               file: "drivers/nvme/host/fabrics.c"
               function: "nvmf_connect_admin_queue"
-              notes: "stacd uses subnqn from discovery log entry to connect to IO controller"
+              notes: "stacd uses subnqn from DDC discovery log entry to connect to IO controller"
           - name: "Host NQN"
             abbrev: "nvme.fabrics.connect.hostnqn"
             bits: 0
@@ -2369,24 +2764,224 @@ timeline:
     type: "frame_tx"
     frame_id: "get_log_page_discovery_resp"
     annotation:
-      text: "Discovery Log Page ← CDC (3 entries)"
+      text: "Discovery Log Page ← CDC (2 DDC referrals)"
       detail: >
-        The CDC returns the discovery log with 3 entries:
-        1) A DDC referral (subtype=1, Discovery Subsystem) at 192.168.100.51:8009
-           — this is the Direct Discovery Controller on the storage array.
-        2) NVM Subsystem A (subtype=2) at 192.168.100.51:4420 with NQN
-           nqn.2024-01.com.storage:subsys-alpha.
-        3) NVM Subsystem B (subtype=2) at 192.168.100.52:4420 with NQN
-           nqn.2024-01.com.storage:subsys-beta.
-        stafd publishes these entries via D-Bus. stacd reads them and
-        automatically connects to each NVM subsystem.
+        The CDC returns the discovery log with 2 DDC referral entries:
+        1) DDC on storage array 1 (subtype=1, Discovery Subsystem) at 192.168.100.51:8009
+        2) DDC on storage array 2 (subtype=1, Discovery Subsystem) at 192.168.100.52:8009
+        These are referrals — the CDC directs the host to connect to each DDC (Direct
+        Discovery Controller) to learn which IO Controllers are available on that
+        storage array. The CDC provides the network-wide view; the DDCs provide
+        per-array details. stafd will now follow the first referral and connect to
+        the DDC on storage array 1.
     state_after:
       - actor_id: "initiator"
         layers:
           - layer: 7
             state_fields:
-              stafd_state: "discovery complete"
+              stafd_state: "CDC discovery complete"
               discovered_controllers: 3
+
+  # ── Phase: DDC Discovery (Direct Discovery Controller on Storage) ──
+  - id: "evt_tcp_syn_ddc"
+    type: "frame_tx"
+    frame_id: "tcp_syn_ddc"
+    annotation:
+      text: "TCP SYN → DDC port 8009 (storage array)"
+      detail: >
+        stafd follows the DDC referral from the CDC's discovery log. It initiates
+        a TCP connection to the Direct Discovery Controller (DDC) on storage array 1
+        at 192.168.100.51:8009. The DDC is a Discovery Controller that runs on the
+        storage array itself (as opposed to the CDC which runs in the network switch).
+        The DDC provides discovery log pages specific to the IO subsystems on this
+        particular storage array. This is the second tier of the three-tier discovery
+        hierarchy: CDC (network-wide) → DDC (per-array) → IOC (per-subsystem).
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "SYN_SENT"
+              src_port: 49180
+              dst_port: 8009
+          - layer: 6
+            state_fields:
+              fabrics_state: "connecting"
+              controller_type: "DDC"
+              cntlid: "none"
+
+  - id: "evt_tcp_synack_ddc"
+    type: "frame_tx"
+    frame_id: "tcp_synack_ddc"
+    annotation:
+      text: "TCP SYN-ACK ← DDC"
+      detail: "The storage array's DDC acknowledges the TCP connection attempt."
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "SYN_RCVD"
+
+  - id: "evt_tcp_ack_ddc"
+    type: "frame_tx"
+    frame_id: "tcp_ack_ddc"
+    annotation:
+      text: "TCP ACK — connection established to DDC"
+      detail: "TCP handshake to the DDC on the storage array is complete."
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "ESTABLISHED"
+      - actor_id: "target"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "ESTABLISHED"
+
+  - id: "evt_icreq_ddc"
+    type: "frame_tx"
+    frame_id: "icreq_ddc"
+    annotation:
+      text: "ICReq → DDC (Initialize NVMe/TCP Connection)"
+      detail: "NVMe/TCP initialization with the DDC — same ICReq/ICResp exchange as with the CDC."
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 5
+            state_fields:
+              tcp_transport_state: "ICReq sent"
+
+  - id: "evt_icresp_ddc"
+    type: "frame_tx"
+    frame_id: "icresp_ddc"
+    annotation:
+      text: "ICResp ← DDC (Connection parameters accepted)"
+      detail: "DDC accepts NVMe/TCP transport parameters."
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 5
+            state_fields:
+              tcp_transport_state: "connected"
+      - actor_id: "target"
+        layers:
+          - layer: 5
+            state_fields:
+              tcp_transport_state: "connected"
+
+  - id: "evt_fabrics_connect_ddc"
+    type: "frame_tx"
+    frame_id: "fabrics_connect_ddc"
+    annotation:
+      text: "Fabrics Connect → DDC (Admin Queue, Discovery NQN)"
+      detail: >
+        The host sends Fabrics Connect to the DDC using the well-known discovery
+        subsystem NQN (nqn.2014-08.org.nvmexpress.discovery) — the same NQN used
+        for the CDC connection. Both CDC and DDC are Discovery Controllers; they
+        differ in scope (CDC = centralized/network-wide, DDC = local to a storage
+        array) but use the same discovery protocol and NQN.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 6
+            state_fields:
+              fabrics_state: "connecting"
+
+  - id: "evt_fabrics_connect_ddc_resp"
+    type: "frame_tx"
+    frame_id: "fabrics_connect_ddc_resp"
+    annotation:
+      text: "Fabrics Connect Response ← DDC (CNTLID=1)"
+      detail: >
+        The DDC accepts the connection and assigns CNTLID=1. The admin queue
+        to the DDC is established — the host can now request the DDC's
+        discovery log to learn about IO Controllers on this storage array.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 6
+            state_fields:
+              fabrics_state: "connected"
+              cntlid: "1"
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            state_fields:
+              ddc_state: "connected"
+
+  - id: "evt_dim_register_ddc"
+    type: "frame_tx"
+    frame_id: "dim_register_ddc"
+    annotation:
+      text: "DIM Register → DDC (TP8013)"
+      detail: >
+        The host registers with the DDC via DIM, just as it did with the CDC.
+        This ensures the DDC returns discovery log entries filtered by the
+        zoning configuration for this specific host. The DDC will also
+        send AENs if subsystems on this storage array change.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 6
+            state_fields:
+              fabrics_state: "DIM registering"
+
+  - id: "evt_dim_register_ddc_resp"
+    type: "frame_tx"
+    frame_id: "dim_register_ddc_resp"
+    annotation:
+      text: "DIM Register Response ← DDC (Success)"
+      detail: >
+        The DDC confirms the host's registration. The host can now request
+        the DDC's discovery log page to learn which IO Controllers on this
+        storage array are accessible.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 6
+            state_fields:
+              fabrics_state: "registered"
+
+  - id: "evt_get_log_page_ddc"
+    type: "frame_tx"
+    frame_id: "get_log_page_ddc"
+    annotation:
+      text: "Get Log Page → DDC (Discovery Log, LID 0x70)"
+      detail: >
+        The host requests the Discovery Log Page from the DDC. Unlike the CDC's
+        log which contained DDC referrals, the DDC's log contains the actual NVM
+        subsystem entries — specifically the IO Controllers on this storage array
+        that are accessible to this host. This is the step where the host learns
+        the IO Controller's NQN and connection details.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 7
+            state_fields:
+              stafd_state: "reading DDC log"
+
+  - id: "evt_get_log_page_ddc_resp"
+    type: "frame_tx"
+    frame_id: "get_log_page_ddc_resp"
+    annotation:
+      text: "DDC Discovery Log ← DDC (subsys-alpha at 4420)"
+      detail: >
+        The DDC returns its discovery log with 1 entry: NVM Subsystem A
+        (nqn.2024-01.com.storage:subsys-alpha) at 192.168.100.51:4420. This is
+        the IO Controller NQN that stacd will use to connect. The three-tier
+        discovery hierarchy is now complete: CDC (network-wide) → DDC (per-array)
+        → IOC (per-subsystem). stacd now has the subsystem NQN and connection
+        details needed to establish an IO Controller connection.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 7
+            state_fields:
+              stafd_state: "DDC discovery complete"
+              discovered_controllers: 4
 
   # ── Phase: TCP Handshake to IO Controller ──
   - id: "evt_tcp_syn_ioc"
@@ -2395,8 +2990,9 @@ timeline:
     annotation:
       text: "TCP SYN → IO Controller port 4420"
       detail: >
-        stacd initiates a TCP connection to the IO controller at
-        192.168.100.51:4420 (Subsystem A from the discovery log).
+        stacd initiates a TCP connection to the IO Controller at
+        192.168.100.51:4420 — the address and port learned from the DDC's
+        discovery log (nqn.2024-01.com.storage:subsys-alpha).
         Port 4420 is the IANA-assigned port for NVMe over Fabrics.
     state_after:
       - actor_id: "initiator"
@@ -2483,9 +3079,10 @@ timeline:
       text: "Fabrics Connect → IO Controller (subsys-alpha)"
       detail: >
         The host connects to the IO Controller using the subsystem NQN
-        learned from the CDC's discovery log (nqn.2024-01.com.storage:subsys-alpha).
-        This creates the Admin queue association. Unlike the CDC connection which
-        used the well-known discovery NQN, this uses the actual storage subsystem NQN.
+        learned from the DDC's discovery log (nqn.2024-01.com.storage:subsys-alpha).
+        This creates the Admin queue association. Unlike the CDC and DDC connections
+        which used the well-known discovery NQN, this uses the actual storage
+        subsystem NQN — completing the final tier of the CDC → DDC → IOC hierarchy.
     state_after:
       - actor_id: "initiator"
         layers:
@@ -2748,8 +3345,10 @@ timeline:
       detail: >
         Read completed successfully. The 4KB data from LBA 0x1000 has been
         delivered to the host. The full NVMe/TCP lifecycle is now demonstrated:
-        mDNS discovery → CDC registration → subsystem discovery → controller
-        identification → namespace enumeration → IO queue setup → Write → Read.
+        mDNS discovery → CDC registration → CDC discovery log (DDC referrals) →
+        DDC connection → DDC discovery log (IOC details) → IOC connection →
+        controller identification → namespace enumeration → IO queue setup →
+        Write → Read. The three-tier discovery hierarchy (CDC → DDC → IOC) is complete.
     state_after:
       - actor_id: "initiator"
         layers:

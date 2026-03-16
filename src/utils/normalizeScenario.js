@@ -180,6 +180,8 @@ function inferPhase(event, lastPhase) {
 
   // NVMe-oF/TCP phases (check before generic patterns)
   if (/\bmdns\b|_nvme-disc/i.test(text) || /mdns/.test(id)) return 'mDNS Discovery';
+  if (/\bddc\b|direct discovery controller/i.test(text) || /ddc/.test(id)) return 'DDC Discovery';
+  if (/\bio\s*controller/i.test(text) || /_ioc/.test(id)) return 'IOC Connect';
   if (/\bicreq\b|\bicresp\b|initialize connection/i.test(text)
       || /icreq|icresp/.test(id)) return 'NVMe/TCP Init';
   if (/\bdim\b.*register|\bdim\b.*deregister|discovery information/i.test(text)
