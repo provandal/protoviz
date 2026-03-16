@@ -232,23 +232,27 @@ export default function TroubleshooterPage() {
             </button>
           </div>
 
-          {/* Split: packet list + findings + chat */}
-          <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-            <div style={{ flex: 1, overflowY: 'auto', borderRight: '1px solid #1e293b' }}>
-              <PacketList
-                packets={packets}
-                findings={findings}
-                selectedIndex={selectedPacketIndex}
-                onPacketSelect={setSelectedPacketIndex}
-              />
-            </div>
-            {findings && findings.length > 0 && (
-              <div style={{ width: 360, overflowY: 'auto', flexShrink: 0, borderRight: showChat ? '1px solid #1e293b' : 'none' }}>
-                <FindingsPanel findings={findings} onFindingClick={handleFindingClick} />
+          {/* Top: packet list + findings | Bottom: chat */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            {/* Packet list + findings row */}
+            <div style={{ flex: showChat ? '1 1 55%' : '1 1 100%', display: 'flex', overflow: 'hidden', minHeight: 0 }}>
+              <div style={{ flex: 1, overflowY: 'auto', borderRight: '1px solid #1e293b' }}>
+                <PacketList
+                  packets={packets}
+                  findings={findings}
+                  selectedIndex={selectedPacketIndex}
+                  onPacketSelect={setSelectedPacketIndex}
+                />
               </div>
-            )}
+              {findings && findings.length > 0 && (
+                <div style={{ width: 360, overflowY: 'auto', flexShrink: 0 }}>
+                  <FindingsPanel findings={findings} onFindingClick={handleFindingClick} />
+                </div>
+              )}
+            </div>
+            {/* Chat pane below */}
             {showChat && (
-              <div style={{ width: 400, flexShrink: 0, overflow: 'hidden' }}>
+              <div style={{ flex: '1 1 45%', borderTop: '1px solid #1e293b', minHeight: 0, overflow: 'hidden' }}>
                 <TraceChatPanel packets={packets} findings={findings} selectedPacketIndex={selectedPacketIndex} />
               </div>
             )}
