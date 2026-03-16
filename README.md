@@ -24,7 +24,8 @@ ProtoViz is an open-source, browser-based platform that turns protocol exchanges
 - **OSI Stack Visualization** — Live 7-layer state for each actor, updated per step
 - **Wireshark-style Packet Inspector** — Drill into every header field with expandable details, spec references, and kernel source links
 - **AI Chat** — Protocol Q&A with full context awareness (bring your own API key)
-- **PCAP Troubleshooter** — Upload a capture file for client-side parsing and rule-based compliance checking (nothing leaves your browser)
+- **PCAP Troubleshooter** — Upload a capture file for client-side parsing, rule-based compliance checking, and AI-assisted analysis (nothing leaves your browser unless you opt in to chat)
+- **tshark JSON Import** — Full protocol dissection via Wireshark's 3000+ dissectors without GPL entanglement
 - **Annotations** — Add personal notes to any step, export/import as JSON
 - **Pop-out Detail Panel** — Detach the bottom pane to a separate window for multi-monitor setups
 - **Keyboard Navigation** — Arrow keys, Space (play/pause), Home/End, 1-4 (tab switch)
@@ -37,8 +38,9 @@ ProtoViz is an open-source, browser-based platform that turns protocol exchanges
 | Scenario | Protocol | Difficulty |
 |----------|----------|------------|
 | RoCEv2 RC: Link Training → QP Connection → RDMA WRITE → RDMA READ | RoCEv2 | Advanced |
+| FC Fabric: FLOGI → Name Server → PLOGI → PRLI → SCSI I/O | Fibre Channel | Advanced |
 
-More scenarios coming: NVMe-oF/TCP, NVMe-oF/RDMA, iWARP, TCP deep dive, native InfiniBand, PFC/ECN/DCQCN.
+More scenarios planned: NVMe-oF/TCP, NVMe-oF/RDMA, iWARP, TCP deep dive, native InfiniBand, PFC/ECN/DCQCN.
 
 ---
 
@@ -71,11 +73,64 @@ python tools/converter.py my_capture.pcap --out public/scenarios/my_protocol/my_
 
 ## PCAP Troubleshooter
 
-Upload a `.pcap` file to analyze protocol compliance entirely in your browser — no data leaves your machine.
+The Troubleshooter analyzes packet captures for protocol compliance — entirely in your browser. No data leaves your machine unless you opt in to the AI chat feature.
 
-**Supported dissectors:** Ethernet, IPv4, UDP, TCP, RoCEv2 (BTH, RETH, AETH)
+### Input Formats
 
-**Rule engine checks:** PSN continuity, RDMA Write/Read sequence patterns, field validation against spec.
+The Troubleshooter accepts two input formats:
+
+#### Option 1: Raw PCAP (.pcap, .cap)
+
+Drag and drop or select a standard PCAP file. ProtoViz parses it client-side using built-in JavaScript dissectors.
+
+**Built-in dissectors:** Ethernet, IPv4, ARP, TCP, UDP, RoCEv2 (BTH, RETH, AETH)
+
+This is the simplest path — no tools needed beyond a browser. Ideal for RoCEv2 and basic TCP/UDP analysis.
+
+#### Option 2: tshark JSON (.json)
+
+For full protocol dissection (FC, iSCSI, NVMe-oF, QUIC, TLS, and 3000+ other protocols), pre-process your capture with Wireshark's `tshark` command-line tool and upload the JSON output:
+
+```bash
+# Basic: full dissection as JSON
+tshark -r capture.pcap -T json > capture.json
+
+# With display filter (e.g., only RoCEv2 traffic)
+tshark -r capture.pcap -T json -Y "infiniband" > roce_only.json
+
+# First 500 packets only
+tshark -r capture.pcap -T json -c 500 > first500.json
+```
+
+Then upload `capture.json` to the Troubleshooter. ProtoViz maps tshark's protocol layers to its internal format, giving you the same packet list, findings panel, and chat experience with far deeper dissection.
+
+**Why tshark JSON?** Wireshark is GPL-licensed. By using tshark as a separate pre-processing step (rather than linking against libwireshark), ProtoViz remains MIT-licensed while giving you access to the full Wireshark dissector ecosystem. This is the same approach used by most commercial tools that integrate with Wireshark.
+
+**Installing tshark:** tshark ships with Wireshark. Install Wireshark from [wireshark.org](https://www.wireshark.org/download.html) — tshark is included automatically. On Linux: `apt install tshark` or `yum install wireshark-cli`.
+
+### Rule Engine
+
+The Troubleshooter runs declarative compliance rules against parsed packets:
+
+| Rule | Type | Severity | What it checks |
+|------|------|----------|----------------|
+| TCP RST detection | `tcp_flag_present` | Error | Flags connection resets |
+| PSN continuity | `psn_sequence` | Error | Detects gaps in RoCEv2 Packet Sequence Numbers per QP |
+| RDMA Write → ACK | `sequence_pattern` | Warning | Verifies RDMA Write is followed by an Acknowledge |
+| RDMA Read → Response | `sequence_pattern` | Warning | Verifies RDMA Read Request is followed by a Read Response |
+| UDP port 4791 | `field_value` | Info | Confirms RoCEv2 traffic uses the correct well-known port |
+
+Rules are defined in `public/rules/roce-v2.json`. Adding new rules requires no code changes — just add entries to the JSON file.
+
+### Clickable Findings
+
+Each finding in the right panel is clickable. Clicking a finding scrolls to and highlights the corresponding packet in the packet list, expanding its dissection detail.
+
+### Trace Chat
+
+Click the **Chat** button in the toolbar to open an AI assistant panel. The assistant receives full context about your trace — protocol breakdown, IP endpoints, all findings, and the currently selected packet's dissection — so it can help you understand what went wrong.
+
+Requires an Anthropic API key (stored in localStorage, sent only to api.anthropic.com).
 
 ---
 
@@ -109,17 +164,19 @@ protoviz/
 │   │   ├── viewer/          # Sequence diagram, OSI stacks, packet inspector
 │   │   ├── gallery/         # Landing page, scenario cards, filters
 │   │   ├── layout/          # Split layout, bottom pane, popout view
-│   │   ├── chat/            # AI chat panel
-│   │   ├── troubleshooter/  # PCAP upload, packet list, findings
+│   │   ├── chat/            # AI chat panel (scenario viewer)
+│   │   ├── troubleshooter/  # PCAP upload, packet list, findings, trace chat
 │   │   └── about/           # About panel
 │   ├── hooks/               # useScenario, usePlayback, useKeyboardNav, usePopout, useAnnotations
-│   ├── pcap/                # PCAP parser, dissectors (Ethernet, IPv4, UDP, TCP, RoCE), rule engine
+│   ├── pcap/                # PCAP parser, tshark JSON reader, dissectors, rule engine
 │   ├── store/               # Zustand state management
 │   ├── utils/               # Constants, state engine, scenario normalizer
 │   └── styles/
 ├── public/
 │   ├── scenarios/           # YAML scenario files + index.json manifest
-│   └── rules/               # Declarative compliance rules
+│   │   ├── roce/            # RoCEv2 scenario
+│   │   └── fc/              # Fibre Channel scenario
+│   └── rules/               # Declarative compliance rules (JSON)
 ├── mcp/                     # MCP server for AI agents
 ├── tools/                   # Python PCAP converter
 ├── .github/workflows/       # GitHub Pages deployment
@@ -139,9 +196,9 @@ Scenarios are YAML files conforming to `scenario.schema.json`. Key sections:
 - `timeline` — Ordered events referencing frames and state deltas
 - `glossary` — Protocol terms with definitions
 
-Each field can carry `spec_refs` (IBTA, RFC, IEEE), `kernel_ref` (Linux kernel source), and `description`.
+Each field can carry `spec_refs` (IBTA, RFC, IEEE, T11/INCITS), `kernel_ref` (Linux kernel source), and `description`.
 
-See `public/scenarios/roce/` for a complete example.
+See `public/scenarios/roce/` and `public/scenarios/fc/` for complete examples.
 
 ---
 
@@ -155,7 +212,9 @@ The viewer is grounded in Linux kernel source. Kernel references are cited at th
 | QP creation, WQE posting | `drivers/infiniband/hw/mlx5/qp.c` → `mlx5_ib_create_qp()` |
 | Memory Region registration | `drivers/infiniband/hw/mlx5/mr.c` → `mlx5_ib_reg_user_mr()` |
 | Connection Manager REQ/REP/RTU | `drivers/infiniband/core/cm.c` → `ib_send_cm_req()` |
-| CQ polling | `drivers/infiniband/hw/mlx5/cq.c` → `mlx5_ib_poll_cq()` |
+| FC ELS (FLOGI/PLOGI/PRLI) | `drivers/scsi/lpfc/lpfc_els.c` → `lpfc_issue_els_flogi()` |
+| FC Name Server queries | `drivers/scsi/lpfc/lpfc_ct.c` → `lpfc_ns_cmd()` |
+| SCSI target discovery | `drivers/scsi/scsi_scan.c` → `scsi_scan_host()` |
 
 ---
 
@@ -176,10 +235,12 @@ Distinguished Engineer - Dell Technologies
 
 - Linux RDMA community (`rdma-core`, `drivers/infiniband/`)
 - InfiniBand Trade Association — IBTA specifications
+- T11 Technical Committee — Fibre Channel specifications (FC-FS, FC-LS, FC-GS, FCP)
+- Wireshark project — tshark JSON integration for full protocol dissection
 
 ## Protocol Content Disclaimer
 
-Protocol descriptions in ProtoViz scenarios are based on open-source implementations (Linux kernel, rdma-core, Wireshark) and public RFCs. No proprietary specification text has been reproduced. IBTA, IEEE, and other specification references are provided as citations for further reading — the explanatory content is original. If you believe any content inadvertently reproduces copyrighted material, please [open an issue](https://github.com/provandal/protoviz/issues).
+Protocol descriptions in ProtoViz scenarios are based on open-source implementations (Linux kernel, rdma-core, Wireshark) and public RFCs. No proprietary specification text has been reproduced. IBTA, IEEE, T11/INCITS, and other specification references are provided as citations for further reading — the explanatory content is original. If you believe any content inadvertently reproduces copyrighted material, please [open an issue](https://github.com/provandal/protoviz/issues).
 
 ---
 

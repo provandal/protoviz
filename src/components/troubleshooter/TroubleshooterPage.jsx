@@ -2,11 +2,16 @@
 import { useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { parsePcap } from '../../pcap/pcapReader';
+import { parseTsharkJson } from '../../pcap/tsharkReader';
 import { dissectPacket } from '../../pcap/dissect';
 import { evaluateRules } from '../../pcap/ruleEngine';
 import FindingsPanel from './FindingsPanel';
 import PacketList from './PacketList';
 import TraceChatPanel from './TraceChatPanel';
+
+function isJsonFile(name) {
+  return /\.json$/i.test(name);
+}
 
 export default function TroubleshooterPage() {
   const navigate = useNavigate();
@@ -15,9 +20,20 @@ export default function TroubleshooterPage() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [fileName, setFileName] = useState('');
+  const [inputFormat, setInputFormat] = useState('');
   const [selectedPacketIndex, setSelectedPacketIndex] = useState(null);
   const [showChat, setShowChat] = useState(false);
   const fileRef = useRef(null);
+
+  const loadAndEvaluateRules = useCallback(async (dissected) => {
+    const base = import.meta.env.BASE_URL;
+    const rulesRes = await fetch(`${base}rules/roce-v2.json`);
+    if (rulesRes.ok) {
+      const rulesData = await rulesRes.json();
+      return evaluateRules(rulesData.rules, dissected);
+    }
+    return [];
+  }, []);
 
   const handleFile = useCallback(async (e) => {
     const file = e.target.files?.[0];
@@ -28,26 +44,30 @@ export default function TroubleshooterPage() {
     setFileName(file.name);
 
     try {
-      const buffer = await file.arrayBuffer();
-      const { packets: rawPackets } = parsePcap(buffer);
+      let dissected;
 
-      // Dissect all packets
-      const dissected = rawPackets.map(pkt => ({
-        ...pkt,
-        ...dissectPacket(pkt),
-      }));
+      if (isJsonFile(file.name)) {
+        // tshark JSON input
+        const text = await file.text();
+        const { packets: parsed } = parseTsharkJson(text);
+        dissected = parsed;
+        setInputFormat('tshark JSON');
+      } else {
+        // Raw PCAP input
+        const buffer = await file.arrayBuffer();
+        const { packets: rawPackets } = parsePcap(buffer);
+        dissected = rawPackets.map(pkt => ({
+          ...pkt,
+          ...dissectPacket(pkt),
+        }));
+        setInputFormat('PCAP');
+      }
 
       setPackets(dissected);
       setSelectedPacketIndex(null);
 
-      // Load and evaluate rules
-      const base = import.meta.env.BASE_URL;
-      const rulesRes = await fetch(`${base}rules/roce-v2.json`);
-      if (rulesRes.ok) {
-        const rulesData = await rulesRes.json();
-        const results = evaluateRules(rulesData.rules, dissected);
-        setFindings(results);
-      }
+      const results = await loadAndEvaluateRules(dissected);
+      setFindings(results);
     } catch (err) {
       setError(err.message);
       setPackets(null);
@@ -55,13 +75,14 @@ export default function TroubleshooterPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [loadAndEvaluateRules]);
 
   const reset = useCallback(() => {
     setPackets(null);
     setFindings(null);
     setError(null);
     setFileName('');
+    setInputFormat('');
     setSelectedPacketIndex(null);
     setShowChat(false);
     if (fileRef.current) fileRef.current.value = '';
@@ -98,13 +119,13 @@ export default function TroubleshooterPage() {
       {/* Upload area or results */}
       {!packets ? (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40 }}>
-          <div style={{ textAlign: 'center', maxWidth: 500 }}>
+          <div style={{ textAlign: 'center', maxWidth: 560 }}>
             <div style={{ fontSize: 48, marginBottom: 16, opacity: 0.3 }}>📡</div>
             <div style={{ color: '#e2e8f0', fontSize: 18, fontWeight: 700, marginBottom: 8 }}>
               PCAP Troubleshooter
             </div>
             <div style={{ color: '#64748b', fontSize: 12, marginBottom: 24, lineHeight: 1.6 }}>
-              Upload a PCAP file to analyze protocol compliance.
+              Upload a PCAP file or tshark JSON export to analyze protocol compliance.
               All parsing happens locally in your browser — nothing is uploaded to any server.
             </div>
 
@@ -118,11 +139,11 @@ export default function TroubleshooterPage() {
                 opacity: loading ? 0.5 : 1,
               }}
             >
-              {loading ? 'Parsing...' : 'Choose PCAP File'}
+              {loading ? 'Parsing...' : 'Choose File'}
               <input
                 ref={fileRef}
                 type="file"
-                accept=".pcap,.cap"
+                accept=".pcap,.cap,.json"
                 onChange={handleFile}
                 style={{ display: 'none' }}
               />
@@ -138,8 +159,27 @@ export default function TroubleshooterPage() {
               </div>
             )}
 
-            <div style={{ marginTop: 24, color: '#334155', fontSize: 10 }}>
-              Supports standard PCAP format (Ethernet link type)
+            <div style={{ marginTop: 32, textAlign: 'left' }}>
+              <div style={{ color: '#475569', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 8 }}>
+                Supported formats
+              </div>
+              <div style={{ display: 'flex', gap: 16 }}>
+                <div style={{ flex: 1, background: '#0a0f1a', border: '1px solid #1e293b', borderRadius: 6, padding: '10px 12px' }}>
+                  <div style={{ color: '#60a5fa', fontSize: 11, fontWeight: 700, marginBottom: 4 }}>PCAP (.pcap, .cap)</div>
+                  <div style={{ color: '#475569', fontSize: 10, lineHeight: 1.5 }}>
+                    Standard packet capture. Built-in dissectors for Ethernet, IPv4, TCP, UDP, and RoCEv2.
+                  </div>
+                </div>
+                <div style={{ flex: 1, background: '#0a0f1a', border: '1px solid #1e293b', borderRadius: 6, padding: '10px 12px' }}>
+                  <div style={{ color: '#a78bfa', fontSize: 11, fontWeight: 700, marginBottom: 4 }}>tshark JSON (.json)</div>
+                  <div style={{ color: '#475569', fontSize: 10, lineHeight: 1.5 }}>
+                    Full protocol dissection via Wireshark. Supports 3000+ protocols.
+                  </div>
+                  <div style={{ color: '#334155', fontSize: 9, marginTop: 4, fontFamily: 'monospace' }}>
+                    tshark -r capture.pcap -T json &gt; out.json
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -153,6 +193,14 @@ export default function TroubleshooterPage() {
             <span style={{ color: '#94a3b8', fontSize: 11 }}>
               {fileName} — {packets.length} packets
             </span>
+            {inputFormat && (
+              <span style={{
+                background: '#0c1929', color: '#93c5fd',
+                fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 3,
+              }}>
+                {inputFormat}
+              </span>
+            )}
             {findings && (
               <span style={{
                 background: findings.some(f => f.severity === 'error') ? '#450a0a' : '#052e16',
