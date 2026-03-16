@@ -98,7 +98,7 @@ topology:
       type: "initiator"
       label: "Host (Initiator HBA)"
       description: "FC initiator — Linux host with dual-port 32GFC HBA running lpfc or qla2xxx driver"
-      hardware: "Broadcom LPe36002 32GFC HBA"
+      hardware: "32GFC dual-port HBA"
       os: "Linux 6.x"
       kernel_version: "6.8"
       position: "left"
@@ -107,14 +107,14 @@ topology:
       type: "switch"
       label: "FC Switch"
       description: "32GFC FC switch with embedded Name Server, zoning, and FCID assignment"
-      hardware: "Brocade G720 FC Switch"
+      hardware: "32GFC FC switch"
       position: "center"
 
     - id: "target"
       type: "target"
       label: "Storage Array (Target)"
       description: "FC storage array presenting SCSI LUNs over FCP"
-      hardware: "Dell PowerStore 32GFC"
+      hardware: "32GFC storage array"
       position: "right"
 
   links:
