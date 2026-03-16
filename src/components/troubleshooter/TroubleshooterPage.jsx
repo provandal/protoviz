@@ -12,7 +12,26 @@ import PacketList from './PacketList';
 import TraceChatPanel from './TraceChatPanel';
 
 function isJsonFile(name) {
-  return /\.json$/i.test(name);
+  return /\.json$/i.test(name) || /\.out$/i.test(name) || /\.txt$/i.test(name);
+}
+
+/**
+ * Read file as text, handling UTF-16 BOM that PowerShell's > redirect produces.
+ */
+async function readFileAsText(file) {
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+
+  // Detect UTF-16 LE BOM (0xFF 0xFE)
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
+    return new TextDecoder('utf-16le').decode(buffer);
+  }
+  // Detect UTF-16 BE BOM (0xFE 0xFF)
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+    return new TextDecoder('utf-16be').decode(buffer);
+  }
+  // Default UTF-8
+  return new TextDecoder('utf-8').decode(buffer);
 }
 
 export default function TroubleshooterPage() {
@@ -49,20 +68,28 @@ export default function TroubleshooterPage() {
       let dissected;
 
       if (isJsonFile(file.name)) {
-        // tshark JSON input
-        const text = await file.text();
+        // JSON input — try tshark format
+        const text = await readFileAsText(file);
         const { packets: parsed } = parseTsharkJson(text);
         dissected = parsed;
         setInputFormat('tshark JSON');
       } else {
-        // Raw PCAP input
+        // Try PCAP/pcapng first, fall back to JSON if it fails
         const buffer = await file.arrayBuffer();
-        const { packets: rawPackets } = parsePcap(buffer);
-        dissected = rawPackets.map(pkt => ({
-          ...pkt,
-          ...dissectPacket(pkt),
-        }));
-        setInputFormat('PCAP');
+        try {
+          const { packets: rawPackets } = parsePcap(buffer);
+          dissected = rawPackets.map(pkt => ({
+            ...pkt,
+            ...dissectPacket(pkt),
+          }));
+          setInputFormat('PCAP');
+        } catch {
+          // Not a valid PCAP — try parsing as JSON (handles any extension)
+          const text = await readFileAsText(file);
+          const { packets: parsed } = parseTsharkJson(text);
+          dissected = parsed;
+          setInputFormat('tshark JSON');
+        }
       }
 
       setPackets(dissected);
@@ -156,7 +183,7 @@ export default function TroubleshooterPage() {
               <input
                 ref={fileRef}
                 type="file"
-                accept=".pcap,.pcapng,.cap,.json"
+                accept=".pcap,.pcapng,.cap,.json,.out,.txt"
                 onChange={handleFile}
                 style={{ display: 'none' }}
               />
