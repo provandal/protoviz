@@ -1,7 +1,17 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 
-export default function PacketList({ packets, findings }) {
+function formatTimestamp(pkt, baseTimestamp) {
+  const relative = pkt.timestamp - baseTimestamp;
+  const secs = Math.floor(relative);
+  const frac = relative - secs;
+  const usec = Math.round(frac * 1e6);
+  return `${secs}.${String(usec).padStart(6, '0')}`;
+}
+
+export default function PacketList({ packets, findings, selectedIndex, onPacketSelect }) {
   const [expanded, setExpanded] = useState(null);
+  const selectedRef = useRef(null);
+  const baseTimestamp = packets.length > 0 ? packets[0].timestamp : 0;
 
   // Build finding lookup by packet index
   const findingsByPkt = {};
@@ -11,6 +21,14 @@ export default function PacketList({ packets, findings }) {
       findingsByPkt[f.packetIndex].push(f);
     }
   }
+
+  // Auto-scroll to selected packet when it changes
+  useEffect(() => {
+    if (selectedIndex != null && selectedRef.current) {
+      selectedRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setExpanded(selectedIndex);
+    }
+  }, [selectedIndex]);
 
   return (
     <div>
@@ -23,7 +41,7 @@ export default function PacketList({ packets, findings }) {
         textTransform: 'uppercase', letterSpacing: '0.05em',
       }}>
         <span style={{ width: 50 }}>#</span>
-        <span style={{ width: 90 }}>Time</span>
+        <span style={{ width: 110 }}>Time</span>
         <span style={{ flex: 1 }}>Summary</span>
         <span style={{ width: 60, textAlign: 'right' }}>Length</span>
       </div>
@@ -31,30 +49,36 @@ export default function PacketList({ packets, findings }) {
       {packets.map((pkt, i) => {
         const hasFinding = !!findingsByPkt[i];
         const isExpanded = expanded === i;
+        const isSelected = selectedIndex === i;
         const hasRoce = pkt.layers.some(l => l.name.includes('BTH'));
+        const hasTcpRst = pkt.layers.some(l => l.name === 'TCP' && l.fields.flag_names?.includes('RST'));
 
         return (
-          <div key={i}>
+          <div key={i} ref={isSelected ? selectedRef : undefined}>
             <div
-              onClick={() => setExpanded(isExpanded ? null : i)}
+              onClick={() => {
+                setExpanded(isExpanded ? null : i);
+                onPacketSelect?.(i);
+              }}
               style={{
                 display: 'flex', padding: '4px 12px',
                 cursor: 'pointer',
-                background: hasFinding ? '#1c0a0a' : (i % 2 === 0 ? '#020817' : '#0a0f1a'),
-                borderLeft: hasFinding ? '3px solid #dc2626' : '3px solid transparent',
+                background: isSelected ? '#172554' : hasFinding ? '#1c0a0a' : (i % 2 === 0 ? '#020817' : '#0a0f1a'),
+                borderLeft: isSelected ? '3px solid #3b82f6' : hasFinding ? '3px solid #dc2626' : '3px solid transparent',
                 fontSize: 11,
                 transition: 'background 0.1s',
               }}
               onMouseEnter={e => e.currentTarget.style.background = '#1e293b'}
-              onMouseLeave={e => e.currentTarget.style.background = hasFinding ? '#1c0a0a' : (i % 2 === 0 ? '#020817' : '#0a0f1a')}
+              onMouseLeave={e => e.currentTarget.style.background = isSelected ? '#172554' : hasFinding ? '#1c0a0a' : (i % 2 === 0 ? '#020817' : '#0a0f1a')}
             >
               <span style={{ width: 50, color: '#475569' }}>{i + 1}</span>
-              <span style={{ width: 90, color: '#64748b' }}>
-                {pkt.timestamp.toFixed(6).slice(0, 10)}
+              <span style={{ width: 110, color: '#64748b', fontFamily: "'JetBrains Mono',monospace", fontSize: 10 }}>
+                {formatTimestamp(pkt, baseTimestamp)}
               </span>
               <span style={{
-                flex: 1, color: hasRoce ? '#60a5fa' : '#94a3b8',
+                flex: 1, color: hasTcpRst ? '#f87171' : hasRoce ? '#60a5fa' : '#94a3b8',
                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                fontWeight: hasTcpRst ? 700 : 400,
               }}>
                 {pkt.summary}
               </span>
@@ -80,7 +104,11 @@ export default function PacketList({ packets, findings }) {
                       {Object.entries(layer.fields).map(([k, v]) => (
                         <div key={k} style={{ display: 'contents' }}>
                           <span style={{ color: '#475569', fontSize: 10 }}>{k}:</span>
-                          <span style={{ color: '#cbd5e1', fontSize: 10 }}>{String(v)}</span>
+                          <span style={{
+                            color: k === 'flag_names' && String(v).includes('RST') ? '#f87171' : '#cbd5e1',
+                            fontSize: 10,
+                            fontWeight: k === 'flag_names' && String(v).includes('RST') ? 700 : 400,
+                          }}>{String(v)}</span>
                         </div>
                       ))}
                     </div>
@@ -94,7 +122,7 @@ export default function PacketList({ packets, findings }) {
                         color: f.severity === 'error' ? '#fca5a5' : '#fde68a',
                         fontSize: 10, marginBottom: 4,
                       }}>
-                        ⚠ {f.description}
+                        {f.description}
                       </div>
                     ))}
                   </div>

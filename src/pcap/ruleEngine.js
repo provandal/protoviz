@@ -21,6 +21,9 @@ export function evaluateRules(rules, dissectedPackets) {
       case 'sequence_pattern':
         findings.push(...checkSequencePattern(rule, dissectedPackets));
         break;
+      case 'tcp_flag_present':
+        findings.push(...checkTcpFlagPresent(rule, dissectedPackets));
+        break;
     }
   }
 
@@ -79,6 +82,26 @@ function checkPsnSequence(rule, packets) {
     }
   }
 
+  return findings;
+}
+
+function checkTcpFlagPresent(rule, packets) {
+  const findings = [];
+  const flag = rule.flag;
+  for (const pkt of packets) {
+    const tcp = pkt.layers.find(l => l.name === 'TCP');
+    if (!tcp) continue;
+    const flagNames = tcp.fields.flag_names || '';
+    if (flagNames.includes(flag)) {
+      findings.push({
+        severity: rule.severity || 'error',
+        packetIndex: pkt.index,
+        rule: rule.id,
+        description: rule.description || `TCP ${flag} flag detected`,
+        spec_ref: rule.spec_ref,
+      });
+    }
+  }
   return findings;
 }
 

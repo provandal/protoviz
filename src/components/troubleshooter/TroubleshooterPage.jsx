@@ -6,6 +6,7 @@ import { dissectPacket } from '../../pcap/dissect';
 import { evaluateRules } from '../../pcap/ruleEngine';
 import FindingsPanel from './FindingsPanel';
 import PacketList from './PacketList';
+import TraceChatPanel from './TraceChatPanel';
 
 export default function TroubleshooterPage() {
   const navigate = useNavigate();
@@ -14,6 +15,8 @@ export default function TroubleshooterPage() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [fileName, setFileName] = useState('');
+  const [selectedPacketIndex, setSelectedPacketIndex] = useState(null);
+  const [showChat, setShowChat] = useState(false);
   const fileRef = useRef(null);
 
   const handleFile = useCallback(async (e) => {
@@ -35,6 +38,7 @@ export default function TroubleshooterPage() {
       }));
 
       setPackets(dissected);
+      setSelectedPacketIndex(null);
 
       // Load and evaluate rules
       const base = import.meta.env.BASE_URL;
@@ -58,7 +62,13 @@ export default function TroubleshooterPage() {
     setFindings(null);
     setError(null);
     setFileName('');
+    setSelectedPacketIndex(null);
+    setShowChat(false);
     if (fileRef.current) fileRef.current.value = '';
+  }, []);
+
+  const handleFindingClick = useCallback((packetIndex) => {
+    setSelectedPacketIndex(packetIndex);
   }, []);
 
   return (
@@ -154,6 +164,16 @@ export default function TroubleshooterPage() {
             )}
             <div style={{ flex: 1 }} />
             <button
+              onClick={() => setShowChat(c => !c)}
+              style={{
+                background: showChat ? '#1e40af' : 'none',
+                border: '1px solid #334155', color: showChat ? '#fff' : '#64748b',
+                padding: '3px 10px', borderRadius: 4, cursor: 'pointer', fontSize: 10,
+              }}
+            >
+              Chat
+            </button>
+            <button
               onClick={reset}
               style={{
                 background: 'none', border: '1px solid #334155', color: '#64748b',
@@ -164,14 +184,24 @@ export default function TroubleshooterPage() {
             </button>
           </div>
 
-          {/* Split: packet list + findings */}
+          {/* Split: packet list + findings + chat */}
           <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
             <div style={{ flex: 1, overflowY: 'auto', borderRight: '1px solid #1e293b' }}>
-              <PacketList packets={packets} findings={findings} />
+              <PacketList
+                packets={packets}
+                findings={findings}
+                selectedIndex={selectedPacketIndex}
+                onPacketSelect={setSelectedPacketIndex}
+              />
             </div>
             {findings && findings.length > 0 && (
-              <div style={{ width: 360, overflowY: 'auto', flexShrink: 0 }}>
-                <FindingsPanel findings={findings} />
+              <div style={{ width: 360, overflowY: 'auto', flexShrink: 0, borderRight: showChat ? '1px solid #1e293b' : 'none' }}>
+                <FindingsPanel findings={findings} onFindingClick={handleFindingClick} />
+              </div>
+            )}
+            {showChat && (
+              <div style={{ width: 400, flexShrink: 0, overflow: 'hidden' }}>
+                <TraceChatPanel packets={packets} findings={findings} selectedPacketIndex={selectedPacketIndex} />
               </div>
             )}
           </div>

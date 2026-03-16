@@ -12,6 +12,14 @@
       "severity": "info"
     },
     {
+      "id": "tcp_rst",
+      "type": "tcp_flag_present",
+      "flag": "RST",
+      "description": "TCP RST — connection reset by peer, indicates aborted connection or rejected attempt",
+      "spec_ref": "RFC 9293, §3.5.2",
+      "severity": "error"
+    },
+    {
       "id": "psn_continuity",
       "type": "psn_sequence",
       "description": "Packet Sequence Numbers should be contiguous within a QP stream",

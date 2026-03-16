@@ -4,7 +4,7 @@ const SEVERITY_STYLES = {
   info: { bg: '#0c1929', border: '#2563eb', color: '#93c5fd', label: 'INFO' },
 };
 
-export default function FindingsPanel({ findings }) {
+export default function FindingsPanel({ findings, onFindingClick }) {
   return (
     <div style={{ padding: 12 }}>
       <div style={{
@@ -19,10 +19,14 @@ export default function FindingsPanel({ findings }) {
         return (
           <div
             key={i}
+            onClick={() => onFindingClick?.(f.packetIndex)}
             style={{
               background: sev.bg, border: `1px solid ${sev.border}44`,
               borderRadius: 6, padding: '10px 12px', marginBottom: 8,
+              cursor: 'pointer', transition: 'border-color 0.15s',
             }}
+            onMouseEnter={e => e.currentTarget.style.borderColor = sev.border}
+            onMouseLeave={e => e.currentTarget.style.borderColor = `${sev.border}44`}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
               <span style={{
@@ -33,6 +37,9 @@ export default function FindingsPanel({ findings }) {
               </span>
               <span style={{ color: '#475569', fontSize: 9 }}>
                 Packet #{f.packetIndex + 1}
+              </span>
+              <span style={{ color: '#334155', fontSize: 9, marginLeft: 'auto' }}>
+                Click to view
               </span>
             </div>
             <div style={{ color: sev.color, fontSize: 11, lineHeight: 1.5 }}>
