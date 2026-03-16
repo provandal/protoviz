@@ -500,7 +500,7 @@ I have parsed a PCAP file and classified the exchange as:
 {json.dumps(classification, indent=2)}
 
 I have generated a partial scenario YAML. Please:
-1. Write a detailed meta.description (2-3 sentences, technically accurate, suitable for a SNIA audience)
+1. Write a detailed meta.description (2-3 sentences, technically accurate, suitable for network engineers)
 2. Generate 4-6 learning_objectives (what will someone learn from watching this scenario?)
 3. If this is a RoCEv2 exchange, note the specific IBTA spec sections most relevant
 
