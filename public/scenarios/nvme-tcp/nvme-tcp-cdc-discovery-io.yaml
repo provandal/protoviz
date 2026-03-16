@@ -143,18 +143,19 @@ topology:
 
     - id: "switch"
       type: "switch"
-      label: "25GbE Ethernet Switch"
-      description: "Data center Ethernet switch connecting host to storage network"
-      hardware: "25GbE Ethernet switch"
+      label: "Ethernet Switch + CDC"
+      description: "Data center Ethernet switch with embedded Centralized Discovery Controller (CDC). The CDC provides mDNS advertisement, DIM registration, and Discovery Log Pages per TP8009."
+      hardware: "25GbE Ethernet switch with CDC"
+      ip: "192.168.100.50"
       position: "center"
 
     - id: "target"
       type: "target"
-      label: "Storage Infrastructure"
-      description: "CDC and NVMe-oF/TCP storage array providing discovery services and NVMe namespaces"
+      label: "NVMe-oF/TCP Storage Array"
+      description: "NVMe-oF/TCP storage array providing IO Controllers and NVMe namespaces"
       hardware: "NVMe-oF/TCP storage array"
       os: "Linux 6.x / Storage OS"
-      ip: "192.168.100.50"
+      ip: "192.168.100.51"
       mac: "00:50:56:d4:e5:f6"
       position: "right"
 
@@ -321,21 +322,9 @@ osi_layers:
 
   target:
     - layer: 7
-      name: "NVMe Target / CDC"
-      components: ["drivers/nvme/target/discovery.c", "nvmet configfs"]
+      name: "NVMe IO Controller"
+      components: ["drivers/nvme/target/core.c", "nvmet configfs"]
       state_schema:
-        cdc_state:
-          type: "string"
-          description: "CDC service state"
-          initial: "listening"
-        registered_hosts:
-          type: "integer"
-          description: "Number of hosts registered via DIM"
-          initial: 0
-        subsystem_count:
-          type: "integer"
-          description: "Number of subsystems in CDC database"
-          initial: 3
         io_controller_state:
           type: "string"
           description: "IO Controller state"
@@ -346,16 +335,12 @@ osi_layers:
           initial: 4
 
     - layer: 6
-      name: "NVMe Fabrics (Target)"
+      name: "NVMe Fabrics (IOC)"
       components: ["drivers/nvme/target/fabrics-cmd.c"]
       state_schema:
         fabrics_state:
           type: "string"
           initial: "listening"
-        controller_type:
-          type: "string"
-          description: "Active controller type serving this connection"
-          initial: "CDC"
         assigned_cntlid:
           type: "string"
           description: "Controller ID assigned to host"
@@ -368,12 +353,6 @@ osi_layers:
         tcp_transport_state:
           type: "string"
           initial: "listening"
-        hdgst:
-          type: "boolean"
-          initial: false
-        ddgst:
-          type: "boolean"
-          initial: false
         maxdata:
           type: "integer"
           description: "Max data capsules per R2T"
@@ -389,7 +368,7 @@ osi_layers:
         listen_port:
           type: "integer"
           description: "TCP listening port"
-          initial: 8009
+          initial: 4420
 
     - layer: 3
       name: "IP / Routing"
@@ -397,7 +376,7 @@ osi_layers:
       state_schema:
         src_ip:
           type: "string"
-          initial: "192.168.100.50"
+          initial: "192.168.100.51"
 
     - layer: 2
       name: "Ethernet"
@@ -422,6 +401,46 @@ osi_layers:
           initial: "25Gbps"
 
   switch:
+    - layer: 7
+      name: "CDC (Discovery Controller)"
+      components: ["drivers/nvme/target/discovery.c", "TP8009", "TP8013"]
+      state_schema:
+        cdc_state:
+          type: "string"
+          description: "CDC service state"
+          initial: "listening"
+        registered_hosts:
+          type: "integer"
+          description: "Hosts registered via DIM"
+          initial: 0
+        subsystem_count:
+          type: "integer"
+          description: "Subsystems in CDC database"
+          initial: 3
+    - layer: 6
+      name: "NVMe Fabrics (CDC)"
+      components: ["drivers/nvme/target/fabrics-cmd.c"]
+      state_schema:
+        cdc_fabrics_state:
+          type: "string"
+          initial: "listening"
+        assigned_cntlid:
+          type: "string"
+          initial: "none"
+    - layer: 5
+      name: "NVMe-oF/TCP (CDC)"
+      components: ["drivers/nvme/target/tcp.c"]
+      state_schema:
+        cdc_transport_state:
+          type: "string"
+          initial: "listening"
+    - layer: 4
+      name: "TCP (CDC port 8009)"
+      components: ["kernel TCP stack"]
+      state_schema:
+        cdc_tcp_state:
+          type: "string"
+          initial: "LISTEN"
     - layer: 3
       name: "IP Forwarding"
       components: ["L3 switch forwarding"]
@@ -436,12 +455,6 @@ osi_layers:
         fwd_table_entries:
           type: "integer"
           initial: 0
-        port_a_state:
-          type: "string"
-          initial: "forwarding"
-        port_b_state:
-          type: "string"
-          initial: "forwarding"
 
 # ─────────────────────────────────────────────────────────────────
 # FRAME DEFINITIONS
@@ -451,8 +464,7 @@ frames:
   - id: "mdns_query"
     name: "mDNS Query (_nvme-disc._tcp)"
     from: "initiator"
-    to: "target"
-    via: ["switch"]
+    to: "switch"
     total_bytes: 78
     color: "#b45309"
     headers:
@@ -549,9 +561,8 @@ frames:
 
   - id: "mdns_response"
     name: "mDNS Response (CDC advertisement)"
-    from: "target"
+    from: "switch"
     to: "initiator"
-    via: ["switch"]
     total_bytes: 210
     color: "#b45309"
     headers:
@@ -566,7 +577,8 @@ frames:
           - name: "Source MAC"
             abbrev: "eth.src"
             bits: 48
-            value: "00:50:56:d4:e5:f6"
+            value: "00:50:56:sw:cd:01"
+            description: "Switch management MAC address"
           - name: "EtherType"
             abbrev: "eth.type"
             bits: 16
@@ -578,6 +590,7 @@ frames:
             abbrev: "ip.src"
             bits: 32
             value: "192.168.100.50"
+            description: "Switch/CDC management IP"
           - name: "Destination IP"
             abbrev: "ip.dst"
             bits: 32
@@ -642,8 +655,7 @@ frames:
   - id: "tcp_syn_cdc"
     name: "TCP SYN (→ CDC port 8009)"
     from: "initiator"
-    to: "target"
-    via: ["switch"]
+    to: "switch"
     total_bytes: 74
     color: "#0f766e"
     headers:
@@ -704,9 +716,8 @@ frames:
 
   - id: "tcp_synack_cdc"
     name: "TCP SYN-ACK (CDC → Host)"
-    from: "target"
+    from: "switch"
     to: "initiator"
-    via: ["switch"]
     total_bytes: 74
     color: "#0f766e"
     headers:
@@ -737,8 +748,7 @@ frames:
   - id: "tcp_ack_cdc"
     name: "TCP ACK (3-way handshake complete)"
     from: "initiator"
-    to: "target"
-    via: ["switch"]
+    to: "switch"
     total_bytes: 66
     color: "#0f766e"
     headers:
@@ -758,8 +768,7 @@ frames:
   - id: "icreq_cdc"
     name: "ICReq (Initialize Connection Request)"
     from: "initiator"
-    to: "target"
-    via: ["switch"]
+    to: "switch"
     total_bytes: 194
     color: "#1e40af"
     headers:
@@ -842,9 +851,8 @@ frames:
 
   - id: "icresp_cdc"
     name: "ICResp (Initialize Connection Response)"
-    from: "target"
+    from: "switch"
     to: "initiator"
-    via: ["switch"]
     total_bytes: 194
     color: "#1e40af"
     headers:
@@ -906,8 +914,7 @@ frames:
   - id: "fabrics_connect_cdc"
     name: "Fabrics Connect (Admin Queue → CDC)"
     from: "initiator"
-    to: "target"
-    via: ["switch"]
+    to: "switch"
     total_bytes: 1154
     color: "#1e40af"
     headers:
@@ -1007,9 +1014,8 @@ frames:
 
   - id: "fabrics_connect_cdc_resp"
     name: "Fabrics Connect Response (CDC → Host)"
-    from: "target"
+    from: "switch"
     to: "initiator"
-    via: ["switch"]
     total_bytes: 90
     color: "#1e40af"
     headers:
@@ -1054,8 +1060,7 @@ frames:
   - id: "dim_register"
     name: "DIM Register (Host → CDC)"
     from: "initiator"
-    to: "target"
-    via: ["switch"]
+    to: "switch"
     total_bytes: 322
     color: "#6d28d9"
     headers:
@@ -1131,9 +1136,8 @@ frames:
 
   - id: "dim_register_resp"
     name: "DIM Register Response (Success)"
-    from: "target"
+    from: "switch"
     to: "initiator"
-    via: ["switch"]
     total_bytes: 90
     color: "#6d28d9"
     headers:
@@ -1161,8 +1165,7 @@ frames:
   - id: "get_log_page_discovery"
     name: "Get Log Page — Discovery Log (LID 0x70)"
     from: "initiator"
-    to: "target"
-    via: ["switch"]
+    to: "switch"
     total_bytes: 138
     color: "#0369a1"
     headers:
@@ -1212,9 +1215,8 @@ frames:
 
   - id: "get_log_page_discovery_resp"
     name: "Discovery Log Page Response (3 entries)"
-    from: "target"
+    from: "switch"
     to: "initiator"
-    via: ["switch"]
     total_bytes: 3210
     color: "#0369a1"
     headers:
@@ -2182,11 +2184,11 @@ timeline:
         The CDC's TCP stack responds with SYN-ACK, acknowledging the host's
         SYN and sending its own sequence number.
     state_after:
-      - actor_id: "target"
+      - actor_id: "switch"
         layers:
           - layer: 4
             state_fields:
-              tcp_state: "SYN_RCVD"
+              cdc_tcp_state: "SYN_RCVD"
 
   - id: "evt_tcp_ack_cdc"
     type: "frame_tx"
@@ -2202,11 +2204,11 @@ timeline:
           - layer: 4
             state_fields:
               tcp_state: "ESTABLISHED"
-      - actor_id: "target"
+      - actor_id: "switch"
         layers:
           - layer: 4
             state_fields:
-              tcp_state: "ESTABLISHED"
+              cdc_tcp_state: "ESTABLISHED"
 
   # ── Phase: NVMe-oF/TCP Initialization to CDC ──
   - id: "evt_icreq_cdc"
@@ -2245,11 +2247,11 @@ timeline:
           - layer: 5
             state_fields:
               tcp_transport_state: "connected"
-      - actor_id: "target"
+      - actor_id: "switch"
         layers:
           - layer: 5
             state_fields:
-              tcp_transport_state: "connected"
+              cdc_transport_state: "connected"
 
   # ── Phase: Fabrics Connect to CDC ──
   - id: "evt_fabrics_connect_cdc"
@@ -2289,11 +2291,11 @@ timeline:
             state_fields:
               fabrics_state: "connected"
               cntlid: "65"
-      - actor_id: "target"
+      - actor_id: "switch"
         layers:
           - layer: 6
             state_fields:
-              fabrics_state: "connected"
+              cdc_fabrics_state: "connected"
               assigned_cntlid: "65"
 
   # ── Phase: DIM Registration ──
@@ -2335,7 +2337,7 @@ timeline:
           - layer: 6
             state_fields:
               fabrics_state: "registered"
-      - actor_id: "target"
+      - actor_id: "switch"
         layers:
           - layer: 7
             state_fields:
@@ -2422,10 +2424,6 @@ timeline:
           - layer: 4
             state_fields:
               tcp_state: "SYN_RCVD"
-              listen_port: 4420
-          - layer: 6
-            state_fields:
-              controller_type: "IOC"
 
   - id: "evt_tcp_ack_ioc"
     type: "frame_tx"
