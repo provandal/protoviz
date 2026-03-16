@@ -8,125 +8,96 @@
 
 ## Phase 1 — Foundation
 
-These unblock everything else. No user-facing features ship without these.
-
 ### 1.1 Project Scaffolding & Build System
 - **Priority:** P0
-- **Status:** planned
-- **Description:** Set up Vite + React project structure. Split `ProtoViz.jsx`
-  (903 lines) into proper components: `OsiStack`, `SequenceDiagram`,
-  `PacketInspector`, `PlaybackControls`, `ScenarioLoader`, `App`. Add
-  `package.json`, dev server, and production build.
-- **Why first:** Nothing else can ship without a build system.
+- **Status:** done
+- **Description:** Vite + React project with Zustand state management. Monolithic
+  `ProtoViz.jsx` (903 lines) split into 12+ components: `OsiStack`,
+  `SequenceDiagram`, `PacketInspector`, `HeaderBlock`, `PacketField`,
+  `PlaybackControls`, `EventDetail`, `ActorHeaders`, `SwitchFooter`,
+  `SplitLayout`, `BottomPane`, `PopoutView`, and `ProtoVizViewer` orchestrator.
 
 ### 1.2 GitHub Pages Deployment
 - **Priority:** P0
-- **Status:** planned
-- **Description:** GitHub Actions workflow to build and deploy to GitHub Pages
-  on push to `main`. Target URL: `https://<user>.github.io/ProtoViz/`.
-- **Depends on:** 1.1
+- **Status:** done
+- **Description:** GitHub Actions workflow builds and deploys to GitHub Pages
+  on push to `main`. Live at `https://provandal.github.io/protoviz/`.
 
-### 1.3 License Change — MIT + Attribution
+### 1.3 License — MIT + Attribution
 - **Priority:** P0
-- **Status:** planned
-- **Description:** Replace dual license (Apache+Commons Clause / CC BY 4.0)
-  with single MIT license. Required attribution in LICENSE, README, and app
-  footer/about panel:
-  - **Creator:** Erik Smith (with LinkedIn URL)
-  - **Contributors:** Claude.AI and Claude Code (Anthropic)
-  - **Affiliation:** Dell; Chair, SNIA Data, Storage & Networking (DSN) Community
-- **Why early:** Must be settled before attracting contributors.
+- **Status:** done
+- **Description:** MIT license with attribution to Erik Smith (Distinguished
+  Engineer - Dell Technologies) and AI contributors (Claude.AI, Claude Code
+  by Anthropic). Attribution in LICENSE, README, and app footer.
 
 ### 1.4 Dynamic Scenario Loading
 - **Priority:** P0
-- **Status:** planned
-- **Description:** Decouple scenario data from the viewer component. Viewer
-  fetches scenario YAML/JSON files at runtime (from `/scenarios/` directory or
-  via URL parameter). Enables multiple scenarios without rebuilding.
-- **Depends on:** 1.1
+- **Status:** done
+- **Description:** Scenarios loaded at runtime from YAML files in
+  `public/scenarios/`. `useScenario` hook fetches, parses (js-yaml), and
+  normalizes into internal format. Manifest-based discovery via `index.json`.
 
 ---
 
 ## Phase 2 — Core User Experience
 
-The features that make ProtoViz usable and shareable as a standalone tool.
-
 ### 2.1 Scenario Gallery / Landing Page
 - **Priority:** P1
-- **Status:** planned
-- **Description:** Index page listing available scenarios. Browse by protocol,
-  difficulty, tags. Card-based layout with scenario metadata (title, protocol,
-  description, difficulty, author). Click to open viewer.
-- **Depends on:** 1.4
+- **Status:** done
+- **Description:** Card-based gallery at root route. Filterable by protocol
+  family, difficulty, and full-text search across title/description/tags.
+  Responsive grid layout. Two scenarios currently: RoCEv2 and FC Fabric Login.
 
 ### 2.2 Shareable URLs (Deep Links)
 - **Priority:** P1
-- **Status:** planned
-- **Description:** URL routing so users can link to a specific scenario at a
-  specific step. Format: `#/scenario-slug/step/12`. Paste in Slack, docs, or
-  email and the recipient lands exactly where you intended.
-- **Why:** This is how tools go viral in engineering teams.
-- **Depends on:** 1.4
+- **Status:** done
+- **Description:** HashRouter routes: `/#/:scenarioSlug/step/:stepNum`.
+  URL syncs bidirectionally with viewer step. 1-indexed in URL for
+  human-friendly sharing.
 
 ### 2.3 Responsive Design & Mobile Support
 - **Priority:** P1
-- **Status:** planned
-- **Description:** Ensure the viewer is usable on tablets and large phones.
-  Collapse the three-column layout to stacked/tabbed on smaller screens.
-  The OSI stack and packet inspector can be toggled panels on mobile.
-- **Depends on:** 1.1
+- **Status:** in-progress
+- **Description:** Flexbox layout with resizable split panes. Gallery uses
+  responsive grid. Desktop experience is solid; tablet/mobile collapse logic
+  and touch interactions still needed.
 
 ### 2.4 Keyboard Navigation & Accessibility
 - **Priority:** P1
-- **Status:** planned
-- **Description:** Arrow keys for step forward/back, spacebar for play/pause,
-  Escape to close packet inspector. ARIA labels on interactive elements.
-  Screen reader support for sequence diagram events.
-- **Depends on:** 1.1
+- **Status:** done
+- **Description:** `useKeyboardNav` hook: Arrow keys (step), Space (play/pause),
+  Home/End (first/last step), numpad 1-4 (tab switching). Ignores input when
+  typing in form fields.
 
 ---
 
 ## Phase 3 — Annotations & Community
 
-Features that transform ProtoViz from a viewer into a collaborative learning
-platform.
-
 ### 3.1 Local Annotations
 - **Priority:** P1
-- **Status:** planned
-- **Description:** Users can add personal notes to any timeline step or packet
-  field. Stored in `localStorage`. Exportable/importable as JSON. Useful for
-  instructors preparing a lesson or engineers bookmarking key moments.
-- **Depends on:** 1.4
+- **Status:** done
+- **Description:** `useAnnotations` hook stores notes per step in
+  `localStorage` keyed by scenario slug. Export/import as JSON. Displayed
+  in the Explain tab with inline edit UI.
 
 ### 3.2 Community Notes
 - **Priority:** P2
 - **Status:** planned
-- **Description:** Shared annotation layer — anyone can submit a note on a
-  step/field (like X/Twitter Community Notes). Requires a lightweight backend
-  or GitHub-based storage (e.g., GitHub Discussions API or a JSON file in the
-  repo updated via PR). Moderation workflow needed.
-- **Options:**
-  - GitHub Discussions integration (free, no backend)
-  - Lightweight serverless API (Cloudflare Workers / Netlify Functions)
-  - JSON files in repo with PR-based contribution (fully static)
-- **Depends on:** 3.1
+- **Description:** Shared annotation layer via GitHub Discussions API.
+  Public read (no auth), GitHub auth to post. Structured metadata header
+  links notes to specific scenario/step/field.
 
 ### 3.3 Guided Walkthroughs / Tutorial Mode
 - **Priority:** P2
 - **Status:** planned
-- **Description:** Authors can define a "guided path" through a scenario with
-  callouts: "Notice this field..." / "This is where the handshake completes."
-  Stored as an overlay in the scenario YAML. Supports step-by-step narration.
-- **Depends on:** 1.4
+- **Description:** Authors define guided paths in scenario YAML. Step-by-step
+  narration with callouts. Overlay UI for guided navigation.
 
 ### 3.4 Quiz / Assessment Mode
 - **Priority:** P3
 - **Status:** planned
-- **Description:** Interactive questions embedded in scenarios: "What layer
-  does this event happen at?", "What will the target respond with?", "What's
-  wrong with this field value?" Useful for certification prep, onboarding,
-  university courses.
+- **Description:** Interactive questions embedded in scenarios. Multiple choice
+  or free-form at specific steps. Score tracking in localStorage.
 - **Depends on:** 3.3
 
 ---
@@ -137,186 +108,176 @@ The diagnostic engine — turns ProtoViz from educational to operational.
 
 ### 4.1 Client-Side PCAP Parser
 - **Priority:** P2
-- **Status:** planned
-- **Description:** In-browser PCAP/PCAPng parsing using JavaScript (e.g.,
-  `pcap-parser` or custom WebAssembly module). Extracts packet headers into
-  structured format without uploading data anywhere. Privacy-first: all
-  parsing happens locally.
-- **Depends on:** 1.1
+- **Status:** done
+- **Description:** Custom JS parser supporting both PCAP and pcapng formats.
+  Magic-byte-based format detection (not file extension). Dissector pipeline:
+  Ethernet → IPv4 → TCP/UDP → RoCEv2 (BTH/RETH/AETH). Also supports
+  `tshark -T json` import for full Wireshark dissection of 3000+ protocols.
+  UTF-16 BOM handling for PowerShell output. Privacy-first: all parsing
+  happens locally in the browser.
 
 ### 4.2 Rule-Based Spec Compliance Checker
 - **Priority:** P2
-- **Status:** planned
-- **Description:** State machine engine that validates protocol exchanges
-  against spec rules:
-  - PSN sequencing (gaps, duplicates, wrapping)
-  - QP state machine transitions (RESET→INIT→RTR→RTS)
-  - CM handshake completeness (REQ→REP→RTU)
-  - Required field values (opcode validity, key authorization)
-  - Timeout violations (CM timeouts, retry limits)
-  - PFC/ECN consistency
-  Rules are defined declaratively (JSON/YAML) so they can be extended per
-  protocol.
-- **Depends on:** 4.1
+- **Status:** done
+- **Description:** Declarative JSON rule engine with four rule types:
+  `field_value`, `psn_sequence`, `tcp_flag_present`, `sequence_pattern`.
+  Rules in `public/rules/roce-v2.json`. Clickable findings navigate to
+  the flagged packet. Returns structured findings with severity, packet
+  index, description, and spec references.
 
-### 4.3 AI-Powered Deep Analysis (Hybrid Option B)
+### 4.3 AI-Powered Trace Analysis
+- **Priority:** P2
+- **Status:** done
+- **Description:** Two AI chat integrations:
+  - **Scenario Chat:** context-aware chat per step with spec/kernel references
+  - **Trace Chat:** PCAP troubleshooter chat with full trace summary context
+    (protocol breakdown, endpoints, findings, selected packet details)
+  User-provided API key (stored in localStorage). Model selection
+  (Sonnet/Opus/Haiku). Streaming responses with abort control.
+
+### 4.4 ULP Payload Dissection
+- **Priority:** P2
+- **Status:** done
+- **Description:** Captures first 64 bytes of payload after transport headers.
+  Protocol-specific dissectors for iSCSI (BHS, CDB, SCSI status),
+  NVMe-oF/TCP (PDU type, NVMe opcode), TLS (version, handshake type),
+  HTTP (method, URI, status), and DNS (query/response, domain name).
+  Falls back to hex dump + ASCII for unrecognized protocols.
+
+### 4.5 Conversation-to-Scenario Conversion
+- **Priority:** P2
+- **Status:** done
+- **Description:** Right-click any packet in the troubleshooter to extract
+  the full conversation between two endpoints. Filters by IP pair, infers
+  phases (TCP Handshake/Data/Teardown, RDMA operations), generates labels,
+  and converts to a ProtoViz scenario viewable in the interactive viewer.
+
+### 4.6 Comparison Mode
 - **Priority:** P2
 - **Status:** planned
-- **Description:** Optional "Deep Analysis" button. Browser sends structured
-  (not raw) packet summary to Claude API. Claude identifies:
-  - Spec violations with specific section references
-  - Interop mismatches (both sides compliant but incompatible behavior)
-  - Performance issues (excessive retries, suboptimal MTU, missing ECN)
-  - Suggested fixes with kernel/driver configuration references
-  User provides their own API key or uses a future ProtoViz API proxy.
-  Clear consent UX before any data leaves the browser.
-- **Depends on:** 4.1, 4.2
-
-### 4.4 Troubleshooter Results Visualization
-- **Priority:** P2
-- **Status:** planned
-- **Description:** Display analysis results as an annotated scenario. The
-  uploaded trace becomes a ProtoViz scenario with diagnostic overlays:
-  red highlights on violations, warning icons on interop issues, green
-  checkmarks on compliant exchanges. Users can step through their own
-  trace the same way they explore reference scenarios.
-- **Depends on:** 4.3, 1.4
-
-### 4.5 Comparison Mode
-- **Priority:** P2
-- **Status:** planned
-- **Description:** Side-by-side view of two scenarios — e.g., reference
-  (working) vs. uploaded trace (broken). Highlights divergence points.
-  "Here's where your connection went wrong compared to the reference."
-- **Depends on:** 4.4
+- **Description:** Side-by-side view of two scenarios — reference (working)
+  vs. uploaded trace (broken). Highlights divergence points.
 
 ---
 
 ## Phase 5 — AI Agent Integration
 
-Making ProtoViz useful for AI agents, not just humans.
-
 ### 5.1 MCP Server (Model Context Protocol)
 - **Priority:** P2
-- **Status:** planned
-- **Description:** Expose ProtoViz scenarios as an MCP server. AI agents can
-  query protocol knowledge contextually:
-  - List available protocols and scenarios
-  - Query field definitions, valid values, state machines
-  - Look up spec references for a given header/field
-  - Retrieve expected packet sequences for an operation
-  Runs as a local MCP server or hosted service.
-- **Depends on:** 1.4
+- **Status:** done
+- **Description:** MCP server in `mcp/` exposing six tools: `list_protocols`,
+  `get_scenario_timeline`, `lookup_field`, `get_spec_reference`,
+  `get_state_machine`, `get_expected_sequence`. Plus scenario resources
+  via `scenario://` URI scheme. Zod schema validation.
 
 ### 5.2 Agent-Consumable Troubleshooter API
 - **Priority:** P3
 - **Status:** planned
-- **Description:** REST/JSON API for the troubleshooter. An AI agent managing
-  infrastructure can submit a PCAP programmatically and receive structured
-  findings: spec violations, state machine errors, interop mismatches — all
-  with spec references and suggested fixes. Could run as a serverless
-  function or container.
-- **Depends on:** 4.3
+- **Description:** REST/JSON API wrapping the rule engine + AI analysis.
+  Serverless function for programmatic PCAP submission and structured
+  findings retrieval.
 
 ### 5.3 Protocol Knowledge Base for RAG
 - **Priority:** P3
 - **Status:** planned
-- **Description:** Package scenario files as optimized RAG documents for AI
-  coding assistants. An agent helping someone write RDMA code can pull in the
-  exact field layout, kernel function reference, and spec section. Publish
-  as a structured dataset or API endpoint.
-- **Depends on:** 1.4
+- **Description:** Package scenario files as optimized RAG documents for
+  AI coding assistants. Structured dataset or API endpoint.
 
 ### 5.4 Live Scenario Generation by Agents
 - **Priority:** P3
 - **Status:** planned
-- **Description:** AI agents monitoring networks generate ProtoViz scenarios
-  from live or captured traffic. Creates a living library of real-world
-  protocol exchanges that humans can review. Extends converter.py into an
-  agent-callable service.
-- **Depends on:** 4.1, 5.2
+- **Description:** AI agents generate ProtoViz scenarios from live or
+  captured traffic. Extends converter.py into an agent-callable service.
 
 ---
 
 ## Phase 6 — Ecosystem & Reach
 
-Features that extend ProtoViz beyond the main site.
+### 6.1 AI-Powered Scenario Creator
+- **Priority:** P2
+- **Status:** done
+- **Description:** `ScenarioCreator` page where users describe a protocol
+  exchange in natural language and Claude generates valid scenario YAML.
+  Example prompts provided. Lowers the contribution barrier — no need to
+  hand-write YAML.
 
-### 6.1 Embeddable Widget
+### 6.2 Embeddable Widget
 - **Priority:** P2
 - **Status:** planned
 - **Description:** `<iframe>` embed code for any scenario (optionally locked
-  to a step range). Blog authors, vendor docs, and training courses can embed
-  interactive protocol visualizations inline. Compact mode with reduced chrome.
-- **Depends on:** 2.2
-
-### 6.2 Vendor-Specific Behavior Annotations
-- **Priority:** P2
-- **Status:** planned
-- **Description:** Annotate where NIC implementations diverge from each other
-  (ConnectX, E810, EFA, etc.) — not just from the spec. Schema extension for
-  `vendor_notes` on fields. Leverages Erik's cross-vendor visibility from
-  Dell/SNIA position.
-- **Depends on:** 1.4
+  to a step range). Compact mode with reduced chrome for embedding in
+  blog posts, vendor docs, and training courses.
 
 ### 6.3 Additional Protocol Scenarios
 - **Priority:** P2 (ongoing)
-- **Status:** planned
-- **Description:** Expand scenario library:
+- **Status:** in-progress
+- **Description:** Expand scenario library. Completed:
+  - RoCEv2 RC Connection with RDMA Write/Read
+  - Fibre Channel Fabric Login with SCSI I/O
+  Planned:
   - NVMe-oF over TCP
   - NVMe-oF over RDMA (RoCEv2)
   - iWARP
-  - TCP (deep dive: congestion control, retransmission)
-  - InfiniBand (native, non-RoCE)
-  - PFC / ECN / DCQCN (congestion management deep dive)
+  - TCP deep dive (congestion control, retransmission)
+  - Native InfiniBand
+  - PFC / ECN / DCQCN
   - ARP / NDP
-  - BGP / OSPF (stretch goal)
 
-### 6.4 Scenario Authoring Tool
-- **Priority:** P3
+### 6.4 Vendor-Specific Behavior Annotations
+- **Priority:** P2
 - **Status:** planned
-- **Description:** Visual editor for creating scenarios without hand-writing
-  YAML. Drag-and-drop actors, define events, add field annotations. Lowers
-  the contribution barrier significantly. Could be a separate page on the
-  same GitHub Pages site.
-- **Depends on:** 1.4, scenario.schema.json
+- **Description:** Schema extension for `vendor_notes` on fields. Annotate
+  where NIC implementations diverge from each other and from the spec.
 
 ### 6.5 Print / Export Mode
 - **Priority:** P3
 - **Status:** planned
-- **Description:** Export a scenario (or a step range) as a PDF or set of
-  images for use in slide decks, printed training materials, or
-  documentation. Renders the sequence diagram and packet details as
-  static images.
-- **Depends on:** 1.1
+- **Description:** Export a scenario or step range as PDF/images for slide
+  decks, printed training materials, or documentation.
+
+### 6.6 Pop-Out Detail Panel
+- **Priority:** P1
+- **Status:** done
+- **Description:** Detail panel (Explain, Inspect, Chat, About tabs) can be
+  popped out to a separate window via `usePopout` hook. Two-way
+  BroadcastChannel sync for step changes, tab switches, and chat messages.
+
+### 6.7 Resizable Split Layout
+- **Priority:** P1
+- **Status:** done
+- **Description:** `SplitLayout` component with mouse-drag resize between
+  top (visualization) and bottom (detail) panes. Constrained 20-85%.
+  Position persisted in Zustand store.
 
 ---
 
 ## Dependency Graph (simplified)
 
 ```
-1.1 Scaffolding
- ├── 1.2 GitHub Pages
- ├── 1.3 License
- ├── 1.4 Dynamic Loading
- │    ├── 2.1 Gallery
- │    ├── 2.2 Deep Links
- │    ├── 3.1 Local Annotations → 3.2 Community Notes
+1.1 Scaffolding ✓
+ ├── 1.2 GitHub Pages ✓
+ ├── 1.3 License ✓
+ ├── 1.4 Dynamic Loading ✓
+ │    ├── 2.1 Gallery ✓
+ │    ├── 2.2 Deep Links ✓
+ │    ├── 3.1 Local Annotations ✓ → 3.2 Community Notes
  │    ├── 3.3 Walkthroughs → 3.4 Quiz Mode
- │    ├── 5.1 MCP Server
+ │    ├── 5.1 MCP Server ✓
  │    ├── 5.3 RAG Knowledge Base
- │    ├── 6.2 Vendor Annotations
- │    ├── 6.3 Protocol Scenarios
- │    └── 6.4 Authoring Tool
- ├── 2.3 Responsive Design
- ├── 2.4 Accessibility
- ├── 4.1 PCAP Parser
- │    ├── 4.2 Rule Checker
- │    │    └── 4.3 AI Analysis
- │    │         ├── 4.4 Results Viz → 4.5 Comparison Mode
+ │    ├── 6.3 Protocol Scenarios (in-progress)
+ │    ├── 6.4 Vendor Annotations
+ │    └── 6.1 Scenario Creator ✓
+ ├── 2.3 Responsive Design (in-progress)
+ ├── 2.4 Accessibility ✓
+ ├── 4.1 PCAP Parser ✓
+ │    ├── 4.2 Rule Checker ✓
+ │    │    └── 4.3 AI Analysis ✓
+ │    │         ├── 4.4 ULP Dissection ✓
+ │    │         ├── 4.5 Conversation→Scenario ✓
+ │    │         ├── 4.6 Comparison Mode
  │    │         └── 5.2 Agent API → 5.4 Live Generation
  │    └── 5.4 Live Generation
  └── 6.5 Print/Export
 
-2.2 Deep Links → 6.1 Embeddable Widget
+2.2 Deep Links ✓ → 6.2 Embeddable Widget
 ```
