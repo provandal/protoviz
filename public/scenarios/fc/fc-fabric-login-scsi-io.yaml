@@ -1,0 +1,2401 @@
+meta:
+  id: "fc-fabric-login-scsi-io"
+  title: "FC Fabric Login → Name Server Discovery → SCSI Write & Read"
+  protocol: "Fibre Channel"
+  protocol_family: "FC"
+  version: "1.0.0"
+  description: >
+    A complete Fibre Channel SAN login sequence over 32GFC, from physical link
+    establishment through Fabric Login (FLOGI), Name Server discovery, Port Login
+    (PLOGI), Process Login (PRLI) for FCP, SCSI LUN discovery via INQUIRY and
+    READ CAPACITY, followed by a SCSI WRITE(10) and READ(10) to verify the write.
+    The host connects to an FC switch running embedded Name Server and fabric services,
+    which routes frames to a storage array. Frame fields are annotated with T11/INCITS
+    spec references (FC-FS, FC-LS, FC-GS, FCP-4) and Linux kernel source cross-links
+    (drivers/scsi/lpfc, drivers/scsi/qla2xxx).
+
+  learning_objectives:
+    - "Understand how FC physical links come up independently (host↔switch, switch↔storage)"
+    - "Trace the FLOGI exchange: host requests fabric login, switch assigns an N_Port ID (FCID)"
+    - "Follow Name Server queries to discover available targets via GID_FT"
+    - "Observe port-level login (PLOGI) and process-level login (PRLI) for FCP"
+    - "See how SCSI commands are encapsulated in FCP frames (FCP_CMND, FCP_DATA, FCP_RSP)"
+    - "Understand the FCP_XFER_RDY handshake required for SCSI WRITE operations"
+    - "Compare FC's own layer model (FC-0 through FC-4) to the OSI stack"
+
+  difficulty: "advanced"
+
+  authors:
+    - name: "Erik Smith"
+      org: "Dell Technologies"
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+
+  created: "2026-03-15"
+  updated: "2026-03-15"
+
+  tags:
+    - "Fibre Channel"
+    - "FC"
+    - "SAN"
+    - "SCSI"
+    - "FCP"
+    - "FLOGI"
+    - "PLOGI"
+    - "32GFC"
+    - "Name Server"
+    - "education"
+
+  primary_specs:
+    - document: "FC-FS-5"
+      section: "1"
+      title: "Fibre Channel — Framing and Signaling"
+      url: "https://www.t11.org/fcSite/fcretr.html"
+    - document: "FC-LS-4"
+      section: "1"
+      title: "Fibre Channel — Link Services"
+      url: "https://www.t11.org/fcSite/fcretr.html"
+    - document: "FC-GS-8"
+      section: "1"
+      title: "Fibre Channel — Generic Services (Name Server)"
+      url: "https://www.t11.org/fcSite/fcretr.html"
+    - document: "FCP-4"
+      section: "1"
+      title: "Fibre Channel Protocol for SCSI"
+      url: "https://www.t11.org/fcSite/fcretr.html"
+    - document: "SPC-6"
+      section: "1"
+      title: "SCSI Primary Commands"
+      url: "https://www.t10.org/"
+
+  source_references:
+    - repo: "torvalds/linux"
+      path: "drivers/scsi/lpfc/lpfc_els.c"
+      description: "Emulex/Broadcom lpfc — FLOGI, PLOGI, PRLI ELS handling"
+    - repo: "torvalds/linux"
+      path: "drivers/scsi/qla2xxx/qla_init.c"
+      description: "QLogic/Marvell qla2xxx — fabric login and target discovery"
+    - repo: "torvalds/linux"
+      path: "drivers/scsi/lpfc/lpfc_ct.c"
+      description: "lpfc — Name Server CT request handling (GID_FT, GPN_ID)"
+    - repo: "torvalds/linux"
+      path: "drivers/scsi/scsi_scan.c"
+      description: "SCSI midlayer — LUN discovery via INQUIRY and REPORT LUNS"
+
+  content_disclaimer: >
+    Protocol descriptions in this scenario are based on open-source implementations
+    (Linux kernel, open-fc) and publicly available T11/INCITS standards summaries.
+    No proprietary specification text has been reproduced. Spec references are
+    provided as citations for further reading.
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "initiator"
+      type: "initiator"
+      label: "Host (Initiator HBA)"
+      description: "FC initiator — Linux host with dual-port 32GFC HBA running lpfc or qla2xxx driver"
+      hardware: "Broadcom LPe36002 32GFC HBA"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "FC Switch"
+      description: "32GFC FC switch with embedded Name Server, zoning, and FCID assignment"
+      hardware: "Brocade G720 FC Switch"
+      position: "center"
+
+    - id: "target"
+      type: "target"
+      label: "Storage Array (Target)"
+      description: "FC storage array presenting SCSI LUNs over FCP"
+      hardware: "Dell PowerStore 32GFC"
+      position: "right"
+
+  links:
+    - id: "link-host-sw"
+      from: "initiator"
+      to: "switch"
+      speed_gbps: 32
+      media: "fiber_sfp28"
+      fec: "RS-FEC"
+    - id: "link-sw-stor"
+      from: "switch"
+      to: "target"
+      speed_gbps: 32
+      media: "fiber_sfp28"
+      fec: "RS-FEC"
+
+# ─────────────────────────────────────────────────────────────────
+# LAYER DEFINITIONS (per actor)
+# FC uses FC-0 through FC-4 rather than the OSI model.
+# Mapped to viewer layers 1-7 for display.
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  initiator:
+    - layer: 7
+      name: "SCSI / Block Device"
+      components: ["scsi_mod", "sd_mod", "scsi_scan.c", "block layer"]
+      state_schema:
+        scsi_state:
+          type: "string"
+          description: "SCSI host adapter state"
+          initial: "offline"
+        lun_count:
+          type: "integer"
+          description: "Number of discovered LUNs"
+          initial: 0
+        last_cmd:
+          type: "string"
+          description: "Last SCSI command issued"
+          initial: "none"
+
+    - layer: 6
+      name: "FCP-4 (FC-4 ULP)"
+      components: ["lpfc_scsi.c", "FCP command/response mapping"]
+      state_schema:
+        fcp_state:
+          type: "string"
+          description: "FCP process login state with target"
+          initial: "none"
+        io_tag:
+          type: "string"
+          description: "Current FCP I/O tag (OX_ID)"
+          initial: "null"
+
+    - layer: 5
+      name: "FC-2 Exchanges"
+      components: ["lpfc_sli.c", "exchange management", "sequence control"]
+      state_schema:
+        ox_id_next:
+          type: "string"
+          description: "Next originator exchange ID to allocate"
+          initial: "0x0001"
+        active_exchanges:
+          type: "integer"
+          description: "Number of active exchanges"
+          initial: 0
+
+    - layer: 4
+      name: "FC-2 Framing"
+      components: ["lpfc_hw.h", "frame header construction", "CRC"]
+      state_schema:
+        my_fcid:
+          type: "string"
+          description: "Assigned N_Port ID (FCID) — set by fabric during FLOGI"
+          initial: "0x000000"
+        bb_credit:
+          type: "integer"
+          description: "Buffer-to-buffer credit (frames we can send before ACK)"
+          initial: 0
+
+    - layer: 3
+      name: "FC Login / Fabric Services"
+      components: ["lpfc_els.c", "lpfc_ct.c", "FC-LS", "FC-GS"]
+      state_schema:
+        fabric_login:
+          type: "string"
+          description: "Fabric login state (FLOGI)"
+          initial: "none"
+        ns_login:
+          type: "string"
+          description: "Name Server login state"
+          initial: "none"
+        target_fcid:
+          type: "string"
+          description: "Discovered target FCID from Name Server"
+          initial: "null"
+        target_plogi:
+          type: "string"
+          description: "Port login state with target"
+          initial: "none"
+
+    - layer: 2
+      name: "FC-1 Encode"
+      components: ["64b/66b encoding", "word sync"]
+      state_schema:
+        encoding:
+          type: "string"
+          initial: "64b/66b"
+        word_sync:
+          type: "boolean"
+          initial: false
+
+    - layer: 1
+      name: "FC-0 Physical"
+      components: ["32GFC SFP28", "850nm VCSEL"]
+      state_schema:
+        phy_state:
+          type: "string"
+          description: "Physical port state (point-to-point link to switch)"
+          initial: "down"
+        speed:
+          type: "string"
+          initial: "unknown"
+        signal_detect:
+          type: "boolean"
+          initial: false
+
+  target:
+    - layer: 7
+      name: "SCSI Target / LUNs"
+      components: ["SCSI target mode", "block storage backend"]
+      state_schema:
+        target_state:
+          type: "string"
+          initial: "online"
+        luns_exported:
+          type: "integer"
+          description: "Number of LUNs presented to fabric"
+          initial: 1
+        last_cmd_received:
+          type: "string"
+          initial: "none"
+
+    - layer: 6
+      name: "FCP-4 (FC-4 ULP)"
+      components: ["FCP target processing", "XFER_RDY generation"]
+      state_schema:
+        fcp_state:
+          type: "string"
+          initial: "none"
+
+    - layer: 5
+      name: "FC-2 Exchanges"
+      components: ["exchange management"]
+      state_schema:
+        active_exchanges:
+          type: "integer"
+          initial: 0
+
+    - layer: 4
+      name: "FC-2 Framing"
+      components: ["frame header", "CRC"]
+      state_schema:
+        my_fcid:
+          type: "string"
+          description: "Storage array FCID (pre-assigned by fabric)"
+          initial: "0x010200"
+        bb_credit:
+          type: "integer"
+          initial: 16
+
+    - layer: 3
+      name: "FC Login State"
+      components: ["FC-LS", "ELS handling"]
+      state_schema:
+        fabric_login:
+          type: "string"
+          initial: "complete"
+        host_plogi:
+          type: "string"
+          description: "Port login state with initiator host"
+          initial: "none"
+
+    - layer: 2
+      name: "FC-1 Encode"
+      components: ["64b/66b encoding"]
+      state_schema:
+        encoding:
+          type: "string"
+          initial: "64b/66b"
+
+    - layer: 1
+      name: "FC-0 Physical"
+      components: ["32GFC SFP28"]
+      state_schema:
+        phy_state:
+          type: "string"
+          description: "Physical port state (point-to-point link to switch)"
+          initial: "down"
+        speed:
+          type: "string"
+          initial: "unknown"
+        signal_detect:
+          type: "boolean"
+          initial: false
+
+  switch:
+    - layer: 3
+      name: "Fabric Services"
+      components: ["Name Server", "FCID assignment", "Zone enforcement"]
+      state_schema:
+        ns_entries:
+          type: "integer"
+          description: "Number of entries in Name Server database"
+          initial: 1
+        zone_active:
+          type: "string"
+          description: "Active zone set name"
+          initial: "prod_zone_cfg"
+        fcid_pool_next:
+          type: "string"
+          description: "Next FCID to assign"
+          initial: "0x010100"
+    - layer: 2
+      name: "FC Frame Forwarding"
+      components: ["D_ID routing", "BB_Credit management"]
+      state_schema:
+        fwd_table_entries:
+          type: "integer"
+          description: "FCIDs in routing table"
+          initial: 1
+        port_a_bb_credit:
+          type: "integer"
+          description: "BB_Credit available toward host"
+          initial: 16
+        port_b_bb_credit:
+          type: "integer"
+          description: "BB_Credit available toward storage"
+          initial: 16
+    - layer: 1
+      name: "FC-0 Physical (per-port)"
+      components: ["32GFC SFP28"]
+      state_schema:
+        port_a_phy:
+          type: "string"
+          description: "Physical state of port facing host"
+          initial: "down"
+        port_b_phy:
+          type: "string"
+          description: "Physical state of port facing storage"
+          initial: "down"
+
+# ─────────────────────────────────────────────────────────────────
+# FRAME LIBRARY
+# ─────────────────────────────────────────────────────────────────
+frames:
+
+  # ── FLOGI ─────────────────────────────────────────────────────
+  - id: "flogi"
+    name: "FLOGI (Fabric Login)"
+    description: >
+      Host sends Fabric Login to well-known address 0xFFFFFE (Fabric Controller).
+      S_ID is 0x000000 because the host has no FCID yet.
+      Linux: lpfc_els.c lpfc_issue_els_flogi()
+    from: "initiator"
+    to: "switch"
+    timestamp_ns: 5000000
+    total_bytes: 148
+    color: "#d97706"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 4
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x22"
+            description: "Unsolicited Control — ELS request frame"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.3"
+                title: "R_CTL field encoding"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0xFFFFFE"
+            description: "Well-known address for Fabric Controller. FLOGI always goes here."
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "15.2"
+                title: "Well-known address identifiers"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-specific control"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x000000"
+            description: "Source ID is 0x000000 — host has no FCID assigned yet"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.7"
+                title: "TYPE field — protocol type identifier"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x290000"
+            description: "Exchange originator, first+last sequence, sequence initiative"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.5"
+                title: "F_CTL — Frame Control"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0001"
+            description: "Originator Exchange ID — tracks this FLOGI exchange"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.10"
+                title: "OX_ID and RX_ID — Exchange identification"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — 0xFFFF means unassigned (fabric will assign)"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for ELS frames"
+      - name: "FLOGI Payload (ELS)"
+        abbrev: "fc.els.flogi"
+        layer: 3
+        total_bytes: 116
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x04000000"
+            description: "0x04 = FLOGI command code"
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "5.3"
+                title: "FLOGI — Fabric Login"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "Common Service Parameters"
+            abbrev: "fc.els.csp"
+            bits: 128
+            value: "BB_Credit=16, Recv_Size=2112"
+            description: "Includes BB_Credit offered (16), max receive data field size (2112 bytes), E_D_TOV"
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "5.3.3"
+                title: "Common Service Parameters"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+            kernel_ref:
+              file: "drivers/scsi/lpfc/lpfc_els.c"
+              function: "lpfc_issue_els_flogi"
+              notes: "Sets BB_Credit, data field size, and feature bits in FLOGI payload"
+          - name: "Port Name (WWPN)"
+            abbrev: "fc.els.wwpn"
+            bits: 64
+            value: "21:00:00:0e:1e:12:34:56"
+            description: "World Wide Port Name — globally unique 64-bit identifier for this HBA port"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "15.3"
+                title: "Name_Identifier format"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "Node Name (WWNN)"
+            abbrev: "fc.els.wwnn"
+            bits: 64
+            value: "20:00:00:0e:1e:12:34:56"
+            description: "World Wide Node Name — identifies the physical node (may have multiple ports)"
+          - name: "Class 3 Service Parameters"
+            abbrev: "fc.els.class3"
+            bits: 128
+            value: "Class 3 supported"
+            description: "Class 3 (connectionless, no confirmation) — the standard FC class for modern SANs"
+
+  # ── FLOGI ACC ─────────────────────────────────────────────────
+  - id: "flogi_acc"
+    name: "FLOGI ACC (Fabric Login Accept)"
+    description: >
+      Fabric accepts login and assigns FCID 0x010100 to the host.
+      The assigned FCID becomes the host's S_ID for all subsequent frames.
+    from: "switch"
+    to: "initiator"
+    timestamp_ns: 5200000
+    total_bytes: 148
+    color: "#d97706"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 4
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x23"
+            description: "Solicited Control — ELS response (ACC)"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+            description: "Newly assigned FCID for the host — this is the fabric's answer"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0xFFFFFE"
+            description: "Fabric Controller"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+            description: "ELS"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x980000"
+            description: "Exchange responder, last sequence, end sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0001"
+            description: "Same OX_ID as the FLOGI request — correlates request and response"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0001"
+            description: "Responder Exchange ID assigned by fabric"
+      - name: "FLOGI ACC Payload"
+        abbrev: "fc.els.flogi_acc"
+        layer: 3
+        total_bytes: 116
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x02000000"
+            description: "0x02 = LS_ACC (Link Service Accept)"
+          - name: "Common Service Parameters"
+            abbrev: "fc.els.csp"
+            bits: 128
+            value: "BB_Credit=16, Recv_Size=2112"
+            description: "Fabric's service parameters including BB_Credit grant"
+          - name: "Switch WWPN"
+            abbrev: "fc.els.wwpn"
+            bits: 64
+            value: "20:01:00:05:73:01:02:03"
+            description: "Switch port's World Wide Port Name"
+
+  # ── PLOGI to Name Server ──────────────────────────────────────
+  - id: "plogi_ns"
+    name: "PLOGI to Name Server"
+    description: >
+      Host logs in to the Name Server at well-known address 0xFFFFFC.
+      Must complete PLOGI before sending CT (Common Transport) queries.
+      Linux: lpfc_ct.c lpfc_ns_cmd() — first issues PLOGI, then GID_FT.
+    from: "initiator"
+    to: "switch"
+    timestamp_ns: 6000000
+    total_bytes: 148
+    color: "#0d9488"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 4
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x22"
+            description: "Unsolicited Control — ELS request"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0xFFFFFC"
+            description: "Well-known address for Name Server (Directory Server)"
+            spec_refs:
+              - document: "FC-GS-8"
+                section: "4.2"
+                title: "Well-known addresses — Name Server"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+            description: "Host's assigned FCID (from FLOGI)"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+            description: "ELS"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0002"
+            description: "New exchange for this PLOGI"
+      - name: "PLOGI Payload"
+        abbrev: "fc.els.plogi"
+        layer: 3
+        total_bytes: 116
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x03000000"
+            description: "0x03 = PLOGI command code"
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "5.2"
+                title: "PLOGI — Port Login"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "WWPN"
+            abbrev: "fc.els.wwpn"
+            bits: 64
+            value: "21:00:00:0e:1e:12:34:56"
+            description: "Host port WWPN"
+          - name: "Class 3 Service Parameters"
+            abbrev: "fc.els.class3"
+            bits: 128
+            value: "Max concurrent sequences, open sequences"
+            description: "Negotiates class 3 parameters for subsequent communication"
+
+  # ── PLOGI ACC from Name Server ────────────────────────────────
+  - id: "plogi_ns_acc"
+    name: "PLOGI ACC from Name Server"
+    description: "Name Server accepts port login. Host can now send CT queries."
+    from: "switch"
+    to: "initiator"
+    timestamp_ns: 6100000
+    total_bytes: 148
+    color: "#0d9488"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 4
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x23"
+            description: "Solicited Control — ELS ACC"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0xFFFFFC"
+            description: "Name Server"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0002"
+      - name: "PLOGI ACC"
+        abbrev: "fc.els.plogi_acc"
+        layer: 3
+        total_bytes: 116
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x02000000"
+            description: "LS_ACC"
+
+  # ── GID_FT Request ────────────────────────────────────────────
+  - id: "gid_ft_req"
+    name: "GID_FT Request"
+    description: >
+      Host queries Name Server for all FCIDs registered as FCP (SCSI) targets.
+      GID_FT = Get Port Identifiers by FC-4 Type. This is a Common Transport (CT)
+      request, not an ELS. Linux: lpfc_ct.c lpfc_ns_cmd(SLI_CTNS_GID_FT).
+    from: "initiator"
+    to: "switch"
+    timestamp_ns: 7000000
+    total_bytes: 64
+    color: "#0d9488"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 4
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x02"
+            description: "Unsolicited Data — CT request (not ELS)"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.3"
+                title: "R_CTL encoding — Data frames"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0xFFFFFC"
+            description: "Name Server"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x20"
+            description: "0x20 = CT (Common Transport / FC-GS)"
+            spec_refs:
+              - document: "FC-GS-8"
+                section: "4.3"
+                title: "CT frame TYPE identifier"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0003"
+      - name: "CT Header + GID_FT"
+        abbrev: "fc.ct"
+        layer: 3
+        total_bytes: 24
+        fields:
+          - name: "CT Revision"
+            abbrev: "fc.ct.revision"
+            bits: 8
+            value: "0x01"
+            description: "CT IU revision"
+          - name: "GS_Type"
+            abbrev: "fc.ct.gs_type"
+            bits: 8
+            value: "0xFC"
+            description: "0xFC = Directory Service (Name Server)"
+            spec_refs:
+              - document: "FC-GS-8"
+                section: "4.3.1"
+                title: "GS_Type — service type identifier"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "GS_Subtype"
+            abbrev: "fc.ct.gs_subtype"
+            bits: 8
+            value: "0x02"
+            description: "0x02 = Name Server"
+          - name: "Command"
+            abbrev: "fc.ct.cmd"
+            bits: 16
+            value: "0x0171"
+            description: "0x0171 = GID_FT (Get Port IDs by FC-4 Type)"
+            spec_refs:
+              - document: "FC-GS-8"
+                section: "5.2.3.3"
+                title: "GID_FT — Get Port Identifiers by FC-4 Type"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+            kernel_ref:
+              file: "drivers/scsi/lpfc/lpfc_ct.c"
+              function: "lpfc_ns_cmd"
+              notes: "SLI_CTNS_GID_FT=0x0171; requests all ports supporting FC-4 type 0x08 (FCP)"
+          - name: "FC-4 Type"
+            abbrev: "fc.ct.fc4_type"
+            bits: 8
+            value: "0x08"
+            description: "0x08 = FCP (SCSI over FC) — we want to find SCSI targets"
+
+  # ── GID_FT Response ───────────────────────────────────────────
+  - id: "gid_ft_resp"
+    name: "GID_FT Response"
+    description: >
+      Name Server returns the list of FCIDs registered as FCP targets.
+      The response contains one entry: the storage array at FCID 0x010200.
+    from: "switch"
+    to: "initiator"
+    timestamp_ns: 7100000
+    total_bytes: 48
+    color: "#0d9488"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 4
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x03"
+            description: "Solicited Data — CT response"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0xFFFFFC"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x20"
+            description: "CT"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0003"
+      - name: "CT Response + Port ID List"
+        abbrev: "fc.ct.resp"
+        layer: 3
+        total_bytes: 12
+        fields:
+          - name: "CT Command/Response"
+            abbrev: "fc.ct.resp_code"
+            bits: 16
+            value: "0x8002"
+            description: "0x8002 = Accept response"
+          - name: "Port ID Entry"
+            abbrev: "fc.ct.port_id"
+            bits: 32
+            value: "0x010200"
+            description: "Storage array FCID — this is the target we need to log in to"
+
+  # ── PLOGI to Target ───────────────────────────────────────────
+  - id: "plogi_target"
+    name: "PLOGI to Target"
+    description: >
+      Host initiates Port Login with the discovered storage array.
+      PLOGI negotiates port-level parameters (BB_Credit, max frame size).
+      Linux: lpfc_els.c lpfc_issue_els_plogi()
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 8000000
+    total_bytes: 148
+    color: "#2563eb"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 4
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x22"
+            description: "Unsolicited Control — ELS"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage array FCID discovered from Name Server"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0004"
+      - name: "PLOGI Payload"
+        abbrev: "fc.els.plogi"
+        layer: 3
+        total_bytes: 116
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x03000000"
+            description: "PLOGI"
+          - name: "WWPN"
+            abbrev: "fc.els.wwpn"
+            bits: 64
+            value: "21:00:00:0e:1e:12:34:56"
+          - name: "WWNN"
+            abbrev: "fc.els.wwnn"
+            bits: 64
+            value: "20:00:00:0e:1e:12:34:56"
+
+  # ── PLOGI ACC from Target ─────────────────────────────────────
+  - id: "plogi_target_acc"
+    name: "PLOGI ACC from Target"
+    description: "Storage accepts port login. Port-level communication is established."
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 8200000
+    total_bytes: 148
+    color: "#2563eb"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 4
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x23"
+            description: "ELS ACC"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010200"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0004"
+      - name: "PLOGI ACC"
+        abbrev: "fc.els.plogi_acc"
+        layer: 3
+        total_bytes: 116
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x02000000"
+            description: "LS_ACC"
+          - name: "WWPN"
+            abbrev: "fc.els.wwpn"
+            bits: 64
+            value: "50:00:00:0e:1e:ab:cd:ef"
+            description: "Storage port WWPN"
+          - name: "WWNN"
+            abbrev: "fc.els.wwnn"
+            bits: 64
+            value: "50:00:00:0e:1e:ab:cd:00"
+            description: "Storage node WWNN"
+
+  # ── PRLI ──────────────────────────────────────────────────────
+  - id: "prli"
+    name: "PRLI (Process Login for FCP)"
+    description: >
+      Process Login establishes the FCP (SCSI) upper-layer association between
+      host and storage. PRLI carries service parameter pages that specify
+      initiator/target roles and features like confirmed completion.
+      Linux: lpfc_els.c lpfc_issue_els_prli()
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 9000000
+    total_bytes: 52
+    color: "#1e40af"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 4
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x22"
+            description: "ELS request"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0005"
+      - name: "PRLI Payload"
+        abbrev: "fc.els.prli"
+        layer: 6
+        total_bytes: 20
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x20000014"
+            description: "0x20 = PRLI, page length 0x14 (20 bytes)"
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "5.6"
+                title: "PRLI — Process Login"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "Service Parameter Page Type"
+            abbrev: "fc.els.prli.type"
+            bits: 8
+            value: "0x08"
+            description: "0x08 = FCP (SCSI). This PRLI is for the FCP-4 upper-layer protocol."
+            spec_refs:
+              - document: "FCP-4"
+                section: "5.1"
+                title: "FCP service parameter page"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "Initiator Function"
+            abbrev: "fc.els.prli.initiator"
+            bits: 1
+            value: 1
+            description: "This port is an FCP initiator (can send SCSI commands)"
+          - name: "Target Function"
+            abbrev: "fc.els.prli.target"
+            bits: 1
+            value: 0
+            description: "This port is NOT an FCP target"
+          - name: "Read XFER_RDY Disabled"
+            abbrev: "fc.els.prli.rd_xrdy_dis"
+            bits: 1
+            value: 1
+            description: "Read operations do not require XFER_RDY (data sent immediately after command)"
+          - name: "Write XFER_RDY Disabled"
+            abbrev: "fc.els.prli.wr_xrdy_dis"
+            bits: 1
+            value: 0
+            description: "Write operations DO require XFER_RDY from target before data transfer"
+
+  # ── PRLI ACC ──────────────────────────────────────────────────
+  - id: "prli_acc"
+    name: "PRLI ACC (Process Login Accept)"
+    description: >
+      Storage accepts FCP process login. The storage identifies itself as a
+      target. FCP I/O can now begin between these two ports.
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 9200000
+    total_bytes: 52
+    color: "#1e40af"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 4
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x23"
+            description: "ELS ACC"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010200"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0005"
+      - name: "PRLI ACC Payload"
+        abbrev: "fc.els.prli_acc"
+        layer: 6
+        total_bytes: 20
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x02000014"
+            description: "LS_ACC with PRLI page"
+          - name: "Initiator Function"
+            abbrev: "fc.els.prli.initiator"
+            bits: 1
+            value: 0
+            description: "Storage is NOT an initiator"
+          - name: "Target Function"
+            abbrev: "fc.els.prli.target"
+            bits: 1
+            value: 1
+            description: "Storage IS an FCP target — it presents SCSI LUNs"
+          - name: "Response Code"
+            abbrev: "fc.els.prli.resp"
+            bits: 4
+            value: "0x01"
+            description: "0x01 = Request executed (accepted)"
+
+  # ── INQUIRY ───────────────────────────────────────────────────
+  - id: "fcp_inquiry_cmd"
+    name: "FCP_CMND: INQUIRY"
+    description: >
+      SCSI INQUIRY command to discover device type and identification.
+      Encapsulated as FCP_CMND IU within an FC frame.
+      Linux: scsi_scan.c scsi_probe_lun() → INQUIRY opcode 0x12
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 10000000
+    total_bytes: 60
+    color: "#7c3aed"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 4
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x06"
+            description: "0x06 = Command — FCP_CMND (unsolicited command)"
+            spec_refs:
+              - document: "FCP-4"
+                section: "9.1"
+                title: "FCP_CMND IU"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x08"
+            description: "0x08 = FCP (SCSI over Fibre Channel)"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0010"
+            description: "Exchange ID for this SCSI I/O"
+      - name: "FCP_CMND"
+        abbrev: "fcp.cmnd"
+        layer: 6
+        total_bytes: 32
+        fields:
+          - name: "FCP_LUN"
+            abbrev: "fcp.lun"
+            bits: 64
+            value: "0x0000000000000000"
+            description: "LUN 0 — target device"
+          - name: "CDB Opcode"
+            abbrev: "fcp.cdb.opcode"
+            bits: 8
+            value: "0x12"
+            description: "0x12 = INQUIRY — discover device type and capabilities"
+            spec_refs:
+              - document: "SPC-6"
+                section: "6.7"
+                title: "INQUIRY command"
+                url: "https://www.t10.org/"
+          - name: "Allocation Length"
+            abbrev: "fcp.cdb.alloc_len"
+            bits: 16
+            value: 96
+            description: "Maximum bytes host will accept in response"
+          - name: "FCP_DL"
+            abbrev: "fcp.dl"
+            bits: 32
+            value: 96
+            description: "FCP Data Length — expected data transfer length"
+
+  # ── INQUIRY Response ──────────────────────────────────────────
+  - id: "fcp_inquiry_data"
+    name: "FCP_DATA: INQUIRY Response"
+    description: "Storage sends INQUIRY data identifying itself as a block device (SBC)."
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 10200000
+    total_bytes: 120
+    color: "#7c3aed"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 4
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x01"
+            description: "Solicited Data — FCP_DATA"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010200"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x08"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0010"
+            description: "Same exchange as INQUIRY command"
+      - name: "INQUIRY Data"
+        abbrev: "scsi.inquiry"
+        layer: 7
+        total_bytes: 96
+        fields:
+          - name: "Device Type"
+            abbrev: "scsi.inquiry.devtype"
+            bits: 5
+            value: "0x00"
+            description: "0x00 = Direct access block device (disk)"
+          - name: "Vendor Identification"
+            abbrev: "scsi.inquiry.vendor"
+            bits: 64
+            value: "DellEMC"
+            description: "Vendor string from storage array"
+          - name: "Product Identification"
+            abbrev: "scsi.inquiry.product"
+            bits: 128
+            value: "PowerStore"
+            description: "Product identification"
+
+  # ── INQUIRY FCP_RSP ───────────────────────────────────────────
+  - id: "fcp_inquiry_rsp"
+    name: "FCP_RSP: INQUIRY Good"
+    description: "Storage sends FCP_RSP confirming INQUIRY completed successfully."
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 10300000
+    total_bytes: 48
+    color: "#7c3aed"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 4
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x07"
+            description: "Command Status — FCP_RSP"
+            spec_refs:
+              - document: "FCP-4"
+                section: "9.5"
+                title: "FCP_RSP IU"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010200"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x08"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0010"
+      - name: "FCP_RSP"
+        abbrev: "fcp.rsp"
+        layer: 6
+        total_bytes: 24
+        fields:
+          - name: "SCSI Status"
+            abbrev: "fcp.rsp.status"
+            bits: 8
+            value: "0x00"
+            description: "0x00 = GOOD — INQUIRY completed successfully"
+          - name: "FCP_RESID_UNDER"
+            abbrev: "fcp.rsp.resid"
+            bits: 32
+            value: 0
+            description: "No residual — all requested data was transferred"
+
+  # ── WRITE(10) Command ─────────────────────────────────────────
+  - id: "fcp_write_cmd"
+    name: "FCP_CMND: WRITE(10)"
+    description: >
+      Host sends SCSI WRITE(10) command to write 4KB (8 blocks) at LBA 0.
+      The actual data transfer waits for FCP_XFER_RDY from the target.
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 12000000
+    total_bytes: 60
+    color: "#dc2626"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 4
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x06"
+            description: "FCP_CMND"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x08"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0020"
+      - name: "FCP_CMND"
+        abbrev: "fcp.cmnd"
+        layer: 6
+        total_bytes: 32
+        fields:
+          - name: "FCP_LUN"
+            abbrev: "fcp.lun"
+            bits: 64
+            value: "0x0000000000000000"
+            description: "LUN 0"
+          - name: "CDB Opcode"
+            abbrev: "fcp.cdb.opcode"
+            bits: 8
+            value: "0x2A"
+            description: "0x2A = WRITE(10) — write data to logical blocks"
+            spec_refs:
+              - document: "SBC-4"
+                section: "5.35"
+                title: "WRITE(10) command"
+                url: "https://www.t10.org/"
+          - name: "LBA"
+            abbrev: "fcp.cdb.lba"
+            bits: 32
+            value: 0
+            description: "Starting Logical Block Address"
+          - name: "Transfer Length"
+            abbrev: "fcp.cdb.xfer_len"
+            bits: 16
+            value: 8
+            description: "8 blocks × 512 bytes = 4096 bytes (4KB)"
+          - name: "FCP_DL"
+            abbrev: "fcp.dl"
+            bits: 32
+            value: 4096
+            description: "FCP Data Length — 4096 bytes to write"
+
+  # ── WRITE XFER_RDY ────────────────────────────────────────────
+  - id: "fcp_write_xfer_rdy"
+    name: "FCP_XFER_RDY"
+    description: >
+      Storage sends Transfer Ready, telling the host it is ready to receive
+      write data. This flow control mechanism prevents the host from flooding
+      the target before it has buffer space allocated.
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 12200000
+    total_bytes: 36
+    color: "#dc2626"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 4
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x05"
+            description: "Transfer Ready — FCP_XFER_RDY"
+            spec_refs:
+              - document: "FCP-4"
+                section: "9.3"
+                title: "FCP_XFER_RDY IU"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010200"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x08"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0020"
+      - name: "FCP_XFER_RDY"
+        abbrev: "fcp.xfer_rdy"
+        layer: 6
+        total_bytes: 12
+        fields:
+          - name: "DATA_RO"
+            abbrev: "fcp.xfer_rdy.offset"
+            bits: 32
+            value: 0
+            description: "Relative offset — start writing at byte 0"
+          - name: "BURST_LEN"
+            abbrev: "fcp.xfer_rdy.burst_len"
+            bits: 32
+            value: 4096
+            description: "Host may send up to 4096 bytes of write data"
+
+  # ── WRITE Data ─────────────────────────────────────────────────
+  - id: "fcp_write_data"
+    name: "FCP_DATA: Write Payload"
+    description: >
+      Host sends 4KB of write data to the storage. The data is sent as FCP_DATA
+      frames. For small writes like this one, a single frame suffices.
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 12400000
+    total_bytes: 4120
+    color: "#dc2626"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 4
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x01"
+            description: "Solicited Data — FCP_DATA (write direction)"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x08"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0020"
+          - name: "Parameter (Relative Offset)"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Data starts at offset 0"
+      - name: "Write Data Payload"
+        abbrev: "fcp.data"
+        layer: 7
+        total_bytes: 4096
+        fields:
+          - name: "Data"
+            abbrev: "fcp.data.payload"
+            bits: 32768
+            value: "[4096 bytes of application data]"
+            description: "Application write data — 8 blocks at LBA 0"
+
+  # ── WRITE FCP_RSP ──────────────────────────────────────────────
+  - id: "fcp_write_rsp"
+    name: "FCP_RSP: Write Good"
+    description: >
+      Storage confirms write completed successfully. SCSI status GOOD (0x00)
+      means the data has been accepted (and typically committed to non-volatile storage).
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 12800000
+    total_bytes: 48
+    color: "#dc2626"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 4
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x07"
+            description: "FCP_RSP"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010200"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x08"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0020"
+      - name: "FCP_RSP"
+        abbrev: "fcp.rsp"
+        layer: 6
+        total_bytes: 24
+        fields:
+          - name: "SCSI Status"
+            abbrev: "fcp.rsp.status"
+            bits: 8
+            value: "0x00"
+            description: "GOOD — write committed successfully"
+
+  # ── READ(10) Command ──────────────────────────────────────────
+  - id: "fcp_read_cmd"
+    name: "FCP_CMND: READ(10)"
+    description: >
+      Host sends SCSI READ(10) to read back the same 4KB that was just written.
+      No XFER_RDY is needed for reads — target sends data immediately.
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 14000000
+    total_bytes: 60
+    color: "#7c3aed"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 4
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x06"
+            description: "FCP_CMND"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x08"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0021"
+      - name: "FCP_CMND"
+        abbrev: "fcp.cmnd"
+        layer: 6
+        total_bytes: 32
+        fields:
+          - name: "FCP_LUN"
+            abbrev: "fcp.lun"
+            bits: 64
+            value: "0x0000000000000000"
+          - name: "CDB Opcode"
+            abbrev: "fcp.cdb.opcode"
+            bits: 8
+            value: "0x28"
+            description: "0x28 = READ(10) — read data from logical blocks"
+            spec_refs:
+              - document: "SBC-4"
+                section: "5.20"
+                title: "READ(10) command"
+                url: "https://www.t10.org/"
+          - name: "LBA"
+            abbrev: "fcp.cdb.lba"
+            bits: 32
+            value: 0
+            description: "Read from same LBA that was written"
+          - name: "Transfer Length"
+            abbrev: "fcp.cdb.xfer_len"
+            bits: 16
+            value: 8
+            description: "8 blocks = 4KB"
+          - name: "FCP_DL"
+            abbrev: "fcp.dl"
+            bits: 32
+            value: 4096
+
+  # ── READ Data ──────────────────────────────────────────────────
+  - id: "fcp_read_data"
+    name: "FCP_DATA: Read Payload"
+    description: >
+      Storage sends 4KB of read data. No XFER_RDY was needed — the target
+      sends FCP_DATA immediately after receiving the READ command.
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 14200000
+    total_bytes: 4120
+    color: "#7c3aed"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 4
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x01"
+            description: "Solicited Data — FCP_DATA (read direction)"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010200"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x08"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0021"
+      - name: "Read Data Payload"
+        abbrev: "fcp.data"
+        layer: 7
+        total_bytes: 4096
+        fields:
+          - name: "Data"
+            abbrev: "fcp.data.payload"
+            bits: 32768
+            value: "[4096 bytes — same data that was written]"
+            description: "Read data should match the write — verifying end-to-end data integrity"
+
+  # ── READ FCP_RSP ───────────────────────────────────────────────
+  - id: "fcp_read_rsp"
+    name: "FCP_RSP: Read Good"
+    description: "Storage confirms read completed. The 4KB read matches what was written."
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 14400000
+    total_bytes: 48
+    color: "#7c3aed"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 4
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x07"
+            description: "FCP_RSP"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010200"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x08"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0021"
+      - name: "FCP_RSP"
+        abbrev: "fcp.rsp"
+        layer: 6
+        total_bytes: 24
+        fields:
+          - name: "SCSI Status"
+            abbrev: "fcp.rsp.status"
+            bits: 8
+            value: "0x00"
+            description: "GOOD — read completed, data integrity verified"
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+
+  # ── Phase 1: Physical Link ─────────────────────────────────────
+  - id: "evt_phy_link_a"
+    type: "state_change"
+    t_ns: 0
+    annotation:
+      text: "Link A: signal detected — Host HBA ↔ Switch"
+      detail: >
+        Optical transceiver on host HBA detects light from FC switch port.
+        FC link initialization begins. Physical link is point-to-point.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 1
+            name: "FC-0 Physical"
+            state_fields:
+              phy_state: "initializing"
+              signal_detect: true
+      - actor_id: "switch"
+        layers:
+          - layer: 1
+            name: "FC-0 Physical (per-port)"
+            state_fields:
+              port_a_phy: "initializing"
+
+  - id: "evt_phy_link_b"
+    type: "state_change"
+    t_ns: 200000
+    annotation:
+      text: "Link B: signal detected — Switch ↔ Storage Array"
+      detail: "Storage array port detects light from switch. Independent physical link."
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 1
+            name: "FC-0 Physical"
+            state_fields:
+              phy_state: "initializing"
+              signal_detect: true
+      - actor_id: "switch"
+        layers:
+          - layer: 1
+            name: "FC-0 Physical (per-port)"
+            state_fields:
+              port_b_phy: "initializing"
+
+  - id: "evt_link_up_a"
+    type: "state_change"
+    t_ns: 2000000
+    annotation:
+      text: "Link A UP — Host ↔ Switch at 32GFC"
+      detail: >
+        Speed negotiation complete: 32GFC (32.0 Gbps). 64b/66b encoding active.
+        FC primitives can now be exchanged. BB_Credit flow control initialized.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 1
+            name: "FC-0 Physical"
+            state_fields:
+              phy_state: "UP"
+              speed: "32GFC"
+          - layer: 2
+            name: "FC-1 Encode"
+            state_fields:
+              word_sync: true
+      - actor_id: "switch"
+        layers:
+          - layer: 1
+            name: "FC-0 Physical (per-port)"
+            state_fields:
+              port_a_phy: "UP"
+
+  - id: "evt_link_up_b"
+    type: "state_change"
+    t_ns: 2500000
+    annotation:
+      text: "Link B UP — Switch ↔ Storage at 32GFC"
+      detail: >
+        Both physical links are now up. The switch can forward FC frames between ports.
+        Storage array was previously logged into the fabric (FCID 0x010200 pre-assigned).
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 1
+            name: "FC-0 Physical"
+            state_fields:
+              phy_state: "UP"
+              speed: "32GFC"
+          - layer: 2
+            name: "FC-1 Encode"
+            state_fields:
+              word_sync: true
+      - actor_id: "switch"
+        layers:
+          - layer: 1
+            name: "FC-0 Physical (per-port)"
+            state_fields:
+              port_b_phy: "UP"
+          - layer: 2
+            name: "FC Frame Forwarding"
+            state_fields:
+              fwd_table_entries: 1
+
+  # ── Phase 2: FLOGI ─────────────────────────────────────────────
+  - id: "evt_flogi"
+    type: "frame_tx"
+    t_ns: 5000000
+    frame_id: "flogi"
+    annotation:
+      text: "FLOGI — Host requests fabric login (S_ID=0x000000 → D_ID=0xFFFFFE)"
+      detail: >
+        The host has no FCID yet (S_ID=0x000000). It sends FLOGI to the well-known
+        Fabric Controller address (0xFFFFFE). The FLOGI carries the host's WWPN,
+        BB_Credit, and supported features. This is always the first ELS after link up.
+        Linux: lpfc_els.c lpfc_issue_els_flogi() → lpfc_cmpl_els_flogi()
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 3
+            name: "FC Login / Fabric Services"
+            state_fields:
+              fabric_login: "FLOGI_SENT"
+          - layer: 5
+            name: "FC-2 Exchanges"
+            state_fields:
+              active_exchanges: 1
+
+  - id: "evt_flogi_acc"
+    type: "frame_tx"
+    t_ns: 5200000
+    frame_id: "flogi_acc"
+    annotation:
+      text: "FLOGI ACC — Fabric assigns FCID 0x010100 to host"
+      detail: >
+        The fabric accepts the login and assigns N_Port ID 0x010100. This FCID
+        will be the host's S_ID in all subsequent frames. The fabric also returns
+        its own service parameters and BB_Credit. The host's HBA driver stores
+        the assigned FCID and configures the hardware.
+        Linux: lpfc_cmpl_els_flogi() → lpfc_vport_set_state(FC_VPORT_ACTIVE)
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 4
+            name: "FC-2 Framing"
+            state_fields:
+              my_fcid: "0x010100"
+              bb_credit: 16
+          - layer: 3
+            name: "FC Login / Fabric Services"
+            state_fields:
+              fabric_login: "complete"
+          - layer: 5
+            name: "FC-2 Exchanges"
+            state_fields:
+              active_exchanges: 0
+              ox_id_next: "0x0002"
+      - actor_id: "switch"
+        layers:
+          - layer: 3
+            name: "Fabric Services"
+            state_fields:
+              fcid_pool_next: "0x010101"
+          - layer: 2
+            name: "FC Frame Forwarding"
+            state_fields:
+              fwd_table_entries: 2
+
+  # ── Phase 3: Name Server ───────────────────────────────────────
+  - id: "evt_plogi_ns"
+    type: "frame_tx"
+    t_ns: 6000000
+    frame_id: "plogi_ns"
+    annotation:
+      text: "PLOGI to Name Server (0xFFFFFC)"
+      detail: >
+        Before querying the Name Server, the host must first PLOGI to it.
+        This establishes port-level communication parameters.
+        Linux: lpfc_ct.c lpfc_ns_cmd() calls lpfc_issue_els_plogi() to 0xFFFFFC first.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 3
+            name: "FC Login / Fabric Services"
+            state_fields:
+              ns_login: "PLOGI_SENT"
+
+  - id: "evt_plogi_ns_acc"
+    type: "frame_tx"
+    t_ns: 6100000
+    frame_id: "plogi_ns_acc"
+    annotation:
+      text: "Name Server accepts PLOGI — CT queries now permitted"
+      detail: "Name Server login complete. Host can now send Common Transport (CT) requests."
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 3
+            name: "FC Login / Fabric Services"
+            state_fields:
+              ns_login: "complete"
+
+  - id: "evt_gid_ft"
+    type: "frame_tx"
+    t_ns: 7000000
+    frame_id: "gid_ft_req"
+    annotation:
+      text: "GID_FT query — find all FCP (SCSI) targets in fabric"
+      detail: >
+        Host sends a Common Transport (CT) request to the Name Server asking for
+        all port identifiers (FCIDs) registered as FC-4 type 0x08 (FCP/SCSI).
+        This is how the host discovers which storage arrays are available.
+        Linux: lpfc_ct.c lpfc_ns_cmd(SLI_CTNS_GID_FT) → SLI_CTNS_GID_FT=0x0171
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 5
+            name: "FC-2 Exchanges"
+            state_fields:
+              active_exchanges: 1
+
+  - id: "evt_gid_ft_resp"
+    type: "frame_tx"
+    t_ns: 7100000
+    frame_id: "gid_ft_resp"
+    annotation:
+      text: "Name Server responds: storage at FCID 0x010200"
+      detail: >
+        The Name Server returns a list of FCIDs that support FCP. In this fabric,
+        there is one target: the storage array at 0x010200. The host will now
+        PLOGI to this FCID to establish port-level communication.
+        Linux: lpfc_cmpl_ct_cmd_gid_ft() processes the response and initiates PLOGI.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 3
+            name: "FC Login / Fabric Services"
+            state_fields:
+              target_fcid: "0x010200"
+          - layer: 5
+            name: "FC-2 Exchanges"
+            state_fields:
+              active_exchanges: 0
+              ox_id_next: "0x0004"
+
+  # ── Phase 4: PLOGI to Target ───────────────────────────────────
+  - id: "evt_plogi_target"
+    type: "frame_tx"
+    t_ns: 8000000
+    frame_id: "plogi_target"
+    annotation:
+      text: "PLOGI to storage (0x010200) — port-level login"
+      detail: >
+        Host sends PLOGI to the storage array. This frame traverses the switch
+        (D_ID-based routing). PLOGI negotiates port parameters: BB_Credit, max
+        frame size, and class of service.
+        Linux: lpfc_issue_els_plogi() → lpfc_cmpl_els_plogi()
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 3
+            name: "FC Login / Fabric Services"
+            state_fields:
+              target_plogi: "PLOGI_SENT"
+          - layer: 5
+            name: "FC-2 Exchanges"
+            state_fields:
+              active_exchanges: 1
+
+  - id: "evt_plogi_target_acc"
+    type: "frame_tx"
+    t_ns: 8200000
+    frame_id: "plogi_target_acc"
+    annotation:
+      text: "Storage accepts PLOGI — port-level login established"
+      detail: >
+        Storage accepts port login. Host and storage can now exchange FC frames
+        directly. But FCP (SCSI) I/O requires one more step: Process Login (PRLI).
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 3
+            name: "FC Login / Fabric Services"
+            state_fields:
+              target_plogi: "complete"
+          - layer: 5
+            name: "FC-2 Exchanges"
+            state_fields:
+              active_exchanges: 0
+              ox_id_next: "0x0005"
+      - actor_id: "target"
+        layers:
+          - layer: 3
+            name: "FC Login State"
+            state_fields:
+              host_plogi: "complete"
+
+  # ── Phase 5: PRLI ──────────────────────────────────────────────
+  - id: "evt_prli"
+    type: "frame_tx"
+    t_ns: 9000000
+    frame_id: "prli"
+    annotation:
+      text: "PRLI — establish FCP (SCSI) upper-layer protocol"
+      detail: >
+        Process Login establishes the FC-4 (FCP) association. The PRLI service
+        parameter page declares this host as an initiator and negotiates FCP
+        features like XFER_RDY behavior. This is the final login step before
+        SCSI commands can flow.
+        Linux: lpfc_issue_els_prli() — sends PRLI with initiator bit set.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 6
+            name: "FCP-4 (FC-4 ULP)"
+            state_fields:
+              fcp_state: "PRLI_SENT"
+
+  - id: "evt_prli_acc"
+    type: "frame_tx"
+    t_ns: 9200000
+    frame_id: "prli_acc"
+    annotation:
+      text: "PRLI ACC — FCP established. SCSI I/O can begin."
+      detail: >
+        Storage accepts PRLI and declares itself as a target. The FCP process
+        association is now established. SCSI commands can be sent as FCP_CMND frames.
+        Linux: lpfc_cmpl_els_prli() → lpfc_issue_disc_scsi() triggers SCSI LUN discovery.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 6
+            name: "FCP-4 (FC-4 ULP)"
+            state_fields:
+              fcp_state: "complete"
+          - layer: 7
+            name: "SCSI / Block Device"
+            state_fields:
+              scsi_state: "scanning"
+      - actor_id: "target"
+        layers:
+          - layer: 6
+            name: "FCP-4 (FC-4 ULP)"
+            state_fields:
+              fcp_state: "complete"
+
+  # ── Phase 6: SCSI Discovery ────────────────────────────────────
+  - id: "evt_inquiry_cmd"
+    type: "frame_tx"
+    t_ns: 10000000
+    frame_id: "fcp_inquiry_cmd"
+    annotation:
+      text: "SCSI INQUIRY — discover device type"
+      detail: >
+        Host sends SCSI INQUIRY (opcode 0x12) to identify the device at LUN 0.
+        INQUIRY returns device type, vendor, product, and supported features.
+        Linux: scsi_scan.c scsi_probe_lun() → scsi_execute_cmd(INQUIRY)
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 7
+            name: "SCSI / Block Device"
+            state_fields:
+              last_cmd: "INQUIRY"
+          - layer: 5
+            name: "FC-2 Exchanges"
+            state_fields:
+              active_exchanges: 1
+
+  - id: "evt_inquiry_data"
+    type: "frame_tx"
+    t_ns: 10200000
+    frame_id: "fcp_inquiry_data"
+    annotation:
+      text: "INQUIRY data — device is a block disk (type 0x00)"
+      detail: >
+        Storage returns INQUIRY response identifying itself as a direct-access
+        block device (type 0x00, SBC). Vendor: DellEMC, Product: PowerStore.
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            name: "SCSI Target / LUNs"
+            state_fields:
+              last_cmd_received: "INQUIRY"
+
+  - id: "evt_inquiry_rsp"
+    type: "frame_tx"
+    t_ns: 10300000
+    frame_id: "fcp_inquiry_rsp"
+    annotation:
+      text: "FCP_RSP — INQUIRY GOOD, LUN 0 discovered"
+      detail: >
+        SCSI status GOOD. The host's SCSI midlayer now knows this is a block device.
+        scsi_add_lun() creates a SCSI device and sd_mod attaches a /dev/sdX block device.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 7
+            name: "SCSI / Block Device"
+            state_fields:
+              scsi_state: "online"
+              lun_count: 1
+          - layer: 5
+            name: "FC-2 Exchanges"
+            state_fields:
+              active_exchanges: 0
+              ox_id_next: "0x0020"
+
+  # ── Phase 7: SCSI Write ────────────────────────────────────────
+  - id: "evt_write_cmd"
+    type: "frame_tx"
+    t_ns: 12000000
+    frame_id: "fcp_write_cmd"
+    annotation:
+      text: "WRITE(10) — write 4KB at LBA 0"
+      detail: >
+        Application writes 4KB (8 × 512-byte blocks) starting at LBA 0.
+        FCP_CMND carries the SCSI CDB. Host must wait for FCP_XFER_RDY
+        before sending data — this is FC write flow control.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 7
+            name: "SCSI / Block Device"
+            state_fields:
+              last_cmd: "WRITE(10)"
+          - layer: 6
+            name: "FCP-4 (FC-4 ULP)"
+            state_fields:
+              io_tag: "0x0020"
+          - layer: 5
+            name: "FC-2 Exchanges"
+            state_fields:
+              active_exchanges: 1
+
+  - id: "evt_write_xfer_rdy"
+    type: "frame_tx"
+    t_ns: 12200000
+    frame_id: "fcp_write_xfer_rdy"
+    annotation:
+      text: "FCP_XFER_RDY — storage ready to receive write data"
+      detail: >
+        Storage sends Transfer Ready, granting the host permission to send up
+        to 4096 bytes of write data. This flow control mechanism is unique to
+        FC writes — it prevents the host from sending data before the target
+        has allocated buffer space. Reads do not require this step.
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            name: "SCSI Target / LUNs"
+            state_fields:
+              last_cmd_received: "WRITE(10)"
+
+  - id: "evt_write_data"
+    type: "frame_tx"
+    t_ns: 12400000
+    frame_id: "fcp_write_data"
+    annotation:
+      text: "FCP_DATA — host sends 4KB write payload"
+      detail: >
+        Host sends the actual write data as FCP_DATA frames. For this 4KB write,
+        a single frame is sufficient (max FC payload is 2112 bytes, so in practice
+        this would be 2 frames, but shown as one for clarity).
+    state_after: []
+
+  - id: "evt_write_rsp"
+    type: "frame_tx"
+    t_ns: 12800000
+    frame_id: "fcp_write_rsp"
+    annotation:
+      text: "FCP_RSP — write GOOD, data committed"
+      detail: >
+        Storage confirms the write completed with SCSI status GOOD.
+        The data has been committed to non-volatile storage.
+        Exchange is complete: OX_ID 0x0020 is freed.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 7
+            name: "SCSI / Block Device"
+            state_fields:
+              last_cmd: "WRITE complete"
+          - layer: 5
+            name: "FC-2 Exchanges"
+            state_fields:
+              active_exchanges: 0
+              ox_id_next: "0x0021"
+
+  # ── Phase 8: SCSI Read ─────────────────────────────────────────
+  - id: "evt_read_cmd"
+    type: "frame_tx"
+    t_ns: 14000000
+    frame_id: "fcp_read_cmd"
+    annotation:
+      text: "READ(10) — read back 4KB at LBA 0 to verify write"
+      detail: >
+        Host reads back the same 4KB to verify the write. No XFER_RDY is needed
+        for reads — the target sends FCP_DATA immediately after receiving the command.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 7
+            name: "SCSI / Block Device"
+            state_fields:
+              last_cmd: "READ(10)"
+          - layer: 6
+            name: "FCP-4 (FC-4 ULP)"
+            state_fields:
+              io_tag: "0x0021"
+          - layer: 5
+            name: "FC-2 Exchanges"
+            state_fields:
+              active_exchanges: 1
+
+  - id: "evt_read_data"
+    type: "frame_tx"
+    t_ns: 14200000
+    frame_id: "fcp_read_data"
+    annotation:
+      text: "FCP_DATA — storage sends 4KB read data (no XFER_RDY needed)"
+      detail: >
+        Storage sends the read data immediately — unlike writes, reads do not
+        require an XFER_RDY handshake. The data returned should match what was
+        written at LBA 0.
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            name: "SCSI Target / LUNs"
+            state_fields:
+              last_cmd_received: "READ(10)"
+
+  - id: "evt_read_rsp"
+    type: "frame_tx"
+    t_ns: 14400000
+    frame_id: "fcp_read_rsp"
+    annotation:
+      text: "FCP_RSP — read GOOD, data verified"
+      detail: >
+        SCSI status GOOD. The read data matches the write data, confirming
+        end-to-end data integrity through the FC fabric.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 7
+            name: "SCSI / Block Device"
+            state_fields:
+              last_cmd: "READ complete"
+          - layer: 5
+            name: "FC-2 Exchanges"
+            state_fields:
+              active_exchanges: 0
+
+  - id: "evt_done"
+    type: "annotation"
+    t_ns: 15000000
+    annotation:
+      text: "Scenario complete"
+      detail: >
+        Summary: Host established 32GFC physical links, performed Fabric Login
+        (FLOGI, FCID assigned), discovered storage via Name Server (GID_FT),
+        completed Port Login (PLOGI) and Process Login (PRLI) for FCP,
+        discovered LUN 0 via SCSI INQUIRY, wrote 4KB at LBA 0, and read it
+        back to verify. Total login frames: 10 (FLOGI×2, PLOGI×4, GID_FT×2, PRLI×2).
+        Total I/O frames: 9 (INQUIRY×3, WRITE×4, READ×3 including XFER_RDY).
+
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
+glossary:
+  - term: "FLOGI"
+    abbrev: "Fabric Login"
+    definition: "The first ELS command sent by an N_Port after physical link up. Sent to the well-known Fabric Controller address 0xFFFFFE. The fabric responds with an assigned N_Port ID (FCID) that becomes the port's address in the fabric."
+    spec_refs:
+      - document: "FC-LS-4"
+        section: "5.3"
+        title: "Fabric Login (FLOGI)"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "PLOGI"
+    abbrev: "Port Login"
+    definition: "Port-to-port login that establishes communication parameters between two N_Ports. Negotiates BB_Credit, max frame size, and class of service. Required before any upper-layer protocol exchange."
+    spec_refs:
+      - document: "FC-LS-4"
+        section: "5.2"
+        title: "Port Login (PLOGI)"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "PRLI"
+    abbrev: "Process Login"
+    definition: "Establishes an upper-layer protocol (FC-4) association between ports. For FCP, PRLI declares initiator/target roles and negotiates FCP-specific features. Required before SCSI commands can flow."
+    spec_refs:
+      - document: "FC-LS-4"
+        section: "5.6"
+        title: "Process Login (PRLI)"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "FCID"
+    abbrev: "N_Port ID"
+    definition: "A 24-bit address assigned by the fabric to an N_Port during FLOGI. Used as S_ID and D_ID in FC frame headers for routing. Format is typically domain:area:port (e.g., 0x010200 = domain 1, area 2, port 0)."
+    spec_refs:
+      - document: "FC-FS-5"
+        section: "15.1"
+        title: "Address Identifier"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "Name Server"
+    definition: "A fabric service at well-known address 0xFFFFFC that maintains a database of all logged-in ports and their attributes (WWPN, WWNN, FC-4 types, etc.). Hosts query the Name Server to discover available targets."
+    spec_refs:
+      - document: "FC-GS-8"
+        section: "5"
+        title: "Name Server"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "GID_FT"
+    definition: "Get Port Identifiers by FC-4 Type. A Name Server CT query that returns all FCIDs registered for a given FC-4 type. FC-4 type 0x08 = FCP (SCSI). This is how initiators discover SCSI targets in the fabric."
+    spec_refs:
+      - document: "FC-GS-8"
+        section: "5.2.3.3"
+        title: "GID_FT"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "FCP_XFER_RDY"
+    definition: "Transfer Ready — an FCP IU sent by the target to grant the initiator permission to send write data. This flow control mechanism prevents the initiator from flooding the target. Only required for write operations; reads do not use XFER_RDY."
+    spec_refs:
+      - document: "FCP-4"
+        section: "9.3"
+        title: "FCP_XFER_RDY IU"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "BB_Credit"
+    abbrev: "Buffer-to-Buffer Credit"
+    definition: "Flow control mechanism in FC. Each port advertises how many frames it can buffer (BB_Credit). The sender decrements credit for each frame sent and replenishes when R_RDY primitives are received. Prevents buffer overrun at the receiver."
+    spec_refs:
+      - document: "FC-FS-5"
+        section: "17.2"
+        title: "Buffer-to-buffer flow control"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "Exchange"
+    definition: "A bidirectional conversation between two N_Ports identified by OX_ID (originator) and RX_ID (responder). An exchange contains one or more sequences. In FCP, each SCSI I/O operation is one exchange."
+    spec_refs:
+      - document: "FC-FS-5"
+        section: "16"
+        title: "Exchange and Sequence Management"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "WWPN"
+    abbrev: "World Wide Port Name"
+    definition: "A globally unique 64-bit identifier assigned to each FC port. Analogous to a MAC address in Ethernet but assigned by the manufacturer. Used for zoning and persistent binding."
+    spec_refs:
+      - document: "FC-FS-5"
+        section: "15.3"
+        title: "Name_Identifier format"
+        url: "https://www.t11.org/fcSite/fcretr.html"

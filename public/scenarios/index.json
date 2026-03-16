@@ -9,6 +9,16 @@
       "description": "Complete RoCEv2 Reliable Connected exchange over 100GbE: physical link, ARP, CM bring-up, RDMA WRITE, RDMA READ.",
       "tags": ["RDMA", "RoCEv2", "InfiniBand", "100GbE", "PFC"],
       "path": "roce/roce-v2-rc-connection-rdma-write-read.yaml"
+    },
+    {
+      "slug": "fc-fabric-login-scsi-io",
+      "title": "FC Fabric: FLOGI → Name Server → PLOGI → PRLI → SCSI I/O",
+      "protocol": "Fibre Channel",
+      "protocol_family": "SAN",
+      "difficulty": "advanced",
+      "description": "Complete Fibre Channel SAN login sequence through a fabric switch: physical link, FLOGI, Name Server discovery, PLOGI, PRLI, then SCSI INQUIRY, WRITE(10), and READ(10).",
+      "tags": ["Fibre Channel", "SAN", "SCSI", "FCP", "storage", "education"],
+      "path": "fc/fc-fabric-login-scsi-io.yaml"
     }
   ]
 }

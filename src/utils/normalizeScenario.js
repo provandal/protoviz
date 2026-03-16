@@ -178,6 +178,19 @@ function inferPhase(event, lastPhase) {
   const text = (event.annotation?.text || '').toLowerCase();
   const id = event.id.toLowerCase();
 
+  // FC-specific phases (check before generic patterns)
+  if (/\bflogi\b/.test(text) || /flogi/.test(id)) return 'FLOGI';
+  if (/name.?server|gid_ft|gnn_id|gpn_id|ga_nxt/i.test(text)
+      || /ns_|gid_ft|name_server/.test(id)) return 'Name Server';
+  if (/\bprli\b/.test(text) || /prli/.test(id)) return 'PRLI';
+  if (/\bplogi\b/.test(text) || /plogi/.test(id)) return 'PLOGI';
+  if (/scsi.*(inquiry|read.?cap|discover|report.?lun)/i.test(text)
+      || /inquiry|readcap|discover/.test(id)) return 'SCSI Discovery';
+  if (/scsi.*write|fcp.*write|\bwrite\(10\)|\bwrite_cmd\b/i.test(text)
+      || /write_cmd|write_data|write_rsp|write_xfer/.test(id)) return 'SCSI Write';
+  if (/scsi.*read|fcp.*read|\bread\(10\)|\bread_cmd\b/i.test(text)
+      || /read_cmd|read_data|read_rsp/.test(id)) return 'SCSI Read';
+
   // CM takes priority (CM events also mention QP transitions)
   if (/\bcm\b/.test(text) || /cm[_ ]/.test(id)) return 'CM';
 
