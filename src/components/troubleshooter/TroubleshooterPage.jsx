@@ -143,7 +143,7 @@ export default function TroubleshooterPage() {
               <input
                 ref={fileRef}
                 type="file"
-                accept=".pcap,.cap,.json"
+                accept=".pcap,.pcapng,.cap,.json"
                 onChange={handleFile}
                 style={{ display: 'none' }}
               />
@@ -165,9 +165,9 @@ export default function TroubleshooterPage() {
               </div>
               <div style={{ display: 'flex', gap: 16 }}>
                 <div style={{ flex: 1, background: '#0a0f1a', border: '1px solid #1e293b', borderRadius: 6, padding: '10px 12px' }}>
-                  <div style={{ color: '#60a5fa', fontSize: 11, fontWeight: 700, marginBottom: 4 }}>PCAP (.pcap, .cap)</div>
+                  <div style={{ color: '#60a5fa', fontSize: 11, fontWeight: 700, marginBottom: 4 }}>PCAP / pcapng</div>
                   <div style={{ color: '#475569', fontSize: 10, lineHeight: 1.5 }}>
-                    Standard packet capture. Built-in dissectors for Ethernet, IPv4, TCP, UDP, and RoCEv2.
+                    Standard packet capture (.pcap, .pcapng, .cap). Built-in dissectors for Ethernet, IPv4, TCP, UDP, and RoCEv2.
                   </div>
                 </div>
                 <div style={{ flex: 1, background: '#0a0f1a', border: '1px solid #1e293b', borderRadius: 6, padding: '10px 12px' }}>
