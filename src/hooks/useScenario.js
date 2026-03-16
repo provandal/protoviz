@@ -9,6 +9,13 @@ export default function useScenario(slug) {
   useEffect(() => {
     if (!slug) return;
 
+    // Skip fetch for generated scenarios (e.g., from PCAP conversation)
+    // The scenario is already set in the store before navigation
+    if (slug.startsWith('_')) {
+      const existing = useViewerStore.getState();
+      if (existing.scenario && existing.currentSlug === slug) return;
+    }
+
     let cancelled = false;
 
     async function load() {

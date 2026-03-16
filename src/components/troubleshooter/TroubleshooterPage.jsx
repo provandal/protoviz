@@ -5,6 +5,8 @@ import { parsePcap } from '../../pcap/pcapReader';
 import { parseTsharkJson } from '../../pcap/tsharkReader';
 import { dissectPacket } from '../../pcap/dissect';
 import { evaluateRules } from '../../pcap/ruleEngine';
+import { filterConversation, packetsToScenario } from '../../pcap/pcapToScenario';
+import useViewerStore from '../../store/viewerStore';
 import FindingsPanel from './FindingsPanel';
 import PacketList from './PacketList';
 import TraceChatPanel from './TraceChatPanel';
@@ -91,6 +93,17 @@ export default function TroubleshooterPage() {
   const handleFindingClick = useCallback((packetIndex) => {
     setSelectedPacketIndex(packetIndex);
   }, []);
+
+  const handleConversationView = useCallback((endpointA, endpointB) => {
+    if (!packets) return;
+    const convPackets = filterConversation(packets, endpointA, endpointB);
+    if (convPackets.length === 0) return;
+
+    const scenario = packetsToScenario(convPackets, endpointA, endpointB);
+    const slug = '_pcap_conversation';
+    useViewerStore.setState({ scenario, currentSlug: slug, step: 0, playing: false, error: null, loading: false });
+    navigate(`/${slug}`);
+  }, [packets, navigate]);
 
   return (
     <div style={{
@@ -242,6 +255,7 @@ export default function TroubleshooterPage() {
                   findings={findings}
                   selectedIndex={selectedPacketIndex}
                   onPacketSelect={setSelectedPacketIndex}
+                  onConversationView={handleConversationView}
                 />
               </div>
               {findings && findings.length > 0 && (

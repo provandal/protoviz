@@ -23,4 +23,14 @@ export const PHASE_COLORS = {
   'SCSI Discovery': '#6d28d9',
   'SCSI Write': '#991b1b',
   'SCSI Read': '#6b21a8',
+  // PCAP conversation phases
+  'TCP Handshake': '#0f766e',
+  'TCP Data': '#0369a1',
+  'TCP Teardown': '#64748b',
+  'TCP Reset': '#dc2626',
+  'UDP': '#1e40af',
+  'RoCE': '#7c3aed',
+  'RDMA Send': '#1d4ed8',
+  'RDMA ACK': '#475569',
+  'Other': '#475569',
 };

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 
 function formatTimestamp(pkt, baseTimestamp) {
   const relative = pkt.timestamp - baseTimestamp;
@@ -8,9 +8,11 @@ function formatTimestamp(pkt, baseTimestamp) {
   return `${secs}.${String(usec).padStart(6, '0')}`;
 }
 
-export default function PacketList({ packets, findings, selectedIndex, onPacketSelect }) {
+export default function PacketList({ packets, findings, selectedIndex, onPacketSelect, onConversationView }) {
   const [expanded, setExpanded] = useState(null);
+  const [contextMenu, setContextMenu] = useState(null);
   const selectedRef = useRef(null);
+  const menuRef = useRef(null);
   const baseTimestamp = packets.length > 0 ? packets[0].timestamp : 0;
 
   // Build finding lookup by packet index
@@ -29,6 +31,39 @@ export default function PacketList({ packets, findings, selectedIndex, onPacketS
       setExpanded(selectedIndex);
     }
   }, [selectedIndex]);
+
+  // Close context menu on click outside
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handleClick = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) {
+        setContextMenu(null);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [contextMenu]);
+
+  const handleContextMenu = useCallback((e, pkt, i) => {
+    e.preventDefault();
+    // Only show if packet has IP layer (needed for conversation filtering)
+    const ip = pkt.layers.find(l => l.name === 'IPv4' || l.name === 'IPv6');
+    if (!ip) return;
+
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      packetIndex: i,
+      srcIp: ip.fields.src_ip,
+      dstIp: ip.fields.dst_ip,
+    });
+  }, []);
+
+  const handleViewConversation = useCallback(() => {
+    if (!contextMenu) return;
+    onConversationView?.(contextMenu.srcIp, contextMenu.dstIp);
+    setContextMenu(null);
+  }, [contextMenu, onConversationView]);
 
   return (
     <div>
@@ -60,6 +95,7 @@ export default function PacketList({ packets, findings, selectedIndex, onPacketS
                 setExpanded(isExpanded ? null : i);
                 onPacketSelect?.(i);
               }}
+              onContextMenu={(e) => handleContextMenu(e, pkt, i)}
               style={{
                 display: 'flex', padding: '4px 12px',
                 cursor: 'pointer',
@@ -132,6 +168,61 @@ export default function PacketList({ packets, findings, selectedIndex, onPacketS
           </div>
         );
       })}
+
+      {/* Context menu */}
+      {contextMenu && (
+        <div
+          ref={menuRef}
+          style={{
+            position: 'fixed',
+            left: contextMenu.x,
+            top: contextMenu.y,
+            background: '#1e293b',
+            border: '1px solid #334155',
+            borderRadius: 6,
+            padding: 4,
+            zIndex: 1000,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+            minWidth: 220,
+          }}
+        >
+          <div
+            onClick={handleViewConversation}
+            style={{
+              padding: '8px 12px',
+              color: '#e2e8f0',
+              fontSize: 11,
+              cursor: 'pointer',
+              borderRadius: 4,
+              transition: 'background 0.1s',
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = '#334155'}
+            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+          >
+            View Conversation as Scenario
+            <div style={{ color: '#64748b', fontSize: 9, marginTop: 2 }}>
+              {contextMenu.srcIp} ↔ {contextMenu.dstIp}
+            </div>
+          </div>
+          <div
+            onClick={() => setContextMenu(null)}
+            style={{
+              padding: '6px 12px',
+              color: '#64748b',
+              fontSize: 10,
+              cursor: 'pointer',
+              borderRadius: 4,
+              borderTop: '1px solid #334155',
+              marginTop: 2,
+              paddingTop: 6,
+            }}
+            onMouseEnter={e => e.currentTarget.style.color = '#94a3b8'}
+            onMouseLeave={e => e.currentTarget.style.color = '#64748b'}
+          >
+            Cancel
+          </div>
+        </div>
+      )}
     </div>
   );
 }
