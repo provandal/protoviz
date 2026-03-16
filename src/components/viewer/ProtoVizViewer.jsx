@@ -72,13 +72,20 @@ export default function ProtoVizViewer() {
   const initLayers = buildStateAtStep(scenario, 'initiator', step);
   const targLayers = buildStateAtStep(scenario, 'target', step);
   const swLayers = buildStateAtStep(scenario, 'switch', step);
+  const hasSwitch = swLayers && swLayers.length > 0;
   const phaseColor = PHASE_COLORS[ev.phase] || '#475569';
+
+  // Dynamic labels from scenario actors
+  const initActor = scenario.actors.find(a => a.id === 'initiator');
+  const targActor = scenario.actors.find(a => a.id === 'target');
+  const initLabel = initActor?.label || 'Initiator';
+  const targLabel = targActor?.label || 'Target';
 
   const topContent = (
     <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-      {/* Host A OSI Stack */}
+      {/* Left OSI Stack */}
       <div style={{ width: 220, borderRight: '1px solid #1e293b', overflow: 'hidden', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
-        <OsiStack actorId="initiator" label="Host A — Initiator" layers={initLayers} stepEvent={ev} />
+        <OsiStack actorId="initiator" label={initLabel} layers={initLayers} stepEvent={ev} />
       </div>
 
       {/* Center: Sequence + Controls */}
@@ -90,9 +97,9 @@ export default function ProtoVizViewer() {
         <PlaybackControls total={total} phaseColor={phaseColor} />
       </div>
 
-      {/* Host B OSI Stack */}
+      {/* Right OSI Stack */}
       <div style={{ width: 220, borderLeft: '1px solid #1e293b', overflow: 'hidden', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
-        <OsiStack actorId="target" label="Host B — Target" layers={targLayers} stepEvent={ev} />
+        <OsiStack actorId="target" label={targLabel} layers={targLayers} stepEvent={ev} />
       </div>
     </div>
   );

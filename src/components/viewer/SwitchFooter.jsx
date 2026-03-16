@@ -1,6 +1,7 @@
 import { L_COLOR } from '../../utils/constants';
 
 export default function SwitchFooter({ layers }) {
+  if (!layers || layers.length === 0) return null;
   const sorted = [...layers].sort((a, b) => a.layer - b.layer);
 
   return (

@@ -8,6 +8,7 @@ export function applyStateDelta(current, delta) {
 }
 
 export function buildStateAtStep(scenario, actorId, stepIdx) {
+  if (!scenario.osi_layers[actorId]) return [];
   let layers = [...scenario.osi_layers[actorId]].map(l => ({ ...l, fields: { ...l.fields } }));
   for (let i = 0; i <= stepIdx; i++) {
     const ev = scenario.timeline[i];
