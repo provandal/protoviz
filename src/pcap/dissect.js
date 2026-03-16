@@ -1,11 +1,12 @@
 /**
- * Full packet dissection pipeline: Ethernet → IPv4 → UDP/TCP → RoCE
+ * Full packet dissection pipeline: Ethernet → IPv4 → UDP/TCP → RoCE / ULP
  */
 import { dissectEthernet } from './dissectors/ethernet.js';
 import { dissectIPv4 } from './dissectors/ip.js';
 import { dissectUDP, ROCE_V2_PORT } from './dissectors/udp.js';
 import { dissectTCP } from './dissectors/tcp.js';
 import { dissectBTH, dissectRETH, dissectAETH, RETH_OPCODES, AETH_OPCODES } from './dissectors/roce.js';
+import { dissectPayload } from './dissectors/payload.js';
 
 export function dissectPacket(packet) {
   const { data } = packet;
@@ -55,7 +56,14 @@ export function dissectPacket(packet) {
             }
           }
         } else {
-          summary += ` | UDP ${udp.fields.src_port}→${udp.fields.dst_port}`;
+          // Non-RoCE UDP: try ULP dissection
+          const { layer: ulpLayer, summary: ulpSummary } = dissectPayload(
+            data, udp.nextOffset, udp.fields.src_port, udp.fields.dst_port, 'udp'
+          );
+          if (ulpLayer) layers.push(ulpLayer);
+          summary += ulpSummary
+            ? ` | ${ulpSummary}`
+            : ` | UDP ${udp.fields.src_port}→${udp.fields.dst_port}`;
         }
       }
     } else if (ip.nextProtocol === 6) {
@@ -63,6 +71,19 @@ export function dissectPacket(packet) {
       if (tcp) {
         layers.push(tcp);
         summary += ` | TCP ${tcp.fields.src_port}→${tcp.fields.dst_port} [${tcp.fields.flag_names}]`;
+
+        // ULP dissection on TCP payload
+        const payloadOffset = tcp.nextOffset;
+        const payloadLen = data.length - payloadOffset;
+        if (payloadLen > 0) {
+          const { layer: ulpLayer, summary: ulpSummary } = dissectPayload(
+            data, payloadOffset, tcp.fields.src_port, tcp.fields.dst_port, 'tcp'
+          );
+          if (ulpLayer) {
+            layers.push(ulpLayer);
+            if (ulpSummary) summary += ` | ${ulpSummary}`;
+          }
+        }
       }
     } else {
       summary += ` | ${ip.fields.protocol_name}`;
