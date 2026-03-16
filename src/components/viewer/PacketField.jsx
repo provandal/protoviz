@@ -11,7 +11,7 @@ export default function PacketField({ field, depth = 0 }) {
       <div
         onClick={() => setExpanded(e => !e)}
         style={{
-          display: 'flex', alignItems: 'flex-start', gap: 8, padding: '5px 8px', cursor: 'pointer',
+          display: 'grid', gridTemplateColumns: '22px 160px 1fr 120px', alignItems: 'start', padding: '5px 8px', cursor: 'pointer',
           background: expanded ? '#1e293b' : 'transparent',
           borderRadius: 4, userSelect: 'none',
           transition: 'background 0.15s',
@@ -19,10 +19,10 @@ export default function PacketField({ field, depth = 0 }) {
         onMouseEnter={e => e.currentTarget.style.background = '#1e293b'}
         onMouseLeave={e => e.currentTarget.style.background = expanded ? '#1e293b' : 'transparent'}
       >
-        <span style={{ color: '#64748b', fontFamily: "'JetBrains Mono',monospace", fontSize: 10, minWidth: 22, marginTop: 1 }}>{field.bits}b</span>
-        <span style={{ color: '#94a3b8', fontFamily: "'JetBrains Mono',monospace", fontSize: 10, minWidth: 160, marginTop: 1 }}>{field.abbrev}</span>
-        <span style={{ color: '#e2e8f0', fontSize: 12, flex: 1 }}>{field.name}</span>
-        <span style={{ color: '#f59e0b', fontFamily: "'JetBrains Mono',monospace", fontSize: 11, minWidth: 120, textAlign: 'right', marginTop: 1 }}>{String(field.value)}</span>
+        <span style={{ color: '#64748b', fontFamily: "'JetBrains Mono',monospace", fontSize: 10, marginTop: 1 }}>{field.bits}b</span>
+        <span style={{ color: '#94a3b8', fontFamily: "'JetBrains Mono',monospace", fontSize: 10, marginTop: 1 }}>{field.abbrev}</span>
+        <span style={{ color: '#e2e8f0', fontSize: 12 }}>{field.name}</span>
+        <span style={{ color: '#f59e0b', fontFamily: "'JetBrains Mono',monospace", fontSize: 11, textAlign: 'right', marginTop: 1 }}>{String(field.value)}</span>
       </div>
       {expanded && (
         <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 6, margin: '2px 0 4px 22px', padding: 10 }}>

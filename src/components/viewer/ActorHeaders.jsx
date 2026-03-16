@@ -5,7 +5,6 @@ const ACTOR_COLORS = {
 };
 
 function getActorSub(actor) {
-  if (actor.type === 'switch') return 'PFC Priority 3 \u2022 ECN/DCQCN';
   return [actor.ip, actor.hw].filter(Boolean).join(' \u2022 ');
 }
 
