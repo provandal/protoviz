@@ -34,8 +34,18 @@ function getFrameSpan(ev, leftId, rightId) {
 }
 
 export default function SequenceDiagram({ timeline, currentStep, onStepSelect, leftActorId = 'initiator', rightActorId = 'target' }) {
-  const phases = [...new Set(timeline.map(e => e.phase))];
-  const phaseGroups = phases.map(p => ({ phase: p, events: timeline.filter(e => e.phase === p) }));
+  // Build phase groups as consecutive runs to preserve chronological order.
+  // If the same phase reappears later, it gets its own group in the correct position.
+  const phaseGroups = [];
+  let currentPhase = null;
+  for (const ev of timeline) {
+    if (ev.phase !== currentPhase) {
+      phaseGroups.push({ phase: ev.phase, events: [ev] });
+      currentPhase = ev.phase;
+    } else {
+      phaseGroups[phaseGroups.length - 1].events.push(ev);
+    }
+  }
   const currentRef = useRef(null);
   const slug = useViewerStore(s => s.currentSlug);
   const scenario = useViewerStore(s => s.scenario);

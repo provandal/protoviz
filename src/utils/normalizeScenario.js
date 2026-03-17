@@ -178,6 +178,10 @@ function inferPhase(event, lastPhase) {
   const text = (event.annotation?.text || '').toLowerCase();
   const id = event.id.toLowerCase();
 
+  // Scenario-level annotations (must check before protocol patterns steal keywords)
+  if (/scenario complete|summary|end of scenario/i.test(text)
+      || /^evt_done$|^evt_complete$|^evt_summary$/.test(id)) return 'Summary';
+
   // NVMe-oF/TCP phases (check before generic patterns)
   if (/\bmdns\b|_nvme-disc/i.test(text) || /mdns/.test(id)) return 'mDNS Discovery';
   if (/\bddc\b|direct discovery controller/i.test(text) || /ddc/.test(id)) return 'DDC Discovery';
