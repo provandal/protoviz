@@ -283,6 +283,14 @@ function inferPhase(event, lastPhase) {
   if (/\biscsi\b.*r2t|ready.?to.?transfer|data.?out/i.test(text)
       || /write_r2t|write_data/.test(id)) return 'SCSI Write';
 
+  // TLS phases (before TCP — TLS events run over TCP)
+  if (/clienthello|serverhello|client hello|server hello|certificateverify|encryptedextensions/i.test(text)
+      || /tls_client_hello|tls_server_hello|tls_server_encrypted|tls_client_finished/.test(id)) return 'TLS Handshake';
+  if (/\btls\b.*app|https.*request|https.*response|encrypted.*application/i.test(text)
+      || /tls_app_data/.test(id)) return 'TLS Data';
+  if (/close_notify|\btls\b.*close|\btls\b.*shutdown/i.test(text)
+      || /tls_close/.test(id)) return 'TLS Close';
+
   // TCP phases
   if (/\btcp\b.*\bsyn\b|\b3.?way\b.*handshake|handshake.*complete/i.test(text)
       || /tcp_syn|tcp_ack_handshake/.test(id)) return 'TCP Handshake';

@@ -1,0 +1,1298 @@
+meta:
+  id: "tls-1.3-handshake"
+  title: "TLS 1.3: Full Handshake → Encrypted Application Data → Alert Close"
+  protocol: "TLS 1.3"
+  protocol_family: "TCP/IP"
+  version: "1.0.0"
+  description: >
+    Complete TLS 1.3 (RFC 8446) handshake and data exchange. TLS 1.3 reduced the
+    handshake from two round-trips (TLS 1.2) to one: the client sends supported
+    key shares in ClientHello, and the server responds with its key share in
+    ServerHello — both sides derive the shared secret after just one round trip.
+    This scenario covers: TCP 3-way handshake, ClientHello with supported_versions
+    and key_share extensions (x25519), ServerHello with key_share, encrypted
+    EncryptedExtensions + Certificate + CertificateVerify + Finished, client
+    Finished, then bidirectional application data over AES-256-GCM, and graceful
+    close_notify alert teardown. All post-ServerHello messages are encrypted.
+
+  learning_objectives:
+    - "Understand the 1-RTT TLS 1.3 handshake vs 2-RTT TLS 1.2"
+    - "See how ClientHello key_share (x25519) enables the server to derive keys immediately"
+    - "Trace the handshake key schedule: (EC)DHE shared secret → Handshake Secret → handshake traffic keys"
+    - "Observe that EncryptedExtensions, Certificate, CertificateVerify, and Finished are ALL encrypted"
+    - "Understand how the Master Secret derives application traffic keys from the handshake"
+    - "See AES-256-GCM authenticated encryption protecting application data"
+    - "Follow the close_notify alert for graceful TLS shutdown"
+    - "Appreciate why TLS 1.3 removed RSA key transport, static DH, and all CBC cipher suites"
+
+  difficulty: "intermediate"
+
+  authors:
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+
+  created: "2026-03-17"
+  updated: "2026-03-17"
+
+  tags:
+    - "TLS"
+    - "TLS 1.3"
+    - "encryption"
+    - "HTTPS"
+    - "x25519"
+    - "ECDHE"
+    - "AEAD"
+    - "AES-GCM"
+    - "certificate"
+    - "transport security"
+    - "education"
+
+  primary_specs:
+    - document: "RFC 8446"
+      section: "1"
+      title: "The Transport Layer Security (TLS) Protocol Version 1.3"
+      url: "https://www.rfc-editor.org/rfc/rfc8446"
+      alt_url: ""
+    - document: "RFC 7748"
+      section: "5"
+      title: "Elliptic Curves for Security (x25519)"
+      url: "https://www.rfc-editor.org/rfc/rfc7748"
+      alt_url: ""
+    - document: "RFC 5116"
+      section: "1"
+      title: "An Interface and Algorithms for Authenticated Encryption (AEAD)"
+      url: "https://www.rfc-editor.org/rfc/rfc5116"
+      alt_url: ""
+
+  content_disclaimer: >
+    This scenario illustrates the TLS 1.3 full handshake as specified in
+    RFC 8446. Pre-Shared Key (PSK) and 0-RTT modes are not covered here.
+    Cryptographic values shown are illustrative, not from a real capture.
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "client"
+      type: "host"
+      label: "TLS Client (Browser)"
+      description: "Web browser initiating HTTPS connection"
+      hardware: "Workstation / Laptop"
+      os: "Linux / macOS / Windows"
+      ip: "10.0.0.100"
+      mac: "00:11:22:33:44:01"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "Network"
+      description: "LAN / Internet path (simplified)"
+      hardware: "Ethernet switch / routers"
+      position: "center"
+
+    - id: "server"
+      type: "host"
+      label: "TLS Server (HTTPS)"
+      description: "Web server with TLS certificate"
+      hardware: "Server"
+      os: "Linux"
+      ip: "10.0.0.200"
+      mac: "00:11:22:33:44:02"
+      position: "right"
+
+  links:
+    - id: "link-client-sw"
+      from: "client"
+      to: "switch"
+      speed_gbps: 1
+      media: "copper"
+    - id: "link-sw-server"
+      from: "switch"
+      to: "server"
+      speed_gbps: 10
+      media: "copper"
+
+# ─────────────────────────────────────────────────────────────────
+# OSI LAYERS
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  client:
+    - layer: 7
+      name: "Application (HTTPS)"
+      components: ["Browser", "HTTP/2"]
+      state_schema:
+        app_state:
+          type: "string"
+          initial: "idle"
+        url:
+          type: "string"
+          initial: "—"
+
+    - layer: 6
+      name: "TLS 1.3"
+      components: ["OpenSSL / BoringSSL / rustls"]
+      state_schema:
+        tls_state:
+          type: "string"
+          description: "TLS handshake state machine"
+          initial: "START"
+        cipher_suite:
+          type: "string"
+          initial: "—"
+        handshake_secret:
+          type: "string"
+          initial: "—"
+        app_traffic_secret:
+          type: "string"
+          initial: "—"
+        peer_verified:
+          type: "boolean"
+          initial: false
+
+    - layer: 5
+      name: "TLS Record Layer"
+      components: ["Record protocol"]
+      state_schema:
+        record_version:
+          type: "string"
+          initial: "0x0303 (TLS 1.2 compat)"
+        content_type:
+          type: "string"
+          initial: "—"
+
+    - layer: 4
+      name: "TCP"
+      components: ["kernel TCP stack"]
+      state_schema:
+        tcp_state:
+          type: "string"
+          initial: "CLOSED"
+        src_port:
+          type: "integer"
+          initial: 0
+        dst_port:
+          type: "integer"
+          initial: 443
+
+    - layer: 3
+      name: "IP"
+      components: ["IPv4"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "10.0.0.100"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+
+    - layer: 1
+      name: "Physical"
+      components: ["1000BASE-T"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "up"
+
+  server:
+    - layer: 7
+      name: "Application (HTTPS)"
+      components: ["nginx / Apache", "HTTP/2"]
+      state_schema:
+        app_state:
+          type: "string"
+          initial: "listening"
+
+    - layer: 6
+      name: "TLS 1.3"
+      components: ["OpenSSL / BoringSSL"]
+      state_schema:
+        tls_state:
+          type: "string"
+          initial: "START"
+        cipher_suite:
+          type: "string"
+          initial: "—"
+        handshake_secret:
+          type: "string"
+          initial: "—"
+        app_traffic_secret:
+          type: "string"
+          initial: "—"
+        client_verified:
+          type: "boolean"
+          initial: false
+
+    - layer: 5
+      name: "TLS Record Layer"
+      components: ["Record protocol"]
+      state_schema:
+        record_version:
+          type: "string"
+          initial: "0x0303 (TLS 1.2 compat)"
+        content_type:
+          type: "string"
+          initial: "—"
+
+    - layer: 4
+      name: "TCP"
+      components: ["kernel TCP stack"]
+      state_schema:
+        tcp_state:
+          type: "string"
+          initial: "LISTEN"
+        src_port:
+          type: "integer"
+          initial: 443
+
+    - layer: 3
+      name: "IP"
+      components: ["IPv4"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "10.0.0.200"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+
+    - layer: 1
+      name: "Physical"
+      components: ["10GBASE-T"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "up"
+
+  switch:
+    - layer: 2
+      name: "Ethernet Switching"
+      components: ["L2 bridge"]
+      state_schema:
+        fwd_table_entries:
+          type: "integer"
+          initial: 0
+    - layer: 1
+      name: "Physical"
+      components: ["per-port PHY"]
+      state_schema:
+        port_client_phy:
+          type: "string"
+          initial: "up"
+        port_server_phy:
+          type: "string"
+          initial: "up"
+
+# ─────────────────────────────────────────────────────────────────
+# FRAMES
+# ─────────────────────────────────────────────────────────────────
+frames:
+  # ── TCP 3-Way Handshake ──────────────────────────────────────────
+  - id: "tcp_syn"
+    name: "TCP SYN"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    total_bytes: 74
+    color: "#0f766e"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.0.100"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.0.200"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 40
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49152
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 443
+            description: "HTTPS"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 12
+            value: "0x002 [SYN]"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 0
+            description: "ISN (relative)"
+
+  - id: "tcp_syn_ack"
+    name: "TCP SYN-ACK"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    total_bytes: 74
+    color: "#0f766e"
+    headers:
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 40
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 443
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 49152
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 12
+            value: "0x012 [SYN, ACK]"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 0
+            description: "Server ISN (relative)"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 1
+
+  - id: "tcp_ack_handshake"
+    name: "TCP ACK (handshake complete)"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    total_bytes: 54
+    color: "#0f766e"
+    headers:
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 20
+        fields:
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 12
+            value: "0x010 [ACK]"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 1
+
+  # ── TLS 1.3 ClientHello ──────────────────────────────────────────
+  - id: "tls_client_hello"
+    name: "TLS ClientHello"
+    description: "Client proposes TLS 1.3 with x25519 key share — the critical difference from TLS 1.2"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    total_bytes: 571
+    color: "#1e40af"
+    headers:
+      - name: "TLS Record"
+        abbrev: "tls.record"
+        layer: 5
+        total_bytes: 5
+        fields:
+          - name: "Content Type"
+            abbrev: "tls.record.content_type"
+            bits: 8
+            value: "22 (Handshake)"
+            description: "Handshake protocol"
+            spec_refs:
+              - document: "RFC 8446"
+                section: "5.1"
+                title: "Record Layer"
+                url: "https://www.rfc-editor.org/rfc/rfc8446#section-5.1"
+          - name: "Legacy Version"
+            abbrev: "tls.record.version"
+            bits: 16
+            value: "0x0301 (TLS 1.0)"
+            description: "Set to TLS 1.0 for maximum compatibility with middleboxes. The REAL version is in supported_versions extension."
+          - name: "Length"
+            abbrev: "tls.record.length"
+            bits: 16
+            value: 512
+
+      - name: "Handshake: ClientHello"
+        abbrev: "tls.handshake"
+        layer: 6
+        total_bytes: 512
+        fields:
+          - name: "Handshake Type"
+            abbrev: "tls.handshake.type"
+            bits: 8
+            value: "1 (ClientHello)"
+            spec_refs:
+              - document: "RFC 8446"
+                section: "4.1.2"
+                title: "Client Hello"
+                url: "https://www.rfc-editor.org/rfc/rfc8446#section-4.1.2"
+          - name: "Legacy Version"
+            abbrev: "tls.handshake.version"
+            bits: 16
+            value: "0x0303 (TLS 1.2)"
+            description: "Must be 0x0303 — actual version negotiated via supported_versions extension"
+          - name: "Random"
+            abbrev: "tls.handshake.random"
+            bits: 256
+            value: "a1b2c3d4...32 bytes"
+            description: "32 bytes of cryptographic randomness — used in key derivation"
+          - name: "Cipher Suites"
+            abbrev: "tls.handshake.ciphersuites"
+            bits: 48
+            value: "TLS_AES_256_GCM_SHA384, TLS_AES_128_GCM_SHA256, TLS_CHACHA20_POLY1305_SHA256"
+            description: "TLS 1.3 cipher suites are AEAD-only — no CBC, no RC4, no 3DES. The cipher suite only specifies the AEAD algorithm and hash; key exchange is always (EC)DHE via extensions."
+            spec_refs:
+              - document: "RFC 8446"
+                section: "B.4"
+                title: "Cipher Suites"
+                url: "https://www.rfc-editor.org/rfc/rfc8446#appendix-B.4"
+          - name: "Extension: supported_versions"
+            abbrev: "tls.extension.supported_versions"
+            bits: 32
+            value: "[0x0304 (TLS 1.3)]"
+            description: "THIS is how TLS 1.3 is actually negotiated. The legacy version field is frozen at 0x0303 to avoid breaking middleboxes."
+            spec_refs:
+              - document: "RFC 8446"
+                section: "4.2.1"
+                title: "Supported Versions"
+                url: "https://www.rfc-editor.org/rfc/rfc8446#section-4.2.1"
+          - name: "Extension: supported_groups"
+            abbrev: "tls.extension.supported_groups"
+            bits: 32
+            value: "[x25519, secp256r1, secp384r1]"
+            description: "Named groups for key exchange. x25519 is preferred — fast, constant-time, 128-bit security."
+          - name: "Extension: key_share"
+            abbrev: "tls.extension.key_share"
+            bits: 264
+            value: "x25519: 0xE6DB68...32 bytes (client public key)"
+            description: "THE KEY INNOVATION of TLS 1.3: the client sends its (EC)DHE public key in the FIRST message. This lets the server derive the shared secret immediately, enabling 1-RTT handshake. In TLS 1.2, this required a separate ServerKeyExchange round trip."
+            spec_refs:
+              - document: "RFC 8446"
+                section: "4.2.8"
+                title: "Key Share"
+                url: "https://www.rfc-editor.org/rfc/rfc8446#section-4.2.8"
+          - name: "Extension: signature_algorithms"
+            abbrev: "tls.extension.sig_algs"
+            bits: 48
+            value: "[ecdsa_secp256r1_sha256, rsa_pss_rsae_sha256, ed25519]"
+            description: "Algorithms the client will accept for server certificate signatures"
+          - name: "Extension: server_name (SNI)"
+            abbrev: "tls.extension.server_name"
+            bits: 136
+            value: "www.example.com"
+            description: "Server Name Indication — tells the server which certificate to use (virtual hosting). Sent in cleartext (encrypted in ECH/ESNI draft)."
+
+  # ── TLS 1.3 ServerHello ─────────────────────────────────────────
+  - id: "tls_server_hello"
+    name: "TLS ServerHello"
+    description: "Server selects cipher suite and provides its key share — both sides can now derive the handshake secret"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    total_bytes: 155
+    color: "#1e40af"
+    headers:
+      - name: "TLS Record"
+        abbrev: "tls.record"
+        layer: 5
+        total_bytes: 5
+        fields:
+          - name: "Content Type"
+            abbrev: "tls.record.content_type"
+            bits: 8
+            value: "22 (Handshake)"
+          - name: "Legacy Version"
+            abbrev: "tls.record.version"
+            bits: 16
+            value: "0x0303 (TLS 1.2)"
+            description: "Frozen at 0x0303 for compatibility — real version in supported_versions"
+
+      - name: "Handshake: ServerHello"
+        abbrev: "tls.handshake"
+        layer: 6
+        total_bytes: 96
+        fields:
+          - name: "Handshake Type"
+            abbrev: "tls.handshake.type"
+            bits: 8
+            value: "2 (ServerHello)"
+            spec_refs:
+              - document: "RFC 8446"
+                section: "4.1.3"
+                title: "Server Hello"
+                url: "https://www.rfc-editor.org/rfc/rfc8446#section-4.1.3"
+          - name: "Legacy Version"
+            abbrev: "tls.handshake.version"
+            bits: 16
+            value: "0x0303"
+          - name: "Random"
+            abbrev: "tls.handshake.random"
+            bits: 256
+            value: "5f6e7d8c...32 bytes"
+            description: "Server random — 32 bytes. If this equals a specific sentinel value, it signals a TLS 1.2 downgrade (HelloRetryRequest)."
+          - name: "Cipher Suite"
+            abbrev: "tls.handshake.ciphersuite"
+            bits: 16
+            value: "0x1302 (TLS_AES_256_GCM_SHA384)"
+            description: "Server selects AES-256-GCM with SHA-384. In TLS 1.3, there are only 5 cipher suites to choose from — all AEAD."
+          - name: "Extension: supported_versions"
+            abbrev: "tls.extension.supported_versions"
+            bits: 16
+            value: "0x0304 (TLS 1.3)"
+            description: "Confirms TLS 1.3 negotiation"
+          - name: "Extension: key_share"
+            abbrev: "tls.extension.key_share"
+            bits: 264
+            value: "x25519: 0x3B41...32 bytes (server public key)"
+            description: "Server's x25519 public key. Both sides now have each other's public keys and can compute the ECDHE shared secret: ECDH(client_private, server_public) = ECDH(server_private, client_public). This shared secret feeds into HKDF to derive all traffic keys."
+            spec_refs:
+              - document: "RFC 7748"
+                section: "5"
+                title: "The X25519 and X448 Functions"
+                url: "https://www.rfc-editor.org/rfc/rfc7748#section-5"
+
+  # ── Server's encrypted handshake flight (Change Cipher Spec + encrypted records) ──
+  - id: "tls_server_encrypted_flight"
+    name: "Server Encrypted Handshake (EncExt + Cert + CertVerify + Finished)"
+    description: "ALL of these messages are encrypted with handshake traffic keys — a major TLS 1.3 improvement over TLS 1.2"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    total_bytes: 3200
+    color: "#6d28d9"
+    headers:
+      - name: "TLS Record (encrypted)"
+        abbrev: "tls.record"
+        layer: 5
+        total_bytes: 5
+        fields:
+          - name: "Content Type"
+            abbrev: "tls.record.content_type"
+            bits: 8
+            value: "23 (Application Data)"
+            description: "Appears as Application Data on the wire — the REAL content type (Handshake) is hidden inside the encrypted payload. This is 'record layer protection' in TLS 1.3."
+            spec_refs:
+              - document: "RFC 8446"
+                section: "5.2"
+                title: "Record Payload Protection"
+                url: "https://www.rfc-editor.org/rfc/rfc8446#section-5.2"
+          - name: "Legacy Version"
+            abbrev: "tls.record.version"
+            bits: 16
+            value: "0x0303"
+
+      - name: "EncryptedExtensions (decrypted view)"
+        abbrev: "tls.handshake.encrypted_extensions"
+        layer: 6
+        total_bytes: 20
+        fields:
+          - name: "Handshake Type"
+            abbrev: "tls.handshake.type"
+            bits: 8
+            value: "8 (EncryptedExtensions)"
+            description: "Extensions that are safe to encrypt (unlike ServerHello extensions needed for key derivation). May include ALPN (h2), server_name acknowledgment, etc."
+            spec_refs:
+              - document: "RFC 8446"
+                section: "4.3.1"
+                title: "Encrypted Extensions"
+                url: "https://www.rfc-editor.org/rfc/rfc8446#section-4.3.1"
+          - name: "ALPN"
+            abbrev: "tls.extension.alpn"
+            bits: 24
+            value: "h2"
+            description: "Application-Layer Protocol Negotiation — server agrees to HTTP/2"
+
+      - name: "Certificate (decrypted view)"
+        abbrev: "tls.handshake.certificate"
+        layer: 6
+        total_bytes: 2500
+        fields:
+          - name: "Handshake Type"
+            abbrev: "tls.handshake.type"
+            bits: 8
+            value: "11 (Certificate)"
+            spec_refs:
+              - document: "RFC 8446"
+                section: "4.4.2"
+                title: "Certificate"
+                url: "https://www.rfc-editor.org/rfc/rfc8446#section-4.4.2"
+          - name: "Certificate Chain"
+            abbrev: "tls.handshake.certificate_chain"
+            bits: 0
+            value: "www.example.com (leaf) → Intermediate CA → Root CA"
+            description: "X.509 certificate chain. The leaf certificate contains the server's public key (ECDSA P-256 or RSA). Client validates the chain up to a trusted root CA. In TLS 1.3, the certificate message is encrypted — passive observers cannot see which certificate is served."
+
+      - name: "CertificateVerify (decrypted view)"
+        abbrev: "tls.handshake.certificate_verify"
+        layer: 6
+        total_bytes: 100
+        fields:
+          - name: "Handshake Type"
+            abbrev: "tls.handshake.type"
+            bits: 8
+            value: "15 (CertificateVerify)"
+            description: "Proves the server possesses the private key matching the certificate. Signs a hash of the entire handshake transcript up to this point."
+            spec_refs:
+              - document: "RFC 8446"
+                section: "4.4.3"
+                title: "Certificate Verify"
+                url: "https://www.rfc-editor.org/rfc/rfc8446#section-4.4.3"
+          - name: "Signature Algorithm"
+            abbrev: "tls.handshake.sig_algorithm"
+            bits: 16
+            value: "ecdsa_secp256r1_sha256 (0x0403)"
+          - name: "Signature"
+            abbrev: "tls.handshake.sig"
+            bits: 512
+            value: "0x3045...64 bytes"
+            description: "ECDSA signature over: 64 spaces + 'TLS 1.3, server CertificateVerify' + 0x00 + Hash(handshake_context). The fixed context string prevents cross-protocol attacks."
+
+      - name: "Server Finished (decrypted view)"
+        abbrev: "tls.handshake.finished"
+        layer: 6
+        total_bytes: 52
+        fields:
+          - name: "Handshake Type"
+            abbrev: "tls.handshake.type"
+            bits: 8
+            value: "20 (Finished)"
+            description: "HMAC over the entire handshake transcript, keyed with the server's finished key derived from the handshake secret. Proves handshake integrity."
+            spec_refs:
+              - document: "RFC 8446"
+                section: "4.4.4"
+                title: "Finished"
+                url: "https://www.rfc-editor.org/rfc/rfc8446#section-4.4.4"
+          - name: "Verify Data"
+            abbrev: "tls.handshake.verify_data"
+            bits: 384
+            value: "HMAC-SHA384(finished_key, Hash(handshake_context))"
+            description: "48 bytes (SHA-384 output). The client verifies this to confirm the server's view of the handshake matches."
+
+  # ── Client Finished ──────────────────────────────────────────────
+  - id: "tls_client_finished"
+    name: "Client Finished (encrypted)"
+    description: "Client confirms handshake integrity — TLS handshake is now complete"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    total_bytes: 80
+    color: "#6d28d9"
+    headers:
+      - name: "TLS Record (encrypted)"
+        abbrev: "tls.record"
+        layer: 5
+        total_bytes: 5
+        fields:
+          - name: "Content Type"
+            abbrev: "tls.record.content_type"
+            bits: 8
+            value: "23 (Application Data)"
+            description: "Encrypted — real content type is Handshake (Finished)"
+
+      - name: "Client Finished (decrypted view)"
+        abbrev: "tls.handshake.finished"
+        layer: 6
+        total_bytes: 52
+        fields:
+          - name: "Handshake Type"
+            abbrev: "tls.handshake.type"
+            bits: 8
+            value: "20 (Finished)"
+          - name: "Verify Data"
+            abbrev: "tls.handshake.verify_data"
+            bits: 384
+            value: "HMAC-SHA384(client_finished_key, Hash(full_handshake))"
+            description: "Client's HMAC covers the FULL handshake including the server's Finished. After the server verifies this, both sides derive application traffic keys from the Master Secret."
+
+  # ── Application Data ─────────────────────────────────────────────
+  - id: "tls_app_data_request"
+    name: "HTTPS Request (encrypted)"
+    description: "HTTP/2 GET request encrypted with application traffic keys"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    total_bytes: 250
+    color: "#0369a1"
+    headers:
+      - name: "TLS Record (encrypted)"
+        abbrev: "tls.record"
+        layer: 5
+        total_bytes: 5
+        fields:
+          - name: "Content Type"
+            abbrev: "tls.record.content_type"
+            bits: 8
+            value: "23 (Application Data)"
+            description: "Now genuinely Application Data — HTTP/2 frames inside"
+          - name: "Length"
+            abbrev: "tls.record.length"
+            bits: 16
+            value: 200
+
+      - name: "Application Data (decrypted view)"
+        abbrev: "tls.app_data"
+        layer: 7
+        total_bytes: 200
+        fields:
+          - name: "AEAD Algorithm"
+            abbrev: "tls.app_data.aead"
+            bits: 0
+            value: "AES-256-GCM"
+            description: "Each record encrypted with AES-256-GCM: a 256-bit key, 96-bit nonce (IV XOR sequence number), and 128-bit authentication tag. The nonce construction prevents nonce reuse."
+            spec_refs:
+              - document: "RFC 8446"
+                section: "5.3"
+                title: "Per-Record Nonce"
+                url: "https://www.rfc-editor.org/rfc/rfc8446#section-5.3"
+          - name: "Plaintext"
+            abbrev: "tls.app_data.plaintext"
+            bits: 0
+            value: "GET / HTTP/2  |  Host: www.example.com"
+            description: "HTTP/2 request — fully encrypted, including headers. Only the TLS record header (type + length) is visible to network observers."
+
+  - id: "tls_app_data_response"
+    name: "HTTPS Response (encrypted)"
+    description: "HTTP/2 200 OK response with page content"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    total_bytes: 5000
+    color: "#0369a1"
+    headers:
+      - name: "TLS Record (encrypted)"
+        abbrev: "tls.record"
+        layer: 5
+        total_bytes: 5
+        fields:
+          - name: "Content Type"
+            abbrev: "tls.record.content_type"
+            bits: 8
+            value: "23 (Application Data)"
+          - name: "Length"
+            abbrev: "tls.record.length"
+            bits: 16
+            value: 4950
+
+      - name: "Application Data (decrypted view)"
+        abbrev: "tls.app_data"
+        layer: 7
+        total_bytes: 4950
+        fields:
+          - name: "AEAD Algorithm"
+            abbrev: "tls.app_data.aead"
+            bits: 0
+            value: "AES-256-GCM"
+          - name: "Plaintext"
+            abbrev: "tls.app_data.plaintext"
+            bits: 0
+            value: "HTTP/2 200 OK  |  content-type: text/html  |  <html>..."
+            description: "Response payload — may span multiple TLS records (max 16KB each)"
+
+  # ── TLS close_notify ─────────────────────────────────────────────
+  - id: "tls_close_notify_client"
+    name: "TLS close_notify Alert (Client)"
+    description: "Client signals graceful TLS shutdown"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    total_bytes: 75
+    color: "#64748b"
+    headers:
+      - name: "TLS Record (encrypted)"
+        abbrev: "tls.record"
+        layer: 5
+        total_bytes: 5
+        fields:
+          - name: "Content Type"
+            abbrev: "tls.record.content_type"
+            bits: 8
+            value: "23 (Application Data)"
+            description: "Encrypted alert — real content type is Alert(0x15)"
+
+      - name: "Alert (decrypted view)"
+        abbrev: "tls.alert"
+        layer: 6
+        total_bytes: 2
+        fields:
+          - name: "Level"
+            abbrev: "tls.alert.level"
+            bits: 8
+            value: "1 (Warning)"
+          - name: "Description"
+            abbrev: "tls.alert.description"
+            bits: 8
+            value: "0 (close_notify)"
+            description: "Graceful shutdown — no more data will be sent on this TLS connection. The peer should respond with its own close_notify before closing TCP."
+            spec_refs:
+              - document: "RFC 8446"
+                section: "6.1"
+                title: "Closure Alerts"
+                url: "https://www.rfc-editor.org/rfc/rfc8446#section-6.1"
+
+  - id: "tls_close_notify_server"
+    name: "TLS close_notify Alert (Server)"
+    description: "Server acknowledges graceful TLS shutdown"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    total_bytes: 75
+    color: "#64748b"
+    headers:
+      - name: "TLS Record (encrypted)"
+        abbrev: "tls.record"
+        layer: 5
+        total_bytes: 5
+        fields:
+          - name: "Content Type"
+            abbrev: "tls.record.content_type"
+            bits: 8
+            value: "23 (Application Data)"
+
+      - name: "Alert (decrypted view)"
+        abbrev: "tls.alert"
+        layer: 6
+        total_bytes: 2
+        fields:
+          - name: "Level"
+            abbrev: "tls.alert.level"
+            bits: 8
+            value: "1 (Warning)"
+          - name: "Description"
+            abbrev: "tls.alert.description"
+            bits: 8
+            value: "0 (close_notify)"
+            description: "Both sides have exchanged close_notify — TLS session is cleanly terminated. TCP FIN follows."
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+  # ── TCP Handshake ──────────────────────────────────────────────
+  - id: "tcp_syn"
+    type: "frame_tx"
+    t_ns: 0
+    frame_id: "tcp_syn"
+    annotation:
+      text: "TCP SYN → Port 443 (HTTPS)"
+      detail: >
+        Client initiates a TCP connection to the server's HTTPS port (443).
+        TLS 1.3 runs over TCP (or QUIC/UDP in TLS 1.3 + HTTP/3, not shown here).
+        The TCP handshake must complete before TLS can begin.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "SYN_SENT"
+              src_port: 49152
+
+  - id: "tcp_syn_ack"
+    type: "frame_tx"
+    t_ns: 500000
+    frame_id: "tcp_syn_ack"
+    annotation:
+      text: "TCP SYN-ACK ← Server acknowledges"
+      detail: "Server responds with SYN-ACK."
+    state_after:
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "SYN_RECEIVED"
+
+  - id: "tcp_ack_handshake"
+    type: "frame_tx"
+    t_ns: 1000000
+    frame_id: "tcp_ack_handshake"
+    annotation:
+      text: "TCP ACK → Connection established"
+      detail: "TCP 3-way handshake complete. TLS handshake begins immediately."
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "ESTABLISHED"
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "ESTABLISHED"
+
+  # ── TLS 1.3 Handshake ─────────────────────────────────────────
+  - id: "tls_client_hello"
+    type: "frame_tx"
+    t_ns: 1100000
+    frame_id: "tls_client_hello"
+    annotation:
+      text: "TLS ClientHello — offers TLS 1.3 + x25519 key share"
+      detail: >
+        The client sends ClientHello containing:
+        • supported_versions: [TLS 1.3] — the ONLY way to negotiate TLS 1.3
+        • cipher_suites: [AES-256-GCM, AES-128-GCM, ChaCha20-Poly1305]
+        • key_share: x25519 client public key
+        • signature_algorithms: [ECDSA, RSA-PSS, Ed25519]
+        • server_name: www.example.com (SNI, still cleartext)
+
+        KEY DIFFERENCE from TLS 1.2: the client sends its ECDHE public key
+        in this first message. In TLS 1.2, the client had to wait for
+        ServerKeyExchange before computing the shared secret. This eager
+        key share is what enables TLS 1.3's 1-RTT handshake.
+
+        If the server doesn't support the offered key share group, it responds
+        with HelloRetryRequest asking the client to try a different group —
+        this adds one more round trip (rare in practice since x25519 is
+        universally supported).
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 6
+            state_fields:
+              tls_state: "WAIT_SH"
+          - layer: 5
+            state_fields:
+              content_type: "Handshake (ClientHello)"
+
+  - id: "tls_server_hello"
+    type: "frame_tx"
+    t_ns: 1600000
+    frame_id: "tls_server_hello"
+    annotation:
+      text: "TLS ServerHello — selects AES-256-GCM + x25519 key share"
+      detail: >
+        Server responds with ServerHello containing:
+        • supported_versions: TLS 1.3 (confirms version)
+        • cipher_suite: TLS_AES_256_GCM_SHA384
+        • key_share: x25519 server public key
+
+        At this point, BOTH sides can compute the ECDHE shared secret:
+          shared_secret = x25519(my_private_key, peer_public_key)
+
+        The TLS 1.3 key schedule then derives:
+        1. Early Secret = HKDF-Extract(0, 0)  [no PSK in full handshake]
+        2. Handshake Secret = HKDF-Extract(derived_secret, shared_secret)
+        3. Client/Server handshake traffic keys (for encrypting the rest
+           of the handshake)
+
+        EVERYTHING after ServerHello is encrypted with handshake traffic keys.
+        This means the server's certificate, extensions, and Finished are all
+        hidden from passive observers — a significant privacy improvement
+        over TLS 1.2 where the certificate was sent in cleartext.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 6
+            state_fields:
+              tls_state: "WAIT_EE"
+              cipher_suite: "TLS_AES_256_GCM_SHA384"
+              handshake_secret: "derived (HKDF-Extract)"
+      - actor_id: "server"
+        layers:
+          - layer: 6
+            state_fields:
+              tls_state: "WAIT_FLIGHT2"
+              cipher_suite: "TLS_AES_256_GCM_SHA384"
+              handshake_secret: "derived (HKDF-Extract)"
+          - layer: 5
+            state_fields:
+              content_type: "Handshake (ServerHello)"
+
+  - id: "tls_server_encrypted_flight"
+    type: "frame_tx"
+    t_ns: 1700000
+    frame_id: "tls_server_encrypted_flight"
+    annotation:
+      text: "Server encrypted flight — EncryptedExtensions + Certificate + CertificateVerify + Finished"
+      detail: >
+        The server sends four handshake messages, ALL encrypted with handshake
+        traffic keys derived from the ECDHE shared secret:
+
+        1. EncryptedExtensions — non-key extensions (ALPN: h2, etc.)
+        2. Certificate — X.509 certificate chain
+           (encrypted! In TLS 1.2 this was cleartext)
+        3. CertificateVerify — signature over handshake transcript proving
+           the server holds the private key matching the certificate
+        4. Finished — HMAC over entire handshake proving integrity
+
+        On the wire, these appear as "Application Data" (content type 23).
+        The real content type is hidden inside the encrypted payload as the
+        last byte (a TLS 1.3 "inner content type"). This prevents middleboxes
+        from interfering with specific handshake messages.
+
+        After verifying the server's Finished, the client can derive:
+        4. Master Secret = HKDF-Extract(derived_secret, 0)
+        5. Client/Server application traffic keys
+    state_after:
+      - actor_id: "server"
+        layers:
+          - layer: 6
+            state_fields:
+              tls_state: "WAIT_FINISHED"
+          - layer: 5
+            state_fields:
+              content_type: "Application Data (encrypted handshake)"
+
+  - id: "tls_client_finished"
+    type: "frame_tx"
+    t_ns: 2200000
+    frame_id: "tls_client_finished"
+    annotation:
+      text: "Client Finished (encrypted) — TLS 1.3 handshake complete in 1-RTT"
+      detail: >
+        Client sends its Finished message (encrypted with handshake keys):
+        • Verify Data = HMAC-SHA384(client_finished_key, Hash(all_handshake))
+
+        After the server verifies this, the handshake is complete.
+        Both sides now derive application traffic keys from the Master Secret:
+          client_app_key = HKDF-Expand(Master Secret, "c ap traffic", Hash)
+          server_app_key = HKDF-Expand(Master Secret, "s ap traffic", Hash)
+
+        Total: 1 round trip for the TLS handshake (after TCP).
+        Compare: TLS 1.2 needed 2 round trips.
+        With TLS 1.3 + 0-RTT (PSK resumption), it can be 0 round trips.
+
+        Note: The server can start sending application data immediately after
+        its own Finished — it doesn't need to wait for the client's Finished.
+        This is called "0.5-RTT data" in TLS 1.3.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 6
+            state_fields:
+              tls_state: "CONNECTED"
+              app_traffic_secret: "derived (HKDF-Expand)"
+              peer_verified: true
+          - layer: 5
+            state_fields:
+              content_type: "Application Data"
+      - actor_id: "server"
+        layers:
+          - layer: 6
+            state_fields:
+              tls_state: "CONNECTED"
+              app_traffic_secret: "derived (HKDF-Expand)"
+              client_verified: true
+
+  # ── Application Data ───────────────────────────────────────────
+  - id: "tls_app_data_request"
+    type: "frame_tx"
+    t_ns: 2300000
+    frame_id: "tls_app_data_request"
+    annotation:
+      text: "HTTPS GET request — encrypted with AES-256-GCM application traffic keys"
+      detail: >
+        Client sends an HTTP/2 GET request for the page. The entire HTTP
+        request (method, headers, path, cookies — everything) is encrypted
+        inside a TLS Application Data record.
+
+        Encryption: AES-256-GCM with a per-record nonce constructed from:
+          nonce = write_iv XOR sequence_number (64-bit)
+        The sequence number increments per record, ensuring nonce uniqueness
+        without explicit IV in the record (saving 8 bytes per record vs TLS 1.2).
+
+        Authentication: GCM produces a 128-bit tag covering the ciphertext
+        and the associated data (record header). Any tampering causes
+        decryption failure.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "request sent"
+              url: "https://www.example.com/"
+
+  - id: "tls_app_data_response"
+    type: "frame_tx"
+    t_ns: 2800000
+    frame_id: "tls_app_data_response"
+    annotation:
+      text: "HTTPS 200 OK response — encrypted page content"
+      detail: >
+        Server responds with the page content, encrypted with its application
+        traffic key. Large responses span multiple TLS records (max 16,384
+        bytes of plaintext per record, plus 256 bytes for content type and
+        padding).
+
+        HTTP/2 multiplexes multiple streams within a single TLS connection,
+        so concurrent requests for CSS, JS, images all share this encrypted
+        tunnel.
+    state_after:
+      - actor_id: "server"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "response sent"
+
+  # ── TLS Close ──────────────────────────────────────────────────
+  - id: "tls_close_client"
+    type: "frame_tx"
+    t_ns: 5000000
+    frame_id: "tls_close_notify_client"
+    annotation:
+      text: "TLS close_notify alert — client initiates graceful shutdown"
+      detail: >
+        Client sends close_notify to signal it will send no more TLS data.
+        This alert is encrypted (appears as Application Data on the wire).
+
+        close_notify prevents truncation attacks — without it, an attacker
+        could silently drop data by terminating the TCP connection. With
+        close_notify, both sides know the data transfer completed.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 6
+            state_fields:
+              tls_state: "CLOSE_NOTIFY_SENT"
+
+  - id: "tls_close_server"
+    type: "frame_tx"
+    t_ns: 5100000
+    frame_id: "tls_close_notify_server"
+    annotation:
+      text: "TLS close_notify ← Server responds, TLS session cleanly closed"
+      detail: >
+        Server acknowledges with its own close_notify. Both sides now know
+        the TLS session is cleanly terminated. TCP FIN/ACK follows to
+        close the transport connection.
+    state_after:
+      - actor_id: "server"
+        layers:
+          - layer: 6
+            state_fields:
+              tls_state: "CLOSED"
+      - actor_id: "client"
+        layers:
+          - layer: 6
+            state_fields:
+              tls_state: "CLOSED"
+
+  # ── Summary ────────────────────────────────────────────────────
+  - id: "evt_summary"
+    type: "annotation"
+    t_ns: 6000000
+    annotation:
+      text: "Scenario complete — TLS 1.3 Full Handshake"
+      detail: >
+        This scenario demonstrated the TLS 1.3 (RFC 8446) full handshake:
+
+        TCP HANDSHAKE (3 packets):
+          SYN → SYN-ACK → ACK
+
+        TLS 1.3 HANDSHAKE (3 messages, 1 round trip):
+          ClientHello (key_share: x25519 public key)
+          ServerHello (key_share: x25519 public key)
+          → Both sides compute ECDHE shared secret
+          Server: {EncryptedExtensions, Certificate, CertificateVerify, Finished}
+                  ↑ ALL encrypted with handshake traffic keys
+          Client: {Finished}
+
+        APPLICATION DATA:
+          Bidirectional HTTP/2 over AES-256-GCM
+
+        TLS CLOSE:
+          Mutual close_notify alerts
+
+        Key improvements over TLS 1.2:
+        • 1-RTT handshake (vs 2-RTT) — client sends key share eagerly
+        • Certificate encrypted — passive observers can't see server identity
+        • Only AEAD cipher suites — no CBC padding oracles, no RC4, no 3DES
+        • No RSA key transport — always forward-secret (ECDHE required)
+        • Simplified state machine — fewer moving parts, fewer attacks
+        • Key schedule based on HKDF — clean, analyzable key derivation
+        • 0-RTT available for resumption (with replay caveats)
+
+        Cipher suite negotiated: TLS_AES_256_GCM_SHA384
+        Key exchange: x25519 (Curve25519 ECDHE)
+        Server authentication: ECDSA (secp256r1) certificate
+
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
+glossary:
+  - term: "TLS 1.3"
+    definition: "RFC 8446 (August 2018). Major revision of TLS reducing handshake latency to 1-RTT, mandating forward secrecy, encrypting the certificate, and removing all non-AEAD cipher suites."
+    spec_refs:
+      - document: "RFC 8446"
+        section: "1"
+        title: "Introduction"
+        url: "https://www.rfc-editor.org/rfc/rfc8446#section-1"
+
+  - term: "ECDHE"
+    abbrev: "ECDHE"
+    definition: "Elliptic Curve Diffie-Hellman Ephemeral — key agreement protocol where both parties generate ephemeral key pairs and compute a shared secret. Provides forward secrecy: compromising the server's long-term key doesn't reveal past session keys."
+
+  - term: "x25519"
+    definition: "Elliptic curve Diffie-Hellman function on Curve25519. 32-byte public keys, 32-byte private keys, constant-time implementation. The most widely used key exchange in TLS 1.3."
+    spec_refs:
+      - document: "RFC 7748"
+        section: "5"
+        title: "The X25519 Function"
+        url: "https://www.rfc-editor.org/rfc/rfc7748#section-5"
+
+  - term: "AEAD"
+    abbrev: "AEAD"
+    definition: "Authenticated Encryption with Associated Data — encryption scheme that provides both confidentiality and integrity in a single operation. TLS 1.3 ONLY supports AEAD suites (AES-GCM, ChaCha20-Poly1305)."
+
+  - term: "AES-256-GCM"
+    definition: "256-bit AES in Galois/Counter Mode — AEAD cipher providing encryption (CTR mode) and authentication (GHASH). Produces a 128-bit authentication tag. Hardware-accelerated on modern CPUs via AES-NI."
+
+  - term: "HKDF"
+    abbrev: "HKDF"
+    definition: "HMAC-based Key Derivation Function (RFC 5869). Used in TLS 1.3's key schedule to extract and expand keying material. HKDF-Extract concentrates entropy; HKDF-Expand derives keys of arbitrary length."
+    spec_refs:
+      - document: "RFC 5869"
+        section: "1"
+        title: "HMAC-based Extract-and-Expand Key Derivation Function"
+        url: "https://www.rfc-editor.org/rfc/rfc5869"
+
+  - term: "Forward Secrecy"
+    definition: "Property ensuring that compromise of long-term keys (server certificate private key) does not compromise past session keys. Guaranteed in TLS 1.3 because key exchange is always ephemeral (EC)DHE — RSA key transport was removed."
+
+  - term: "SNI"
+    abbrev: "SNI"
+    definition: "Server Name Indication — TLS extension in ClientHello that tells the server which hostname the client is connecting to. Required for virtual hosting (multiple sites on one IP). Sent in cleartext in TLS 1.3 (ECH/ESNI drafts aim to encrypt it)."
+
+  - term: "close_notify"
+    definition: "TLS alert message signaling that the sender will not send any more data. Both peers should exchange close_notify for a clean shutdown. Prevents truncation attacks where an attacker closes the TCP connection to silently cut off data."

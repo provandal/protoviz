@@ -111,6 +111,16 @@
       "path": "gpudirect-storage/gpudirect-storage-rdma-remote.yaml"
     },
     {
+      "slug": "tls-1.3-handshake",
+      "title": "TLS 1.3: Full Handshake \u2192 Encrypted Application Data \u2192 Alert Close",
+      "protocol": "TLS 1.3",
+      "protocol_family": "TCP/IP",
+      "difficulty": "intermediate",
+      "description": "Complete TLS 1.3 (RFC 8446) flow: TCP handshake, 1-RTT TLS handshake with x25519 key exchange (ClientHello key_share + ServerHello key_share), encrypted server flight (EncryptedExtensions + Certificate + CertificateVerify + Finished), application data over AES-256-GCM, and graceful close_notify teardown.",
+      "tags": ["TLS", "TLS 1.3", "encryption", "HTTPS", "x25519", "ECDHE", "AEAD", "AES-GCM", "transport security", "education"],
+      "path": "tls/tls-1.3-handshake.yaml"
+    },
+    {
       "slug": "nccl-allreduce-rocev2",
       "title": "NCCL AllReduce: Ring Algorithm over RoCEv2 (4 GPUs)",
       "protocol": "NCCL / RoCEv2",
