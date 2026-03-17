@@ -219,6 +219,18 @@ function inferPhase(event, lastPhase) {
   if (/scsi.*read|fcp.*read|\bread\(10\)|\bread_cmd\b/i.test(text)
       || /read_cmd|read_data|read_rsp/.test(id)) return 'SCSI Read';
 
+  // SMB Direct phases (before RDMA — SMB events contain "write"/"read" in IDs)
+  if (/smb\s*direct.*negotiate|smbd.*negotiate/i.test(text)
+      || /smbd_negotiate/.test(id)) return 'SMB Direct Setup';
+  if (/smb2.*negotiate/i.test(text) || /smb2_negotiate/.test(id)) return 'SMB Negotiate';
+  if (/session.?setup|tree.?connect/i.test(text)
+      || /smb2_session/.test(id)) return 'SMB Session';
+  if (/smb2.*create/i.test(text) || /smb2_create/.test(id)) return 'SMB File Open';
+  if (/smb2.*write|smb.*write.*rdma/i.test(text)
+      || /smb2_write|smb_write/.test(id)) return 'SMB Write';
+  if (/smb2.*read|smb.*read.*rdma/i.test(text)
+      || /smb2_read|smb_read/.test(id)) return 'SMB Read';
+
   // CM takes priority (CM events also mention QP transitions)
   if (/\bcm\b/.test(text) || /cm[_ ]/.test(id)) return 'CM';
 

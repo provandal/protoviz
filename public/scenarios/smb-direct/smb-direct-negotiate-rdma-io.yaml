@@ -1,0 +1,1366 @@
+meta:
+  id: "smb-direct-negotiate-rdma-io"
+  title: "SMB Direct: Negotiate → RDMA Channel → File Read & Write over RoCEv2"
+  protocol: "SMB Direct (SMB 3.x over RDMA)"
+  protocol_family: "RDMA"
+  version: "1.0.0"
+  description: >
+    SMB Direct (MS-SMBD) enables SMB 3.x file sharing over RDMA transports
+    (RoCEv2, iWARP). After TCP-based SMB negotiation discovers RDMA capability,
+    the connection migrates to an RDMA channel. File reads use RDMA READ
+    (server pulls from client buffer) and file writes use RDMA WRITE
+    (server pushes data to client buffer), both bypassing the CPU data path.
+    This scenario covers: TCP connection, SMB2 NEGOTIATE with RDMA capabilities,
+    SMB Direct negotiation, RDMA channel establishment, SMB2 SESSION_SETUP,
+    TREE_CONNECT, CREATE, WRITE via RDMA, and READ via RDMA.
+
+  learning_objectives:
+    - "Understand how SMB3 discovers RDMA capability during NEGOTIATE"
+    - "See the SMB Direct (MS-SMBD) negotiation that establishes the RDMA channel"
+    - "Follow how file data bypasses TCP entirely once the RDMA channel is active"
+    - "Trace SMB2 WRITE with RDMA: client offers buffer descriptor, server RDMA READs data"
+    - "Trace SMB2 READ with RDMA: server RDMA WRITEs data into client's registered buffer"
+    - "Understand SMB Direct credit management for flow control"
+    - "Appreciate the CPU offload benefit: file server data path is zero-copy"
+
+  difficulty: "advanced"
+
+  authors:
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+
+  created: "2026-03-17"
+  updated: "2026-03-17"
+
+  tags:
+    - "SMB"
+    - "SMB Direct"
+    - "SMB3"
+    - "RDMA"
+    - "RoCEv2"
+    - "MS-SMBD"
+    - "file sharing"
+    - "Windows"
+    - "Hyper-V"
+    - "education"
+
+  primary_specs:
+    - document: "MS-SMBD"
+      section: "1"
+      title: "SMB2 Remote Direct Memory Access (RDMA) Transport Protocol"
+      url: "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smbd/"
+      alt_url: ""
+    - document: "MS-SMB2"
+      section: "2.2"
+      title: "Server Message Block (SMB) Protocol Versions 2 and 3"
+      url: "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/"
+      alt_url: ""
+
+  content_disclaimer: >
+    This scenario illustrates SMB Direct as specified in MS-SMBD and MS-SMB2.
+    Actual implementations may vary. SMB Direct is primarily a Windows Server
+    and Windows client technology, also supported by Samba with RDMA transport.
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "client"
+      type: "host"
+      label: "SMB Client (Hyper-V Host)"
+      description: "Windows Server running Hyper-V, accessing VHDx files over SMB Direct"
+      hardware: "Server + 100GbE RNIC"
+      os: "Windows Server 2022"
+      ip: "192.168.10.1"
+      mac: "00:02:c9:aa:00:01"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "Lossless 100GbE Switch"
+      description: "Data center switch with PFC/ECN for RoCEv2"
+      hardware: "100GbE switch"
+      position: "center"
+
+    - id: "server"
+      type: "host"
+      label: "SMB File Server (SOFS)"
+      description: "Scale-Out File Server sharing CSV/VHDx over SMB Direct"
+      hardware: "Server + 100GbE RNIC"
+      os: "Windows Server 2022"
+      ip: "192.168.10.2"
+      mac: "00:02:c9:aa:00:02"
+      position: "right"
+
+  links:
+    - id: "link-client-sw"
+      from: "client"
+      to: "switch"
+      speed_gbps: 100
+      media: "fiber_sr"
+      fec: "RS(544,514)"
+    - id: "link-sw-server"
+      from: "switch"
+      to: "server"
+      speed_gbps: 100
+      media: "fiber_sr"
+      fec: "RS(544,514)"
+
+# ─────────────────────────────────────────────────────────────────
+# OSI LAYERS
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  client:
+    - layer: 7
+      name: "SMB2/3 Client"
+      components: ["mrxsmb20.sys", "Hyper-V VM worker"]
+      state_schema:
+        smb_state:
+          type: "string"
+          initial: "disconnected"
+        dialect:
+          type: "string"
+          initial: "—"
+        tree_id:
+          type: "string"
+          initial: "—"
+        file_id:
+          type: "string"
+          initial: "—"
+
+    - layer: 6
+      name: "SMB Direct (MS-SMBD)"
+      components: ["smbdirect.sys"]
+      state_schema:
+        smbd_state:
+          type: "string"
+          initial: "idle"
+        credits_granted:
+          type: "integer"
+          description: "SMBD receive credits from peer"
+          initial: 0
+        max_read_write_size:
+          type: "integer"
+          description: "Max RDMA read/write size negotiated"
+          initial: 0
+        rdma_transform:
+          type: "string"
+          initial: "—"
+
+    - layer: 5
+      name: "IB Transport (RC QP)"
+      components: ["NetworkDirect (ND)", "RDMA verbs"]
+      state_schema:
+        qp_state:
+          type: "string"
+          initial: "RESET"
+
+    - layer: 4
+      name: "UDP (RoCEv2)"
+      components: ["RNIC hardware"]
+      state_schema:
+        dst_port:
+          type: "integer"
+          initial: 4791
+
+    - layer: 3
+      name: "IP"
+      components: ["tcpip.sys"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "192.168.10.1"
+
+    - layer: 2
+      name: "Ethernet / PFC"
+      components: ["NIC driver", "802.1Qbb"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+
+    - layer: 1
+      name: "Physical (100GbE)"
+      components: ["100GBASE-SR4"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "up"
+
+  server:
+    - layer: 7
+      name: "SMB2/3 Server"
+      components: ["srv2.sys", "SOFS role"]
+      state_schema:
+        smb_state:
+          type: "string"
+          initial: "listening"
+        dialect:
+          type: "string"
+          initial: "—"
+
+    - layer: 6
+      name: "SMB Direct (MS-SMBD)"
+      components: ["smbdirect.sys"]
+      state_schema:
+        smbd_state:
+          type: "string"
+          initial: "listening"
+        credits_granted:
+          type: "integer"
+          initial: 0
+        max_read_write_size:
+          type: "integer"
+          initial: 0
+
+    - layer: 5
+      name: "IB Transport (RC QP)"
+      components: ["NetworkDirect (ND)"]
+      state_schema:
+        qp_state:
+          type: "string"
+          initial: "RESET"
+
+    - layer: 4
+      name: "UDP (RoCEv2)"
+      components: ["RNIC hardware"]
+      state_schema:
+        dst_port:
+          type: "integer"
+          initial: 4791
+
+    - layer: 3
+      name: "IP"
+      components: ["tcpip.sys"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "192.168.10.2"
+
+    - layer: 2
+      name: "Ethernet / PFC"
+      components: ["NIC driver", "802.1Qbb"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+
+    - layer: 1
+      name: "Physical (100GbE)"
+      components: ["100GBASE-SR4"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "up"
+
+  switch:
+    - layer: 2
+      name: "Ethernet Switching"
+      components: ["802.1Q", "802.1Qbb PFC"]
+      state_schema:
+        fwd_table_entries:
+          type: "integer"
+          initial: 0
+    - layer: 1
+      name: "Physical"
+      components: ["100GBASE-SR4"]
+      state_schema:
+        port_client_phy:
+          type: "string"
+          initial: "up"
+        port_server_phy:
+          type: "string"
+          initial: "up"
+
+# ─────────────────────────────────────────────────────────────────
+# FRAMES
+# ─────────────────────────────────────────────────────────────────
+frames:
+  # ── SMB Direct Negotiate (over RDMA SEND) ─────────────────────
+  - id: "smbd_negotiate_req"
+    name: "SMB Direct Negotiate Request"
+    description: "Client proposes SMB Direct parameters over RDMA SEND"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    total_bytes: 138
+    color: "#7c3aed"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.10.1"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.10.2"
+
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+            description: "RoCEv2"
+
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "RDMA SEND — SMB Direct control messages use SEND/RECV"
+          - name: "Destination QP"
+            abbrev: "bth.dqp"
+            bits: 24
+            value: "0x000100"
+
+      - name: "SMB Direct Negotiate"
+        abbrev: "smbd.negotiate"
+        layer: 6
+        total_bytes: 36
+        fields:
+          - name: "Min Version"
+            abbrev: "smbd.negotiate.min_version"
+            bits: 16
+            value: "0x0100"
+            description: "SMB Direct version 1.0"
+            spec_refs:
+              - document: "MS-SMBD"
+                section: "2.2.1"
+                title: "SMB Direct Negotiate Request"
+                url: "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smbd/"
+          - name: "Max Version"
+            abbrev: "smbd.negotiate.max_version"
+            bits: 16
+            value: "0x0100"
+          - name: "Credits Requested"
+            abbrev: "smbd.negotiate.credits"
+            bits: 16
+            value: 255
+            description: "Initial receive credits requested from server — flow control for RDMA SEND operations"
+          - name: "Preferred Send Size"
+            abbrev: "smbd.negotiate.send_size"
+            bits: 32
+            value: 1364
+            description: "Preferred size for RDMA SEND payloads (control messages)"
+          - name: "Max Receive Size"
+            abbrev: "smbd.negotiate.max_recv"
+            bits: 32
+            value: 8192
+          - name: "Max Fragmented Size"
+            abbrev: "smbd.negotiate.max_frag"
+            bits: 32
+            value: 1048576
+            description: "1 MB — max SMB message that can be fragmented across multiple SEND operations"
+          - name: "Max Read/Write Size"
+            abbrev: "smbd.negotiate.max_rdma_rw"
+            bits: 32
+            value: 1048576
+            description: "1 MB — max size for a single RDMA READ or WRITE operation (bulk data transfer)"
+
+  - id: "smbd_negotiate_resp"
+    name: "SMB Direct Negotiate Response"
+    description: "Server accepts and returns its SMB Direct parameters"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    total_bytes: 138
+    color: "#7c3aed"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "RDMA SEND"
+
+      - name: "SMB Direct Negotiate Response"
+        abbrev: "smbd.negotiate_resp"
+        layer: 6
+        total_bytes: 36
+        fields:
+          - name: "Status"
+            abbrev: "smbd.negotiate_resp.status"
+            bits: 32
+            value: "0x00000000 (Success)"
+            spec_refs:
+              - document: "MS-SMBD"
+                section: "2.2.2"
+                title: "SMB Direct Negotiate Response"
+                url: "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smbd/"
+          - name: "Credits Granted"
+            abbrev: "smbd.negotiate_resp.credits"
+            bits: 16
+            value: 255
+            description: "Server grants 255 receive credits — client can send up to 255 messages before needing more credits"
+          - name: "Max Read/Write Size"
+            abbrev: "smbd.negotiate_resp.max_rdma_rw"
+            bits: 32
+            value: 1048576
+            description: "1 MB RDMA read/write — server agrees"
+
+  # ── SMB2 NEGOTIATE (over SMB Direct SEND) ─────────────────────
+  - id: "smb2_negotiate_req"
+    name: "SMB2 NEGOTIATE Request (over SMB Direct)"
+    description: "Standard SMB2 negotiate — now carried over the RDMA channel"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    total_bytes: 300
+    color: "#1e40af"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "RDMA SEND — SMB2 control carried via RDMA SEND"
+
+      - name: "SMB Direct Data Transfer"
+        abbrev: "smbd.data"
+        layer: 6
+        total_bytes: 24
+        fields:
+          - name: "Credits Requested"
+            abbrev: "smbd.data.credits_requested"
+            bits: 16
+            value: 255
+          - name: "Credits Granted"
+            abbrev: "smbd.data.credits_granted"
+            bits: 16
+            value: 10
+            description: "Piggyback credit grant on every data message"
+          - name: "Data Length"
+            abbrev: "smbd.data.length"
+            bits: 32
+            value: 232
+          - name: "Remaining Data Length"
+            abbrev: "smbd.data.remaining"
+            bits: 32
+            value: 0
+            description: "0 = complete message (not fragmented)"
+
+      - name: "SMB2 NEGOTIATE"
+        abbrev: "smb2.negotiate"
+        layer: 7
+        total_bytes: 232
+        fields:
+          - name: "Command"
+            abbrev: "smb2.cmd"
+            bits: 16
+            value: "0x0000 (NEGOTIATE)"
+            spec_refs:
+              - document: "MS-SMB2"
+                section: "2.2.3"
+                title: "SMB2 NEGOTIATE Request"
+                url: "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/"
+          - name: "Dialects"
+            abbrev: "smb2.negotiate.dialects"
+            bits: 48
+            value: "[0x0311 (SMB 3.1.1), 0x0302 (SMB 3.0.2), 0x0300 (SMB 3.0)]"
+            description: "SMB3 dialects — required for RDMA. SMB2 does not support RDMA."
+          - name: "Negotiate Context: RDMA Transform"
+            abbrev: "smb2.negotiate.rdma_transform"
+            bits: 32
+            value: "SMB2_RDMA_TRANSFORM_ENCRYPTION"
+            description: "Requests RDMA transform capabilities — allows encrypting RDMA payloads (SMB 3.1.1 feature)"
+
+  - id: "smb2_negotiate_resp"
+    name: "SMB2 NEGOTIATE Response"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    total_bytes: 350
+    color: "#1e40af"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+
+      - name: "SMB2 NEGOTIATE Response"
+        abbrev: "smb2.negotiate_resp"
+        layer: 7
+        total_bytes: 280
+        fields:
+          - name: "Dialect Revision"
+            abbrev: "smb2.negotiate_resp.dialect"
+            bits: 16
+            value: "0x0311 (SMB 3.1.1)"
+          - name: "Capabilities"
+            abbrev: "smb2.negotiate_resp.capabilities"
+            bits: 32
+            value: "MULTI_CHANNEL | LARGE_MTU"
+            description: "SMB Multichannel for RDMA + TCP failover"
+          - name: "Max Read Size"
+            abbrev: "smb2.negotiate_resp.max_read"
+            bits: 32
+            value: 1048576
+            description: "1 MB — matches SMB Direct negotiated RDMA R/W size"
+          - name: "Max Write Size"
+            abbrev: "smb2.negotiate_resp.max_write"
+            bits: 32
+            value: 1048576
+
+  # ── SMB2 SESSION_SETUP + TREE_CONNECT ─────────────────────────
+  - id: "smb2_session_tree"
+    name: "SMB2 SESSION_SETUP + TREE_CONNECT (combined view)"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    total_bytes: 400
+    color: "#1e40af"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+
+      - name: "SMB2 SESSION_SETUP"
+        abbrev: "smb2.session_setup"
+        layer: 7
+        total_bytes: 200
+        fields:
+          - name: "Command"
+            abbrev: "smb2.cmd"
+            bits: 16
+            value: "0x0001 (SESSION_SETUP)"
+          - name: "Security Mode"
+            abbrev: "smb2.session.security_mode"
+            bits: 8
+            value: "Signing Enabled"
+          - name: "Security Buffer (SPNEGO)"
+            abbrev: "smb2.session.security_buffer"
+            bits: 0
+            value: "NTLMSSP / Kerberos token"
+            description: "GSSAPI/SPNEGO wrapping Kerberos (domain) or NTLM authentication"
+
+  - id: "smb2_session_tree_resp"
+    name: "SMB2 SESSION_SETUP + TREE_CONNECT Responses"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    total_bytes: 300
+    color: "#1e40af"
+    headers:
+      - name: "SMB2 SESSION_SETUP Response"
+        abbrev: "smb2.session_resp"
+        layer: 7
+        total_bytes: 100
+        fields:
+          - name: "Status"
+            abbrev: "smb2.session_resp.status"
+            bits: 32
+            value: "STATUS_SUCCESS"
+          - name: "Session ID"
+            abbrev: "smb2.session_resp.session_id"
+            bits: 64
+            value: "0x0000040000000025"
+
+      - name: "SMB2 TREE_CONNECT Response"
+        abbrev: "smb2.tree_connect_resp"
+        layer: 7
+        total_bytes: 50
+        fields:
+          - name: "Share"
+            abbrev: "smb2.tree_connect.share"
+            bits: 0
+            value: "\\\\server\\share$"
+          - name: "Tree ID"
+            abbrev: "smb2.tree_connect_resp.tree_id"
+            bits: 32
+            value: "0x00000001"
+
+  # ── SMB2 CREATE (open file) ───────────────────────────────────
+  - id: "smb2_create_req"
+    name: "SMB2 CREATE Request"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    total_bytes: 250
+    color: "#0e7490"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+
+      - name: "SMB2 CREATE"
+        abbrev: "smb2.create"
+        layer: 7
+        total_bytes: 180
+        fields:
+          - name: "Command"
+            abbrev: "smb2.cmd"
+            bits: 16
+            value: "0x0005 (CREATE)"
+            spec_refs:
+              - document: "MS-SMB2"
+                section: "2.2.13"
+                title: "SMB2 CREATE Request"
+                url: "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/"
+          - name: "File Name"
+            abbrev: "smb2.create.filename"
+            bits: 0
+            value: "vm01.vhdx"
+            description: "Hyper-V virtual disk file — these are large, sequential, latency-sensitive I/Os that benefit enormously from RDMA"
+          - name: "Desired Access"
+            abbrev: "smb2.create.access"
+            bits: 32
+            value: "GENERIC_READ | GENERIC_WRITE"
+          - name: "Create Disposition"
+            abbrev: "smb2.create.disposition"
+            bits: 32
+            value: "FILE_OPEN"
+
+  - id: "smb2_create_resp"
+    name: "SMB2 CREATE Response"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    total_bytes: 200
+    color: "#0e7490"
+    headers:
+      - name: "SMB2 CREATE Response"
+        abbrev: "smb2.create_resp"
+        layer: 7
+        total_bytes: 150
+        fields:
+          - name: "Status"
+            abbrev: "smb2.create_resp.status"
+            bits: 32
+            value: "STATUS_SUCCESS"
+          - name: "File ID"
+            abbrev: "smb2.create_resp.file_id"
+            bits: 128
+            value: "0x0000...0025"
+            description: "Persistent handle for vm01.vhdx"
+          - name: "File Size"
+            abbrev: "smb2.create_resp.file_size"
+            bits: 64
+            value: "107374182400 (100 GB)"
+
+  # ── SMB2 WRITE via RDMA ──────────────────────────────────────
+  - id: "smb2_write_req"
+    name: "SMB2 WRITE Request (with RDMA buffer descriptor)"
+    description: "Client sends WRITE command with buffer descriptor — server will RDMA READ the data"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    total_bytes: 180
+    color: "#991b1b"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "RDMA SEND — the WRITE command itself is sent via SEND; the DATA will follow via RDMA READ"
+
+      - name: "SMB2 WRITE"
+        abbrev: "smb2.write"
+        layer: 7
+        total_bytes: 120
+        fields:
+          - name: "Command"
+            abbrev: "smb2.cmd"
+            bits: 16
+            value: "0x0009 (WRITE)"
+            spec_refs:
+              - document: "MS-SMB2"
+                section: "2.2.21"
+                title: "SMB2 WRITE Request"
+                url: "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/"
+          - name: "Write Length"
+            abbrev: "smb2.write.length"
+            bits: 32
+            value: 1048576
+            description: "1 MB write"
+          - name: "File Offset"
+            abbrev: "smb2.write.offset"
+            bits: 64
+            value: 0
+          - name: "Channel"
+            abbrev: "smb2.write.channel"
+            bits: 32
+            value: "SMB2_CHANNEL_RDMA_V1"
+            description: "Signals that WriteChannelInfo contains an RDMA buffer descriptor, NOT inline data"
+          - name: "Buffer Descriptor (RDMA)"
+            abbrev: "smb2.write.rdma_buffer"
+            bits: 0
+            value: "Offset: 0x7f0000000000, Token (rkey): 0x1234, Length: 1048576"
+            description: "Client tells the server: 'My data is in this registered memory buffer. RDMA READ it.' The server's RNIC fetches the data directly from client memory without involving either CPU."
+            spec_refs:
+              - document: "MS-SMBD"
+                section: "2.2.3"
+                title: "SMB_DIRECT_BUFFER_DESCRIPTOR_V1"
+                url: "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smbd/"
+
+  - id: "smb_write_rdma_read"
+    name: "RDMA READ (server fetches write data from client)"
+    description: "Server's RNIC RDMA READs 1MB from client's registered buffer"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    total_bytes: 1048630
+    color: "#991b1b"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x0c"
+            description: "RDMA READ Request — server asks client's RNIC to return 1MB of data from the buffer descriptor address"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 100
+
+      - name: "RETH"
+        abbrev: "reth"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - name: "Virtual Address"
+            abbrev: "reth.va"
+            bits: 64
+            value: "0x00007f0000000000"
+            description: "Client's registered buffer VA — where the write data resides"
+          - name: "R_Key"
+            abbrev: "reth.rkey"
+            bits: 32
+            value: "0x00001234"
+            description: "Client's memory region key from the buffer descriptor"
+          - name: "DMA Length"
+            abbrev: "reth.dma_len"
+            bits: 32
+            value: 1048576
+            description: "1 MB — full write payload fetched in one RDMA READ"
+
+  - id: "smb2_write_resp"
+    name: "SMB2 WRITE Response"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    total_bytes: 120
+    color: "#991b1b"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "RDMA SEND — response/status messages use SEND"
+
+      - name: "SMB2 WRITE Response"
+        abbrev: "smb2.write_resp"
+        layer: 7
+        total_bytes: 48
+        fields:
+          - name: "Status"
+            abbrev: "smb2.write_resp.status"
+            bits: 32
+            value: "STATUS_SUCCESS"
+          - name: "Bytes Written"
+            abbrev: "smb2.write_resp.count"
+            bits: 32
+            value: 1048576
+            description: "1 MB written to file — data was fetched by the server directly from client memory via RDMA READ"
+
+  # ── SMB2 READ via RDMA ───────────────────────────────────────
+  - id: "smb2_read_req"
+    name: "SMB2 READ Request (with RDMA buffer descriptor)"
+    description: "Client sends READ command with buffer descriptor — server will RDMA WRITE data to client"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    total_bytes: 180
+    color: "#6b21a8"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "RDMA SEND — the READ command is sent via SEND"
+
+      - name: "SMB2 READ"
+        abbrev: "smb2.read"
+        layer: 7
+        total_bytes: 120
+        fields:
+          - name: "Command"
+            abbrev: "smb2.cmd"
+            bits: 16
+            value: "0x0008 (READ)"
+            spec_refs:
+              - document: "MS-SMB2"
+                section: "2.2.19"
+                title: "SMB2 READ Request"
+                url: "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/"
+          - name: "Read Length"
+            abbrev: "smb2.read.length"
+            bits: 32
+            value: 1048576
+            description: "1 MB read"
+          - name: "File Offset"
+            abbrev: "smb2.read.offset"
+            bits: 64
+            value: 0
+          - name: "Channel"
+            abbrev: "smb2.read.channel"
+            bits: 32
+            value: "SMB2_CHANNEL_RDMA_V1"
+            description: "Server should RDMA WRITE the data into the client's buffer"
+          - name: "Buffer Descriptor (RDMA)"
+            abbrev: "smb2.read.rdma_buffer"
+            bits: 0
+            value: "Offset: 0x7f0000100000, Token (rkey): 0x5678, Length: 1048576"
+            description: "Client offers a registered memory buffer. Server will RDMA WRITE file data directly into this buffer — zero CPU copy on both sides."
+
+  - id: "smb_read_rdma_write"
+    name: "RDMA WRITE (server pushes read data to client)"
+    description: "Server's RNIC RDMA WRITEs 1MB of file data directly into client's buffer"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    total_bytes: 1048630
+    color: "#6b21a8"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x0a"
+            description: "RDMA WRITE — server pushes file data directly into client's registered memory"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 200
+
+      - name: "RETH"
+        abbrev: "reth"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - name: "Virtual Address"
+            abbrev: "reth.va"
+            bits: 64
+            value: "0x00007f0000100000"
+            description: "Client's registered buffer for read data"
+          - name: "R_Key"
+            abbrev: "reth.rkey"
+            bits: 32
+            value: "0x00005678"
+          - name: "DMA Length"
+            abbrev: "reth.dma_len"
+            bits: 32
+            value: 1048576
+            description: "1 MB file data written directly into client memory"
+
+  - id: "smb2_read_resp"
+    name: "SMB2 READ Response (data already delivered via RDMA WRITE)"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    total_bytes: 120
+    color: "#6b21a8"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "RDMA SEND — completion status only (data already in client's buffer)"
+
+      - name: "SMB2 READ Response"
+        abbrev: "smb2.read_resp"
+        layer: 7
+        total_bytes: 48
+        fields:
+          - name: "Status"
+            abbrev: "smb2.read_resp.status"
+            bits: 32
+            value: "STATUS_SUCCESS"
+          - name: "Data Remaining"
+            abbrev: "smb2.read_resp.remaining"
+            bits: 32
+            value: 0
+            description: "All data delivered via RDMA WRITE — response contains no inline data"
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+  # ── Setup ─────────────────────────────────────────────────────
+  - id: "evt_phy_link"
+    type: "state_change"
+    t_ns: 0
+    annotation:
+      text: "Physical link up — 100GbE lossless fabric for SMB Direct"
+      detail: >
+        Both hosts connect via 100GbE with PFC enabled (required for RoCEv2
+        lossless transport). SMB Direct on Windows detects RDMA-capable NICs
+        via NetworkDirect (ND) providers registered in the system.
+
+        SMB Direct is supported on:
+        • Windows Server 2012 and later (built-in)
+        • Windows 10/11 Enterprise/Pro (client)
+        • Samba 4.x with RDMA support
+        • RNIC hardware: ConnectX, E810, EFA, etc.
+    state_after:
+      - actor_id: "switch"
+        layers:
+          - layer: 1
+            state_fields:
+              port_client_phy: "up"
+              port_server_phy: "up"
+
+  - id: "evt_qp_ready"
+    type: "state_change"
+    t_ns: 50000000
+    annotation:
+      text: "RDMA QPs connected — SMB Direct establishes the RDMA channel"
+      detail: >
+        Before SMB Direct negotiation, the underlying RDMA connection must be
+        established. The client connects to the server's RDMA listener (port 5445)
+        via CM REQ/REP/RTU (or iWARP MPA if using iWARP transport).
+
+        Once the QP reaches RTS state, the SMB Direct negotiation can begin
+        over RDMA SEND/RECV.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 5
+            state_fields:
+              qp_state: "RTS"
+      - actor_id: "server"
+        layers:
+          - layer: 5
+            state_fields:
+              qp_state: "RTS"
+
+  # ── SMB Direct Negotiate ──────────────────────────────────────
+  - id: "smbd_negotiate_req"
+    type: "frame_tx"
+    t_ns: 100000000
+    frame_id: "smbd_negotiate_req"
+    annotation:
+      text: "SMB Direct Negotiate Request — client proposes RDMA parameters"
+      detail: >
+        The client sends an SMB Direct Negotiate message over RDMA SEND
+        proposing:
+        • Credits: 255 (flow control for SEND-based messages)
+        • Preferred Send Size: 1364 bytes
+        • Max Fragmented Size: 1 MB (for large SMB messages split across SENDs)
+        • Max Read/Write Size: 1 MB (for RDMA READ/WRITE bulk transfers)
+
+        Credit management is critical: each RDMA SEND consumes one credit at
+        the receiver. Without credits, the sender must wait — this prevents
+        receive queue overflow.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 6
+            state_fields:
+              smbd_state: "negotiate sent"
+
+  - id: "smbd_negotiate_resp"
+    type: "frame_tx"
+    t_ns: 100500000
+    frame_id: "smbd_negotiate_resp"
+    annotation:
+      text: "SMB Direct Negotiate Response — RDMA channel established"
+      detail: >
+        Server accepts the SMB Direct parameters. The RDMA channel is now
+        active — all subsequent SMB2 messages will be carried over RDMA
+        SEND/RECV instead of TCP.
+
+        Key negotiated values:
+        • Credits: 255 (bidirectional)
+        • Max RDMA Read/Write: 1 MB
+        • This means file data up to 1 MB can be transferred in a single
+          RDMA READ or WRITE operation
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 6
+            state_fields:
+              smbd_state: "connected"
+              credits_granted: 255
+              max_read_write_size: 1048576
+      - actor_id: "server"
+        layers:
+          - layer: 6
+            state_fields:
+              smbd_state: "connected"
+              credits_granted: 255
+              max_read_write_size: 1048576
+
+  # ── SMB2 NEGOTIATE ────────────────────────────────────────────
+  - id: "smb2_negotiate"
+    type: "frame_tx"
+    t_ns: 200000000
+    frame_id: "smb2_negotiate_req"
+    annotation:
+      text: "SMB2 NEGOTIATE — dialect 3.1.1 with RDMA transform capability"
+      detail: >
+        Standard SMB2 NEGOTIATE exchange, but now carried over the SMB Direct
+        RDMA channel (via RDMA SEND). The client proposes SMB 3.1.1 and
+        includes the RDMA Transform negotiate context, which enables
+        encryption of RDMA payloads in SMB 3.1.1.
+
+        Without RDMA Transform, SMB encryption (AES-128-CCM/GCM) would
+        force all data through SEND/RECV (defeating RDMA's zero-copy
+        benefit). RDMA Transform encrypts in-place in the registered
+        memory buffer before RDMA READ/WRITE.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            state_fields:
+              smb_state: "negotiate"
+
+  - id: "smb2_negotiate_resp"
+    type: "frame_tx"
+    t_ns: 200500000
+    frame_id: "smb2_negotiate_resp"
+    annotation:
+      text: "SMB2 NEGOTIATE Response — SMB 3.1.1 confirmed"
+      detail: "Server selects SMB 3.1.1 dialect. MULTI_CHANNEL and LARGE_MTU capabilities confirmed."
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            state_fields:
+              dialect: "SMB 3.1.1"
+      - actor_id: "server"
+        layers:
+          - layer: 7
+            state_fields:
+              dialect: "SMB 3.1.1"
+
+  # ── SMB2 SESSION + TREE ──────────────────────────────────────
+  - id: "smb2_session_tree"
+    type: "frame_tx"
+    t_ns: 300000000
+    frame_id: "smb2_session_tree"
+    annotation:
+      text: "SMB2 SESSION_SETUP + TREE_CONNECT — authenticate and map share"
+      detail: >
+        Standard SMB2 session and tree connect, carried over RDMA.
+        SESSION_SETUP authenticates via Kerberos (domain) or NTLM.
+        TREE_CONNECT maps \\server\share$ for file access.
+
+        In a Hyper-V over SMB scenario, the share hosts VHDx virtual disk
+        files. SMB Direct is the recommended transport for live VM storage —
+        it provides lower latency and higher throughput than TCP, critical
+        for Hyper-V Live Migration and CSV (Cluster Shared Volumes).
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            state_fields:
+              smb_state: "authenticated"
+
+  - id: "smb2_session_tree_resp"
+    type: "frame_tx"
+    t_ns: 300500000
+    frame_id: "smb2_session_tree_resp"
+    annotation:
+      text: "Session established, share connected"
+      detail: "Session and tree connect successful. Client can now open files."
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            state_fields:
+              tree_id: "0x00000001 (\\\\server\\share$)"
+
+  # ── SMB2 CREATE ───────────────────────────────────────────────
+  - id: "smb2_create_req"
+    type: "frame_tx"
+    t_ns: 400000000
+    frame_id: "smb2_create_req"
+    annotation:
+      text: "SMB2 CREATE — open vm01.vhdx for read/write"
+      detail: >
+        Client opens the Hyper-V virtual disk file. This is a typical
+        SMB Direct workload: Hyper-V stores VM disk images on remote
+        SMB shares, and all VM I/O flows over SMB Direct.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            state_fields:
+              smb_state: "file open"
+
+  - id: "smb2_create_resp"
+    type: "frame_tx"
+    t_ns: 400500000
+    frame_id: "smb2_create_resp"
+    annotation:
+      text: "CREATE response — file handle for vm01.vhdx (100 GB)"
+      detail: "Server returns a persistent file handle."
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            state_fields:
+              file_id: "vm01.vhdx (100 GB)"
+
+  # ── SMB2 WRITE via RDMA ──────────────────────────────────────
+  - id: "smb2_write_req"
+    type: "frame_tx"
+    t_ns: 500000000
+    frame_id: "smb2_write_req"
+    annotation:
+      text: "SMB2 WRITE with RDMA buffer descriptor — 1 MB to vm01.vhdx"
+      detail: >
+        The client sends an SMB2 WRITE command via RDMA SEND, but instead
+        of inline data, it includes an SMB_DIRECT_BUFFER_DESCRIPTOR_V1
+        containing:
+        • Memory offset (virtual address) of the registered buffer
+        • R_Key (remote key) for RDMA access
+        • Data length
+
+        The Channel field = SMB2_CHANNEL_RDMA_V1 tells the server to
+        RDMA READ the data from this buffer descriptor rather than
+        expecting inline data.
+
+        This is the "inverted" model: the client exposes its memory and
+        the server pulls data — the opposite of a traditional file write
+        where the client pushes data. This model is efficient because:
+        1. The server controls the pace (no receive buffer overflows)
+        2. The server can read data directly into its file system cache
+        3. Zero CPU copies on both sides
+
+  - id: "smb_write_rdma_read"
+    type: "frame_tx"
+    t_ns: 500200000
+    frame_id: "smb_write_rdma_read"
+    annotation:
+      text: "RDMA READ — server fetches 1 MB write data from client memory"
+      detail: >
+        The server's RNIC issues an RDMA READ to fetch 1 MB of write data
+        directly from the client's registered memory buffer. Neither CPU
+        is involved in the data transfer — it's DMA engine to DMA engine
+        over the lossless RoCEv2 fabric.
+
+        After the RDMA READ completes, the server has the file data in
+        its local buffer and can write it to disk (or its file system cache).
+    state_after:
+      - actor_id: "server"
+        layers:
+          - layer: 7
+            state_fields:
+              smb_state: "writing to disk"
+
+  - id: "smb2_write_resp"
+    type: "frame_tx"
+    t_ns: 501000000
+    frame_id: "smb2_write_resp"
+    annotation:
+      text: "SMB2 WRITE Response — 1 MB written successfully"
+      detail: "Server confirms 1 MB written. The entire data path was zero-copy."
+    state_after:
+      - actor_id: "server"
+        layers:
+          - layer: 7
+            state_fields:
+              smb_state: "listening"
+
+  # ── SMB2 READ via RDMA ───────────────────────────────────────
+  - id: "smb2_read_req"
+    type: "frame_tx"
+    t_ns: 600000000
+    frame_id: "smb2_read_req"
+    annotation:
+      text: "SMB2 READ with RDMA buffer descriptor — 1 MB from vm01.vhdx"
+      detail: >
+        Client sends SMB2 READ with Channel = SMB2_CHANNEL_RDMA_V1 and
+        a buffer descriptor. The server will RDMA WRITE the file data
+        directly into the client's registered memory buffer.
+
+        For Hyper-V over SMB, this is how VM reads work: the hypervisor
+        issues a VHDx read, which becomes an SMB READ over RDMA. The
+        file data lands in the VM's memory via RDMA WRITE without any
+        CPU copies on the file server.
+
+  - id: "smb_read_rdma_write"
+    type: "frame_tx"
+    t_ns: 600200000
+    frame_id: "smb_read_rdma_write"
+    annotation:
+      text: "RDMA WRITE — server pushes 1 MB read data into client memory"
+      detail: >
+        Server's RNIC RDMA WRITEs 1 MB of file data directly into the
+        client's registered buffer. The data path:
+          Server disk/cache → Server memory → RNIC DMA → Network →
+          Client RNIC DMA → Client registered buffer
+
+        The server CPU only initiates the RDMA WRITE (posts a WQE);
+        the actual data movement is entirely hardware-driven.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            state_fields:
+              smb_state: "read data received via RDMA WRITE"
+
+  - id: "smb2_read_resp"
+    type: "frame_tx"
+    t_ns: 601000000
+    frame_id: "smb2_read_resp"
+    annotation:
+      text: "SMB2 READ Response — data already in client buffer (zero inline data)"
+      detail: >
+        The READ response contains only status — the file data was already
+        delivered via RDMA WRITE. The response's Data Remaining = 0 confirms
+        all data was transferred.
+
+        Compare this to SMB over TCP: the full 1 MB of file data would be
+        inline in the SMB2 READ response, requiring the server CPU to copy
+        data into TCP send buffers and the client CPU to copy from TCP
+        receive buffers.
+
+  # ── Summary ───────────────────────────────────────────────────
+  - id: "evt_summary"
+    type: "annotation"
+    t_ns: 700000000
+    annotation:
+      text: "Scenario complete — SMB Direct file I/O over RoCEv2"
+      detail: >
+        This scenario demonstrated SMB Direct (MS-SMBD):
+
+        SETUP:
+          RDMA QP connection → SMB Direct Negotiate (credits, max R/W size)
+          → SMB2 NEGOTIATE (3.1.1) → SESSION_SETUP → TREE_CONNECT → CREATE
+
+        FILE WRITE (SMB2_CHANNEL_RDMA_V1):
+          Client: WRITE command + buffer descriptor (via RDMA SEND)
+          Server: RDMA READ fetches 1 MB from client buffer (zero-copy)
+          Server: WRITE response (via RDMA SEND)
+
+        FILE READ (SMB2_CHANNEL_RDMA_V1):
+          Client: READ command + buffer descriptor (via RDMA SEND)
+          Server: RDMA WRITE pushes 1 MB into client buffer (zero-copy)
+          Server: READ response — no inline data (via RDMA SEND)
+
+        Key points:
+        • Control messages (commands, responses) → RDMA SEND/RECV
+        • Bulk data (file content) → RDMA READ/WRITE (zero-copy)
+        • WRITE uses RDMA READ (server pulls from client)
+        • READ uses RDMA WRITE (server pushes to client)
+        • Credit-based flow control prevents receive queue overflow
+        • SMB 3.1.1 RDMA Transform enables encryption with zero-copy
+
+        Primary use cases:
+        • Hyper-V over SMB (VHDx on remote shares)
+        • SQL Server on SMB (database files on SMB Direct shares)
+        • CSV (Cluster Shared Volumes) for failover clusters
+        • Any Windows file workload that benefits from low latency
+
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
+glossary:
+  - term: "SMB Direct"
+    abbrev: "MS-SMBD"
+    definition: "Microsoft protocol that enables SMB 3.x file sharing over RDMA transports. Control messages use RDMA SEND/RECV; bulk file data uses RDMA READ/WRITE for zero-copy transfers."
+    spec_refs:
+      - document: "MS-SMBD"
+        section: "1"
+        title: "Introduction"
+        url: "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smbd/"
+
+  - term: "NetworkDirect"
+    abbrev: "ND"
+    definition: "Windows RDMA API — the Windows equivalent of libibverbs. Provides kernel-bypass access to RDMA NICs for SMB Direct and other applications."
+
+  - term: "SMB2_CHANNEL_RDMA_V1"
+    definition: "Flag in SMB2 READ/WRITE requests indicating that file data should be transferred via RDMA READ or WRITE using the provided buffer descriptor, instead of inline in the SMB message."
+
+  - term: "SMB_DIRECT_BUFFER_DESCRIPTOR_V1"
+    definition: "Structure containing an RDMA memory offset (virtual address), remote key (rkey), and length — tells the peer where to RDMA READ from or WRITE to."
+
+  - term: "RDMA Transform"
+    definition: "SMB 3.1.1 feature that enables encryption of RDMA payloads. Without this, SMB encryption forces all data through SEND/RECV (no zero-copy). With RDMA Transform, data is encrypted in-place in the registered buffer."
+
+  - term: "SOFS"
+    abbrev: "SOFS"
+    definition: "Scale-Out File Server — a Windows Server role that provides continuously available SMB file shares across cluster nodes. Primary SMB Direct deployment model."
+
+  - term: "Credits (SMB Direct)"
+    definition: "Flow control mechanism: the receiver grants credits to the sender. Each RDMA SEND consumes one credit. When credits are exhausted, the sender must wait. Credits are replenished via piggyback grants on data messages."

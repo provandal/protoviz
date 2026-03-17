@@ -72,5 +72,12 @@ export const PHASE_COLORS = {
   'TLS Handshake': '#1e40af',
   'TLS Data': '#0369a1',
   'TLS Close': '#64748b',
+  // SMB Direct phases
+  'SMB Direct Setup': '#7c3aed',
+  'SMB Negotiate': '#1e40af',
+  'SMB Session': '#0369a1',
+  'SMB File Open': '#0e7490',
+  'SMB Write': '#991b1b',
+  'SMB Read': '#6b21a8',
   'Other': '#475569',
 };

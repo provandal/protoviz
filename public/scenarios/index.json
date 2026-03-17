@@ -111,6 +111,16 @@
       "path": "gpudirect-storage/gpudirect-storage-rdma-remote.yaml"
     },
     {
+      "slug": "smb-direct-negotiate-rdma-io",
+      "title": "SMB Direct: Negotiate \u2192 RDMA Channel \u2192 File Read & Write over RoCEv2",
+      "protocol": "SMB Direct (SMB 3.x over RDMA)",
+      "protocol_family": "RDMA",
+      "difficulty": "advanced",
+      "description": "SMB Direct (MS-SMBD) over RoCEv2: SMB Direct negotiate, SMB 3.1.1 dialect, session/tree setup, then file WRITE (server RDMA READs data from client buffer) and READ (server RDMA WRITEs data into client buffer). Zero-copy data path for Hyper-V over SMB workloads.",
+      "tags": ["SMB", "SMB Direct", "SMB3", "RDMA", "RoCEv2", "MS-SMBD", "file sharing", "Windows", "Hyper-V", "education"],
+      "path": "smb-direct/smb-direct-negotiate-rdma-io.yaml"
+    },
+    {
       "slug": "tls-1.3-handshake",
       "title": "TLS 1.3: Full Handshake \u2192 Encrypted Application Data \u2192 Alert Close",
       "protocol": "TLS 1.3",
