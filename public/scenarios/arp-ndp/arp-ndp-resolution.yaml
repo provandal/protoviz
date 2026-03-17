@@ -1,0 +1,953 @@
+meta:
+  id: "arp-ndp-resolution"
+  title: "ARP & NDP: IPv4 Address Resolution and IPv6 Neighbor Discovery"
+  protocol: "ARP / NDP"
+  protocol_family: "TCP/IP"
+  version: "1.0.0"
+  description: >
+    Side-by-side comparison of IPv4 ARP (RFC 826) and IPv6 NDP (RFC 4861).
+    Both protocols solve the same problem — mapping a network-layer address
+    (IP) to a link-layer address (MAC) — but with fundamentally different
+    approaches. ARP uses broadcast; NDP uses multicast and is built on ICMPv6.
+    This scenario covers: ARP Request/Reply, Gratuitous ARP, NDP Neighbor
+    Solicitation/Advertisement, and NDP Router Advertisement.
+
+  learning_objectives:
+    - "Understand why address resolution is needed: IP addresses vs MAC addresses"
+    - "Follow a complete ARP Request → Reply exchange and ARP table update"
+    - "See why ARP uses broadcast (all-hosts) and the scalability implications"
+    - "Understand Gratuitous ARP for IP conflict detection and failover"
+    - "Compare NDP Neighbor Solicitation: solicited-node multicast vs ARP broadcast"
+    - "See how NDP leverages ICMPv6 instead of being a separate protocol"
+    - "Trace NDP Router Advertisement for prefix/gateway learning (SLAAC)"
+    - "Appreciate why NDP is more secure and scalable than ARP"
+
+  difficulty: "beginner"
+
+  authors:
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+
+  created: "2026-03-17"
+  updated: "2026-03-17"
+
+  tags:
+    - "ARP"
+    - "NDP"
+    - "IPv4"
+    - "IPv6"
+    - "ICMPv6"
+    - "address resolution"
+    - "neighbor discovery"
+    - "Ethernet"
+    - "beginner"
+    - "education"
+
+  primary_specs:
+    - document: "RFC 826"
+      section: "1"
+      title: "An Ethernet Address Resolution Protocol"
+      url: "https://www.rfc-editor.org/rfc/rfc826"
+    - document: "RFC 4861"
+      section: "1"
+      title: "Neighbor Discovery for IP version 6 (IPv6)"
+      url: "https://www.rfc-editor.org/rfc/rfc4861"
+    - document: "RFC 5227"
+      section: "1"
+      title: "IPv4 Address Conflict Detection"
+      url: "https://www.rfc-editor.org/rfc/rfc5227"
+
+  content_disclaimer: >
+    This scenario illustrates ARP and NDP address resolution as specified
+    in RFC 826 and RFC 4861. Both protocols are shown using the same
+    topology for easy comparison.
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "host_a"
+      type: "host"
+      label: "Host A"
+      description: "Source host needing to resolve its peer's MAC address"
+      hardware: "Workstation"
+      os: "Linux"
+      ip: "192.168.1.10 / fd00::10"
+      mac: "AA:BB:CC:00:00:0A"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "Ethernet Switch"
+      description: "L2 switch connecting both hosts and the router"
+      hardware: "Managed switch"
+      position: "center"
+
+    - id: "host_b"
+      type: "host"
+      label: "Host B"
+      description: "Destination host being resolved"
+      hardware: "Workstation"
+      os: "Linux"
+      ip: "192.168.1.20 / fd00::20"
+      mac: "AA:BB:CC:00:00:0B"
+      position: "right"
+
+  links:
+    - id: "link-a-sw"
+      from: "host_a"
+      to: "switch"
+      speed_gbps: 1
+      media: "copper"
+    - id: "link-sw-b"
+      from: "switch"
+      to: "host_b"
+      speed_gbps: 1
+      media: "copper"
+
+# ─────────────────────────────────────────────────────────────────
+# OSI LAYERS
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  host_a:
+    - layer: 7
+      name: "Application"
+      components: ["User process"]
+      state_schema:
+        app_action:
+          type: "string"
+          initial: "wants to send to Host B"
+
+    - layer: 3
+      name: "Network (IPv4 + IPv6)"
+      components: ["ARP", "NDP / ICMPv6", "IPv4", "IPv6"]
+      state_schema:
+        arp_table:
+          type: "string"
+          description: "ARP cache entries"
+          initial: "(empty)"
+        ndp_table:
+          type: "string"
+          description: "IPv6 neighbor cache entries"
+          initial: "(empty)"
+        default_gateway:
+          type: "string"
+          initial: "—"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+
+    - layer: 1
+      name: "Physical"
+      components: ["1000BASE-T"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "up"
+
+  host_b:
+    - layer: 7
+      name: "Application"
+      components: ["User process"]
+      state_schema:
+        app_action:
+          type: "string"
+          initial: "idle"
+
+    - layer: 3
+      name: "Network (IPv4 + IPv6)"
+      components: ["ARP", "NDP / ICMPv6", "IPv4", "IPv6"]
+      state_schema:
+        arp_table:
+          type: "string"
+          initial: "(empty)"
+        ndp_table:
+          type: "string"
+          initial: "(empty)"
+        default_gateway:
+          type: "string"
+          initial: "—"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+
+    - layer: 1
+      name: "Physical"
+      components: ["1000BASE-T"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "up"
+
+  switch:
+    - layer: 2
+      name: "Ethernet Switching"
+      components: ["L2 bridge", "MAC table"]
+      state_schema:
+        mac_table_entries:
+          type: "integer"
+          initial: 0
+    - layer: 1
+      name: "Physical"
+      components: ["per-port PHY"]
+      state_schema:
+        port_a_phy:
+          type: "string"
+          initial: "up"
+        port_b_phy:
+          type: "string"
+          initial: "up"
+
+# ─────────────────────────────────────────────────────────────────
+# FRAMES
+# ─────────────────────────────────────────────────────────────────
+frames:
+  # ── ARP Request ───────────────────────────────────────────────
+  - id: "arp_request"
+    name: "ARP Request: Who has 192.168.1.20?"
+    description: "Host A broadcasts ARP Request to resolve Host B's IPv4 address"
+    from: "host_a"
+    to: "host_b"
+    via: ["switch"]
+    total_bytes: 42
+    color: "#b45309"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "FF:FF:FF:FF:FF:FF"
+            description: "BROADCAST — every host on the LAN receives this frame. This is ARP's biggest scalability problem: in a large L2 domain, every ARP request interrupts every host."
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "AA:BB:CC:00:00:0A"
+            description: "Host A's MAC address"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0806"
+            description: "ARP (0x0806) — a dedicated EtherType, NOT encapsulated in IP"
+
+      - name: "ARP"
+        abbrev: "arp"
+        layer: 3
+        total_bytes: 28
+        fields:
+          - name: "Hardware Type"
+            abbrev: "arp.hw_type"
+            bits: 16
+            value: "1 (Ethernet)"
+            spec_refs:
+              - document: "RFC 826"
+                section: "1"
+                title: "ARP Packet Format"
+                url: "https://www.rfc-editor.org/rfc/rfc826"
+          - name: "Protocol Type"
+            abbrev: "arp.proto_type"
+            bits: 16
+            value: "0x0800 (IPv4)"
+          - name: "Hardware Size"
+            abbrev: "arp.hw_size"
+            bits: 8
+            value: 6
+            description: "MAC address = 6 bytes"
+          - name: "Protocol Size"
+            abbrev: "arp.proto_size"
+            bits: 8
+            value: 4
+            description: "IPv4 address = 4 bytes"
+          - name: "Opcode"
+            abbrev: "arp.opcode"
+            bits: 16
+            value: "1 (Request)"
+            description: "ARP Request — 'Who has this IP? Tell me your MAC.'"
+          - name: "Sender MAC"
+            abbrev: "arp.src_hw"
+            bits: 48
+            value: "AA:BB:CC:00:00:0A"
+          - name: "Sender IP"
+            abbrev: "arp.src_proto"
+            bits: 32
+            value: "192.168.1.10"
+          - name: "Target MAC"
+            abbrev: "arp.dst_hw"
+            bits: 48
+            value: "00:00:00:00:00:00"
+            description: "Unknown — this is what we're trying to discover"
+          - name: "Target IP"
+            abbrev: "arp.dst_proto"
+            bits: 32
+            value: "192.168.1.20"
+            description: "Host B's IPv4 address — the address we need to resolve"
+
+  # ── ARP Reply ─────────────────────────────────────────────────
+  - id: "arp_reply"
+    name: "ARP Reply: 192.168.1.20 is at AA:BB:CC:00:00:0B"
+    description: "Host B responds with its MAC address"
+    from: "host_b"
+    to: "host_a"
+    via: ["switch"]
+    total_bytes: 42
+    color: "#b45309"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "AA:BB:CC:00:00:0A"
+            description: "Unicast to Host A — only the requester receives the reply"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "AA:BB:CC:00:00:0B"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0806"
+
+      - name: "ARP"
+        abbrev: "arp"
+        layer: 3
+        total_bytes: 28
+        fields:
+          - name: "Opcode"
+            abbrev: "arp.opcode"
+            bits: 16
+            value: "2 (Reply)"
+            description: "ARP Reply — 'That IP is at this MAC address.'"
+          - name: "Sender MAC"
+            abbrev: "arp.src_hw"
+            bits: 48
+            value: "AA:BB:CC:00:00:0B"
+            description: "THE ANSWER — Host B's MAC address"
+          - name: "Sender IP"
+            abbrev: "arp.src_proto"
+            bits: 32
+            value: "192.168.1.20"
+          - name: "Target MAC"
+            abbrev: "arp.dst_hw"
+            bits: 48
+            value: "AA:BB:CC:00:00:0A"
+          - name: "Target IP"
+            abbrev: "arp.dst_proto"
+            bits: 32
+            value: "192.168.1.10"
+
+  # ── Gratuitous ARP ────────────────────────────────────────────
+  - id: "garp"
+    name: "Gratuitous ARP: I am 192.168.1.10"
+    description: "Host A announces its own IP→MAC binding (link-up, failover, or conflict detection)"
+    from: "host_a"
+    to: "host_b"
+    via: ["switch"]
+    total_bytes: 42
+    color: "#92400e"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "FF:FF:FF:FF:FF:FF"
+            description: "Broadcast — all hosts update their ARP caches"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0806"
+
+      - name: "ARP (Gratuitous)"
+        abbrev: "arp"
+        layer: 3
+        total_bytes: 28
+        fields:
+          - name: "Opcode"
+            abbrev: "arp.opcode"
+            bits: 16
+            value: "1 (Request)"
+            description: "Gratuitous ARP is a Request where Sender IP = Target IP. 'Who has my own IP?' If no reply comes back, no conflict."
+            spec_refs:
+              - document: "RFC 5227"
+                section: "2"
+                title: "Address Conflict Detection"
+                url: "https://www.rfc-editor.org/rfc/rfc5227#section-2"
+          - name: "Sender MAC"
+            abbrev: "arp.src_hw"
+            bits: 48
+            value: "AA:BB:CC:00:00:0A"
+          - name: "Sender IP"
+            abbrev: "arp.src_proto"
+            bits: 32
+            value: "192.168.1.10"
+          - name: "Target MAC"
+            abbrev: "arp.dst_hw"
+            bits: 48
+            value: "00:00:00:00:00:00"
+          - name: "Target IP"
+            abbrev: "arp.dst_proto"
+            bits: 32
+            value: "192.168.1.10"
+            description: "Same as Sender IP — this is what makes it 'gratuitous'. Uses: IP conflict detection, ARP cache update after failover, announce presence on link-up."
+
+  # ── NDP Neighbor Solicitation ─────────────────────────────────
+  - id: "ndp_ns"
+    name: "NDP Neighbor Solicitation: Who has fd00::20?"
+    description: "Host A sends multicast NS to resolve Host B's IPv6 address"
+    from: "host_a"
+    to: "host_b"
+    via: ["switch"]
+    total_bytes: 86
+    color: "#0f766e"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "33:33:FF:00:00:20"
+            description: "Solicited-node MULTICAST — only hosts whose IPv6 address ends in 00:00:20 receive this. Much more efficient than ARP's broadcast: on a /64 subnet with 1000 hosts, only ~1 host processes this frame (vs all 1000 for ARP)."
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "AA:BB:CC:00:00:0A"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+            description: "IPv6 (0x86DD)"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "fd00::10"
+          - name: "Destination"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "ff02::1:ff00:20"
+            description: "Solicited-node multicast address — derived from last 24 bits of target IPv6 address (ff02::1:ff + last 3 bytes)"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: "58 (ICMPv6)"
+            description: "NDP is built ON TOP of ICMPv6, not a separate protocol like ARP"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 255
+            description: "MUST be 255 — if less, the packet was forwarded through a router and must be discarded. This prevents off-link NDP spoofing."
+            spec_refs:
+              - document: "RFC 4861"
+                section: "7.1.1"
+                title: "Validation of Neighbor Solicitations"
+                url: "https://www.rfc-editor.org/rfc/rfc4861#section-7.1.1"
+
+      - name: "ICMPv6: Neighbor Solicitation"
+        abbrev: "icmpv6"
+        layer: 3
+        total_bytes: 32
+        fields:
+          - name: "Type"
+            abbrev: "icmpv6.type"
+            bits: 8
+            value: "135 (Neighbor Solicitation)"
+            spec_refs:
+              - document: "RFC 4861"
+                section: "4.3"
+                title: "Neighbor Solicitation Message Format"
+                url: "https://www.rfc-editor.org/rfc/rfc4861#section-4.3"
+          - name: "Code"
+            abbrev: "icmpv6.code"
+            bits: 8
+            value: 0
+          - name: "Target Address"
+            abbrev: "icmpv6.ns.target"
+            bits: 128
+            value: "fd00::20"
+            description: "Host B's IPv6 address — 'Who has this address?'"
+          - name: "Option: Source Link-Layer Address"
+            abbrev: "icmpv6.opt.source_linkaddr"
+            bits: 64
+            value: "AA:BB:CC:00:00:0A"
+            description: "Host A includes its MAC so Host B can reply without another resolution"
+
+  # ── NDP Neighbor Advertisement ────────────────────────────────
+  - id: "ndp_na"
+    name: "NDP Neighbor Advertisement: fd00::20 is at AA:BB:CC:00:00:0B"
+    description: "Host B responds with its MAC address"
+    from: "host_b"
+    to: "host_a"
+    via: ["switch"]
+    total_bytes: 86
+    color: "#0f766e"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "AA:BB:CC:00:00:0A"
+            description: "Unicast to Host A"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "fd00::20"
+          - name: "Destination"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "fd00::10"
+            description: "Unicast reply to Host A (solicited NA)"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 255
+
+      - name: "ICMPv6: Neighbor Advertisement"
+        abbrev: "icmpv6"
+        layer: 3
+        total_bytes: 32
+        fields:
+          - name: "Type"
+            abbrev: "icmpv6.type"
+            bits: 8
+            value: "136 (Neighbor Advertisement)"
+            spec_refs:
+              - document: "RFC 4861"
+                section: "4.4"
+                title: "Neighbor Advertisement Message Format"
+                url: "https://www.rfc-editor.org/rfc/rfc4861#section-4.4"
+          - name: "Flags"
+            abbrev: "icmpv6.na.flags"
+            bits: 3
+            value: "S=1, O=1, R=0"
+            description: "Solicited=1 (response to NS), Override=1 (update existing cache entry), Router=0 (not a router)"
+          - name: "Target Address"
+            abbrev: "icmpv6.na.target"
+            bits: 128
+            value: "fd00::20"
+          - name: "Option: Target Link-Layer Address"
+            abbrev: "icmpv6.opt.target_linkaddr"
+            bits: 64
+            value: "AA:BB:CC:00:00:0B"
+            description: "THE ANSWER — Host B's MAC address"
+
+  # ── NDP Router Advertisement ──────────────────────────────────
+  - id: "ndp_ra"
+    name: "NDP Router Advertisement"
+    description: "Router announces itself and the network prefix for SLAAC"
+    from: "host_b"
+    to: "host_a"
+    via: ["switch"]
+    total_bytes: 110
+    color: "#15803d"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "33:33:00:00:00:01"
+            description: "All-nodes multicast (ff02::1) — all IPv6 hosts on the link receive this"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "fe80::1"
+            description: "Router's link-local address"
+          - name: "Destination"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "ff02::1"
+            description: "All-nodes multicast"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 255
+
+      - name: "ICMPv6: Router Advertisement"
+        abbrev: "icmpv6"
+        layer: 3
+        total_bytes: 56
+        fields:
+          - name: "Type"
+            abbrev: "icmpv6.type"
+            bits: 8
+            value: "134 (Router Advertisement)"
+            spec_refs:
+              - document: "RFC 4861"
+                section: "4.2"
+                title: "Router Advertisement Message Format"
+                url: "https://www.rfc-editor.org/rfc/rfc4861#section-4.2"
+          - name: "Router Lifetime"
+            abbrev: "icmpv6.ra.router_lifetime"
+            bits: 16
+            value: "1800 seconds (30 min)"
+            description: "How long this router should be used as a default gateway"
+          - name: "Managed (M) Flag"
+            abbrev: "icmpv6.ra.flag_m"
+            bits: 1
+            value: "0"
+            description: "0 = use SLAAC (stateless), not DHCPv6 for address assignment"
+          - name: "Other (O) Flag"
+            abbrev: "icmpv6.ra.flag_o"
+            bits: 1
+            value: "1"
+            description: "1 = use DHCPv6 for other info (DNS, NTP) but not for address"
+          - name: "Option: Prefix Information"
+            abbrev: "icmpv6.opt.prefix"
+            bits: 256
+            value: "fd00::/64, Valid: 86400s, Preferred: 14400s, A=1 L=1"
+            description: "Prefix for SLAAC: hosts combine this /64 prefix with their interface ID (EUI-64 or random) to form a global address. A=1 means autonomous (SLAAC allowed), L=1 means on-link."
+          - name: "Option: Source Link-Layer Address"
+            abbrev: "icmpv6.opt.source_linkaddr"
+            bits: 64
+            value: "AA:BB:CC:00:00:FF"
+            description: "Router's MAC address — hosts add this to their neighbor cache as the default gateway"
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+  # ── ARP Section ────────────────────────────────────────────────
+  - id: "evt_phy_link"
+    type: "state_change"
+    t_ns: 0
+    annotation:
+      text: "Physical link up — both hosts on the same Ethernet segment"
+      detail: >
+        Both hosts are on the same Layer 2 network (VLAN or flat Ethernet).
+        Host A has IPv4 address 192.168.1.10 and IPv6 address fd00::10.
+        Host B has IPv4 address 192.168.1.20 and IPv6 address fd00::20.
+
+        When Host A needs to send an IP packet to Host B, it must first
+        discover Host B's MAC address. This is where ARP (IPv4) or NDP
+        (IPv6) comes in.
+
+  - id: "arp_request"
+    type: "frame_tx"
+    t_ns: 1000000
+    frame_id: "arp_request"
+    annotation:
+      text: "ARP Request — 'Who has 192.168.1.20? Tell 192.168.1.10'"
+      detail: >
+        Host A needs to send to 192.168.1.20 but doesn't know its MAC.
+        It broadcasts an ARP Request to FF:FF:FF:FF:FF:FF (every host
+        on the LAN).
+
+        ARP key characteristics:
+        • Operates at Layer 2/3 boundary with its own EtherType (0x0806)
+        • Uses broadcast — every host on the L2 segment must process it
+        • No authentication — any host can claim any IP (ARP spoofing)
+        • Stateless — no handshake, no sequence numbers
+        • 28-byte payload (tiny, but broadcast cost scales with host count)
+
+        The switch floods the broadcast out all ports. In a 1000-host
+        subnet, all 1000 hosts receive and process this frame — even
+        though only Host B needs to respond.
+    state_after:
+      - actor_id: "host_a"
+        layers:
+          - layer: 3
+            state_fields:
+              arp_table: "192.168.1.20 → (resolving)"
+
+  - id: "arp_reply"
+    type: "frame_tx"
+    t_ns: 1500000
+    frame_id: "arp_reply"
+    annotation:
+      text: "ARP Reply — '192.168.1.20 is at AA:BB:CC:00:00:0B'"
+      detail: >
+        Host B recognizes its own IP in the ARP Request and responds
+        with a unicast ARP Reply containing its MAC address.
+
+        Both hosts update their ARP caches:
+        • Host A: 192.168.1.20 → AA:BB:CC:00:00:0B (from reply)
+        • Host B: 192.168.1.10 → AA:BB:CC:00:00:0A (from request)
+
+        ARP cache entries have a timeout (typically 30-300 seconds on
+        Linux, configurable via net.ipv4.neigh.default.gc_stale_time).
+        After timeout, the next packet triggers another ARP Request.
+    state_after:
+      - actor_id: "host_a"
+        layers:
+          - layer: 3
+            state_fields:
+              arp_table: "192.168.1.20 → AA:BB:CC:00:00:0B"
+      - actor_id: "host_b"
+        layers:
+          - layer: 3
+            state_fields:
+              arp_table: "192.168.1.10 → AA:BB:CC:00:00:0A"
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            state_fields:
+              mac_table_entries: 2
+
+  - id: "garp"
+    type: "frame_tx"
+    t_ns: 3000000
+    frame_id: "garp"
+    annotation:
+      text: "Gratuitous ARP — Host A announces its IP→MAC binding"
+      detail: >
+        A Gratuitous ARP is an ARP Request where Sender IP = Target IP.
+        It serves multiple purposes:
+
+        1. IP CONFLICT DETECTION (RFC 5227): When Host A first configures
+           its IP, it sends GARP. If another host replies, there's a
+           conflict — the IP is already in use.
+
+        2. ARP CACHE UPDATE: All hosts that already have an entry for
+           192.168.1.10 update their cached MAC. This is critical for:
+           • NIC failover (new MAC, same IP)
+           • VM live migration (VM moves to new host, different NIC)
+           • Floating IP failover (keepalived/VRRP)
+
+        3. SWITCH MAC TABLE: The switch learns Host A's MAC on the
+           correct port, useful after port changes or reboots.
+
+        No response is expected (unless there's a conflict).
+    state_after:
+      - actor_id: "host_b"
+        layers:
+          - layer: 3
+            state_fields:
+              arp_table: "192.168.1.10 → AA:BB:CC:00:00:0A (refreshed by GARP)"
+
+  # ── NDP Section ────────────────────────────────────────────────
+  - id: "ndp_ns"
+    type: "frame_tx"
+    t_ns: 5000000
+    frame_id: "ndp_ns"
+    annotation:
+      text: "NDP Neighbor Solicitation — 'Who has fd00::20?' (solicited-node multicast)"
+      detail: >
+        IPv6 equivalent of ARP Request, but fundamentally different:
+
+        1. MULTICAST, NOT BROADCAST: The NS is sent to the solicited-node
+           multicast address ff02::1:ff00:0020 (Ethernet: 33:33:FF:00:00:20).
+           Only hosts whose IPv6 address ends in ...00:0020 listen on this
+           group. In practice, usually only 1-2 hosts process the frame.
+
+        2. BUILT ON ICMPv6: NDP is ICMPv6 type 135/136, not a separate
+           protocol. This means it benefits from IPv6 security features
+           (IPsec, SEND) and doesn't need its own EtherType.
+
+        3. HOP LIMIT = 255: Mandatory. If a packet arrives with hop limit
+           < 255, it was routed (not link-local) and must be discarded.
+           This prevents off-link NDP spoofing — a significant security
+           improvement over ARP.
+
+        4. SOURCE LINK-LAYER OPTION: Host A includes its own MAC in the
+           NS, so Host B can respond without needing a separate resolution.
+
+        Comparison for a 1000-host subnet:
+        • ARP: all 1000 hosts process the broadcast request
+        • NDP: ~1 host processes the multicast solicitation
+    state_after:
+      - actor_id: "host_a"
+        layers:
+          - layer: 3
+            state_fields:
+              ndp_table: "fd00::20 → (INCOMPLETE)"
+
+  - id: "ndp_na"
+    type: "frame_tx"
+    t_ns: 5500000
+    frame_id: "ndp_na"
+    annotation:
+      text: "NDP Neighbor Advertisement — 'fd00::20 is at AA:BB:CC:00:00:0B'"
+      detail: >
+        Host B responds with a Neighbor Advertisement (ICMPv6 type 136):
+        • Solicited flag (S=1): This is a response to an NS
+        • Override flag (O=1): Update existing cache entries
+        • Router flag (R=0): Host B is not a router
+
+        Host A updates its neighbor cache:
+          fd00::20 → AA:BB:CC:00:00:0B (state: REACHABLE)
+
+        NDP neighbor cache states (RFC 4861 Section 7.3.2):
+        • INCOMPLETE: NS sent, waiting for NA
+        • REACHABLE: Recently confirmed (within ReachableTime)
+        • STALE: Not recently confirmed, usable but will probe soon
+        • DELAY: Waiting for upper-layer confirmation
+        • PROBE: Actively sending unicast NS to re-confirm
+    state_after:
+      - actor_id: "host_a"
+        layers:
+          - layer: 3
+            state_fields:
+              ndp_table: "fd00::20 → AA:BB:CC:00:00:0B (REACHABLE)"
+      - actor_id: "host_b"
+        layers:
+          - layer: 3
+            state_fields:
+              ndp_table: "fd00::10 → AA:BB:CC:00:00:0A (STALE)"
+
+  - id: "ndp_ra"
+    type: "frame_tx"
+    t_ns: 8000000
+    frame_id: "ndp_ra"
+    annotation:
+      text: "NDP Router Advertisement — prefix fd00::/64 for SLAAC"
+      detail: >
+        Routers periodically send Router Advertisements (RA) to ff02::1
+        (all-nodes multicast). Hosts also request RAs by sending Router
+        Solicitations (RS) when they boot.
+
+        The RA tells hosts:
+        • Default gateway: the router's link-local address (fe80::1)
+        • Network prefix: fd00::/64 with SLAAC autonomous flag
+        • DNS servers (if RDNSS option included)
+        • MTU (if different from default 1500)
+
+        SLAAC (Stateless Address Autoconfiguration, RFC 4862):
+        Host takes the /64 prefix + generates a 64-bit interface ID
+        (from EUI-64 or privacy random) = complete IPv6 address.
+        No DHCP server needed for basic connectivity.
+
+        ARP has NO equivalent — IPv4 requires DHCP or static config
+        for address assignment and gateway discovery. NDP unifies
+        address resolution, router discovery, prefix advertisement,
+        and redirect functionality into one protocol.
+    state_after:
+      - actor_id: "host_a"
+        layers:
+          - layer: 3
+            state_fields:
+              default_gateway: "fe80::1 (Router, via RA)"
+      - actor_id: "host_b"
+        layers:
+          - layer: 3
+            state_fields:
+              default_gateway: "fe80::1 (Router, via RA)"
+
+  # ── Summary ────────────────────────────────────────────────────
+  - id: "evt_summary"
+    type: "annotation"
+    t_ns: 10000000
+    annotation:
+      text: "Scenario complete — ARP vs NDP comparison"
+      detail: >
+        ARP (IPv4, RFC 826):
+        • Separate protocol with EtherType 0x0806
+        • Uses BROADCAST — all hosts on L2 segment process every request
+        • No authentication — vulnerable to ARP spoofing/poisoning
+        • Only does address resolution (IP → MAC)
+        • Stateless cache with simple timeout
+
+        NDP (IPv6, RFC 4861):
+        • Built on ICMPv6 (types 133-137)
+        • Uses SOLICITED-NODE MULTICAST — only ~1 host processes each NS
+        • Hop limit 255 prevents off-link attacks; SEND (RFC 3971) optional
+        • Does address resolution AND router discovery, SLAAC, redirect
+        • Stateful neighbor cache (INCOMPLETE → REACHABLE → STALE → PROBE)
+        • Duplicate Address Detection (DAD) built-in
+
+        Gratuitous ARP:
+        • Request where Sender IP = Target IP
+        • Used for: conflict detection, failover, cache refresh
+        • NDP equivalent: unsolicited NA with Override flag
+
+        In enterprise/data center networks:
+        • ARP storms are a real scalability problem in large L2 domains
+        • IPv6 NDP's multicast approach reduces broadcast overhead
+        • Both can be secured: ARP with Dynamic ARP Inspection (DAI),
+          NDP with RA Guard and SEND
+
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
+glossary:
+  - term: "ARP"
+    abbrev: "ARP"
+    definition: "Address Resolution Protocol (RFC 826) — maps IPv4 addresses to Ethernet MAC addresses using broadcast requests. Simple but unscalable in large L2 domains."
+    spec_refs:
+      - document: "RFC 826"
+        section: "1"
+        title: "An Ethernet Address Resolution Protocol"
+        url: "https://www.rfc-editor.org/rfc/rfc826"
+
+  - term: "NDP"
+    abbrev: "NDP"
+    definition: "Neighbor Discovery Protocol (RFC 4861) — IPv6's replacement for ARP. Uses ICMPv6 and solicited-node multicast. Also handles router discovery, SLAAC, and redirects."
+    spec_refs:
+      - document: "RFC 4861"
+        section: "1"
+        title: "Introduction"
+        url: "https://www.rfc-editor.org/rfc/rfc4861#section-1"
+
+  - term: "Gratuitous ARP"
+    definition: "ARP Request where Sender IP equals Target IP. Used for IP conflict detection (RFC 5227), ARP cache updates after failover, and announcing presence on the network."
+
+  - term: "Solicited-Node Multicast"
+    definition: "IPv6 multicast address ff02::1:ffXX:XXXX derived from the last 24 bits of a unicast address. Hosts join this group for each of their IPv6 addresses. NDP uses this to limit neighbor solicitations to likely targets instead of broadcasting."
+
+  - term: "SLAAC"
+    abbrev: "SLAAC"
+    definition: "Stateless Address Autoconfiguration (RFC 4862) — hosts generate their own IPv6 addresses by combining the prefix from Router Advertisements with a locally-generated interface ID. No DHCP server needed."
+
+  - term: "Router Advertisement"
+    abbrev: "RA"
+    definition: "ICMPv6 message (type 134) sent by routers to advertise their presence, provide network prefixes, and inform hosts about default gateway and link parameters."
+
+  - term: "DAD"
+    abbrev: "DAD"
+    definition: "Duplicate Address Detection — part of NDP. Before using an IPv6 address, a host sends an NS for that address. If a NA comes back, the address is already in use. Similar in purpose to Gratuitous ARP but mandatory in IPv6."

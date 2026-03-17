@@ -111,6 +111,16 @@
       "path": "gpudirect-storage/gpudirect-storage-rdma-remote.yaml"
     },
     {
+      "slug": "arp-ndp-resolution",
+      "title": "ARP & NDP: IPv4 Address Resolution and IPv6 Neighbor Discovery",
+      "protocol": "ARP / NDP",
+      "protocol_family": "TCP/IP",
+      "difficulty": "beginner",
+      "description": "Side-by-side comparison: ARP broadcast Request/Reply and Gratuitous ARP (IPv4) vs NDP solicited-node multicast Neighbor Solicitation/Advertisement and Router Advertisement with SLAAC (IPv6). Shows why NDP is more scalable and secure than ARP.",
+      "tags": ["ARP", "NDP", "IPv4", "IPv6", "ICMPv6", "address resolution", "neighbor discovery", "Ethernet", "beginner", "education"],
+      "path": "arp-ndp/arp-ndp-resolution.yaml"
+    },
+    {
       "slug": "smb-direct-negotiate-rdma-io",
       "title": "SMB Direct: Negotiate \u2192 RDMA Channel \u2192 File Read & Write over RoCEv2",
       "protocol": "SMB Direct (SMB 3.x over RDMA)",

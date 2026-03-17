@@ -256,6 +256,8 @@ function inferPhase(event, lastPhase) {
   if (/ncclallreduce|allreduce\(\)/i.test(text) || /allreduce_start/.test(id)) return 'Reduce-Scatter';
 
   // Infrastructure (before GPU-specific — many scenarios mention GPUs generically)
+  if (/\bndp\b|neighbor solicitation|neighbor advertisement|router advertisement/i.test(text)
+      || /ndp_/.test(id)) return 'NDP';
   if (/\barp\b/.test(text) || /arp/.test(id)) return 'ARP';
   if (/physical|link|auto.?neg|fec|signal/i.test(text)
       || /^evt_(phy|an_|link)/.test(id)) return 'Link';

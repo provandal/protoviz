@@ -11,6 +11,7 @@ export const L_COLOR = {
 export const PHASE_COLORS = {
   'Link': '#92400e',
   'ARP': '#b45309',
+  'NDP': '#0f766e',
   'Setup': '#0369a1',
   'CM': '#1e40af',
   'RDMA Write': '#991b1b',
