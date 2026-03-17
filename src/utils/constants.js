@@ -44,5 +44,19 @@ export const PHASE_COLORS = {
   'RoCE': '#7c3aed',
   'RDMA Send': '#1d4ed8',
   'RDMA ACK': '#475569',
+  // S3/RDMA scenario phases
+  'S3/RDMA Connect': '#9b59b6',
+  'S3 PUT': '#e74c3c',
+  'S3 GET': '#2ecc71',
+  'Library Init': '#7c3aed',
+  // GPUDirect RDMA scenario phases
+  'GPU Memory Setup': '#15803d',
+  // GPUDirect Storage scenario phases
+  'GDS Init': '#7c3aed',
+  'GDS File Open': '#7c3aed',
+  'GDS Buffer Register': '#7c3aed',
+  'GDS Read': '#059669',
+  'GDS Write': '#2563eb',
+  'P2P DMA': '#dc2626',
   'Other': '#475569',
 };

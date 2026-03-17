@@ -26,3 +26,191 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #475569;
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   ProtoViz Viewer — responsive classes
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Root container */
+.pvz-root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #020817;
+  color: #e2e8f0;
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  overflow: hidden;
+}
+
+/* Loading screen */
+.pvz-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background: #020817;
+  color: #64748b;
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+}
+
+/* Header */
+.pvz-header {
+  padding: 10px 16px;
+  border-bottom: 1px solid #1e293b;
+  background: #0a0f1a;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* OSI columns */
+.pvz-osi-col {
+  border-right: 1px solid #1e293b;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.pvz-osi-col--right {
+  border-right: none;
+  border-left: 1px solid #1e293b;
+}
+
+/* Sequence diagram scroll wrapper */
+.pvz-seq-scroll-wrapper {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: #020817;
+}
+
+/* ── Mobile top-panel tab bar ──────────────────────────────────── */
+.pvz-mobile-top-tabs {
+  display: flex;
+  background: #0f172a;
+  border-bottom: 1px solid #1e293b;
+  flex-shrink: 0;
+}
+
+.pvz-mobile-top-tab {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: #64748b;
+  padding: 8px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.pvz-mobile-top-tab--active {
+  color: #e2e8f0;
+  border-bottom-color: #3b82f6;
+  background: #0a0f1a;
+}
+
+/* ── Bottom pane tab labels ────────────────────────────────────── */
+/* By default show full labels, hide short ones */
+.pvz-bottom-tab-label--short {
+  display: none;
+}
+
+.pvz-bottom-tab-label--full {
+  display: inline;
+}
+
+/* ── Phase legend in playback controls ─────────────────────────── */
+.pvz-phase-legend {
+  display: flex;
+}
+
+/* ── Popout button (hidden on mobile) ──────────────────────────── */
+.pvz-popout-btn {
+  display: inline-flex;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Mobile (<768px)
+   ═══════════════════════════════════════════════════════════════ */
+@media (max-width: 767px) {
+  .pvz-header--mobile {
+    padding: 8px 10px;
+  }
+
+  /* Sequence diagram: allow horizontal scroll on small screens */
+  .pvz-seq-scroll-wrapper {
+    overflow-x: auto;
+    overflow-y: auto;
+  }
+
+  /* Let sequence diagram rows expand beyond viewport width if needed */
+  .pvz-seq-scroll-wrapper > div {
+    min-width: 360px;
+  }
+
+  /* Smaller scrollbar on mobile */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  /* Hide phase legend on mobile to save space */
+  .pvz-phase-legend {
+    display: none;
+  }
+
+  /* Hide popout button on mobile (no multi-window on phones) */
+  .pvz-popout-btn {
+    display: none;
+  }
+
+  /* Show short tab labels, hide full */
+  .pvz-bottom-tab-label--full {
+    display: none;
+  }
+  .pvz-bottom-tab-label--short {
+    display: inline;
+  }
+
+  /* Tighter bottom-tab padding on mobile */
+  .pvz-bottom-tab {
+    padding: 8px 10px !important;
+    font-size: 10px !important;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Tablet (768px - 1024px)
+   ═══════════════════════════════════════════════════════════════ */
+@media (min-width: 768px) and (max-width: 1024px) {
+  .pvz-header {
+    padding: 8px 12px;
+  }
+
+  /* Slightly smaller phase legend text */
+  .pvz-phase-legend span {
+    font-size: 8px;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Touch-friendly improvements
+   ═══════════════════════════════════════════════════════════════ */
+@media (hover: none) and (pointer: coarse) {
+  /* Larger touch targets for playback buttons */
+  .pvz-playback button {
+    min-height: 36px;
+    min-width: 36px;
+  }
+
+  /* Bigger drag handle for split layout on touch devices */
+  .pvz-root > div > div[style*="row-resize"] {
+    min-height: 12px;
+  }
+}

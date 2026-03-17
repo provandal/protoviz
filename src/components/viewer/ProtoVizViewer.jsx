@@ -1,7 +1,8 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import useViewerStore from '../../store/viewerStore';
 import useScenario from '../../hooks/useScenario';
+import useMediaQuery from '../../hooks/useMediaQuery';
 import { buildStateAtStep } from '../../utils/stateEngine';
 import { PHASE_COLORS } from '../../utils/constants';
 import usePlayback from '../../hooks/usePlayback';
@@ -16,6 +17,29 @@ import SplitLayout from '../layout/SplitLayout';
 import BottomPane from '../layout/BottomPane';
 
 const DEFAULT_SCENARIO = 'roce-v2-rc-connection-rdma-write-read';
+
+/* ── Mobile top-panel tabs ─────────────────────────────────────── */
+const MOBILE_TABS = [
+  { id: 'sequence', label: 'Sequence' },
+  { id: 'initiator', label: 'Initiator' },
+  { id: 'target', label: 'Target' },
+];
+
+function MobileTopTabs({ active, onChange }) {
+  return (
+    <div className="pvz-mobile-top-tabs">
+      {MOBILE_TABS.map(tab => (
+        <button
+          key={tab.id}
+          className={`pvz-mobile-top-tab${active === tab.id ? ' pvz-mobile-top-tab--active' : ''}`}
+          onClick={() => onChange(tab.id)}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export default function ProtoVizViewer() {
   const { scenarioSlug, stepNum } = useParams();
@@ -34,6 +58,13 @@ export default function ProtoVizViewer() {
   const splitPosition = useViewerStore(s => s.splitPosition);
   const poppedOut = useViewerStore(s => s.poppedOut);
   const goToStep = useViewerStore(s => s.goToStep);
+
+  // Responsive breakpoints
+  const isMobile = useMediaQuery('(max-width: 767px)');
+  const isTablet = useMediaQuery('(min-width: 768px) and (max-width: 1024px)');
+
+  // Mobile: which top panel is active
+  const [mobileTopTab, setMobileTopTab] = useState('sequence');
 
   // Deep link: set step from URL on mount
   useEffect(() => {
@@ -54,7 +85,7 @@ export default function ProtoVizViewer() {
 
   if (loading || !scenario) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#020817', color: '#64748b', fontFamily: "'IBM Plex Sans',system-ui,sans-serif" }}>
+      <div className="pvz-loading">
         {error ? (
           <div style={{ textAlign: 'center' }}>
             <div style={{ color: '#ef4444', fontSize: 14, marginBottom: 8 }}>Failed to load scenario</div>
@@ -72,7 +103,6 @@ export default function ProtoVizViewer() {
   const initLayers = buildStateAtStep(scenario, 'initiator', step);
   const targLayers = buildStateAtStep(scenario, 'target', step);
   const swLayers = buildStateAtStep(scenario, 'switch', step);
-  const hasSwitch = swLayers && swLayers.length > 0;
   const phaseColor = PHASE_COLORS[ev.phase] || '#475569';
 
   // Dynamic labels from scenario actors
@@ -81,24 +111,106 @@ export default function ProtoVizViewer() {
   const initLabel = initActor?.label || 'Initiator';
   const targLabel = targActor?.label || 'Target';
 
+  // OSI width based on breakpoint
+  const osiWidth = isTablet ? 170 : 220;
+
+  /* ── MOBILE layout (<768px) ──────────────────────────────────── */
+  if (isMobile) {
+    const topContent = (
+      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
+        <MobileTopTabs active={mobileTopTab} onChange={setMobileTopTab} />
+
+        {/* Sequence tab */}
+        <div style={{ flex: 1, display: mobileTopTab === 'sequence' ? 'flex' : 'none', flexDirection: 'column', overflow: 'hidden' }}>
+          <ActorHeaders actors={scenario.actors} />
+          <div className="pvz-seq-scroll-wrapper">
+            <SequenceDiagram timeline={scenario.timeline} currentStep={step} onStepSelect={goToStep} />
+          </div>
+        </div>
+
+        {/* Initiator OSI tab */}
+        <div style={{ flex: 1, display: mobileTopTab === 'initiator' ? 'flex' : 'none', flexDirection: 'column', overflow: 'hidden' }}>
+          <OsiStack actorId="initiator" label={initLabel} layers={initLayers} stepEvent={ev} />
+        </div>
+
+        {/* Target OSI tab */}
+        <div style={{ flex: 1, display: mobileTopTab === 'target' ? 'flex' : 'none', flexDirection: 'column', overflow: 'hidden' }}>
+          <OsiStack actorId="target" label={targLabel} layers={targLayers} stepEvent={ev} />
+        </div>
+
+        {/* Playback controls: always visible on mobile */}
+        <PlaybackControls total={total} phaseColor={phaseColor} />
+      </div>
+    );
+
+    const bottomContent = poppedOut ? (
+      <div
+        onClick={focusPopout}
+        style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          height: '100%', background: '#0a0f1a', cursor: 'pointer',
+          color: '#475569', fontSize: 12,
+          border: '1px dashed #1e293b', borderRadius: 4, margin: 4,
+        }}
+      >
+        Detail panel is in a separate window
+      </div>
+    ) : (
+      <BottomPane event={ev} phaseColor={phaseColor} onPopout={handlePopout} />
+    );
+
+    return (
+      <div className="pvz-root">
+        {/* Compact mobile header */}
+        <div className="pvz-header pvz-header--mobile">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div
+              onClick={() => navigate('/')}
+              style={{ background: 'linear-gradient(135deg,#3b82f6,#8b5cf6)', borderRadius: 6, padding: '4px 8px', cursor: 'pointer' }}
+            >
+              <span style={{ color: '#fff', fontSize: 11, fontWeight: 800, letterSpacing: '0.05em' }}>PROTO<span style={{ color: '#a5f3fc' }}>VIZ</span></span>
+            </div>
+            <span style={{ color: '#94a3b8', fontSize: 11, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{scenario.meta.title}</span>
+          </div>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+            <span style={{ background: `${phaseColor}22`, color: phaseColor, fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 4, border: `1px solid ${phaseColor}44` }}>
+              {ev.phase}
+            </span>
+            <span style={{ color: '#475569', fontSize: 9 }}>{step + 1}/{total}</span>
+          </div>
+        </div>
+
+        <SplitLayout
+          top={topContent}
+          bottom={bottomContent}
+          splitPercent={splitPosition}
+          onSplitChange={(pos) => useViewerStore.getState().setSplitPosition(pos)}
+        />
+
+        <SwitchFooter layers={swLayers} />
+      </div>
+    );
+  }
+
+  /* ── DESKTOP & TABLET layout (>=768px) ───────────────────────── */
   const topContent = (
     <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
       {/* Left OSI Stack */}
-      <div style={{ width: 220, borderRight: '1px solid #1e293b', overflow: 'hidden', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+      <div className="pvz-osi-col" style={{ width: osiWidth }}>
         <OsiStack actorId="initiator" label={initLabel} layers={initLayers} stepEvent={ev} />
       </div>
 
       {/* Center: Sequence + Controls */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <ActorHeaders actors={scenario.actors} />
-        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', background: '#020817' }}>
+        <div className="pvz-seq-scroll-wrapper">
           <SequenceDiagram timeline={scenario.timeline} currentStep={step} onStepSelect={goToStep} />
         </div>
         <PlaybackControls total={total} phaseColor={phaseColor} />
       </div>
 
       {/* Right OSI Stack */}
-      <div style={{ width: 220, borderLeft: '1px solid #1e293b', overflow: 'hidden', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+      <div className="pvz-osi-col pvz-osi-col--right" style={{ width: osiWidth }}>
         <OsiStack actorId="target" label={targLabel} layers={targLayers} stepEvent={ev} />
       </div>
     </div>
@@ -121,17 +233,9 @@ export default function ProtoVizViewer() {
   );
 
   return (
-    <div style={{
-      display: 'flex', flexDirection: 'column', height: '100vh',
-      background: '#020817', color: '#e2e8f0',
-      fontFamily: "'IBM Plex Sans',system-ui,sans-serif", overflow: 'hidden',
-    }}>
+    <div className="pvz-root">
       {/* Header */}
-      <div style={{
-        padding: '10px 16px', borderBottom: '1px solid #1e293b',
-        background: '#0a0f1a', flexShrink: 0,
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-      }}>
+      <div className="pvz-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <div
             onClick={() => navigate('/')}

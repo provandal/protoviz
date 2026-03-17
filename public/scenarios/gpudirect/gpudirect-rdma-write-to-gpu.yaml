@@ -1,29 +1,33 @@
 meta:
-  id: "roce-v2-rc-link-through-rdma-write-read"
-  title: "RoCEv2 RC: Link Training → QP Connection → RDMA WRITE → RDMA READ"
-  protocol: "RoCEv2"
+  id: "gpudirect-rdma-write-to-gpu"
+  title: "GPUDirect RDMA: RoCEv2 WRITE Direct to GPU Memory"
+  protocol: "RoCEv2 + GPUDirect"
   protocol_family: "RDMA"
   version: "1.0.0"
   description: >
-    A complete RoCEv2 Reliable Connected (RC) exchange over 100GbE, beginning with
-    physical link establishment (Auto-Negotiation, Link Training, RS-FEC), proceeding
-    through IP/ARP setup, IB Connection Manager (CM) QP bring-up via MAD/CM REQ→REP→RTU,
-    an RDMA WRITE that pushes a 4KB buffer directly into remote memory without CPU
-    involvement on the target, and an RDMA READ that retrieves that same buffer.
-    Host state is shown across all OSI layers, including verbs API, QP state machine,
-    IB transport headers, IP/UDP encapsulation, PFC-capable Ethernet, and the physical
-    layer RS-FEC state. Frame fields are annotated with IBTA, RFC, and IEEE spec references
-    and cross-referenced to Linux kernel source (rdma-core, drivers/infiniband/hw/mlx5).
+    A GPUDirect RDMA scenario showing how an RDMA WRITE lands directly in GPU
+    memory rather than host DRAM, using the nvidia-peermem kernel module. The key
+    educational moment is the contrast between traditional RDMA WRITE (to host DRAM)
+    and GPUDirect RDMA WRITE (directly to GPU HBM via PCIe BAR, zero CPU bounce
+    buffer). The flow begins with physical link establishment, proceeds through CUDA
+    GPU memory allocation and nvidia-peermem peer memory registration, IB Memory
+    Region registration against the GPU BAR address, QP bring-up via CM REQ/REP/RTU,
+    an RDMA WRITE that pushes a 4MB tensor buffer directly into GPU HBM bypassing
+    the CPU entirely, and an RDMA READ that retrieves that same buffer. Host state
+    is shown across all OSI layers, including the GPU/CUDA runtime layer, the
+    nvidia-peermem/IB verbs layer, and the standard RoCEv2 stack. Frame fields are
+    annotated with IBTA, RFC, and IEEE spec references and cross-referenced to Linux
+    kernel source (rdma-core, drivers/infiniband/hw/mlx5, nvidia-peermem).
 
   learning_objectives:
-    - "Understand how 100GbE physical links come up independently (host↔switch) via Auto-Negotiation and Link Training"
-    - "Trace ARP resolution and IP addressing for RoCEv2 (which runs over UDP/IP, unlike RoCEv1)"
+    - "Understand how nvidia-peermem exposes GPU memory to the RDMA subsystem via the peer_memory_client API"
+    - "See how cuMemAlloc allocates GPU HBM and how the GPU BAR1 aperture maps GPU physical memory to the PCIe address space"
+    - "Trace ibv_reg_mr() against a GPU virtual address — nvidia-peermem intercepts the registration to pin GPU pages instead of host pages"
+    - "Observe the DMA path: RNIC writes directly to GPU HBM via PCIe peer-to-peer, never touching host DRAM or CPU caches"
+    - "Contrast traditional RDMA WRITE (RNIC → host DRAM) vs GPUDirect RDMA WRITE (RNIC → GPU HBM via BAR1)"
     - "Follow IB Connection Manager MAD exchange to bring a Queue Pair from RESET to RTS"
-    - "Observe QP state machine transitions: RESET → INIT → RTR → RTS"
-    - "See how RDMA WRITE bypasses the remote CPU — no receive WQE consumed on target"
-    - "See how RDMA READ requires a round trip and how RETH/AETH headers carry addressing"
-    - "Understand Memory Region (MR) keys (lkey/rkey) and their role in RDMA authorization"
-    - "Observe how PFC (Priority Flow Control) prevents lossless Ethernet drop under congestion"
+    - "See how RDMA READ from GPU memory also bypasses the CPU — GPU RNIC reads GPU HBM via PCIe P2P"
+    - "Understand the role of nvidia_peermem_get_pages() and nvidia_peermem_put_pages() in GPU memory lifecycle"
 
   difficulty: "advanced"
 
@@ -31,87 +35,91 @@ meta:
     - name: "ProtoViz Community"
       org: "proto-viz"
       github: "proto-viz"
-    - name: "Generated via Linux kernel source analysis"
+    - name: "Generated via Linux kernel and nvidia-peermem source analysis"
       org: "proto-viz"
       github: ""
 
-  created: "2026-03-14"
-  updated: "2026-03-14"
+  created: "2026-03-17"
+  updated: "2026-03-17"
 
   tags:
     - "RDMA"
     - "RoCEv2"
+    - "GPUDirect"
+    - "GPU"
+    - "CUDA"
+    - "nvidia-peermem"
     - "InfiniBand"
     - "100GbE"
     - "lossless-ethernet"
     - "PFC"
-    - "DCQCN"
-    - "queue-pair"
+    - "AI-infrastructure"
+    - "HPC"
     - "education"
 
   primary_specs:
     - document: "IBTA Vol1"
-      section: "9"
-      title: "Connection Management"
+      section: "10.6"
+      title: "Memory Management — Registration and Keys"
       url: "https://www.infinibandta.org/ibta-specification/"
-      alt_url: "https://www.rdmamojo.com/2012/12/28/ib-verbs-connection-setup/"
+      alt_url: "https://docs.kernel.org/infiniband/index.html"
     - document: "IBTA Vol1"
       section: "9.7"
       title: "Reliable Connection Service"
       url: "https://www.infinibandta.org/ibta-specification/"
-      alt_url: "https://docs.kernel.org/infiniband/index.html"
+      alt_url: "https://www.rdmamojo.com/2012/12/28/ib-verbs-connection-setup/"
     - document: "RFC 7871"
       section: "3"
       title: "RoCEv2 — IB transport over UDP/IPv4/IPv6"
       url: "https://datatracker.ietf.org/doc/html/rfc7871"
-      alt_url: "https://community.mellanox.com/s/article/rocev2-ip-routable-rdma-over-converged-ethernet"
     - document: "IEEE 802.1Qbb"
       section: "36"
       title: "Priority-based Flow Control"
       url: "https://standards.ieee.org/ieee/802.1Qbb/4788/"
-      alt_url: "https://community.mellanox.com/s/article/understanding-pfc"
     - document: "IEEE 802.3cd"
       section: "135"
       title: "100GBASE-KR4 Auto-Negotiation and Link Training"
       url: "https://standards.ieee.org/ieee/802.3cd/7387/"
-      alt_url: ""
 
   content_disclaimer: >
     Protocol descriptions in this scenario are based on open-source implementations
-    (Linux kernel, rdma-core, Wireshark) and public RFCs. No proprietary specification
-    text has been reproduced. IBTA, IEEE, and other specification references are provided
-    as citations for further reading.
+    (Linux kernel, rdma-core, nvidia-peermem, CUDA documentation) and public RFCs.
+    No proprietary specification text has been reproduced. IBTA, IEEE, NVIDIA, and
+    other specification references are provided as citations for further reading.
 
   source_references:
     - repo: "torvalds/linux"
-      path: "drivers/infiniband/core/cm.c"
-      description: "IB Connection Manager — REQ/REP/RTU/DREQ/DREP state machine"
+      path: "drivers/infiniband/core/umem.c"
+      description: "ib_umem_get() — user memory region pinning; calls peer_memory_client for GPU memory"
+    - repo: "Mellanox/nv_peer_memory"
+      path: "nv_peer_mem.c"
+      description: "nvidia-peermem kernel module — implements ib_peer_memory_client for NVIDIA GPUs"
+    - repo: "torvalds/linux"
+      path: "drivers/infiniband/hw/mlx5/mr.c"
+      description: "mlx5_ib_reg_user_mr() — MR registration, MLX5_CMD_OP_CREATE_MKEY for GPU-backed MRs"
     - repo: "torvalds/linux"
       path: "drivers/infiniband/hw/mlx5/qp.c"
       description: "mlx5 QP creation, modify_qp (RESET→INIT→RTR→RTS), WQE posting"
     - repo: "torvalds/linux"
+      path: "drivers/infiniband/core/cm.c"
+      description: "IB Connection Manager — REQ/REP/RTU/DREQ/DREP state machine"
+    - repo: "torvalds/linux"
       path: "drivers/infiniband/core/verbs.c"
       description: "ib_modify_qp — generic verbs QP state machine enforcement"
-    - repo: "torvalds/linux"
-      path: "drivers/net/ethernet/mellanox/mlx5/core/en/reporter_rx.c"
-      description: "mlx5 RX path, PFC watchdog, ECN counters"
     - repo: "linux-rdma/rdma-core"
       path: "libibverbs/verbs.h"
-      description: "Userspace verbs API — ibv_post_send, ibv_poll_cq, struct ibv_qp_attr"
-    - repo: "linux-rdma/rdma-core"
-      path: "librdmacm/cma.c"
-      description: "rdma_create_qp, rdma_connect, rdma_accept — CM abstraction over IB CM MADs"
+      description: "Userspace verbs API — ibv_reg_mr, ibv_post_send, ibv_poll_cq"
 
 # ─────────────────────────────────────────────────────────────────
 # TOPOLOGY
 # ─────────────────────────────────────────────────────────────────
 topology:
   actors:
-    - id: "initiator"
+    - id: "ai_node"
       type: "initiator"
-      label: "Host A (Initiator)"
-      description: "RDMA initiator — posts SEND/WRITE/READ Work Requests"
-      hardware: "Mellanox ConnectX-6 Dx 100GbE RNIC"
+      label: "AI Compute Node (DGX H100)"
+      description: "GPU-accelerated compute node with NVIDIA H100 GPU and ConnectX-7 RNIC. nvidia-peermem enables direct RDMA to/from GPU HBM."
+      hardware: "NVIDIA H100 GPU + ConnectX-7 100GbE RNIC (PCIe Gen5 peer-to-peer)"
       os: "Linux 6.x"
       kernel_version: "6.8"
       ip: "192.168.1.10"
@@ -121,16 +129,16 @@ topology:
 
     - id: "switch"
       type: "switch"
-      label: "100GbE Switch"
-      description: "Lossless 100GbE switch with PFC and ECN/RED support. PFC priority 3 used for RoCEv2 traffic."
+      label: "100GbE RoCEv2 Switch"
+      description: "Lossless 100GbE datacenter switch with PFC and ECN/RED support. PFC priority 3 used for RoCEv2 traffic."
       hardware: "Generic 100GbE datacenter switch"
       position: "center"
 
-    - id: "target"
+    - id: "remote_server"
       type: "target"
-      label: "Host B (Target)"
-      description: "RDMA target — exposes Memory Regions for remote access"
-      hardware: "Mellanox ConnectX-6 Dx 100GbE RNIC"
+      label: "Remote Server"
+      description: "Standard RoCEv2 endpoint — sends data that will land directly in AI node's GPU memory"
+      hardware: "ConnectX-7 100GbE RNIC"
       os: "Linux 6.x"
       kernel_version: "6.8"
       ip: "192.168.1.20"
@@ -139,16 +147,16 @@ topology:
       position: "right"
 
   links:
-    - id: "link-a-sw"
-      from: "initiator"
+    - id: "link-ai-sw"
+      from: "ai_node"
       to: "switch"
       speed_gbps: 100
       media: "fiber_sr"
       fec: "RS(544,514)"
       autoneg: true
-    - id: "link-sw-b"
+    - id: "link-sw-remote"
       from: "switch"
-      to: "target"
+      to: "remote_server"
       speed_gbps: 100
       media: "fiber_sr"
       fec: "RS(544,514)"
@@ -156,43 +164,62 @@ topology:
 
 # ─────────────────────────────────────────────────────────────────
 # OSI LAYER DEFINITIONS (per actor)
-# These define what each OSI layer means for this specific protocol stack
 # ─────────────────────────────────────────────────────────────────
 osi_layers:
-  initiator:
+  ai_node:
     - layer: 7
-      name: "Application / Verbs"
-      components: ["libibverbs", "librdmacm", "user application"]
+      name: "GPU / CUDA Runtime"
+      components: ["CUDA Driver API", "cuMemAlloc", "libcuda.so", "GPU HBM"]
       state_schema:
-        app_state:
+        cuda_state:
           type: "string"
-          description: "Application-level state"
-          initial: "idle"
-        posted_wr:
+          description: "CUDA runtime initialization state"
+          initial: "uninitialized"
+        gpu_buffer_ptr:
           type: "string"
-          description: "Last Work Request posted to SQ"
-          initial: "none"
-        cq_entries:
+          description: "CUDA device pointer returned by cuMemAlloc (GPU virtual address)"
+          initial: "null"
+        gpu_bar_addr:
+          type: "string"
+          description: "PCIe BAR1 address mapping the GPU buffer into CPU/RNIC-visible address space"
+          initial: "null"
+        gpu_buffer_size:
           type: "integer"
-          description: "Completion Queue entries available"
+          description: "Size of allocated GPU buffer in bytes"
           initial: 0
-        mr_registered:
-          type: "boolean"
-          description: "Memory Region registered with RNIC"
-          initial: false
+        gpu_memory_type:
+          type: "string"
+          description: "Type of GPU memory backing the buffer"
+          initial: "none"
 
     - layer: 6
-      name: "CM / rdma-cm"
-      components: ["librdmacm", "drivers/infiniband/core/cma.c", "drivers/infiniband/core/cm.c"]
+      name: "nvidia-peermem / IB Verbs"
+      components: ["nvidia-peermem kernel module", "libibverbs", "drivers/infiniband/core/umem.c"]
       state_schema:
-        cm_state:
+        peermem_state:
           type: "string"
-          description: "Connection Manager state"
-          initial: "idle"
-        cm_id:
+          description: "nvidia-peermem module state"
+          initial: "not_loaded"
+        mr_state:
           type: "string"
-          description: "rdma_cm_id handle"
+          description: "Memory Region registration state"
+          initial: "none"
+        mr_lkey:
+          type: "string"
+          description: "Local Memory Region key for GPU buffer"
           initial: "null"
+        mr_rkey:
+          type: "string"
+          description: "Remote Memory Region key for GPU buffer (shared with peer)"
+          initial: "null"
+        peer_memory_client:
+          type: "string"
+          description: "Registered IB peer memory client name"
+          initial: "none"
+        gpu_pages_pinned:
+          type: "boolean"
+          description: "GPU pages pinned via nvidia_peermem_get_pages()"
+          initial: false
 
     - layer: 5
       name: "IB Transport (RC QP)"
@@ -230,14 +257,6 @@ osi_layers:
           type: "integer"
           description: "Starting PSN for sends"
           initial: 0
-        lkey:
-          type: "string"
-          description: "Local Memory Region key"
-          initial: "null"
-        rkey:
-          type: "string"
-          description: "Remote Memory Region key (learned from peer)"
-          initial: "null"
         remote_qpn:
           type: "string"
           description: "Remote QP number"
@@ -303,10 +322,6 @@ osi_layers:
           type: "integer"
           description: "Approximate bytes in TX queue"
           initial: 0
-        vlan_id:
-          type: "integer"
-          description: "VLAN for PFC (PFC requires 802.1Q)"
-          initial: 0
 
     - layer: 1
       name: "Physical / RS-FEC"
@@ -337,7 +352,7 @@ osi_layers:
           type: "boolean"
           initial: false
 
-  target:
+  remote_server:
     - layer: 7
       name: "Application / Verbs"
       components: ["libibverbs", "librdmacm", "user application"]
@@ -350,15 +365,15 @@ osi_layers:
           initial: false
         mr_vaddr:
           type: "string"
-          description: "Virtual address of registered Memory Region"
+          description: "Virtual address of registered Memory Region (host DRAM)"
           initial: "null"
         mr_length:
           type: "integer"
           description: "Length of registered MR in bytes"
           initial: 0
-        cpu_involvement:
+        data_source:
           type: "string"
-          description: "Whether CPU was involved in this data transfer"
+          description: "Source of data for RDMA WRITE (e.g. training data, model weights)"
           initial: "none"
 
     - layer: 6
@@ -382,6 +397,9 @@ osi_layers:
         qp_num:
           type: "string"
           initial: "null"
+        psn_send:
+          type: "integer"
+          initial: 0
         psn_recv_expected:
           type: "integer"
           initial: 0
@@ -390,7 +408,7 @@ osi_layers:
           initial: "null"
         rkey:
           type: "string"
-          description: "rkey this host will advertise to initiator (out-of-band, via app)"
+          description: "rkey for remote server's host DRAM MR"
           initial: "null"
         remote_qpn:
           type: "string"
@@ -478,19 +496,19 @@ osi_layers:
           initial: 0
         port_a_pfc_xoff:
           type: "boolean"
-          description: "PFC XOFF asserted toward initiator (priority 3)"
+          description: "PFC XOFF asserted toward AI node (priority 3)"
           initial: false
         port_b_pfc_xoff:
           type: "boolean"
-          description: "PFC XOFF asserted toward target (priority 3)"
+          description: "PFC XOFF asserted toward remote server (priority 3)"
           initial: false
         port_a_egress_queue_p3:
           type: "integer"
-          description: "Bytes queued for egress on port A (toward initiator), priority 3"
+          description: "Bytes queued for egress on port A (toward AI node), priority 3"
           initial: 0
         port_b_egress_queue_p3:
           type: "integer"
-          description: "Bytes queued for egress on port B (toward target), priority 3"
+          description: "Bytes queued for egress on port B (toward remote server), priority 3"
           initial: 0
     - layer: 1
       name: "Physical (per-port)"
@@ -498,7 +516,7 @@ osi_layers:
       state_schema:
         port_a_phy:
           type: "string"
-          description: "Physical state of port facing initiator (Host A)"
+          description: "Physical state of port facing AI node"
           initial: "down"
         port_a_an:
           type: "string"
@@ -510,7 +528,7 @@ osi_layers:
           initial: "idle"
         port_b_phy:
           type: "string"
-          description: "Physical state of port facing target (Host B)"
+          description: "Physical state of port facing remote server"
           initial: "down"
         port_b_an:
           type: "string"
@@ -529,8 +547,8 @@ frames:
   # ── ARP ─────────────────────────────────────────────────────────
   - id: "arp_request"
     name: "ARP Request"
-    description: "Initiator broadcasts ARP to resolve 192.168.1.20 to a MAC address"
-    from: "initiator"
+    description: "AI node broadcasts ARP to resolve 192.168.1.20 to a MAC address"
+    from: "ai_node"
     to: "broadcast"
     via: ["switch"]
     timestamp_ns: 5000000
@@ -558,7 +576,7 @@ frames:
             bits: 48
             offset_bits: 48
             value: "00:02:c9:12:34:56"
-            description: "Initiator NIC MAC address"
+            description: "AI node NIC MAC address"
           - name: "Type"
             abbrev: "eth.type"
             bits: 16
@@ -595,17 +613,17 @@ frames:
             abbrev: "arp.src.hw_mac"
             bits: 48
             value: "00:02:c9:12:34:56"
-            description: "Initiator MAC"
+            description: "AI node MAC"
           - name: "Sender IP"
             abbrev: "arp.src.proto_ipv4"
             bits: 32
             value: "192.168.1.10"
-            description: "Initiator IP"
+            description: "AI node IP"
           - name: "Target MAC"
             abbrev: "arp.dst.hw_mac"
             bits: 48
             value: "00:00:00:00:00:00"
-            description: "Unknown — this is what we're asking for"
+            description: "Unknown — this is what we are asking for"
           - name: "Target IP"
             abbrev: "arp.dst.proto_ipv4"
             bits: 32
@@ -614,9 +632,9 @@ frames:
 
   - id: "arp_reply"
     name: "ARP Reply"
-    description: "Target responds with its MAC address"
-    from: "target"
-    to: "initiator"
+    description: "Remote server responds with its MAC address"
+    from: "remote_server"
+    to: "ai_node"
     via: ["switch"]
     timestamp_ns: 5200000
     total_bytes: 42
@@ -631,12 +649,12 @@ frames:
             abbrev: "eth.dst"
             bits: 48
             value: "00:02:c9:12:34:56"
-            description: "Unicast reply to initiator"
+            description: "Unicast reply to AI node"
           - name: "Source"
             abbrev: "eth.src"
             bits: 48
             value: "00:02:c9:ab:cd:ef"
-            description: "Target MAC"
+            description: "Remote server MAC"
           - name: "Type"
             abbrev: "eth.type"
             bits: 16
@@ -655,7 +673,7 @@ frames:
             abbrev: "arp.src.hw_mac"
             bits: 48
             value: "00:02:c9:ab:cd:ef"
-            description: "Target MAC — this is the answer"
+            description: "Remote server MAC — this is the answer"
           - name: "Sender IP"
             abbrev: "arp.src.proto_ipv4"
             bits: 32
@@ -665,14 +683,14 @@ frames:
   - id: "cm_req"
     name: "CM REQ (Connection Request)"
     description: >
-      IB Connection Manager Request. Initiator proposes QP parameters including
+      IB Connection Manager Request. AI node proposes QP parameters including
       its QP number, starting PSN, path MTU, and retry counts. Carried as a
       Management Datagram (MAD) over UDP port 4791.
       Linux: drivers/infiniband/core/cm.c cm_send_req()
-    from: "initiator"
-    to: "target"
+    from: "ai_node"
+    to: "remote_server"
     via: ["switch"]
-    timestamp_ns: 10000000
+    timestamp_ns: 18000000
     total_bytes: 322
     color: "#5b8dd9"
     headers:
@@ -708,7 +726,7 @@ frames:
             abbrev: "ip.hdr_len"
             bits: 4
             value: 5
-            description: "Header length = 5 × 32-bit words = 20 bytes"
+            description: "Header length = 5 x 32-bit words = 20 bytes"
           - name: "DSCP/ECN"
             abbrev: "ip.dscp"
             bits: 8
@@ -720,10 +738,6 @@ frames:
                 section: "5"
                 title: "ECN field in IP header"
                 url: "https://datatracker.ietf.org/doc/html/rfc3168#section-5"
-              - document: "RFC 4594"
-                section: "4.1"
-                title: "DSCP for low-drop assured forwarding"
-                url: "https://datatracker.ietf.org/doc/html/rfc4594"
           - name: "Total Length"
             abbrev: "ip.len"
             bits: 16
@@ -771,7 +785,7 @@ frames:
             abbrev: "udp.dstport"
             bits: 16
             value: 4791
-            description: "IANA-assigned well-known port for RoCEv2. All RoCEv2 traffic uses this port."
+            description: "IANA-assigned well-known port for RoCEv2."
             spec_refs:
               - document: "RFC 7871"
                 section: "7"
@@ -787,11 +801,6 @@ frames:
             bits: 16
             value: "0x0000"
             description: "RoCEv2 sets UDP checksum to 0. Integrity is protected by ICRC in the IB layer."
-            spec_refs:
-              - document: "RFC 7871"
-                section: "6"
-                title: "UDP checksum set to zero for RoCEv2"
-                url: "https://datatracker.ietf.org/doc/html/rfc7871#section-6"
 
       - name: "IB BTH (Base Transport Header)"
         abbrev: "infiniband.bth"
@@ -813,12 +822,7 @@ frames:
             abbrev: "infiniband.bth.se"
             bits: 1
             value: 0
-            description: "SE=0: receiver need not generate a solicited event. SE=1 used to wake sleeping recv completions."
-            spec_refs:
-              - document: "IBTA Vol1"
-                section: "9.3"
-                title: "Solicited Event bit"
-                url: "https://www.infinibandta.org/ibta-specification/"
+            description: "SE=0: receiver need not generate a solicited event"
           - name: "MigReq"
             abbrev: "infiniband.bth.migreq"
             bits: 1
@@ -828,7 +832,6 @@ frames:
             abbrev: "infiniband.bth.padcnt"
             bits: 2
             value: 0
-            description: "Number of pad bytes appended to payload to make it a multiple of 4"
           - name: "Transport Header Version"
             abbrev: "infiniband.bth.tver"
             bits: 4
@@ -848,27 +851,22 @@ frames:
             abbrev: "infiniband.bth.fecn"
             bits: 1
             value: 0
-            description: "Forward ECN — set by switch when experiencing congestion. Triggers DCQCN rate reduction at receiver."
-            spec_refs:
-              - document: "IBTA Vol1"
-                section: "3.5.4"
-                title: "FECN — Forward Explicit Congestion Notification"
-                url: "https://www.infinibandta.org/ibta-specification/"
+            description: "Forward ECN — not set"
           - name: "BECN"
             abbrev: "infiniband.bth.becn"
             bits: 1
             value: 0
-            description: "Backward ECN — set by receiver in a CNP (Congestion Notification Packet) to tell sender to reduce rate."
+            description: "Backward ECN — not set"
           - name: "Destination QP"
             abbrev: "infiniband.bth.destqp"
             bits: 24
             value: "0x000001"
             value_hex: "0x000001"
-            description: "QP 1 = Well-known QP for CM (General Management Queue Pair). All CM traffic goes to QP1."
+            description: "QP 1 = Well-known QP for CM (General Services Interface). All CM traffic goes to QP1."
             spec_refs:
               - document: "IBTA Vol1"
                 section: "3.5.3"
-                title: "Reserved QP Numbers — QP1 = GSI (General Services Interface)"
+                title: "Reserved QP Numbers — QP1 = GSI"
                 url: "https://www.infinibandta.org/ibta-specification/"
           - name: "Acknowledge Request (A)"
             abbrev: "infiniband.bth.ackreq"
@@ -879,7 +877,7 @@ frames:
             abbrev: "infiniband.bth.psn"
             bits: 24
             value: 0
-            description: "Starting sequence number. 24-bit wrap-around counter. RC transport uses PSN for ordering and retransmit."
+            description: "Starting sequence number for CM MAD exchange"
             spec_refs:
               - document: "IBTA Vol1"
                 section: "9.4"
@@ -896,7 +894,7 @@ frames:
             bits: 32
             value: "0x80010000"
             value_hex: "0x80010000"
-            description: "Well-known Q_Key for CM MADs (0x80010000). Privileged Q_Key — MSB set means kernel-space only."
+            description: "Well-known Q_Key for CM MADs. MSB set = kernel-space only."
             spec_refs:
               - document: "IBTA Vol1"
                 section: "3.5.5"
@@ -918,11 +916,6 @@ frames:
             bits: 8
             value: "0x07"
             description: "0x07 = Communication Management. Identifies this MAD as a CM message."
-            spec_refs:
-              - document: "IBTA Vol1"
-                section: "13.4.1"
-                title: "MAD Common Header — Management Class"
-                url: "https://www.infinibandta.org/ibta-specification/"
           - name: "Method"
             abbrev: "infiniband.mad.method"
             bits: 8
@@ -931,13 +924,13 @@ frames:
           - name: "Transaction ID"
             abbrev: "infiniband.mad.transaction_id"
             bits: 64
-            value: "0x0001000000000001"
+            value: "0x0002000000000001"
             description: "Unique per-message ID for request/response matching"
           - name: "Attribute ID"
             abbrev: "infiniband.mad.attr_id"
             bits: 16
             value: "0x0010"
-            description: "0x0010 = CM_REQ — this is what identifies the MAD as a Connection Request (not the BTH opcode)"
+            description: "0x0010 = CM_REQ — this is what identifies the MAD as a Connection Request"
             spec_refs:
               - document: "IBTA Vol1"
                 section: "12.6.5"
@@ -946,32 +939,22 @@ frames:
           - name: "Local Communication ID"
             abbrev: "infiniband.mad.cm.local_comm_id"
             bits: 32
-            value: "0xA1B2C3D4"
-            description: "Unique ID assigned by initiator for this connection. Both sides use this to match REQ/REP/RTU."
-            spec_refs:
-              - document: "IBTA Vol1"
-                section: "12.6.5"
-                title: "CM REQ — Local Communication ID"
-                url: "https://www.infinibandta.org/ibta-specification/"
+            value: "0xGPU0C3D4"
+            description: "Unique ID assigned by AI node for this connection"
             kernel_ref:
               file: "drivers/infiniband/core/cm.c"
               function: "cm_init_av_for_response"
-              notes: "Communication ID generated in cm_send_req(); stored in cm_id_private->id.local_id"
+              notes: "Communication ID generated in cm_send_req()"
           - name: "Service ID"
             abbrev: "infiniband.mad.cm.service_id"
             bits: 64
             value: "0x0000000001000000"
-            description: "Identifies the service being requested — application-defined or well-known (e.g. iSER, NVMe-oF)"
-            spec_refs:
-              - document: "IBTA Vol1"
-                section: "12.6.5"
-                title: "CM REQ — Service ID"
-                url: "https://www.infinibandta.org/ibta-specification/"
+            description: "Identifies the GPUDirect RDMA data transfer service"
           - name: "Local QPN"
             abbrev: "infiniband.mad.cm.local_qpn"
             bits: 24
             value: "0x00A001"
-            description: "Initiator's QP number — target will use this as its Destination QP in data packets"
+            description: "AI node's QP number — remote server will use this as Destination QP"
             kernel_ref:
               file: "drivers/infiniband/hw/mlx5/qp.c"
               function: "mlx5_ib_create_qp"
@@ -979,8 +962,8 @@ frames:
           - name: "Starting PSN"
             abbrev: "infiniband.mad.cm.starting_psn"
             bits: 24
-            value: 1234567
-            description: "Initiator's proposed starting PSN for its sends. Random to reduce collision probability on path reset."
+            value: 2345678
+            description: "AI node's proposed starting PSN for its sends"
             kernel_ref:
               file: "drivers/infiniband/core/cm.c"
               function: "ib_send_cm_req"
@@ -999,31 +982,17 @@ frames:
             abbrev: "infiniband.mad.cm.retry_count"
             bits: 3
             value: 7
-            description: "Max retransmissions before declaring error. 7 = retry indefinitely (special value)."
-            kernel_ref:
-              file: "drivers/infiniband/core/cm.c"
-              function: "ib_send_cm_req"
-              notes: "Passed via struct ib_cm_req_param.retry_count"
+            description: "Max retransmissions before declaring error. 7 = retry indefinitely."
           - name: "RNR Retry Count"
             abbrev: "infiniband.mad.cm.rnr_retry_count"
             bits: 3
             value: 7
             description: "Retries on Receiver Not Ready NAK. 7 = retry indefinitely."
-            spec_refs:
-              - document: "IBTA Vol1"
-                section: "9.7.5.2"
-                title: "RNR Retry — Receiver Not Ready handling"
-                url: "https://www.infinibandta.org/ibta-specification/"
           - name: "Private Data"
             abbrev: "infiniband.mad.cm.private_data"
             bits: 1792
-            value: "<application-specific, e.g. NVMe-oF connect parameters>"
-            description: "Up to 224 bytes of application private data in REQ. Used by ULPs (NVMe-oF, iSER, SDP) to pass connection parameters."
-            spec_refs:
-              - document: "IBTA Vol1"
-                section: "12.6.5"
-                title: "CM REQ Private Data"
-                url: "https://www.infinibandta.org/ibta-specification/"
+            value: "<gpu_rkey=0xGPU01234, gpu_vaddr=0x00007f4000000000, gpu_buf_len=4194304, is_gpu_memory=true>"
+            description: "Application private data — AI node passes GPU MR rkey, GPU BAR virtual address, and buffer length to remote server. The is_gpu_memory flag tells the remote application this is a GPUDirect target."
 
       - name: "IB ICRC"
         abbrev: "infiniband.icrc"
@@ -1040,13 +1009,13 @@ frames:
   - id: "cm_rep"
     name: "CM REP (Connection Reply)"
     description: >
-      Target accepts the connection, provides its QP number, starting PSN,
-      and optional private data. Sent from QP1 to QP1.
+      Remote server accepts the connection, provides its QP number and starting PSN.
+      The remote server now knows the RDMA WRITE target is GPU memory.
       Linux: drivers/infiniband/core/cm.c cm_send_rep()
-    from: "target"
-    to: "initiator"
+    from: "remote_server"
+    to: "ai_node"
     via: ["switch"]
-    timestamp_ns: 12000000
+    timestamp_ns: 20000000
     total_bytes: 322
     color: "#5b8dd9"
     headers:
@@ -1112,7 +1081,7 @@ frames:
             bits: 16
             value: "0x0000"
             description: "Always 0 for RoCEv2 — ICRC covers integrity"
-      - name: "IB BTH"
+      - name: "IB BTH (Base Transport Header)"
         abbrev: "infiniband.bth"
         layer: 5
         total_bytes: 12
@@ -1127,17 +1096,16 @@ frames:
             abbrev: "infiniband.bth.se"
             bits: 1
             value: 0
-            description: "SE=0: receiver need not generate a solicited event. SE=1 used to wake sleeping recv completions."
+            description: "SE=0: receiver need not generate a solicited event"
           - name: "MigReq"
             abbrev: "infiniband.bth.migreq"
             bits: 1
             value: 1
-            description: "1 = primary path (not alternate/migrated)"
+            description: "1 = primary path"
           - name: "Pad Count"
             abbrev: "infiniband.bth.padcnt"
             bits: 2
             value: 0
-            description: "Number of pad bytes appended to payload to make it a multiple of 4"
           - name: "Transport Header Version"
             abbrev: "infiniband.bth.tver"
             bits: 4
@@ -1147,7 +1115,7 @@ frames:
             bits: 16
             value: "0xFFFF"
             value_hex: "0xFFFF"
-            description: "Full membership P_Key (0xFFFF). Partition Key — defines a virtual fabric partition."
+            description: "Full membership partition key"
           - name: "FECN"
             abbrev: "infiniband.bth.fecn"
             bits: 1
@@ -1210,18 +1178,18 @@ frames:
           - name: "Local Communication ID"
             abbrev: "infiniband.mad.cm.local_comm_id"
             bits: 32
-            value: "0xDEADBEEF"
-            description: "Target's own communication ID for this connection"
+            value: "0xBEEF5678"
+            description: "Remote server's own communication ID for this connection"
           - name: "Remote Communication ID"
             abbrev: "infiniband.mad.cm.remote_comm_id"
             bits: 32
-            value: "0xA1B2C3D4"
-            description: "Echo back the initiator's comm ID from REQ — ties this reply to that request"
+            value: "0xGPU0C3D4"
+            description: "Echo back the AI node's comm ID from REQ"
           - name: "Local QPN"
             abbrev: "infiniband.mad.cm.local_qpn"
             bits: 24
             value: "0x00B002"
-            description: "Target's QP number — initiator will use this as DestQP in all data packets"
+            description: "Remote server's QP number — AI node will use this as DestQP in data packets"
             kernel_ref:
               file: "drivers/infiniband/hw/mlx5/qp.c"
               function: "mlx5_ib_create_qp"
@@ -1229,13 +1197,13 @@ frames:
           - name: "Starting PSN"
             abbrev: "infiniband.mad.cm.starting_psn"
             bits: 24
-            value: 7654321
-            description: "Target's proposed starting PSN for its sends (reads will generate response packets from here)"
+            value: 8765432
+            description: "Remote server's proposed starting PSN for its sends"
           - name: "Target ACK Delay"
             abbrev: "infiniband.mad.cm.target_ack_delay"
             bits: 5
             value: 14
-            description: "Local ACK timeout exponent. Timeout = 4.096µs × 2^(target_ack_delay). Used by initiator to set QP timeout."
+            description: "Local ACK timeout exponent. Timeout = 4.096us x 2^(target_ack_delay)."
             spec_refs:
               - document: "IBTA Vol1"
                 section: "12.6.10"
@@ -1248,8 +1216,8 @@ frames:
           - name: "Private Data"
             abbrev: "infiniband.mad.cm.private_data"
             bits: 1792
-            value: "<rkey=0xDEAD1234, vaddr=0x7f0000000000, length=4096>"
-            description: "Application private data — in this scenario, target passes rkey and virtual address of its registered MR to initiator (application-layer key exchange, not CM-defined)"
+            value: "<server_rkey=0xSRV01234, server_vaddr=0x7f0000000000, length=4194304>"
+            description: "Remote server passes its own MR details (host DRAM-backed) in case AI node needs to read from it"
 
       - name: "IB ICRC"
         abbrev: "infiniband.icrc"
@@ -1266,13 +1234,13 @@ frames:
   - id: "cm_rtu"
     name: "CM RTU (Ready To Use)"
     description: >
-      Initiator confirms connection is ready. After sending RTU, both sides
-      transition their QPs to RTS (Ready To Send). Data can now flow.
-      Linux: drivers/infiniband/core/cm.c → ib_send_cm_rtu()
-    from: "initiator"
-    to: "target"
+      AI node confirms connection is ready. After sending RTU, both sides
+      transition their QPs to RTS (Ready To Send). GPUDirect RDMA data can now flow.
+      Linux: drivers/infiniband/core/cm.c ib_send_cm_rtu()
+    from: "ai_node"
+    to: "remote_server"
     via: ["switch"]
-    timestamp_ns: 13500000
+    timestamp_ns: 21500000
     total_bytes: 322
     color: "#5b8dd9"
     headers:
@@ -1325,7 +1293,7 @@ frames:
             bits: 16
             value: 288
             description: "8 (UDP header) + 12 (BTH) + 8 (DETH) + 256 (MAD) + 4 (ICRC)"
-      - name: "IB BTH"
+      - name: "IB BTH (Base Transport Header)"
         abbrev: "infiniband.bth"
         layer: 5
         total_bytes: 12
@@ -1340,7 +1308,7 @@ frames:
             abbrev: "infiniband.bth.se"
             bits: 1
             value: 0
-            description: "SE=0: receiver need not generate a solicited event. SE=1 used to wake sleeping recv completions."
+            description: "SE=0: receiver need not generate a solicited event"
           - name: "MigReq"
             abbrev: "infiniband.bth.migreq"
             bits: 1
@@ -1350,7 +1318,6 @@ frames:
             abbrev: "infiniband.bth.padcnt"
             bits: 2
             value: 0
-            description: "Number of pad bytes appended to payload to make it a multiple of 4"
           - name: "Transport Header Version"
             abbrev: "infiniband.bth.tver"
             bits: 4
@@ -1360,7 +1327,7 @@ frames:
             bits: 16
             value: "0xFFFF"
             value_hex: "0xFFFF"
-            description: "Full membership P_Key (0xFFFF). Partition Key — defines a virtual fabric partition."
+            description: "Full membership partition key"
           - name: "FECN"
             abbrev: "infiniband.bth.fecn"
             bits: 1
@@ -1422,12 +1389,12 @@ frames:
           - name: "Local Communication ID"
             abbrev: "infiniband.mad.cm.local_comm_id"
             bits: 32
-            value: "0xA1B2C3D4"
+            value: "0xGPU0C3D4"
           - name: "Remote Communication ID"
             abbrev: "infiniband.mad.cm.remote_comm_id"
             bits: 32
-            value: "0xDEADBEEF"
-            description: "Echo target's comm ID — confirms we received the REP"
+            value: "0xBEEF5678"
+            description: "Echo remote server's comm ID — confirms we received the REP"
 
       - name: "IB ICRC"
         abbrev: "infiniband.icrc"
@@ -1440,20 +1407,24 @@ frames:
             value: "0x9876FEDC"
             description: "CRC-32 covering all IB headers + payload"
 
-  # ── RDMA WRITE ONLY (no recv WQE consumed on target) ─────────────
-  - id: "rdma_write_only"
-    name: "RDMA WRITE Only"
+  # ── RDMA WRITE to GPU Memory (remote server writes into AI node's GPU) ────
+  - id: "rdma_write_to_gpu"
+    name: "RDMA WRITE Only (to GPU Memory)"
     description: >
-      4KB RDMA WRITE. Initiator pushes data directly into target's registered memory
-      at a pre-negotiated virtual address using the rkey received in CM REP private data.
-      The target CPU is NOT involved — no receive WQE is consumed.
-      This is the fundamental difference between RDMA WRITE and SEND.
-      Linux: mlx5_ib_post_send() → mlx5_post_one_wr() builds WQE with opcode MLX5_OPCODE_RDMA_WRITE
-    from: "initiator"
-    to: "target"
+      4MB RDMA WRITE. Remote server pushes training data directly into AI node's
+      GPU HBM at a GPU BAR1 virtual address using the rkey received in CM REQ
+      private data. The AI node CPU is NOT involved — the RNIC DMA engine writes
+      directly to GPU memory via PCIe peer-to-peer through the BAR1 aperture.
+      This is the GPUDirect RDMA path: Network → RNIC → PCIe → GPU HBM.
+      No bounce buffer through host DRAM. No CPU copy. No cache pollution.
+      Linux: Remote server calls ibv_post_send(IBV_WR_RDMA_WRITE) targeting the
+      GPU-backed MR. AI node's RNIC resolves the rkey to a GPU-backed MR in its
+      MTT table, and the DMA engine writes via the BAR1 mapping.
+    from: "remote_server"
+    to: "ai_node"
     via: ["switch"]
-    timestamp_ns: 20000000
-    total_bytes: 4162
+    timestamp_ns: 30000000
+    total_bytes: 4170
     color: "#e05c5c"
     headers:
       - name: "Ethernet II"
@@ -1464,11 +1435,12 @@ frames:
           - name: "Destination"
             abbrev: "eth.dst"
             bits: 48
-            value: "00:02:c9:ab:cd:ef"
+            value: "00:02:c9:12:34:56"
+            description: "AI node MAC — RDMA WRITE flows from remote server to AI node's GPU"
           - name: "Source"
             abbrev: "eth.src"
             bits: 48
-            value: "00:02:c9:12:34:56"
+            value: "00:02:c9:ab:cd:ef"
           - name: "Type"
             abbrev: "eth.type"
             bits: 16
@@ -1481,20 +1453,21 @@ frames:
           - name: "Source"
             abbrev: "ip.src"
             bits: 32
-            value: "192.168.1.10"
+            value: "192.168.1.20"
           - name: "Destination"
             abbrev: "ip.dst"
             bits: 32
-            value: "192.168.1.20"
+            value: "192.168.1.10"
           - name: "DSCP/ECN"
             abbrev: "ip.dscp"
             bits: 8
             value: "0x28"
-            description: "ECT(0) marked — sender advertises ECN capability. Switch may flip to CE if congested (DCQCN)."
+            description: "ECT(0) marked — sender advertises ECN capability for DCQCN congestion control"
           - name: "Total Length"
             abbrev: "ip.len"
             bits: 16
-            value: 4148
+            value: 4156
+            description: "One MTU-sized RDMA WRITE packet (first of ~1024 packets for 4MB transfer)"
       - name: "UDP"
         abbrev: "udp"
         layer: 4
@@ -1503,7 +1476,7 @@ frames:
           - name: "Source Port"
             abbrev: "udp.srcport"
             bits: 16
-            value: 49152
+            value: 49153
           - name: "Destination Port"
             abbrev: "udp.dstport"
             bits: 16
@@ -1511,8 +1484,8 @@ frames:
           - name: "Length"
             abbrev: "udp.length"
             bits: 16
-            value: 4128
-      - name: "IB BTH"
+            value: 4136
+      - name: "IB BTH (Base Transport Header)"
         abbrev: "infiniband.bth"
         layer: 5
         total_bytes: 12
@@ -1522,7 +1495,7 @@ frames:
             bits: 8
             value: "0x0A"
             value_hex: "0x0A"
-            description: "0x0A = RC RDMA Write Only. Packet is both first and last — fits in one MTU."
+            description: "0x0A = RC RDMA Write Only. First packet of 4MB transfer shown as single conceptual WRITE (actual transfer uses First/Middle/Last for >MTU)."
             spec_refs:
               - document: "IBTA Vol1"
                 section: "A19"
@@ -1531,18 +1504,17 @@ frames:
           - name: "Solicited Event (SE)"
             abbrev: "infiniband.bth.se"
             bits: 1
-            value: 1
-            description: "SE=1: WRITE Only is the last (and only) packet of the message — receiver may generate a solicited completion event."
+            value: 0
+            description: "SE=0: receiver need not generate a solicited event"
           - name: "MigReq"
             abbrev: "infiniband.bth.migreq"
             bits: 1
             value: 1
-            description: "1 = primary path (not alternate/migrated)"
+            description: "1 = primary path"
           - name: "Pad Count"
             abbrev: "infiniband.bth.padcnt"
             bits: 2
             value: 0
-            description: "Number of pad bytes appended to payload to make it a multiple of 4"
           - name: "Transport Header Version"
             abbrev: "infiniband.bth.tver"
             bits: 4
@@ -1552,12 +1524,12 @@ frames:
             bits: 16
             value: "0xFFFF"
             value_hex: "0xFFFF"
-            description: "Full membership P_Key (0xFFFF). Partition Key — defines a virtual fabric partition."
+            description: "Full membership partition key"
           - name: "FECN"
             abbrev: "infiniband.bth.fecn"
             bits: 1
             value: 0
-            description: "Not set — no congestion detected on this path (yet)"
+            description: "Forward ECN — not set"
           - name: "BECN"
             abbrev: "infiniband.bth.becn"
             bits: 1
@@ -1566,18 +1538,18 @@ frames:
           - name: "Destination QP"
             abbrev: "infiniband.bth.destqp"
             bits: 24
-            value: "0x00B002"
-            description: "Target's data QP (from CM REP). This is the first use of the data QP — CM used QP1."
+            value: "0x00A001"
+            description: "AI node's data QP (from CM REQ). RNIC will DMA payload to GPU memory via this QP's MR table."
           - name: "Acknowledge Request (A)"
             abbrev: "infiniband.bth.ackreq"
             bits: 1
             value: 1
-            description: "Request ACK from target — initiator needs completion event to reclaim SQ WQE"
+            description: "Request ACK — remote server needs completion event"
           - name: "Packet Sequence Number (PSN)"
             abbrev: "infiniband.bth.psn"
             bits: 24
-            value: 1234567
-            description: "First data PSN — matches starting PSN from CM REQ"
+            value: 8765432
+            description: "Remote server's first data PSN — matches starting PSN from CM REP"
       - name: "IB RETH (RDMA Extended Transport Header)"
         abbrev: "infiniband.reth"
         layer: 5
@@ -1586,22 +1558,22 @@ frames:
           - name: "Virtual Address"
             abbrev: "infiniband.reth.virtual_address"
             bits: 64
-            value: "0x7f0000000000"
-            description: "Remote virtual address in target's memory where data will be written. Established out-of-band (via CM private data or separate control message)."
+            value: "0x00007f4000000000"
+            description: "GPU BAR1 virtual address in AI node's address space. This is NOT host DRAM — it is a PCIe BAR mapping of GPU HBM. The RNIC's MTT entry for this MR points to GPU physical pages, causing the DMA write to traverse PCIe directly to the GPU."
             spec_refs:
               - document: "IBTA Vol1"
                 section: "9.7.5.3"
                 title: "RETH — RDMA Extended Transport Header"
                 url: "https://www.infinibandta.org/ibta-specification/"
             kernel_ref:
-              file: "drivers/infiniband/hw/mlx5/qp.c"
-              function: "mlx5_post_one_wr"
-              notes: "Set from ibv_send_wr.wr.rdma.remote_addr in userspace WR, translated to WQE RADDR field"
+              file: "nv_peer_mem.c"
+              function: "nvidia_peermem_get_pages"
+              notes: "nvidia-peermem resolves this VA to GPU physical pages via nvidia_p2p_get_pages(). The RNIC DMA engine sees GPU BAR1 physical addresses in the MTT, causing PCIe P2P writes directly to GPU HBM."
           - name: "R_Key"
             abbrev: "infiniband.reth.r_key"
             bits: 32
-            value: "0xDEAD1234"
-            description: "Remote Memory Region key — proves initiator is authorized to write this memory. Registered by target via ibv_reg_mr(), passed to initiator out-of-band."
+            value: "0xGPU01234"
+            description: "Remote key for the GPU-backed Memory Region. This rkey was registered via ibv_reg_mr() against a cuMemAlloc'd GPU buffer. nvidia-peermem intercepted the registration to pin GPU pages instead of host pages."
             spec_refs:
               - document: "IBTA Vol1"
                 section: "10.6.3"
@@ -1610,12 +1582,12 @@ frames:
             kernel_ref:
               file: "drivers/infiniband/hw/mlx5/mr.c"
               function: "mlx5_ib_reg_user_mr"
-              notes: "rkey generated from MR index + key incarnation bits in MLX5_CMD_OP_CREATE_MKEY"
+              notes: "MR created with MLX5_CMD_OP_CREATE_MKEY. For GPU-backed MRs, the page list in the MKEY points to GPU BAR1 physical addresses obtained from nvidia-peermem."
           - name: "DMA Length"
             abbrev: "infiniband.reth.dma_length"
             bits: 32
-            value: 4096
-            description: "Total bytes to write — 4096 bytes (one page)"
+            value: 4194304
+            description: "4MB (4,194,304 bytes) — a typical tensor buffer or model weight chunk for GPU training"
       - name: "RDMA Data Payload"
         abbrev: "data"
         layer: 7
@@ -1624,8 +1596,8 @@ frames:
           - name: "Payload"
             abbrev: "data.data"
             bits: 32768
-            value: "<4096 bytes of application data>"
-            description: "The actual data being written to remote memory. CPU on target is completely bypassed — RNIC DMA engine writes directly to target physical memory mapped by the MR."
+            value: "<4096 bytes of first MTU — training data / model weights>"
+            description: "First 4KB of the 4MB transfer. The RNIC on the AI node DMAs this payload directly to GPU HBM via PCIe BAR1 — the host CPU never sees this data, host DRAM is never touched, and CPU caches remain unpolluted. This is the key advantage of GPUDirect RDMA over traditional RDMA+cudaMemcpy."
       - name: "IB ICRC (Invariant CRC)"
         abbrev: "infiniband.icrc"
         layer: 5
@@ -1635,25 +1607,26 @@ frames:
             abbrev: "infiniband.icrc"
             bits: 32
             value: "0x<computed>"
-            description: "Invariant CRC-32 covering BTH + all extended headers + payload. 'Invariant' means it excludes mutable fields (TTL, FECN/BECN). Checked by RNIC hardware — not by CPU."
+            description: "Invariant CRC-32 covering BTH + RETH + payload. Checked by RNIC hardware before DMA to GPU memory."
             spec_refs:
               - document: "IBTA Vol1"
                 section: "9.4.1"
                 title: "ICRC — Invariant CRC"
                 url: "https://www.infinibandta.org/ibta-specification/"
 
-  # ── RDMA WRITE ACK ───────────────────────────────────────────────
-  - id: "rdma_write_ack"
-    name: "RC ACK (for RDMA WRITE)"
+  # ── RDMA WRITE ACK ─────────────────────────────────────────────
+  - id: "rdma_write_gpu_ack"
+    name: "RC ACK (for RDMA WRITE to GPU)"
     description: >
-      Target's RNIC sends an acknowledgement for the RDMA WRITE.
-      No CPU involvement — generated autonomously by RNIC hardware.
-      Initiator uses this to generate a send completion on its CQ.
-      Linux: mlx5 firmware generates ACK; kernel sees CQE via mlx5_ib_poll_cq()
-    from: "target"
-    to: "initiator"
+      AI node's RNIC sends an acknowledgement for the RDMA WRITE.
+      The ACK is generated by the RNIC hardware after the DMA to GPU memory
+      completes. The AI node CPU is not involved in either the data write
+      or the ACK generation.
+      Linux: mlx5 firmware generates ACK; remote server sees CQE via mlx5_ib_poll_cq()
+    from: "ai_node"
+    to: "remote_server"
     via: ["switch"]
-    timestamp_ns: 20800000
+    timestamp_ns: 30800000
     total_bytes: 58
     color: "#5bd9a0"
     headers:
@@ -1665,6 +1638,147 @@ frames:
           - name: "Destination"
             abbrev: "eth.dst"
             bits: 48
+            value: "00:02:c9:ab:cd:ef"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:12:34:56"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.1.10"
+          - name: "Destination"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.1.20"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+      - name: "IB BTH (Base Transport Header)"
+        abbrev: "infiniband.bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "Opcode"
+            abbrev: "infiniband.bth.opcode"
+            bits: 8
+            value: "0x11"
+            value_hex: "0x11"
+            description: "0x11 = RC Acknowledge. Pure ACK — no payload. Generated by RNIC hardware after GPU DMA completes."
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "A19"
+                title: "Opcode 0x11 = RC Acknowledge"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "Solicited Event (SE)"
+            abbrev: "infiniband.bth.se"
+            bits: 1
+            value: 0
+            description: "SE=0: receiver need not generate a solicited event"
+          - name: "MigReq"
+            abbrev: "infiniband.bth.migreq"
+            bits: 1
+            value: 1
+            description: "1 = primary path"
+          - name: "Pad Count"
+            abbrev: "infiniband.bth.padcnt"
+            bits: 2
+            value: 0
+          - name: "Transport Header Version"
+            abbrev: "infiniband.bth.tver"
+            bits: 4
+            value: 0
+          - name: "P_Key"
+            abbrev: "infiniband.bth.pkey"
+            bits: 16
+            value: "0xFFFF"
+            value_hex: "0xFFFF"
+            description: "Full membership partition key"
+          - name: "FECN"
+            abbrev: "infiniband.bth.fecn"
+            bits: 1
+            value: 0
+            description: "Forward ECN — not set"
+          - name: "BECN"
+            abbrev: "infiniband.bth.becn"
+            bits: 1
+            value: 0
+            description: "Backward ECN — not set"
+          - name: "Destination QP"
+            abbrev: "infiniband.bth.destqp"
+            bits: 24
+            value: "0x00B002"
+            description: "Remote server's QP — ACK goes back to the QP that sent the WRITE"
+          - name: "Acknowledge Request (A)"
+            abbrev: "infiniband.bth.ackreq"
+            bits: 1
+            value: 0
+            description: "A=0: ACK packets do not request a further ACK"
+          - name: "Packet Sequence Number (PSN)"
+            abbrev: "infiniband.bth.psn"
+            bits: 24
+            value: 8765432
+      - name: "IB AETH (ACK Extended Transport Header)"
+        abbrev: "infiniband.aeth"
+        layer: 5
+        total_bytes: 4
+        fields:
+          - name: "Syndrome"
+            abbrev: "infiniband.aeth.syndrome"
+            bits: 8
+            value: "0x00"
+            value_hex: "0x00"
+            description: "Syndrome 0x00 = ACK (no error). GPU DMA write completed successfully."
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.7.7"
+                title: "AETH Syndrome field encoding"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "Message Sequence Number (MSN)"
+            abbrev: "infiniband.aeth.msn"
+            bits: 24
+            value: 1
+            description: "Cumulative message count ACKed"
+
+  # ── RDMA READ from GPU Memory ─────────────────────────────────
+  - id: "rdma_read_gpu_req"
+    name: "RDMA READ Request (from GPU Memory)"
+    description: >
+      Remote server requests to read back the data from AI node's GPU memory.
+      Only a request packet is sent — no data. AI node's RNIC will autonomously
+      DMA from GPU HBM via PCIe BAR1 and send RDMA READ response packets.
+      No CPU involvement on the AI node.
+      Linux: ibv_post_send() with IBV_WR_RDMA_READ opcode
+    from: "remote_server"
+    to: "ai_node"
+    via: ["switch"]
+    timestamp_ns: 35000000
+    total_bytes: 74
+    color: "#b05bd9"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
             value: "00:02:c9:12:34:56"
           - name: "Source"
             abbrev: "eth.src"
@@ -1696,7 +1810,7 @@ frames:
             abbrev: "udp.dstport"
             bits: 16
             value: 4791
-      - name: "IB BTH"
+      - name: "IB BTH (Base Transport Header)"
         abbrev: "infiniband.bth"
         layer: 5
         total_bytes: 12
@@ -1704,29 +1818,28 @@ frames:
           - name: "Opcode"
             abbrev: "infiniband.bth.opcode"
             bits: 8
-            value: "0x11"
-            value_hex: "0x11"
-            description: "0x11 = RC Acknowledge. Pure ACK packet — no payload."
+            value: "0x0C"
+            value_hex: "0x0C"
+            description: "0x0C = RC RDMA Read Request. Contains RETH specifying what to read from GPU memory."
             spec_refs:
               - document: "IBTA Vol1"
                 section: "A19"
-                title: "Opcode 0x11 = RC Acknowledge"
+                title: "Opcode 0x0C = RC RDMA Read Request"
                 url: "https://www.infinibandta.org/ibta-specification/"
           - name: "Solicited Event (SE)"
             abbrev: "infiniband.bth.se"
             bits: 1
             value: 0
-            description: "SE=0: ACK packets do not set Solicited Event."
+            description: "SE=0: receiver need not generate a solicited event"
           - name: "MigReq"
             abbrev: "infiniband.bth.migreq"
             bits: 1
             value: 1
-            description: "1 = primary path (not alternate/migrated)"
+            description: "1 = primary path"
           - name: "Pad Count"
             abbrev: "infiniband.bth.padcnt"
             bits: 2
             value: 0
-            description: "Number of pad bytes appended to payload to make it a multiple of 4"
           - name: "Transport Header Version"
             abbrev: "infiniband.bth.tver"
             bits: 4
@@ -1736,7 +1849,7 @@ frames:
             bits: 16
             value: "0xFFFF"
             value_hex: "0xFFFF"
-            description: "Full membership P_Key (0xFFFF). Partition Key — defines a virtual fabric partition."
+            description: "Full membership partition key"
           - name: "FECN"
             abbrev: "infiniband.bth.fecn"
             bits: 1
@@ -1751,52 +1864,51 @@ frames:
             abbrev: "infiniband.bth.destqp"
             bits: 24
             value: "0x00A001"
-            description: "Initiator's QP number — ACK goes back to the QP that sent the WRITE"
           - name: "Acknowledge Request (A)"
             abbrev: "infiniband.bth.ackreq"
             bits: 1
-            value: 0
-            description: "A=0: ACK packets do not request an ACK"
+            value: 1
+            description: "A=1: Request an ACK from remote side"
           - name: "Packet Sequence Number (PSN)"
             abbrev: "infiniband.bth.psn"
             bits: 24
-            value: 1234567
-      - name: "IB AETH (ACK Extended Transport Header)"
-        abbrev: "infiniband.aeth"
+            value: 8765433
+            description: "Next PSN after the WRITE ACK (8765432 + 1)"
+      - name: "IB RETH"
+        abbrev: "infiniband.reth"
         layer: 5
-        total_bytes: 4
+        total_bytes: 16
         fields:
-          - name: "Syndrome"
-            abbrev: "infiniband.aeth.syndrome"
-            bits: 8
-            value: "0x00"
-            value_hex: "0x00"
-            description: "Syndrome 0x00 = ACK (no error). Bits 7-6 encode type: 00=ACK (0x00-0x3F, bits 5-0 = credit count), 01=RNR NAK (0x40-0x7F, bits 5-0 = timer index), 11=NAK (0xC0-0xFF, bits 5-0 = error code)."
-            spec_refs:
-              - document: "IBTA Vol1"
-                section: "9.7.7"
-                title: "AETH Syndrome field encoding"
-                url: "https://www.infinibandta.org/ibta-specification/"
-          - name: "Message Sequence Number (MSN)"
-            abbrev: "infiniband.aeth.msn"
-            bits: 24
-            value: 1
-            description: "Cumulative message count ACKed. Initiator uses this to determine which WQEs are complete."
+          - name: "Virtual Address"
+            abbrev: "infiniband.reth.virtual_address"
+            bits: 64
+            value: "0x00007f4000000000"
+            description: "Same GPU BAR1 address — reading from the same GPU buffer we wrote to. RNIC will DMA read from GPU HBM via PCIe P2P."
+          - name: "R_Key"
+            abbrev: "infiniband.reth.r_key"
+            bits: 32
+            value: "0xGPU01234"
+            description: "Same GPU-backed rkey — authorizes read access to GPU memory MR"
+          - name: "DMA Length"
+            abbrev: "infiniband.reth.dma_length"
+            bits: 32
+            value: 4096
+            description: "Read first 4KB from GPU buffer (verification read)"
 
-  # ── RDMA READ REQUEST ─────────────────────────────────────────────
-  - id: "rdma_read_req"
-    name: "RDMA READ Request"
+  # ── RDMA READ RESPONSE (from GPU Memory) ─────────────────────
+  - id: "rdma_read_gpu_resp"
+    name: "RDMA READ Response Only (from GPU Memory)"
     description: >
-      Initiator requests target to send back the data it just wrote.
-      Only a request packet is sent — no data. Target RNIC autonomously
-      reads its own memory and sends RDMA READ Response packets.
-      CPU on target is NOT involved.
-      Linux: ibv_post_send() with IBV_WR_RDMA_READ opcode
-    from: "initiator"
-    to: "target"
+      AI node's RNIC reads GPU HBM via PCIe BAR1 DMA and sends the data back.
+      No CPU involvement on the AI node — the RNIC autonomously performs a PCIe
+      peer-to-peer read from GPU memory and transmits the response.
+      The data path is: GPU HBM → PCIe BAR1 → RNIC DMA engine → network.
+      Linux: mlx5 firmware generates read response from GPU-backed MR pages
+    from: "ai_node"
+    to: "remote_server"
     via: ["switch"]
-    timestamp_ns: 25000000
-    total_bytes: 74
+    timestamp_ns: 36200000
+    total_bytes: 4158
     color: "#b05bd9"
     headers:
       - name: "Ethernet II"
@@ -1838,7 +1950,7 @@ frames:
             abbrev: "udp.dstport"
             bits: 16
             value: 4791
-      - name: "IB BTH"
+      - name: "IB BTH (Base Transport Header)"
         abbrev: "infiniband.bth"
         layer: 5
         total_bytes: 12
@@ -1846,29 +1958,28 @@ frames:
           - name: "Opcode"
             abbrev: "infiniband.bth.opcode"
             bits: 8
-            value: "0x0C"
-            value_hex: "0x0C"
-            description: "0x0C = RC RDMA Read Request. Contains RETH specifying what to read. No payload in request direction."
+            value: "0x10"
+            value_hex: "0x10"
+            description: "0x10 = RC RDMA Read Response Only. Data DMA'd from GPU HBM via PCIe P2P read."
             spec_refs:
               - document: "IBTA Vol1"
                 section: "A19"
-                title: "Opcode 0x0C = RC RDMA Read Request"
+                title: "Opcode 0x10 = RC RDMA Read Response Only"
                 url: "https://www.infinibandta.org/ibta-specification/"
           - name: "Solicited Event (SE)"
             abbrev: "infiniband.bth.se"
             bits: 1
-            value: 0
-            description: "SE=0: READ Request does not set Solicited Event."
+            value: 1
+            description: "SE=1: last (only) packet of read response — solicited event for completion notification"
           - name: "MigReq"
             abbrev: "infiniband.bth.migreq"
             bits: 1
             value: 1
-            description: "1 = primary path (not alternate/migrated)"
+            description: "1 = primary path"
           - name: "Pad Count"
             abbrev: "infiniband.bth.padcnt"
             bits: 2
             value: 0
-            description: "Number of pad bytes appended to payload to make it a multiple of 4"
           - name: "Transport Header Version"
             abbrev: "infiniband.bth.tver"
             bits: 4
@@ -1878,7 +1989,7 @@ frames:
             bits: 16
             value: "0xFFFF"
             value_hex: "0xFFFF"
-            description: "Full membership P_Key (0xFFFF). Partition Key — defines a virtual fabric partition."
+            description: "Full membership partition key"
           - name: "FECN"
             abbrev: "infiniband.bth.fecn"
             bits: 1
@@ -1896,154 +2007,13 @@ frames:
           - name: "Acknowledge Request (A)"
             abbrev: "infiniband.bth.ackreq"
             bits: 1
-            value: 1
-            description: "A=1: Request an ACK from remote side"
+            value: 0
+            description: "A=0: Read response does not request a further ACK"
           - name: "Packet Sequence Number (PSN)"
             abbrev: "infiniband.bth.psn"
             bits: 24
-            value: 1234568
-            description: "Next PSN after the WRITE (1234567 + 1)"
-      - name: "IB RETH"
-        abbrev: "infiniband.reth"
-        layer: 5
-        total_bytes: 16
-        fields:
-          - name: "Virtual Address"
-            abbrev: "infiniband.reth.virtual_address"
-            bits: 64
-            value: "0x7f0000000000"
-            description: "Address to read from — same MR we wrote to"
-          - name: "R_Key"
-            abbrev: "infiniband.reth.r_key"
-            bits: 32
-            value: "0xDEAD1234"
-            description: "Same rkey — authorizes read access to this MR"
-          - name: "DMA Length"
-            abbrev: "infiniband.reth.dma_length"
-            bits: 32
-            value: 4096
-            description: "Read 4096 bytes"
-
-  # ── RDMA READ RESPONSE ────────────────────────────────────────────
-  - id: "rdma_read_resp_only"
-    name: "RDMA READ Response Only"
-    description: >
-      Target RNIC reads its own memory (DMA) and sends the data back.
-      No CPU involvement on target. Initiator RNIC writes received data
-      directly into initiator's local memory buffer.
-      Linux: mlx5 firmware generates read response; ibv_poll_cq() on initiator
-      sees READ completion after last response packet.
-    from: "target"
-    to: "initiator"
-    via: ["switch"]
-    timestamp_ns: 26200000
-    total_bytes: 4162
-    color: "#b05bd9"
-    headers:
-      - name: "Ethernet II"
-        abbrev: "eth"
-        layer: 2
-        total_bytes: 14
-        fields:
-          - name: "Destination"
-            abbrev: "eth.dst"
-            bits: 48
-            value: "00:02:c9:12:34:56"
-          - name: "Source"
-            abbrev: "eth.src"
-            bits: 48
-            value: "00:02:c9:ab:cd:ef"
-          - name: "Type"
-            abbrev: "eth.type"
-            bits: 16
-            value: "0x0800"
-      - name: "IPv4"
-        abbrev: "ip"
-        layer: 3
-        total_bytes: 20
-        fields:
-          - name: "Source"
-            abbrev: "ip.src"
-            bits: 32
-            value: "192.168.1.20"
-          - name: "Destination"
-            abbrev: "ip.dst"
-            bits: 32
-            value: "192.168.1.10"
-      - name: "UDP"
-        abbrev: "udp"
-        layer: 4
-        total_bytes: 8
-        fields:
-          - name: "Destination Port"
-            abbrev: "udp.dstport"
-            bits: 16
-            value: 4791
-      - name: "IB BTH"
-        abbrev: "infiniband.bth"
-        layer: 5
-        total_bytes: 12
-        fields:
-          - name: "Opcode"
-            abbrev: "infiniband.bth.opcode"
-            bits: 8
-            value: "0x10"
-            value_hex: "0x10"
-            description: "0x10 = RC RDMA Read Response Only (fits in one MTU). If >MTU, first=0x0D, middle=0x0E, last=0x0F."
-            spec_refs:
-              - document: "IBTA Vol1"
-                section: "A19"
-                title: "Opcode 0x10 = RC RDMA Read Response Only"
-                url: "https://www.infinibandta.org/ibta-specification/"
-          - name: "Solicited Event (SE)"
-            abbrev: "infiniband.bth.se"
-            bits: 1
-            value: 1
-            description: "SE=1: Read Response Only is the last (and only) packet of the response — receiver may generate a solicited completion event."
-          - name: "MigReq"
-            abbrev: "infiniband.bth.migreq"
-            bits: 1
-            value: 1
-            description: "1 = primary path (not alternate/migrated)"
-          - name: "Pad Count"
-            abbrev: "infiniband.bth.padcnt"
-            bits: 2
-            value: 0
-            description: "Number of pad bytes appended to payload to make it a multiple of 4"
-          - name: "Transport Header Version"
-            abbrev: "infiniband.bth.tver"
-            bits: 4
-            value: 0
-          - name: "P_Key"
-            abbrev: "infiniband.bth.pkey"
-            bits: 16
-            value: "0xFFFF"
-            value_hex: "0xFFFF"
-            description: "Full membership P_Key (0xFFFF). Partition Key — defines a virtual fabric partition."
-          - name: "FECN"
-            abbrev: "infiniband.bth.fecn"
-            bits: 1
-            value: 0
-            description: "Forward ECN — not set"
-          - name: "BECN"
-            abbrev: "infiniband.bth.becn"
-            bits: 1
-            value: 0
-            description: "Backward ECN — not set"
-          - name: "Destination QP"
-            abbrev: "infiniband.bth.destqp"
-            bits: 24
-            value: "0x00A001"
-          - name: "Acknowledge Request (A)"
-            abbrev: "infiniband.bth.ackreq"
-            bits: 1
-            value: 0
-            description: "A=0: READ Response packets do not request an ACK"
-          - name: "Packet Sequence Number (PSN)"
-            abbrev: "infiniband.bth.psn"
-            bits: 24
-            value: 7654321
-            description: "Target's PSN — starts from target's starting PSN in CM REP"
+            value: 2345678
+            description: "AI node's PSN — starts from AI node's starting PSN in CM REQ"
       - name: "IB AETH"
         abbrev: "infiniband.aeth"
         layer: 5
@@ -2053,7 +2023,7 @@ frames:
             abbrev: "infiniband.aeth.syndrome"
             bits: 8
             value: "0x00"
-            description: "ACK — read completed successfully. Initiator will generate READ completion on CQ."
+            description: "ACK — GPU memory read completed successfully"
           - name: "MSN"
             abbrev: "infiniband.aeth.msn"
             bits: 24
@@ -2066,8 +2036,8 @@ frames:
           - name: "Payload"
             abbrev: "data.data"
             bits: 32768
-            value: "<same 4096 bytes previously written by RDMA WRITE>"
-            description: "Data DMA'd from target memory by target's RNIC. No CPU read() call occurred on target."
+            value: "<4096 bytes read from GPU HBM via PCIe BAR1 DMA>"
+            description: "Data DMA'd from GPU HBM by the RNIC via PCIe peer-to-peer read. No CPU involvement on the AI node — no memcpy, no cache pollution, no context switch. The GPU continued running compute kernels undisturbed while this read occurred."
       - name: "IB ICRC"
         abbrev: "infiniband.icrc"
         layer: 5
@@ -2077,7 +2047,7 @@ frames:
             abbrev: "infiniband.icrc"
             bits: 32
             value: "0x<computed>"
-            description: "ICRC over read response — verified by initiator RNIC"
+            description: "ICRC over read response — verified by remote server's RNIC"
 
 # ─────────────────────────────────────────────────────────────────
 # TIMELINE
@@ -2085,25 +2055,23 @@ frames:
 timeline:
 
   # ── Phase 1: Link Training ──────────────────────────────────────
-  # Physical layer is point-to-point: each host↔switch link comes up independently.
-  # The switch operates at L2 (forwarding, PFC) and L3 (ECN marking).
 
   - id: "evt_phy_signal_link_a"
     type: "state_change"
     t_ns: 0
     annotation:
-      text: "Link A: signal detected — Initiator ↔ Switch port A"
+      text: "Link A: signal detected — AI Node ↔ Switch port A"
       detail: >
-        Optical transceiver on initiator detects light from switch port A.
+        Optical transceiver on AI node detects light from switch port A.
         Auto-Negotiation (AN) begins per IEEE 802.3cd clause 73. L1 is point-to-point —
-        this is independent of the switch↔target link.
+        this is independent of the switch ↔ remote server link.
       spec_refs:
         - document: "IEEE 802.3cd"
           section: "73"
           title: "Auto-Negotiation for 100GBASE-KR4"
           url: "https://standards.ieee.org/ieee/802.3cd/7387/"
     state_after:
-      - actor_id: "initiator"
+      - actor_id: "ai_node"
         layers:
           - layer: 1
             name: "Physical / RS-FEC"
@@ -2123,12 +2091,12 @@ timeline:
     type: "state_change"
     t_ns: 500000
     annotation:
-      text: "Link B: signal detected — Switch port B ↔ Target"
+      text: "Link B: signal detected — Switch port B ↔ Remote Server"
       detail: >
-        Optical transceiver on target detects light from switch port B.
+        Optical transceiver on remote server detects light from switch port B.
         AN begins independently on this link.
     state_after:
-      - actor_id: "target"
+      - actor_id: "remote_server"
         layers:
           - layer: 1
             name: "Physical / RS-FEC"
@@ -2150,11 +2118,11 @@ timeline:
     annotation:
       text: "Link A: AN complete — 100GbE agreed, Link Training begins"
       detail: >
-        AN exchanges technology ability pages between initiator and switch port A.
+        AN exchanges technology ability pages between AI node and switch port A.
         Both agree on 100GBASE-SR4. RS(544,514) FEC is mandatory for 100G.
         Link Training begins to equalize the channel (pre-emphasis, post-cursor).
     state_after:
-      - actor_id: "initiator"
+      - actor_id: "ai_node"
         layers:
           - layer: 1
             name: "Physical / RS-FEC"
@@ -2177,10 +2145,10 @@ timeline:
     annotation:
       text: "Link B: AN complete — 100GbE agreed, Link Training begins"
       detail: >
-        AN completes on switch port B ↔ target. Same negotiation: 100GBASE-SR4
+        AN completes on switch port B ↔ remote server. Same negotiation: 100GBASE-SR4
         with RS(544,514) FEC. Link Training begins independently on this link.
     state_after:
-      - actor_id: "target"
+      - actor_id: "remote_server"
         layers:
           - layer: 1
             name: "Physical / RS-FEC"
@@ -2200,13 +2168,13 @@ timeline:
     type: "state_change"
     t_ns: 3800000
     annotation:
-      text: "Link A UP — Initiator ↔ Switch at 100Gbps with RS-FEC"
+      text: "Link A UP — AI Node ↔ Switch at 100Gbps with RS-FEC"
       detail: >
-        Link Training complete on initiator↔switch. PFC (802.1Qbb) is enabled for
+        Link Training complete on AI node ↔ switch. PFC (802.1Qbb) is enabled for
         priority 3 via DCBX negotiation (not shown). Ethernet frames can now flow
         on this link segment.
     state_after:
-      - actor_id: "initiator"
+      - actor_id: "ai_node"
         layers:
           - layer: 1
             name: "Physical / RS-FEC"
@@ -2231,13 +2199,13 @@ timeline:
     type: "state_change"
     t_ns: 4000000
     annotation:
-      text: "Link B UP — Switch ↔ Target at 100Gbps with RS-FEC"
+      text: "Link B UP — Switch ↔ Remote Server at 100Gbps with RS-FEC"
       detail: >
-        Link Training complete on switch↔target. PFC enabled. Both links are now up —
-        the switch can forward L2 frames between its ports. End-to-end L2 connectivity
-        is established.
+        Link Training complete on switch ↔ remote server. PFC enabled. Both links
+        are now up — the switch can forward L2 frames between its ports. End-to-end
+        L2 connectivity is established.
     state_after:
-      - actor_id: "target"
+      - actor_id: "remote_server"
         layers:
           - layer: 1
             name: "Physical / RS-FEC"
@@ -2261,7 +2229,7 @@ timeline:
             state_fields:
               fwd_table_entries: 0
 
-  # ── Phase 2: ARP ────────────────────────────────────────────────
+  # ── Phase 1b: ARP ──────────────────────────────────────────────
   - id: "evt_arp_req"
     type: "frame_tx"
     t_ns: 5000000
@@ -2284,7 +2252,7 @@ timeline:
     annotation:
       text: "ARP Reply: 192.168.1.20 is at 00:02:c9:ab:cd:ef"
     state_after:
-      - actor_id: "initiator"
+      - actor_id: "ai_node"
         layers:
           - layer: 3
             name: "IP / Routing"
@@ -2297,58 +2265,182 @@ timeline:
             state_fields:
               fwd_table_entries: 2
 
-  # ── Phase 3: App registers MR, creates QP ───────────────────────
-  - id: "evt_mr_reg"
+  # ── Phase 2: GPU Memory Setup ──────────────────────────────────
+  # This is the GPUDirect-specific phase — no equivalent in standard RoCEv2
+
+  - id: "evt_gpu_cuda_init"
+    type: "state_change"
+    t_ns: 6000000
+    annotation:
+      text: "GPU / CUDA Runtime initialized — cuInit() and cuDeviceGet()"
+      detail: >
+        The application initializes the CUDA driver API. cuInit(0) loads the CUDA
+        driver and enumerates GPUs. cuDeviceGet() selects the H100 GPU. cuCtxCreate()
+        creates a CUDA context on the device. At this point the GPU is ready for
+        memory allocation but no GPU memory has been allocated yet.
+    state_after:
+      - actor_id: "ai_node"
+        layers:
+          - layer: 7
+            name: "GPU / CUDA Runtime"
+            state_fields:
+              cuda_state: "initialized"
+              gpu_memory_type: "none"
+
+  - id: "evt_gpu_mem_alloc"
     type: "state_change"
     t_ns: 7000000
     annotation:
-      text: "Both sides register Memory Regions via ibv_reg_mr()"
+      text: "GPU memory allocated — cuMemAlloc() returns 4MB GPU HBM buffer"
       detail: >
-        ibv_reg_mr() pins physical pages, builds a DMA mapping, and registers
-        the virtual→physical translation in the RNIC's Memory Translation Table (MTT).
-        Returns lkey (for local DMA) and rkey (to share with remote for RDMA access).
-        Linux: mlx5_ib_reg_user_mr() → MLX5_CMD_OP_CREATE_MKEY firmware command.
+        cuMemAlloc(&devPtr, 4194304) allocates a 4MB buffer in GPU High Bandwidth
+        Memory (HBM). The returned device pointer (devPtr) is a GPU virtual address
+        in the GPU's own address space. This memory lives on the GPU die, connected
+        via HBM3 at ~3.35 TB/s bandwidth. The pointer is not directly accessible
+        by the CPU or RNIC — it must be mapped through the GPU's PCIe BAR1 aperture
+        for peer-to-peer access. The H100 supports up to 256GB of BAR1 aperture
+        (resizable BAR / large BAR mode) to map the full 80GB HBM.
+    state_after:
+      - actor_id: "ai_node"
+        layers:
+          - layer: 7
+            name: "GPU / CUDA Runtime"
+            state_fields:
+              cuda_state: "buffer_allocated"
+              gpu_buffer_ptr: "0x7f4000000000 (GPU VA)"
+              gpu_buffer_size: 4194304
+              gpu_memory_type: "HBM3"
+
+  - id: "evt_gpu_peermem_load"
+    type: "state_change"
+    t_ns: 8000000
+    annotation:
+      text: "nvidia-peermem kernel module loaded — GPU memory exposed to RDMA subsystem"
+      detail: >
+        modprobe nvidia-peermem loads the nvidia-peermem kernel module. This module
+        registers itself as an IB peer_memory_client via ib_register_peer_memory_client().
+        When ibv_reg_mr() is later called with a GPU virtual address, the IB core's
+        ib_umem_get() will call nvidia_peermem_acquire() to check if the address belongs
+        to GPU memory. If it does, nvidia_peermem_get_pages() calls
+        nvidia_p2p_get_pages() to pin the GPU physical pages and return their PCIe BAR1
+        addresses. These BAR1 addresses are then stored in the RNIC's Memory Translation
+        Table (MTT), enabling the RNIC DMA engine to write/read GPU memory directly via
+        PCIe peer-to-peer without any CPU involvement.
       spec_refs:
         - document: "IBTA Vol1"
           section: "10.6"
-          title: "Memory Management — Registration and Keys"
+          title: "Memory Management — peer memory extension"
           url: "https://www.infinibandta.org/ibta-specification/"
     state_after:
-      - actor_id: "initiator"
+      - actor_id: "ai_node"
+        layers:
+          - layer: 6
+            name: "nvidia-peermem / IB Verbs"
+            state_fields:
+              peermem_state: "loaded"
+              peer_memory_client: "nvidia-peermem"
+
+  - id: "evt_gpu_bar_expose"
+    type: "state_change"
+    t_ns: 8500000
+    annotation:
+      text: "GPU BAR1 mapping established — GPU HBM accessible at PCIe address"
+      detail: >
+        nvidia-peermem calls nvidia_p2p_get_pages() which pins the GPU physical pages
+        backing the cuMemAlloc'd buffer and returns their PCIe BAR1 physical addresses.
+        The BAR1 aperture is the PCIe window through which external devices (like the
+        RNIC) can access GPU memory. On H100 with large BAR enabled, the entire 80GB HBM
+        can be mapped through BAR1. The BAR1 address is a PCIe physical address that the
+        RNIC DMA engine can target directly — no CPU TLB, no IOMMU for P2P.
+        This is the fundamental hardware enabler: PCIe allows peer-to-peer transactions
+        between endpoints (RNIC and GPU) without routing through the CPU's root complex
+        memory controller.
+    state_after:
+      - actor_id: "ai_node"
         layers:
           - layer: 7
-            name: "Application / Verbs"
+            name: "GPU / CUDA Runtime"
             state_fields:
-              mr_registered: true
-              app_state: "mr_registered"
-          - layer: 5
-            name: "IB Transport (RC QP)"
+              gpu_bar_addr: "0x00007f4000000000 (BAR1 mapping)"
+          - layer: 6
+            name: "nvidia-peermem / IB Verbs"
             state_fields:
-              lkey: "0xABC01234"
-              qp_state: "RESET"
-      - actor_id: "target"
+              gpu_pages_pinned: true
+
+  # ── Phase 3: Memory Region Registration ────────────────────────
+
+  - id: "evt_mr_reg_gpu"
+    type: "state_change"
+    t_ns: 9000000
+    annotation:
+      text: "Memory Region registered against GPU BAR address via ibv_reg_mr()"
+      detail: >
+        ibv_reg_mr(pd, gpu_va, 4194304, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+        IBV_ACCESS_REMOTE_READ) is called with the GPU virtual address. The IB core's
+        ib_umem_get() detects this is GPU memory via the nvidia-peermem peer_memory_client:
+        1. nvidia_peermem_acquire() confirms the address belongs to NVIDIA GPU memory
+        2. nvidia_peermem_get_pages() calls nvidia_p2p_get_pages() to get BAR1 physical pages
+        3. These BAR1 physical addresses are written into the RNIC's MTT (Memory Translation Table)
+        4. MLX5_CMD_OP_CREATE_MKEY creates an MR whose page table points to GPU BAR1 addresses
+        The returned lkey and rkey can now be used for RDMA operations — the RNIC hardware
+        will DMA directly to/from GPU HBM via the BAR1 physical addresses in the MTT.
+        This is transparent to the remote server — it just sees a normal rkey.
+      spec_refs:
+        - document: "IBTA Vol1"
+          section: "10.6.3"
+          title: "Memory Region Registration"
+          url: "https://www.infinibandta.org/ibta-specification/"
+    state_after:
+      - actor_id: "ai_node"
+        layers:
+          - layer: 6
+            name: "nvidia-peermem / IB Verbs"
+            state_fields:
+              mr_state: "registered"
+              mr_lkey: "0xGPU00ABC"
+              mr_rkey: "0xGPU01234"
+
+  - id: "evt_mr_reg_server"
+    type: "state_change"
+    t_ns: 9500000
+    annotation:
+      text: "Remote server registers Memory Region via ibv_reg_mr() (host DRAM)"
+      detail: >
+        The remote server registers a standard host DRAM-backed Memory Region.
+        ibv_reg_mr() pins host physical pages, creates IOMMU DMA mapping, and
+        writes page translations to the RNIC's MTT. This is the standard MR
+        registration path — no GPU involvement, no nvidia-peermem.
+        The lkey is used locally for scatter-gather, the rkey is not needed here
+        since the remote server is the WRITE source, not target.
+    state_after:
+      - actor_id: "remote_server"
         layers:
           - layer: 7
             name: "Application / Verbs"
             state_fields:
               mr_registered: true
               mr_vaddr: "0x7f0000000000"
-              mr_length: 4096
+              mr_length: 4194304
               app_state: "mr_registered_listening"
+              data_source: "training_data_in_host_dram"
           - layer: 5
             name: "IB Transport (RC QP)"
             state_fields:
-              lkey: "0xDEF05678"
-              rkey: "0xDEAD1234"
+              lkey: "0xSRV00DEF"
+              rkey: "0xSRV01234"
+
+  # ── Phase 3b: QP Creation ──────────────────────────────────────
 
   - id: "evt_qp_create"
     type: "state_change"
-    t_ns: 8000000
+    t_ns: 10000000
     annotation:
-      text: "QP created — state: RESET"
+      text: "QP created on both sides — state: RESET"
       detail: >
         ibv_create_qp() allocates a Queue Pair (Send Queue + Receive Queue + Completion Queue).
-        QP begins in RESET state — cannot send or receive.
+        QP begins in RESET state — cannot send or receive. The AI node's QP will be used
+        with the GPU-backed MR — when the RNIC processes incoming RDMA WRITEs targeting
+        the GPU rkey, it will DMA directly to GPU memory via the MTT page table.
         mlx5: MLX5_CMD_OP_CREATE_QP firmware command assigns QPN.
       spec_refs:
         - document: "IBTA Vol1"
@@ -2356,14 +2448,14 @@ timeline:
           title: "QP State Machine — RESET state"
           url: "https://www.infinibandta.org/ibta-specification/"
     state_after:
-      - actor_id: "initiator"
+      - actor_id: "ai_node"
         layers:
           - layer: 5
             name: "IB Transport (RC QP)"
             state_fields:
               qp_state: "RESET"
               qp_num: "0x00A001"
-      - actor_id: "target"
+      - actor_id: "remote_server"
         layers:
           - layer: 5
             name: "IB Transport (RC QP)"
@@ -2373,71 +2465,70 @@ timeline:
 
   - id: "evt_qp_init"
     type: "state_change"
-    t_ns: 8500000
+    t_ns: 10500000
     annotation:
       text: "QP transitioned RESET → INIT via ibv_modify_qp()"
       detail: >
-        modify_qp(RESET→INIT) sets: P_Key index, port number, access flags.
+        modify_qp(RESET→INIT) sets: P_Key index, port number, access flags
+        (IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ for GPUDirect target).
         QP can now post Receive WQEs (but cannot send yet).
         Linux: ib_modify_qp() → mlx5_ib_modify_qp() → MLX5_CMD_OP_RST2INIT_QP.
-        Required attrs: IB_QP_PKEY_INDEX | IB_QP_PORT | IB_QP_ACCESS_FLAGS.
       spec_refs:
         - document: "IBTA Vol1"
           section: "11.2.4.2"
           title: "RESET to INIT transition — required attributes"
           url: "https://www.infinibandta.org/ibta-specification/"
     state_after:
-      - actor_id: "initiator"
+      - actor_id: "ai_node"
         layers:
           - layer: 5
             name: "IB Transport (RC QP)"
             state_fields:
               qp_state: "INIT"
-      - actor_id: "target"
+      - actor_id: "remote_server"
         layers:
           - layer: 5
             name: "IB Transport (RC QP)"
             state_fields:
               qp_state: "INIT"
 
-  # ── Phase 4: CM Handshake ────────────────────────────────────────
+  # ── Phase 4: CM Handshake ──────────────────────────────────────
+
   - id: "evt_cm_req"
     type: "frame_tx"
-    t_ns: 10000000
+    t_ns: 18000000
     frame_id: "cm_req"
     annotation:
-      text: "CM REQ sent — proposing QP parameters"
+      text: "CM REQ sent — AI node proposes QP parameters, shares GPU MR rkey"
       detail: >
-        rdma_connect() triggers ib_send_cm_req(). Sends initiator QPN, starting PSN,
-        path MTU=4096, retry counts, and application private data to target.
-        Both QPs still in INIT at this point.
+        rdma_connect() triggers ib_send_cm_req(). Sends AI node's QPN, starting PSN,
+        path MTU=4096, retry counts, and private data containing the GPU-backed rkey
+        and GPU BAR virtual address. The remote server will use this rkey to write
+        directly into GPU memory without knowing it is GPU memory — the rkey is
+        opaque and the GPU-backing is transparent to the remote side.
     state_after:
-      - actor_id: "initiator"
+      - actor_id: "ai_node"
         layers:
-          - layer: 6
-            name: "CM / rdma-cm"
-            state_fields:
-              cm_state: "REQ_SENT"
           - layer: 5
             name: "IB Transport (RC QP)"
             state_fields:
-              psn_send: 1234567
+              psn_send: 2345678
               pmtu: "4096"
 
   - id: "evt_cm_rep"
     type: "frame_tx"
-    t_ns: 12000000
+    t_ns: 20000000
     frame_id: "cm_rep"
     annotation:
-      text: "CM REP received — target accepts, provides its QPN and PSN"
+      text: "CM REP received — remote server accepts, provides its QPN and PSN"
       detail: >
-        On receiving REQ, target calls rdma_accept() → ib_send_cm_rep().
-        Target transitions its QP to RTR (Ready To Receive) after sending REP.
-        Initiator transitions its QP to RTR on receiving REP.
+        On receiving REQ, remote server calls rdma_accept() → ib_send_cm_rep().
+        Remote server transitions its QP to RTR. AI node transitions its QP to RTR.
         INIT→RTR sets: dest QPN, RQ PSN, path MTU, AV (address vector).
-        Linux: mlx5_ib_modify_qp() → MLX5_CMD_OP_INIT2RTR_QP.
+        The remote server has stored the GPU rkey from the CM REQ private data —
+        it will use this rkey in the RETH header of the upcoming RDMA WRITE.
     state_after:
-      - actor_id: "target"
+      - actor_id: "remote_server"
         layers:
           - layer: 6
             name: "CM / rdma-cm"
@@ -2448,41 +2539,44 @@ timeline:
             state_fields:
               qp_state: "RTR"
               remote_qpn: "0x00A001"
-              psn_recv_expected: 1234567
+              psn_recv_expected: 2345678
               pmtu: "4096"
-      - actor_id: "initiator"
+      - actor_id: "ai_node"
         layers:
-          - layer: 6
-            name: "CM / rdma-cm"
-            state_fields:
-              cm_state: "REP_RECEIVED"
           - layer: 5
             name: "IB Transport (RC QP)"
             state_fields:
               qp_state: "RTR"
               remote_qpn: "0x00B002"
-              psn_recv_expected: 7654321
-              rkey: "0xDEAD1234"
+              psn_recv_expected: 8765432
 
   - id: "evt_cm_rtu"
     type: "frame_tx"
-    t_ns: 13500000
+    t_ns: 21500000
     frame_id: "cm_rtu"
     annotation:
-      text: "CM RTU sent — both QPs transition to RTS. Connection established."
+      text: "CM RTU sent — both QPs transition to RTS. GPUDirect RDMA connection established."
       detail: >
-        After sending RTU, initiator transitions QP: RTR→RTS.
-        On receiving RTU, target transitions QP: RTR→RTS.
+        After sending RTU, AI node transitions QP: RTR→RTS.
+        On receiving RTU, remote server transitions QP: RTR→RTS.
         RTR→RTS sets: SQ PSN, retry count, RNR retry, timeout.
         Linux: MLX5_CMD_OP_RTR2RTS_QP.
-        QP is now fully operational — RDMA operations can begin.
+        The QP is now fully operational. The remote server can issue RDMA WRITEs
+        targeting the GPU-backed rkey — data will flow directly from network to GPU HBM.
       spec_refs:
         - document: "IBTA Vol1"
           section: "11.2.4.4"
           title: "RTR to RTS — QP ready to send"
           url: "https://www.infinibandta.org/ibta-specification/"
     state_after:
-      - actor_id: "initiator"
+      - actor_id: "ai_node"
+        layers:
+          - layer: 5
+            name: "IB Transport (RC QP)"
+            state_fields:
+              qp_state: "RTS"
+              sq_psn: 2345678
+      - actor_id: "remote_server"
         layers:
           - layer: 6
             name: "CM / rdma-cm"
@@ -2492,197 +2586,205 @@ timeline:
             name: "IB Transport (RC QP)"
             state_fields:
               qp_state: "RTS"
-              sq_psn: 1234567
-          - layer: 7
-            name: "Application / Verbs"
-            state_fields:
-              app_state: "connected"
-      - actor_id: "target"
-        layers:
-          - layer: 6
-            name: "CM / rdma-cm"
-            state_fields:
-              cm_state: "ESTABLISHED"
-          - layer: 5
-            name: "IB Transport (RC QP)"
-            state_fields:
-              qp_state: "RTS"
 
-  # ── Phase 5: RDMA WRITE ──────────────────────────────────────────
-  - id: "evt_app_post_write"
+  # ── Phase 5: RDMA WRITE to GPU Memory ──────────────────────────
+  # This is the key educational moment: the WRITE lands in GPU HBM, not host DRAM
+
+  - id: "evt_app_post_write_to_gpu"
     type: "state_change"
-    t_ns: 19000000
+    t_ns: 29000000
     annotation:
-      text: "Application posts RDMA WRITE Work Request to Send Queue"
+      text: "Remote server posts RDMA WRITE targeting GPU memory on AI node"
       detail: >
-        ibv_post_send() with opcode IBV_WR_RDMA_WRITE.
-        WR specifies: local SG list (lkey + vaddr of source buffer), remote vaddr + rkey.
-        Doorbell ring via mmio write to RNIC BAR register (no syscall after ibv_post_send).
-        Linux: mlx5_post_one_wr() → builds 64-byte WQE → rings doorbell via
-        mlx5_write64() to RNIC MMIO.
-      spec_refs:
-        - document: "IBTA Vol1"
-          section: "11.4.1"
-          title: "ibv_post_send — posting WRs to SQ"
-          url: "https://www.infinibandta.org/ibta-specification/"
+        ibv_post_send() with opcode IBV_WR_RDMA_WRITE on the remote server.
+        The WR specifies: local SG list pointing to host DRAM source buffer (training data),
+        remote vaddr = GPU BAR address, remote rkey = GPU-backed MR key.
+        From the remote server's perspective, this is identical to a normal RDMA WRITE —
+        the remote server does not know (or need to know) that the target memory is GPU HBM.
+        The GPU-backing is entirely transparent: the rkey is opaque, and the RNIC on the
+        AI node side handles the DMA routing to GPU memory based on its MTT entries.
     state_after:
-      - actor_id: "initiator"
+      - actor_id: "remote_server"
         layers:
           - layer: 7
             name: "Application / Verbs"
             state_fields:
-              posted_wr: "RDMA_WRITE wr_id=1"
-              app_state: "write_posted"
+              app_state: "write_to_gpu_posted"
 
-  - id: "evt_rdma_write"
+  - id: "evt_rdma_write_to_gpu"
     type: "frame_tx"
-    t_ns: 20000000
-    frame_id: "rdma_write_only"
+    t_ns: 30000000
+    frame_id: "rdma_write_to_gpu"
     annotation:
-      text: "RDMA WRITE — 4KB pushed into remote memory, zero CPU on target"
+      text: "RDMA WRITE to GPU — 4MB pushed directly into GPU HBM, zero CPU on AI node"
       detail: >
-        RNIC DMAs local buffer, encapsulates in BTH+RETH+UDP+IP+Eth, transmits.
-        Target RNIC verifies ICRC, checks rkey authorization against MR table,
-        DMAs payload to target physical memory. Target CPU sees nothing until
-        application polls CQ (which would only happen if target posted a WRITE_WITH_IMM).
+        Remote server's RNIC DMAs from host DRAM, encapsulates in BTH+RETH+UDP+IP+Eth, transmits.
+        AI node's RNIC: receives packet → verifies ICRC → looks up rkey 0xGPU01234 in MR table →
+        finds MTT entries pointing to GPU BAR1 physical addresses → DMA engine writes payload
+        directly to GPU HBM via PCIe peer-to-peer transaction.
+
+        CRITICAL PATH COMPARISON:
+        Traditional RDMA WRITE: Network → RNIC → PCIe → Host DRAM → cudaMemcpy → GPU HBM
+        GPUDirect RDMA WRITE:   Network → RNIC → PCIe → GPU HBM (direct, zero copy)
+
+        The traditional path requires: (1) RNIC DMA to host DRAM, (2) CPU interrupt or poll,
+        (3) cudaMemcpy() H2D transfer consuming PCIe bandwidth again, (4) GPU DMA from host DRAM.
+        GPUDirect eliminates steps 2-4 entirely. For large AI training data transfers, this
+        halves the PCIe bandwidth consumption and eliminates CPU involvement.
     state_after:
-      - actor_id: "initiator"
-        layers:
-          - layer: 5
-            name: "IB Transport (RC QP)"
-            state_fields:
-              psn_send: 1234567
-          - layer: 2
-            name: "Ethernet / PFC"
-            state_fields:
-              tx_queue_depth: 4162
-      - actor_id: "target"
+      - actor_id: "ai_node"
         layers:
           - layer: 7
-            name: "Application / Verbs"
+            name: "GPU / CUDA Runtime"
             state_fields:
-              cpu_involvement: "NONE — RNIC DMA wrote directly to MR"
+              cuda_state: "buffer_written_by_rdma"
           - layer: 5
             name: "IB Transport (RC QP)"
             state_fields:
-              psn_recv_expected: 1234568
+              psn_recv_expected: 8765433
+      - actor_id: "remote_server"
+        layers:
+          - layer: 5
+            name: "IB Transport (RC QP)"
+            state_fields:
+              psn_send: 8765432
 
-  - id: "evt_rdma_write_ack"
+  - id: "evt_rdma_write_gpu_ack"
     type: "frame_tx"
-    t_ns: 20800000
-    frame_id: "rdma_write_ack"
+    t_ns: 30800000
+    frame_id: "rdma_write_gpu_ack"
     annotation:
-      text: "ACK from target RNIC — WRITE complete, CQE posted on initiator"
+      text: "ACK from AI node RNIC — WRITE to GPU complete, CQE posted on remote server"
       detail: >
-        Target RNIC autonomously generates RC ACK. No CPU involvement on target.
-        On receiving ACK, initiator RNIC posts a CQE (Completion Queue Entry) to
-        initiator's CQ. Application learns of completion via ibv_poll_cq().
-        Linux: mlx5_ib_poll_cq() reads CQE from CQ ring buffer.
+        AI node's RNIC autonomously generates RC ACK after GPU DMA completes.
+        No CPU involvement on the AI node — the GPU received the data, the RNIC
+        generated the ACK, and the AI node's CPU was never interrupted.
+        Remote server's RNIC posts a CQE for the completed WRITE.
+        Application on remote server calls ibv_poll_cq() to learn of completion.
     state_after:
-      - actor_id: "initiator"
+      - actor_id: "remote_server"
         layers:
           - layer: 7
             name: "Application / Verbs"
             state_fields:
-              cq_entries: 1
-              app_state: "write_complete"
+              app_state: "write_to_gpu_complete"
           - layer: 5
             name: "IB Transport (RC QP)"
             state_fields:
-              psn_send: 1234568
+              psn_send: 8765433
 
-  # ── Phase 6: RDMA READ ───────────────────────────────────────────
-  - id: "evt_app_post_read"
+  # ── Phase 6: RDMA READ from GPU Memory ─────────────────────────
+
+  - id: "evt_app_post_read_from_gpu"
     type: "state_change"
-    t_ns: 24000000
+    t_ns: 34000000
     annotation:
-      text: "Application posts RDMA READ Work Request"
+      text: "Remote server posts RDMA READ targeting GPU memory on AI node"
       detail: >
-        ibv_post_send() with opcode IBV_WR_RDMA_READ.
-        Specifies: local SG buffer for received data (lkey), remote vaddr + rkey.
-        RDMA READ requires a round trip — initiator sends request, target sends data.
+        ibv_post_send() with opcode IBV_WR_RDMA_READ on the remote server.
+        Specifies: local SG buffer for received data (host DRAM, lkey), remote vaddr = GPU BAR
+        address, remote rkey = GPU-backed MR key. The AI node's RNIC will perform a PCIe
+        peer-to-peer read from GPU HBM and send the data back — no CPU on AI node.
     state_after:
-      - actor_id: "initiator"
+      - actor_id: "remote_server"
         layers:
           - layer: 7
             name: "Application / Verbs"
             state_fields:
-              posted_wr: "RDMA_READ wr_id=2"
-              app_state: "read_posted"
+              app_state: "read_from_gpu_posted"
 
-  - id: "evt_rdma_read_req"
+  - id: "evt_rdma_read_gpu_req"
     type: "frame_tx"
-    t_ns: 25000000
-    frame_id: "rdma_read_req"
+    t_ns: 35000000
+    frame_id: "rdma_read_gpu_req"
     annotation:
-      text: "RDMA READ Request — no data in this direction"
+      text: "RDMA READ Request from GPU memory — no data in this direction"
       detail: >
-        Initiator sends BTH(opcode=0x0C) + RETH specifying what to read.
-        No payload. Target RNIC will autonomously DMA its own memory and respond.
+        Remote server sends BTH(opcode=0x0C) + RETH specifying what to read from GPU memory.
+        No payload. AI node's RNIC will autonomously: look up rkey → find GPU BAR1 pages in MTT →
+        DMA read from GPU HBM via PCIe P2P → build response packets → transmit.
     state_after:
-      - actor_id: "initiator"
+      - actor_id: "remote_server"
         layers:
           - layer: 5
             name: "IB Transport (RC QP)"
             state_fields:
-              psn_send: 1234568
+              psn_send: 8765433
 
-  - id: "evt_rdma_read_resp"
+  - id: "evt_rdma_read_gpu_resp"
     type: "frame_tx"
-    t_ns: 26200000
-    frame_id: "rdma_read_resp_only"
+    t_ns: 36200000
+    frame_id: "rdma_read_gpu_resp"
     annotation:
-      text: "RDMA READ Response — target RNIC DMAs memory and sends data"
+      text: "RDMA READ Response — AI node's RNIC DMAs from GPU HBM and sends data"
       detail: >
-        Target RNIC: receives READ request → validates rkey → DMA reads physical memory
-        → builds response packet(s) → transmits. Zero CPU involvement on target.
-        Initiator RNIC: receives response → DMA writes to initiator's local buffer →
-        posts READ CQE. Application calls ibv_poll_cq() to retrieve result.
-        The data returned is exactly what was written in the RDMA WRITE — verified
-        end-to-end by ICRC.
+        AI node's RNIC: receives READ request → validates rkey 0xGPU01234 → MTT lookup finds
+        GPU BAR1 physical addresses → DMA engine performs PCIe P2P read from GPU HBM →
+        builds response packet with AETH+payload → transmits to remote server.
+
+        Zero CPU involvement on the AI node. The GPU was not interrupted — no CUDA kernel
+        was paused. The RNIC performed the entire operation autonomously using the PCIe
+        BAR1 aperture. This is how distributed AI training frameworks (NCCL, Gloo) achieve
+        high-throughput inter-node GPU communication without CPU bottlenecks.
     state_after:
-      - actor_id: "target"
+      - actor_id: "ai_node"
+        layers:
+          - layer: 7
+            name: "GPU / CUDA Runtime"
+            state_fields:
+              cuda_state: "buffer_read_by_rdma"
+          - layer: 5
+            name: "IB Transport (RC QP)"
+            state_fields:
+              psn_send: 2345678
+      - actor_id: "remote_server"
         layers:
           - layer: 7
             name: "Application / Verbs"
             state_fields:
-              cpu_involvement: "NONE — RNIC DMA read memory and sent response"
+              app_state: "read_from_gpu_complete"
           - layer: 5
             name: "IB Transport (RC QP)"
             state_fields:
-              psn_send: 7654321
-      - actor_id: "initiator"
-        layers:
-          - layer: 7
-            name: "Application / Verbs"
-            state_fields:
-              cq_entries: 1
-              app_state: "read_complete"
-          - layer: 5
-            name: "IB Transport (RC QP)"
-            state_fields:
-              psn_recv_expected: 7654322
+              psn_recv_expected: 2345679
 
   - id: "evt_done"
     type: "annotation"
-    t_ns: 27000000
+    t_ns: 37000000
     annotation:
-      text: "Scenario complete"
+      text: "Scenario complete — GPUDirect RDMA data transfer to GPU memory"
       detail: >
-        Summary: Two independent 100GbE links came up (host↔switch each), the switch
-        provided L2 forwarding, the initiator established an RoCEv2 RC connection, performed
-        an RDMA WRITE of 4KB to remote memory (zero remote CPU involvement), then
-        read that same data back with an RDMA READ (also zero remote CPU involvement).
-        Total data frames: 2. Total control frames: 5 (ARP×2, CM×3).
-        The remote CPU was never interrupted for data operations.
+        Summary: Two independent 100GbE links came up (AI node ↔ switch, switch ↔ remote
+        server). The AI node allocated GPU HBM via cuMemAlloc, loaded nvidia-peermem to expose
+        GPU memory to the RDMA subsystem, registered an IB Memory Region against the GPU BAR1
+        address, and established an RC QP connection. The remote server performed a 4MB RDMA WRITE
+        that landed directly in GPU HBM — zero CPU involvement on the AI node, zero bounce
+        through host DRAM. Then the remote server performed an RDMA READ that retrieved data
+        directly from GPU HBM — again zero CPU involvement.
+
+        Key takeaway: GPUDirect RDMA eliminates the CPU from the data path entirely. In
+        traditional RDMA + cudaMemcpy, every byte crosses the PCIe bus twice (network→host DRAM,
+        then host DRAM→GPU). With GPUDirect RDMA, each byte crosses PCIe only once
+        (network→GPU directly). This halves PCIe bandwidth consumption and eliminates CPU
+        overhead — critical for scaling distributed AI training across hundreds of GPUs.
 
 # ─────────────────────────────────────────────────────────────────
 # GLOSSARY
 # ─────────────────────────────────────────────────────────────────
 glossary:
+  - term: "GPUDirect RDMA"
+    definition: "A technology that enables direct RDMA transfers between a network adapter and GPU memory, bypassing host CPU and system memory entirely. Data flows Network ↔ RNIC ↔ PCIe ↔ GPU HBM without any CPU involvement or host DRAM bounce buffer. Requires nvidia-peermem kernel module and a GPU with PCIe BAR1 aperture large enough to map the target memory."
+
+  - term: "nvidia-peermem"
+    definition: "A Linux kernel module (formerly nv_peer_mem) that implements the IB peer_memory_client API. When ibv_reg_mr() is called with a GPU virtual address, nvidia-peermem intercepts the registration, pins the GPU physical pages via nvidia_p2p_get_pages(), and provides their PCIe BAR1 addresses to the RNIC's Memory Translation Table. This enables the RNIC to DMA directly to/from GPU memory."
+
+  - term: "BAR1 Aperture"
+    abbrev: "BAR1"
+    definition: "Base Address Register 1 — the PCIe memory-mapped window through which external devices can access GPU memory. The GPU maps regions of its HBM into PCIe address space via BAR1. When the RNIC targets a BAR1 address in a DMA operation, the PCIe transaction is routed directly to the GPU without CPU involvement. H100 GPUs support up to 256GB BAR1 (resizable BAR / large BAR mode)."
+
   - term: "Queue Pair"
     abbrev: "QP"
-    definition: "The fundamental RDMA endpoint. Consists of a Send Queue (SQ) and Receive Queue (RQ). Communication happens between a local QP and a remote QP. For RC service, each QP is connected to exactly one remote QP."
+    definition: "The fundamental RDMA endpoint. Consists of a Send Queue (SQ) and Receive Queue (RQ). For RC service, each QP is connected to exactly one remote QP. In GPUDirect RDMA, the QP's associated Memory Regions may point to GPU memory — the QP itself is unaware of the memory backing."
     spec_refs:
       - document: "IBTA Vol1"
         section: "11.2"
@@ -2691,42 +2793,33 @@ glossary:
 
   - term: "Memory Region"
     abbrev: "MR"
-    definition: "A contiguous virtual memory range registered with the RNIC. Registration pins the pages and creates a virtual→physical translation in the RNIC's Memory Translation Table. Returns lkey (for local access) and rkey (for remote access authorization)."
+    definition: "A contiguous virtual memory range registered with the RNIC. For GPUDirect RDMA, the MR can be registered against GPU memory — nvidia-peermem provides GPU BAR1 physical addresses to the RNIC's MTT instead of host DRAM physical addresses. The resulting lkey/rkey are opaque and interchangeable with host DRAM-backed MRs from the remote peer's perspective."
     spec_refs:
       - document: "IBTA Vol1"
         section: "10.6.3"
         title: "Memory Region Registration"
         url: "https://www.infinibandta.org/ibta-specification/"
 
-  - term: "Work Queue Element"
-    abbrev: "WQE"
-    definition: "A descriptor posted to a QP's SQ or RQ describing a data transfer operation. For SEND/WRITE/READ, the WQE contains opcode, local SG list (lkey+addr+len), and for RDMA ops, the remote address and rkey."
-    spec_refs:
-      - document: "IBTA Vol1"
-        section: "11.4"
-        title: "Work Queue Elements"
-        url: "https://www.infinibandta.org/ibta-specification/"
+  - term: "Memory Translation Table"
+    abbrev: "MTT"
+    definition: "A page table inside the RNIC that maps Memory Region virtual addresses to physical addresses (DMA addresses). For standard MRs, MTT entries point to host DRAM physical pages. For GPU-backed MRs, MTT entries point to GPU BAR1 physical addresses, causing the RNIC DMA engine to perform PCIe peer-to-peer transactions directly with the GPU."
+
+  - term: "PCIe Peer-to-Peer"
+    abbrev: "P2P"
+    definition: "A PCIe capability where two endpoints (e.g., RNIC and GPU) communicate directly through the PCIe switch/root complex without the data passing through host DRAM. The RNIC issues a PCIe write/read transaction targeting the GPU's BAR1 address, and the PCIe fabric routes it directly to the GPU. Requires both devices to be in the same PCIe hierarchy (same root complex or connected via PCIe switch)."
 
   - term: "Priority Flow Control"
     abbrev: "PFC"
-    definition: "IEEE 802.1Qbb extension that allows pause frames to be sent per traffic class (priority 0-7), enabling lossless Ethernet. RoCEv2 typically runs on priority 3. When a switch buffer reaches a threshold, it sends a PAUSE frame for that priority, causing the upstream sender to pause transmission without dropping packets."
+    definition: "IEEE 802.1Qbb extension enabling per-priority pause frames for lossless Ethernet. RoCEv2 typically runs on priority 3. Critical for GPUDirect RDMA because GPU memory has limited buffering — packet drops would cause expensive retransmissions over the GPU's PCIe P2P path."
     spec_refs:
       - document: "IEEE 802.1Qbb"
         section: "36"
         title: "Priority-based Flow Control"
         url: "https://standards.ieee.org/ieee/802.1Qbb/4788/"
 
-  - term: "DCQCN"
-    definition: "Data Center Quantized Congestion Notification. The standard congestion control algorithm for RoCEv2. Uses ECN marking by switches (CE bits in IP header) to trigger rate reduction at senders. Combines concepts from QCN and DCTCP."
-    spec_refs:
-      - document: "SIGCOMM 2015"
-        section: "1"
-        title: "Congestion Control for Large-Scale RDMA Deployments"
-        url: "https://dl.acm.org/doi/10.1145/2829988.2787484"
-
   - term: "Invariant CRC"
     abbrev: "ICRC"
-    definition: "A 32-bit CRC appended to every IB transport packet. Covers BTH, all extended headers, and payload. 'Invariant' means mutable IP/Ethernet fields (TTL, FECN/BECN) are zeroed before computation so routers do not invalidate it. Checked in hardware by the receiving RNIC — if failed, packet is silently dropped and RC will retransmit."
+    definition: "A 32-bit CRC appended to every IB transport packet. Covers BTH, all extended headers, and payload. Checked by RNIC hardware before writing data to the target memory (GPU or host DRAM). For GPUDirect RDMA, ICRC verification happens in the RNIC before the DMA to GPU — corrupted data never reaches GPU HBM."
     spec_refs:
       - document: "IBTA Vol1"
         section: "9.4.1"
@@ -2735,9 +2828,16 @@ glossary:
 
   - term: "Reliable Connected"
     abbrev: "RC"
-    definition: "IB transport service type. RC provides: reliable (guaranteed delivery with retransmission), in-order delivery, connection-oriented (QP-to-QP). Required for RDMA READ. Most RoCEv2 deployments use RC."
+    definition: "IB transport service type providing reliable, in-order, connection-oriented delivery. Required for RDMA READ. Most GPUDirect RDMA deployments use RC for reliable GPU-to-GPU data transfer in distributed AI training (NCCL)."
     spec_refs:
       - document: "IBTA Vol1"
         section: "9.7.5"
         title: "Reliable Connected Service"
         url: "https://www.infinibandta.org/ibta-specification/"
+
+  - term: "High Bandwidth Memory"
+    abbrev: "HBM"
+    definition: "3D-stacked DRAM technology used in modern GPUs and accelerators. H100 uses HBM3 providing ~3.35 TB/s bandwidth. HBM is physically located on the GPU package (on-die or on-interposer). GPUDirect RDMA writes data directly into HBM without passing through host DRAM."
+
+  - term: "NCCL"
+    definition: "NVIDIA Collective Communications Library — the standard library for multi-GPU and multi-node collective operations in distributed AI training. NCCL uses GPUDirect RDMA extensively to perform allreduce, allgather, and other collectives directly between GPU memories across the network, avoiding CPU bounce buffers."

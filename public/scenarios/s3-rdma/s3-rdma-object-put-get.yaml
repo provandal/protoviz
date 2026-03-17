@@ -1,0 +1,2927 @@
+# ─────────────────────────────────────────────────────────────────
+# S3/RDMA: Object PUT and GET over RoCEv2 (NVIDIA Library Architecture)
+# ─────────────────────────────────────────────────────────────────
+# Pre-standard scenario based on NVIDIA RDMA for S3-compatible storage
+# library architecture (announced Dec 2025) and Dell ObjectScale implementation.
+# S3/RDMA application-layer fields (L6/L7) carry spec_note "Pre-standard" markers.
+# RoCEv2 transport fields (L1-L5) use standard IBTA/RFC/IEEE refs only.
+# ─────────────────────────────────────────────────────────────────
+
+meta:
+  id: "s3-rdma-object-put-get"
+  title: "S3/RDMA: Object PUT and GET over RoCEv2 (NVIDIA Library Architecture)"
+  protocol: "S3/RDMA"
+  protocol_family: "RDMA"
+  version: "1.0.0"
+  description: >
+    An S3/RDMA exchange over 100GbE RoCEv2, demonstrating how AI workloads can
+    perform S3 PUT and GET operations with zero CPU involvement in the data path.
+    The scenario begins with physical link establishment and ARP, proceeds through
+    S3/RDMA library initialization and QP connection setup via UD control messages,
+    then shows a complete S3 PUT (1GB AI checkpoint upload) and S3 GET (1GB download)
+    using RDMA WRITE for bulk data transfer. Contrast annotations compare S3/RDMA
+    with traditional S3 over TCP/HTTP at each stage. Based on the NVIDIA RDMA for
+    S3-compatible storage library architecture and Dell ObjectScale implementation.
+    Wire-level field encodings for the S3/RDMA application layer are pre-standard
+    and subject to change pending SNIA Accelerated Object I/O TWG specification.
+
+  learning_objectives:
+    - "Understand why traditional S3 over TCP/HTTP is CPU-intensive and how S3/RDMA eliminates that overhead"
+    - "See how the NVIDIA S3/RDMA library sits above the RoCEv2 transport layer and below the S3 application API"
+    - "Observe the QP connection setup that S3/RDMA uses before any object transfer"
+    - "Trace an S3 PUT operation: how object metadata is exchanged over the control path while data moves over RDMA WRITE"
+    - "Trace an S3 GET operation: how the server uses RDMA WRITE to push object data directly into client memory"
+    - "Contrast S3/RDMA data path (zero CPU on data transfer) with traditional S3 over TCP (CPU handles every byte)"
+    - "Understand the role of Memory Region registration in authorizing the server to write directly into client-allocated buffers"
+
+  difficulty: "advanced"
+
+  authors:
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+    - name: "Generated via specification analysis"
+      org: "proto-viz"
+      github: ""
+
+  created: "2026-03-17"
+  updated: "2026-03-17"
+
+  tags:
+    - "S3"
+    - "RDMA"
+    - "RoCEv2"
+    - "object-storage"
+    - "AI-storage"
+    - "GPUDirect"
+    - "NVIDIANetworking"
+    - "DellObjectScale"
+    - "pre-standard"
+    - "100GbE"
+
+  primary_specs:
+    - document: "NVIDIA RDMA for S3-compatible storage (pre-standard)"
+      section: "Architecture Overview"
+      title: "RDMA for S3-compatible storage library architecture"
+      url: "https://blogs.nvidia.com/blog/s3-compatible-ai-storage/"
+      alt_url: "https://www.snia.org/technical-work-groups"
+    - document: "IBTA Vol1"
+      section: "9.7.5"
+      title: "Reliable Connected Service - RDMA WRITE"
+      url: "https://www.infinibandta.org/ibta-specification/"
+    - document: "RFC 7871"
+      section: "3"
+      title: "RoCEv2 UDP encapsulation"
+      url: "https://datatracker.ietf.org/doc/html/rfc7871"
+    - document: "IEEE 802.1Qbb"
+      section: "36"
+      title: "Priority-based Flow Control"
+      url: "https://standards.ieee.org/ieee/802.1Qbb/4788/"
+
+  content_disclaimer: >
+    Protocol descriptions for the RoCEv2 transport layer are based on open-source
+    implementations (Linux kernel, rdma-core) and public RFCs. S3/RDMA application-layer
+    field descriptions are based on the publicly announced NVIDIA library architecture
+    and are pre-standard. No proprietary specification text has been reproduced.
+
+  source_references:
+    - repo: "NVIDIA CUDA Toolkit"
+      path: "s3rdma/client/s3_rdma_client.h"
+      description: "S3/RDMA client library API (not public source - header reference)"
+    - repo: "torvalds/linux"
+      path: "drivers/infiniband/hw/mlx5/qp.c"
+      description: "mlx5 QP management - used by S3/RDMA library for RC QP setup"
+    - repo: "torvalds/linux"
+      path: "drivers/infiniband/hw/mlx5/mr.c"
+      description: "mlx5 MR registration - S3/RDMA registers GPU/CPU buffers as MRs"
+    - repo: "torvalds/linux"
+      path: "drivers/infiniband/core/cm.c"
+      description: "IB CM - S3/RDMA uses standard RC connection setup"
+    - repo: "linux-rdma/rdma-core"
+      path: "libibverbs/verbs.h"
+      description: "Userspace verbs API - ibv_post_send, ibv_poll_cq, struct ibv_qp_attr"
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "ai_client"
+      type: "initiator"
+      label: "AI Compute Node (Client)"
+      description: >
+        GPU compute node running an AI training workload. Uses the NVIDIA S3/RDMA
+        client library (part of CUDA Toolkit) to access object storage without CPU
+        involvement in the data path. Mellanox ConnectX-6 Dx RNIC with GPUDirect
+        capability. The AI framework (PyTorch/JAX) calls s3_rdma_get() / s3_rdma_put()
+        which internally manages QP setup and RDMA operations.
+      hardware: "NVIDIA DGX H100 / Mellanox ConnectX-6 Dx 100GbE RNIC"
+      os: "Linux 6.x"
+      ip: "192.168.100.10"
+      gid: "fe80::0002:c903:0010:0001"
+      mac: "00:02:c9:10:00:01"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "100GbE RoCEv2 Switch"
+      description: >
+        Lossless 100GbE switch with PFC (priority 3) and ECN/DCQCN configured for
+        RDMA traffic. Standard RoCEv2 fabric - S3/RDMA uses the same lossless
+        Ethernet infrastructure as any other RoCEv2 workload.
+      position: "center"
+
+    - id: "s3_server"
+      type: "target"
+      label: "Object Storage Server (Dell ObjectScale)"
+      description: >
+        Object storage server running the NVIDIA S3/RDMA server library integrated
+        into Dell ObjectScale. Exposes S3-compatible API. For S3/RDMA-capable clients,
+        bypasses the HTTP stack entirely and uses RoCEv2 for data transfer.
+        Mellanox ConnectX-6 Dx RNIC.
+      hardware: "Dell PowerEdge / Mellanox ConnectX-6 Dx 100GbE RNIC"
+      os: "Linux 6.x"
+      ip: "192.168.100.20"
+      mac: "00:02:c9:20:00:01"
+      position: "right"
+
+  links:
+    - id: "link-client-sw"
+      from: "ai_client"
+      to: "switch"
+      speed_gbps: 100
+      media: "fiber_sr"
+      fec: "RS(544,514)"
+      autoneg: true
+    - id: "link-sw-server"
+      from: "switch"
+      to: "s3_server"
+      speed_gbps: 100
+      media: "fiber_sr"
+      fec: "RS(544,514)"
+      autoneg: true
+
+# ─────────────────────────────────────────────────────────────────
+# OSI LAYER DEFINITIONS (per actor)
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  ai_client:
+    - layer: 7
+      name: "S3/RDMA Application"
+      components: ["AI framework (PyTorch/JAX)", "S3 API calls"]
+      state_schema:
+        s3_operation:
+          type: "string"
+          description: "Current S3 operation (PUT/GET/IDLE)"
+          initial: "IDLE"
+        object_key:
+          type: "string"
+          description: "Current object key being operated on"
+          initial: "null"
+        object_size:
+          type: "integer"
+          description: "Object size in bytes"
+          initial: 0
+        s3_state:
+          type: "string"
+          description: "S3 operation state machine"
+          initial: "IDLE"
+        gpu_buffer_ptr:
+          type: "string"
+          description: "GPU buffer virtual address for data"
+          initial: "null"
+
+    - layer: 6
+      name: "NVIDIA S3/RDMA Client Library"
+      components: ["s3_rdma_client.h", "CUDA Toolkit S3/RDMA module"]
+      state_schema:
+        library_state:
+          type: "string"
+          description: "Library lifecycle state"
+          initial: "NOT_INITIALIZED"
+        qp_state_lib:
+          type: "string"
+          description: "Library-managed QP state"
+          initial: "NONE"
+        mr_registered:
+          type: "boolean"
+          description: "Memory Region registered for GPU/CPU buffer pool"
+          initial: false
+        rkey_local:
+          type: "string"
+          description: "Local rkey for registered MR"
+          initial: "null"
+
+    - layer: 5
+      name: "IB Transport (RC QP)"
+      components: ["drivers/infiniband/hw/mlx5/qp.c", "drivers/infiniband/core/verbs.c"]
+      state_schema:
+        qp_state:
+          type: "string"
+          description: "Queue Pair state machine state"
+          initial: "RESET"
+        qp_num:
+          type: "string"
+          description: "Local QP number"
+          initial: "null"
+        psn_send:
+          type: "integer"
+          description: "Send Packet Sequence Number"
+          initial: 0
+        psn_recv:
+          type: "integer"
+          description: "Next expected receive PSN"
+          initial: 0
+        remote_qpn:
+          type: "string"
+          description: "Remote QP number"
+          initial: "null"
+        pmtu:
+          type: "string"
+          description: "Path MTU"
+          initial: "null"
+        rkey_remote:
+          type: "string"
+          description: "Remote Memory Region key (learned from peer)"
+          initial: "null"
+
+    - layer: 4
+      name: "UDP (RoCEv2 encapsulation)"
+      components: ["kernel UDP stack", "RNIC hardware offload"]
+      state_schema:
+        src_port:
+          type: "integer"
+          description: "UDP source port (hash of flow for ECMP)"
+          initial: 0
+        dst_port:
+          type: "integer"
+          description: "UDP destination port - always 4791 for RoCEv2"
+          initial: 4791
+
+    - layer: 3
+      name: "IP / ECN"
+      components: ["kernel IP stack", "RNIC GID table"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "192.168.100.10"
+        dst_ip:
+          type: "string"
+          initial: "null"
+        ecn_state:
+          type: "string"
+          description: "ECN state: Not-ECT | ECT(0) | CE"
+          initial: "Not-ECT"
+
+    - layer: 2
+      name: "Ethernet / PFC 802.1Qbb"
+      components: ["mlx5 driver", "IEEE 802.1Q", "IEEE 802.1Qbb PFC"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "down"
+        pfc_enabled:
+          type: "boolean"
+          description: "PFC enabled on priority 3"
+          initial: false
+        pfc_xoff:
+          type: "boolean"
+          description: "PFC XOFF asserted"
+          initial: false
+
+    - layer: 1
+      name: "Physical / RS-FEC"
+      components: ["IEEE 802.3cd", "100GBASE-SR4", "RS(544,514) FEC"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "down"
+        an_state:
+          type: "string"
+          description: "Auto-Negotiation state"
+          initial: "idle"
+        speed:
+          type: "string"
+          initial: "unknown"
+        signal_detect:
+          type: "boolean"
+          initial: false
+
+  s3_server:
+    - layer: 7
+      name: "S3/RDMA Server"
+      components: ["Dell ObjectScale S3 engine", "NVIDIA S3/RDMA server library"]
+      state_schema:
+        s3_operation:
+          type: "string"
+          initial: "IDLE"
+        object_key:
+          type: "string"
+          initial: "null"
+        object_size:
+          type: "integer"
+          initial: 0
+        s3_state:
+          type: "string"
+          initial: "IDLE"
+        storage_backend:
+          type: "string"
+          initial: "ObjectScale"
+        cpu_involvement:
+          type: "string"
+          description: "Whether CPU was involved in data transfer"
+          initial: "none"
+
+    - layer: 6
+      name: "NVIDIA S3/RDMA Server Library"
+      components: ["s3_rdma_server module", "Dell ObjectScale RDMA plugin"]
+      state_schema:
+        library_state:
+          type: "string"
+          initial: "NOT_INITIALIZED"
+        rkey_advertised:
+          type: "string"
+          description: "rkey advertised to client for RDMA WRITE"
+          initial: "null"
+        client_buffer_vaddr:
+          type: "string"
+          description: "Client buffer virtual address (learned from CONNECT)"
+          initial: "null"
+        client_rkey:
+          type: "string"
+          description: "Client rkey (learned from CONNECT)"
+          initial: "null"
+
+    - layer: 5
+      name: "IB Transport (RC QP)"
+      components: ["drivers/infiniband/hw/mlx5/qp.c"]
+      state_schema:
+        qp_state:
+          type: "string"
+          initial: "RESET"
+        qp_num:
+          type: "string"
+          initial: "null"
+        psn_send:
+          type: "integer"
+          initial: 0
+        psn_recv:
+          type: "integer"
+          initial: 0
+        remote_qpn:
+          type: "string"
+          initial: "null"
+
+    - layer: 4
+      name: "UDP (RoCEv2 encapsulation)"
+      components: ["kernel UDP stack", "RNIC hardware offload"]
+      state_schema:
+        dst_port:
+          type: "integer"
+          initial: 4791
+
+    - layer: 3
+      name: "IP / ECN"
+      components: ["kernel IP stack"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "192.168.100.20"
+        ecn_state:
+          type: "string"
+          initial: "Not-ECT"
+
+    - layer: 2
+      name: "Ethernet / PFC"
+      components: ["mlx5 driver", "IEEE 802.1Qbb PFC"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "down"
+        pfc_enabled:
+          type: "boolean"
+          initial: false
+        pfc_xoff:
+          type: "boolean"
+          initial: false
+
+    - layer: 1
+      name: "Physical / RS-FEC"
+      components: ["IEEE 802.3cd", "100GBASE-SR4"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "down"
+        an_state:
+          type: "string"
+          initial: "idle"
+        speed:
+          type: "string"
+          initial: "unknown"
+        signal_detect:
+          type: "boolean"
+          initial: false
+
+  switch:
+    - layer: 3
+      name: "IP Forwarding / ECN"
+      components: ["L3 forwarding (optional)", "ECN/WRED marking"]
+      state_schema:
+        ecn_marking_enabled:
+          type: "boolean"
+          description: "ECN CE marking enabled for congestion notification (DCQCN)"
+          initial: true
+        wred_threshold_bytes:
+          type: "integer"
+          initial: 153600
+    - layer: 2
+      name: "Ethernet Switching / PFC"
+      components: ["802.1Q bridge", "802.1Qbb PFC", "MAC forwarding table"]
+      state_schema:
+        fwd_table_entries:
+          type: "integer"
+          initial: 0
+        port_a_pfc_xoff:
+          type: "boolean"
+          description: "PFC XOFF toward ai_client (priority 3)"
+          initial: false
+        port_b_pfc_xoff:
+          type: "boolean"
+          description: "PFC XOFF toward s3_server (priority 3)"
+          initial: false
+    - layer: 1
+      name: "Physical (per-port)"
+      components: ["100GBASE-SR4", "RS(544,514) FEC"]
+      state_schema:
+        port_a_phy:
+          type: "string"
+          description: "Physical state of port facing ai_client"
+          initial: "down"
+        port_a_an:
+          type: "string"
+          initial: "idle"
+        port_b_phy:
+          type: "string"
+          description: "Physical state of port facing s3_server"
+          initial: "down"
+        port_b_an:
+          type: "string"
+          initial: "idle"
+
+# ─────────────────────────────────────────────────────────────────
+# FRAMES
+# ─────────────────────────────────────────────────────────────────
+frames:
+
+  # ── ARP ─────────────────────────────────────────────────────────
+  - id: "arp_request"
+    name: "ARP Request"
+    description: "Client broadcasts ARP to resolve 192.168.100.20"
+    from: "ai_client"
+    to: "broadcast"
+    via: ["switch"]
+    timestamp_ns: 5000000
+    total_bytes: 42
+    color: "#f0c040"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "ff:ff:ff:ff:ff:ff"
+            description: "Broadcast MAC"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:10:00:01"
+            description: "Client NIC MAC"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0806"
+            description: "EtherType 0x0806 = ARP"
+      - name: "ARP"
+        abbrev: "arp"
+        layer: 3
+        total_bytes: 28
+        fields:
+          - name: "Opcode"
+            abbrev: "arp.opcode"
+            bits: 16
+            value: 1
+            description: "1 = Request"
+          - name: "Sender MAC"
+            abbrev: "arp.src.hw_mac"
+            bits: 48
+            value: "00:02:c9:10:00:01"
+            description: "Client MAC"
+          - name: "Sender IP"
+            abbrev: "arp.src.proto_ipv4"
+            bits: 32
+            value: "192.168.100.10"
+            description: "Client IP"
+          - name: "Target IP"
+            abbrev: "arp.dst.proto_ipv4"
+            bits: 32
+            value: "192.168.100.20"
+            description: "Server IP to resolve"
+
+  - id: "arp_reply"
+    name: "ARP Reply"
+    description: "Server responds with its MAC address"
+    from: "s3_server"
+    to: "ai_client"
+    via: ["switch"]
+    timestamp_ns: 5200000
+    total_bytes: 42
+    color: "#f0c040"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:10:00:01"
+            description: "Unicast reply to client"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:20:00:01"
+            description: "Server NIC MAC"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0806"
+            description: "ARP"
+      - name: "ARP"
+        abbrev: "arp"
+        layer: 3
+        total_bytes: 28
+        fields:
+          - name: "Opcode"
+            abbrev: "arp.opcode"
+            bits: 16
+            value: 2
+            description: "2 = Reply"
+          - name: "Sender MAC"
+            abbrev: "arp.src.hw_mac"
+            bits: 48
+            value: "00:02:c9:20:00:01"
+            description: "Server MAC (the answer)"
+          - name: "Sender IP"
+            abbrev: "arp.src.proto_ipv4"
+            bits: 32
+            value: "192.168.100.20"
+            description: "Server IP"
+
+  # ── S3/RDMA CONNECT ─────────────────────────────────────────────
+  - id: "s3rdma_connect_req"
+    name: "S3/RDMA CONNECT Request"
+    description: >
+      Client sends S3/RDMA connection request over UD SEND to the well-known
+      S3/RDMA service QP on the server. Carries client QP info, rkey, and buffer
+      address so the server can RDMA WRITE into client memory.
+    from: "ai_client"
+    to: "s3_server"
+    via: ["switch"]
+    timestamp_ns: 20000000
+    total_bytes: 146
+    color: "#9b59b6"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:20:00:01"
+            description: "Server MAC"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:10:00:01"
+            description: "Client MAC"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.100.10"
+            description: "Client IP"
+          - name: "Destination"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.100.20"
+            description: "Server IP"
+          - name: "ECN"
+            abbrev: "ip.ecn"
+            bits: 2
+            value: "ECT(0)"
+            description: "ECN-Capable Transport - RoCEv2 marks ECT(0)"
+            spec_refs:
+              - document: "RFC 3168"
+                section: "5"
+                title: "ECN field"
+                url: "https://datatracker.ietf.org/doc/html/rfc3168"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 49152
+            description: "Entropy source port (hash-based for ECMP)"
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+            description: "RoCEv2 well-known port"
+            spec_refs:
+              - document: "RFC 7871"
+                section: "3"
+                title: "RoCEv2 UDP port"
+                url: "https://datatracker.ietf.org/doc/html/rfc7871"
+      - name: "BTH (Base Transport Header)"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "Opcode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x64"
+            value_hex: "0x64"
+            description: "UD Send Only - control message to well-known S3/RDMA service QP"
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.7.1"
+                title: "UD Send Only opcode"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "Solicited Event (SE)"
+            abbrev: "bth.se"
+            bits: 1
+            value: 1
+            description: "Last (only) packet of message — solicited event"
+          - name: "MigReq"
+            abbrev: "bth.migreq"
+            bits: 1
+            value: 1
+            description: "1 = primary path (not alternate/migrated)"
+          - name: "Pad Count"
+            abbrev: "bth.padcnt"
+            bits: 2
+            value: 0
+            description: "Number of pad bytes appended to payload to make it a multiple of 4"
+          - name: "Transport Header Version"
+            abbrev: "bth.thv"
+            bits: 4
+            value: 0
+          - name: "P_Key"
+            abbrev: "bth.pkey"
+            bits: 16
+            value: "0xFFFF"
+            value_hex: "0xFFFF"
+            description: "Full membership P_Key (0xFFFF). Partition Key — defines a virtual fabric partition."
+          - name: "FECN"
+            abbrev: "bth.fecn"
+            bits: 1
+            value: 0
+            description: "Forward ECN — not set"
+          - name: "BECN"
+            abbrev: "bth.becn"
+            bits: 1
+            value: 0
+            description: "Backward ECN — not set"
+          - name: "Dest QP"
+            abbrev: "bth.dqpn"
+            bits: 24
+            value: "0x000001"
+            # REVIEW: Well-known QP number for S3/RDMA service is assumed to be QP 1. Actual value TBD.
+            description: "Well-known S3/RDMA service QP on server"
+          - name: "Acknowledge Request (A)"
+            abbrev: "bth.ackreq"
+            bits: 1
+            value: 1
+            description: "Requester requests acknowledgement"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 0
+            description: "Packet Sequence Number"
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.7.1"
+                title: "Base Transport Header"
+                url: "https://www.infinibandta.org/ibta-specification/"
+      # REVIEW: DETH header required for UD - 8 bytes with Q_Key and Src QP
+      - name: "DETH (Datagram Extended Header)"
+        abbrev: "deth"
+        layer: 5
+        total_bytes: 8
+        fields:
+          - name: "Q_Key"
+            abbrev: "deth.qkey"
+            bits: 32
+            value: "0x80010000"
+            # REVIEW: Q_Key value for S3/RDMA service is assumed. Actual value TBD.
+            description: "Queue Key authorizing access to the UD service QP"
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.8.4"
+                title: "Datagram Extended Transport Header"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "Src QP"
+            abbrev: "deth.sqp"
+            bits: 24
+            value: "0x000100"
+            description: "Client UD QP number"
+      - name: "S3/RDMA CONNECT Payload"
+        abbrev: "s3rdma.connect"
+        layer: 7
+        total_bytes: 84
+        fields:
+          - name: "Message Type"
+            abbrev: "s3rdma.msg_type"
+            bits: 8
+            # REVIEW: Message type encoding is assumed. No public wire format spec exists.
+            value: "0x01"
+            description: "CONNECT_REQUEST message type"
+            spec_refs:
+              - document: "NVIDIA S3/RDMA Library (pre-standard)"
+                section: "Control Message Format"
+                url: "https://blogs.nvidia.com/blog/s3-compatible-ai-storage/"
+            spec_note: >
+              Pre-standard. Field name and encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Client QP Number"
+            abbrev: "s3rdma.client_qpn"
+            bits: 24
+            value: "0x000200"
+            description: "Pre-created RC QP on client that will be used for data transfer"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Client GID"
+            abbrev: "s3rdma.client_gid"
+            bits: 128
+            value: "fe80::0002:c903:0010:0001"
+            description: "Client RoCE GID for RC QP addressing"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Client rkey"
+            abbrev: "s3rdma.client_rkey"
+            bits: 32
+            value: "0xABCD1234"
+            description: "rkey for client GPU buffer MR - authorizes server to RDMA WRITE into client memory"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Client Buffer VAddr"
+            abbrev: "s3rdma.client_vaddr"
+            bits: 64
+            value: "0x7f8000000000"
+            description: "Virtual address of client GPU buffer (pre-registered MR)"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Client Buffer Size"
+            abbrev: "s3rdma.client_buf_size"
+            bits: 64
+            value: 2147483648
+            description: "2GB - max object size client can receive in one transfer"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+
+  - id: "s3rdma_connect_resp"
+    name: "S3/RDMA CONNECT Response"
+    description: >
+      Server responds with its assigned RC QP number, rkey, and connection ID.
+      After this exchange both sides transition QPs to RTS.
+    from: "s3_server"
+    to: "ai_client"
+    via: ["switch"]
+    timestamp_ns: 20500000
+    total_bytes: 110
+    color: "#9b59b6"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:10:00:01"
+            description: "Client MAC"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:20:00:01"
+            description: "Server MAC"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.100.20"
+            description: "Server IP"
+          - name: "Destination"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.100.10"
+            description: "Client IP"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 49200
+            description: "Entropy source port"
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+            description: "RoCEv2"
+      - name: "BTH (Base Transport Header)"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "Opcode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x64"
+            value_hex: "0x64"
+            description: "UD Send Only - CONNECT response"
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.7.1"
+                title: "UD Send Only opcode"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "Solicited Event (SE)"
+            abbrev: "bth.se"
+            bits: 1
+            value: 1
+            description: "Last (only) packet of message — solicited event"
+          - name: "MigReq"
+            abbrev: "bth.migreq"
+            bits: 1
+            value: 1
+            description: "1 = primary path (not alternate/migrated)"
+          - name: "Pad Count"
+            abbrev: "bth.padcnt"
+            bits: 2
+            value: 0
+            description: "Number of pad bytes appended to payload to make it a multiple of 4"
+          - name: "Transport Header Version"
+            abbrev: "bth.thv"
+            bits: 4
+            value: 0
+          - name: "P_Key"
+            abbrev: "bth.pkey"
+            bits: 16
+            value: "0xFFFF"
+            value_hex: "0xFFFF"
+            description: "Full membership P_Key (0xFFFF). Partition Key — defines a virtual fabric partition."
+          - name: "FECN"
+            abbrev: "bth.fecn"
+            bits: 1
+            value: 0
+            description: "Forward ECN — not set"
+          - name: "BECN"
+            abbrev: "bth.becn"
+            bits: 1
+            value: 0
+            description: "Backward ECN — not set"
+          - name: "Dest QP"
+            abbrev: "bth.dqpn"
+            bits: 24
+            value: "0x000100"
+            description: "Client UD QP (from DETH.SrcQP of request)"
+          - name: "Acknowledge Request (A)"
+            abbrev: "bth.ackreq"
+            bits: 1
+            value: 0
+            description: "Response — no acknowledgement requested"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 0
+            description: "Packet Sequence Number"
+      - name: "DETH (Datagram Extended Header)"
+        abbrev: "deth"
+        layer: 5
+        total_bytes: 8
+        fields:
+          - name: "Q_Key"
+            abbrev: "deth.qkey"
+            bits: 32
+            value: "0x80010000"
+            description: "Queue Key"
+          - name: "Src QP"
+            abbrev: "deth.sqp"
+            bits: 24
+            value: "0x000001"
+            description: "Server S3/RDMA service QP"
+      - name: "S3/RDMA CONNECT Response Payload"
+        abbrev: "s3rdma.connect_resp"
+        layer: 7
+        total_bytes: 48
+        fields:
+          - name: "Message Type"
+            abbrev: "s3rdma.msg_type"
+            bits: 8
+            value: "0x02"
+            description: "CONNECT_RESPONSE message type"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Server QP Number"
+            abbrev: "s3rdma.server_qpn"
+            bits: 24
+            value: "0x000300"
+            description: "RC QP assigned by server for this connection"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Server rkey"
+            abbrev: "s3rdma.server_rkey"
+            bits: 32
+            value: "0xDEAD5678"
+            description: "Server rkey (for potential future atomic ops)"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Connection ID"
+            abbrev: "s3rdma.conn_id"
+            bits: 32
+            # REVIEW: Connection ID format/size is assumed.
+            value: "0x00000001"
+            description: "Unique connection identifier for this S3/RDMA session"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+
+  # ── S3 PUT ──────────────────────────────────────────────────────
+
+  - id: "s3_put_request"
+    name: "S3 PUT REQUEST"
+    description: >
+      Client sends PUT metadata via RDMA SEND (RC). Contains bucket, key, size,
+      checksum, and client buffer info. No object data in this message.
+    from: "ai_client"
+    to: "s3_server"
+    via: ["switch"]
+    timestamp_ns: 30000000
+    total_bytes: 162
+    color: "#e74c3c"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:20:00:01"
+            description: "Server MAC"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:10:00:01"
+            description: "Client MAC"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.100.10"
+            description: "Client IP"
+          - name: "Destination"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.100.20"
+            description: "Server IP"
+          - name: "ECN"
+            abbrev: "ip.ecn"
+            bits: 2
+            value: "ECT(0)"
+            description: "ECN-Capable Transport"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 49152
+            description: "Entropy source port"
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+            description: "RoCEv2"
+      - name: "BTH (Base Transport Header)"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "Opcode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+            value_hex: "0x04"
+            description: "RC Send Only - carries S3/RDMA control message"
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.7.5"
+                title: "RC Send Only opcode"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "Solicited Event (SE)"
+            abbrev: "bth.se"
+            bits: 1
+            value: 1
+            description: "Last (only) packet of message — solicited event"
+          - name: "MigReq"
+            abbrev: "bth.migreq"
+            bits: 1
+            value: 1
+            description: "1 = primary path (not alternate/migrated)"
+          - name: "Pad Count"
+            abbrev: "bth.padcnt"
+            bits: 2
+            value: 0
+            description: "Number of pad bytes appended to payload to make it a multiple of 4"
+          - name: "Transport Header Version"
+            abbrev: "bth.thv"
+            bits: 4
+            value: 0
+          - name: "P_Key"
+            abbrev: "bth.pkey"
+            bits: 16
+            value: "0xFFFF"
+            value_hex: "0xFFFF"
+            description: "Full membership P_Key (0xFFFF). Partition Key — defines a virtual fabric partition."
+          - name: "FECN"
+            abbrev: "bth.fecn"
+            bits: 1
+            value: 0
+            description: "Forward ECN — not set"
+          - name: "BECN"
+            abbrev: "bth.becn"
+            bits: 1
+            value: 0
+            description: "Backward ECN — not set"
+          - name: "Dest QP"
+            abbrev: "bth.dqpn"
+            bits: 24
+            value: "0x000300"
+            description: "Server RC QP (assigned during CONNECT)"
+          - name: "Acknowledge Request (A)"
+            abbrev: "bth.ackreq"
+            bits: 1
+            value: 1
+            description: "Requester requests acknowledgement"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 0
+            description: "PSN 0 - first packet on this RC QP"
+      - name: "S3/RDMA PUT REQUEST Payload"
+        abbrev: "s3rdma.put_req"
+        layer: 7
+        total_bytes: 108
+        fields:
+          - name: "Message Type"
+            abbrev: "s3rdma.msg_type"
+            bits: 8
+            value: "0x10"
+            # REVIEW: PUT_REQUEST message type value is assumed.
+            description: "PUT_REQUEST message type"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Bucket Name"
+            abbrev: "s3rdma.bucket_name"
+            bits: "variable"
+            value: "training-data"
+            description: >
+              S3 bucket name. In standard S3 over HTTP this is a URI path component.
+              In S3/RDMA it is carried in the control message payload, bypassing HTTP entirely.
+            spec_refs:
+              - document: "NVIDIA S3/RDMA Library (pre-standard)"
+                section: "Control Message Format"
+                url: "https://blogs.nvidia.com/blog/s3-compatible-ai-storage/"
+                alt_url: "https://www.snia.org/technical-work-groups"
+            spec_note: >
+              Pre-standard. Field name and encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Object Key"
+            abbrev: "s3rdma.object_key"
+            bits: "variable"
+            value: "checkpoint/model_epoch_42.pt"
+            description: "S3 object key - AI model checkpoint"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Content Length"
+            abbrev: "s3rdma.content_length"
+            bits: 64
+            value: 1073741824
+            description: "1GB - typical AI checkpoint size"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Content Type"
+            abbrev: "s3rdma.content_type"
+            bits: "variable"
+            value: "application/octet-stream"
+            description: "MIME type"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Checksum Algorithm"
+            abbrev: "s3rdma.checksum_alg"
+            bits: 8
+            value: "CRC32C"
+            description: "Checksum algorithm for data integrity verification"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Client Buffer VAddr"
+            abbrev: "s3rdma.client_vaddr"
+            bits: 64
+            value: "0x7f8000000000"
+            description: "Pre-registered MR covering GPU memory"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Client rkey"
+            abbrev: "s3rdma.client_rkey"
+            bits: 32
+            value: "0xABCD1234"
+            description: "Client MR rkey"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+
+  - id: "s3_put_ready"
+    name: "S3 PUT READY"
+    description: >
+      Server allocates storage, registers MR, and responds with destination
+      address and rkey where client should RDMA WRITE the object data.
+    from: "s3_server"
+    to: "ai_client"
+    via: ["switch"]
+    timestamp_ns: 30500000
+    total_bytes: 98
+    color: "#e74c3c"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:10:00:01"
+            description: "Client MAC"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:20:00:01"
+            description: "Server MAC"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.100.20"
+            description: "Server IP"
+          - name: "Destination"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.100.10"
+            description: "Client IP"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+            description: "RoCEv2"
+      - name: "BTH (Base Transport Header)"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "Opcode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+            value_hex: "0x04"
+            description: "RC Send Only"
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.7.5"
+                title: "RC Send Only"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "Solicited Event (SE)"
+            abbrev: "bth.se"
+            bits: 1
+            value: 1
+            description: "Last (only) packet of message — solicited event"
+          - name: "MigReq"
+            abbrev: "bth.migreq"
+            bits: 1
+            value: 1
+            description: "1 = primary path (not alternate/migrated)"
+          - name: "Pad Count"
+            abbrev: "bth.padcnt"
+            bits: 2
+            value: 0
+            description: "Number of pad bytes appended to payload to make it a multiple of 4"
+          - name: "Transport Header Version"
+            abbrev: "bth.thv"
+            bits: 4
+            value: 0
+          - name: "P_Key"
+            abbrev: "bth.pkey"
+            bits: 16
+            value: "0xFFFF"
+            value_hex: "0xFFFF"
+            description: "Full membership P_Key (0xFFFF). Partition Key — defines a virtual fabric partition."
+          - name: "FECN"
+            abbrev: "bth.fecn"
+            bits: 1
+            value: 0
+            description: "Forward ECN — not set"
+          - name: "BECN"
+            abbrev: "bth.becn"
+            bits: 1
+            value: 0
+            description: "Backward ECN — not set"
+          - name: "Dest QP"
+            abbrev: "bth.dqpn"
+            bits: 24
+            value: "0x000200"
+            description: "Client RC QP"
+          - name: "Acknowledge Request (A)"
+            abbrev: "bth.ackreq"
+            bits: 1
+            value: 0
+            description: "Response — no acknowledgement requested"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 0
+            description: "PSN 0 - first packet from server on this QP"
+      - name: "S3/RDMA PUT READY Payload"
+        abbrev: "s3rdma.put_ready"
+        layer: 7
+        total_bytes: 44
+        fields:
+          - name: "Message Type"
+            abbrev: "s3rdma.msg_type"
+            bits: 8
+            value: "0x11"
+            # REVIEW: PUT_READY message type value is assumed.
+            description: "PUT_READY message type"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Server VAddr"
+            abbrev: "s3rdma.server_vaddr"
+            bits: 64
+            value: "0x7e0000000000"
+            description: "Server-side destination address for RDMA WRITE"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Server rkey"
+            abbrev: "s3rdma.server_rkey"
+            bits: 32
+            value: "0xDEAD5678"
+            description: "Server MR rkey authorizing client to RDMA WRITE"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Transfer ID"
+            abbrev: "s3rdma.transfer_id"
+            bits: 32
+            value: "0x00000042"
+            description: "Correlation ID tying REQUEST/READY/COMPLETE messages"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Max Chunk Size"
+            abbrev: "s3rdma.max_chunk"
+            bits: 32
+            value: 67108864
+            description: "64MB - max RDMA WRITE size per chunk"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+
+  - id: "s3_put_rdma_write"
+    name: "RDMA WRITE (PUT Data)"
+    description: >
+      Client RDMA WRITEs 64MB chunk of object data directly into server memory.
+      For a 1GB object this repeats 16 times. Zero CPU involvement on server.
+      This is standard RoCEv2 RDMA WRITE - the S3/RDMA library has arranged the addressing.
+    from: "ai_client"
+    to: "s3_server"
+    via: ["switch"]
+    timestamp_ns: 31000000
+    total_bytes: 4142
+    color: "#e74c3c"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:20:00:01"
+            description: "Server MAC"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:10:00:01"
+            description: "Client MAC"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.100.10"
+            description: "Client IP"
+          - name: "Destination"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.100.20"
+            description: "Server IP"
+          - name: "ECN"
+            abbrev: "ip.ecn"
+            bits: 2
+            value: "ECT(0)"
+            description: "ECN-Capable Transport"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 49152
+            description: "Entropy source port"
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+            description: "RoCEv2"
+      - name: "BTH (Base Transport Header)"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "Opcode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x06"
+            value_hex: "0x06"
+            description: >
+              RC RDMA Write First - first packet of a multi-packet RDMA WRITE.
+              Subsequent packets use RDMA Write Middle (0x07) and RDMA Write Last (0x08).
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.7.5"
+                title: "RC RDMA Write First"
+                url: "https://www.infinibandta.org/ibta-specification/"
+            kernel_ref:
+              file: "drivers/infiniband/hw/mlx5/qp.c"
+              function: "mlx5_post_one_wr()"
+              notes: "Posts RDMA WRITE WQE to SQ. RNIC DMA-reads from local buffer and transmits."
+          - name: "Solicited Event (SE)"
+            abbrev: "bth.se"
+            bits: 1
+            value: 0
+            description: "Not last packet — multi-packet RDMA WRITE (First)"
+          - name: "MigReq"
+            abbrev: "bth.migreq"
+            bits: 1
+            value: 1
+            description: "1 = primary path (not alternate/migrated)"
+          - name: "Pad Count"
+            abbrev: "bth.padcnt"
+            bits: 2
+            value: 0
+            description: "Number of pad bytes appended to payload to make it a multiple of 4"
+          - name: "Transport Header Version"
+            abbrev: "bth.thv"
+            bits: 4
+            value: 0
+          - name: "P_Key"
+            abbrev: "bth.pkey"
+            bits: 16
+            value: "0xFFFF"
+            value_hex: "0xFFFF"
+            description: "Full membership P_Key (0xFFFF). Partition Key — defines a virtual fabric partition."
+          - name: "FECN"
+            abbrev: "bth.fecn"
+            bits: 1
+            value: 0
+            description: "Forward ECN — not set"
+          - name: "BECN"
+            abbrev: "bth.becn"
+            bits: 1
+            value: 0
+            description: "Backward ECN — not set"
+          - name: "Dest QP"
+            abbrev: "bth.dqpn"
+            bits: 24
+            value: "0x000300"
+            description: "Server RC QP"
+          - name: "Acknowledge Request (A)"
+            abbrev: "bth.ackreq"
+            bits: 1
+            value: 1
+            description: "Requester requests acknowledgement"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 1
+            description: "PSN 1 (PSN 0 was the PUT REQUEST SEND)"
+      - name: "RETH (RDMA Extended Transport Header)"
+        abbrev: "reth"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - name: "Virtual Address"
+            abbrev: "reth.va"
+            bits: 64
+            value: "0x7e0000000000"
+            description: "Server destination address (from PUT READY response)"
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.7.5.3"
+                title: "RETH Virtual Address"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "R_Key"
+            abbrev: "reth.rkey"
+            bits: 32
+            value: "0xDEAD5678"
+            description: "Server rkey (from PUT READY response) - authorizes RDMA WRITE into server memory"
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.7.5.3"
+                title: "RETH R_Key"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "DMA Length"
+            abbrev: "reth.dma_len"
+            bits: 32
+            value: 67108864
+            description: "64MB chunk. 16 chunks x 64MB = 1GB total object."
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.7.5.3"
+                title: "RETH DMA Length"
+                url: "https://www.infinibandta.org/ibta-specification/"
+      - name: "Payload (first 4KB shown)"
+        abbrev: "data"
+        layer: 7
+        total_bytes: 4096
+        fields:
+          - name: "RDMA WRITE Data"
+            abbrev: "data.payload"
+            bits: 32768
+            value: "[AI checkpoint data - first 4KB of 64MB chunk]"
+            description: >
+              Object data DMA-read from client GPU memory by RNIC and written directly
+              into server memory at reth.va. Server CPU never touches this data.
+
+  - id: "s3_put_complete"
+    name: "S3 PUT COMPLETE"
+    description: >
+      Server confirms PUT success after verifying checksum. Returns ETag and version.
+    from: "s3_server"
+    to: "ai_client"
+    via: ["switch"]
+    timestamp_ns: 40000000
+    total_bytes: 118
+    color: "#e74c3c"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:10:00:01"
+            description: "Client MAC"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:20:00:01"
+            description: "Server MAC"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.100.20"
+            description: "Server IP"
+          - name: "Destination"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.100.10"
+            description: "Client IP"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+            description: "RoCEv2"
+      - name: "BTH (Base Transport Header)"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "Opcode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+            value_hex: "0x04"
+            description: "RC Send Only - PUT completion notification"
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.7.5"
+                title: "RC Send Only"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "Solicited Event (SE)"
+            abbrev: "bth.se"
+            bits: 1
+            value: 1
+            description: "Last (only) packet of message — solicited event"
+          - name: "MigReq"
+            abbrev: "bth.migreq"
+            bits: 1
+            value: 1
+            description: "1 = primary path (not alternate/migrated)"
+          - name: "Pad Count"
+            abbrev: "bth.padcnt"
+            bits: 2
+            value: 0
+            description: "Number of pad bytes appended to payload to make it a multiple of 4"
+          - name: "Transport Header Version"
+            abbrev: "bth.thv"
+            bits: 4
+            value: 0
+          - name: "P_Key"
+            abbrev: "bth.pkey"
+            bits: 16
+            value: "0xFFFF"
+            value_hex: "0xFFFF"
+            description: "Full membership P_Key (0xFFFF). Partition Key — defines a virtual fabric partition."
+          - name: "FECN"
+            abbrev: "bth.fecn"
+            bits: 1
+            value: 0
+            description: "Forward ECN — not set"
+          - name: "BECN"
+            abbrev: "bth.becn"
+            bits: 1
+            value: 0
+            description: "Backward ECN — not set"
+          - name: "Dest QP"
+            abbrev: "bth.dqpn"
+            bits: 24
+            value: "0x000200"
+            description: "Client RC QP"
+          - name: "Acknowledge Request (A)"
+            abbrev: "bth.ackreq"
+            bits: 1
+            value: 0
+            description: "Response — no acknowledgement requested"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 1
+            description: "Server PSN 1"
+      - name: "S3/RDMA PUT COMPLETE Payload"
+        abbrev: "s3rdma.put_complete"
+        layer: 7
+        total_bytes: 64
+        fields:
+          - name: "Message Type"
+            abbrev: "s3rdma.msg_type"
+            bits: 8
+            value: "0x12"
+            # REVIEW: PUT_COMPLETE message type value is assumed.
+            description: "PUT_COMPLETE message type"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Transfer ID"
+            abbrev: "s3rdma.transfer_id"
+            bits: 32
+            value: "0x00000042"
+            description: "Matches the transfer ID from PUT READY"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "ETag"
+            abbrev: "s3rdma.etag"
+            bits: "variable"
+            value: "d41d8cd98f00b204e9800998ecf8427e"
+            description: "S3 ETag (MD5 of object data)"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Version ID"
+            abbrev: "s3rdma.version_id"
+            bits: "variable"
+            value: "v1"
+            description: "S3 object version"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Bytes Received"
+            abbrev: "s3rdma.bytes_received"
+            bits: 64
+            value: 1073741824
+            description: "1GB confirmed received"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Checksum Verified"
+            abbrev: "s3rdma.checksum_ok"
+            bits: 8
+            value: true
+            description: "CRC32C verified"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+
+  # ── S3 GET ──────────────────────────────────────────────────────
+
+  - id: "s3_get_request"
+    name: "S3 GET REQUEST"
+    description: >
+      Client requests object retrieval. Includes destination buffer info so
+      server knows where to RDMA WRITE the data.
+    from: "ai_client"
+    to: "s3_server"
+    via: ["switch"]
+    timestamp_ns: 50000000
+    total_bytes: 142
+    color: "#2ecc71"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:20:00:01"
+            description: "Server MAC"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:10:00:01"
+            description: "Client MAC"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.100.10"
+            description: "Client IP"
+          - name: "Destination"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.100.20"
+            description: "Server IP"
+          - name: "ECN"
+            abbrev: "ip.ecn"
+            bits: 2
+            value: "ECT(0)"
+            description: "ECN-Capable Transport"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 49152
+            description: "Entropy source port"
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+            description: "RoCEv2"
+      - name: "BTH (Base Transport Header)"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "Opcode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+            value_hex: "0x04"
+            description: "RC Send Only - GET request control message"
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.7.5"
+                title: "RC Send Only"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "Solicited Event (SE)"
+            abbrev: "bth.se"
+            bits: 1
+            value: 1
+            description: "Last (only) packet of message — solicited event"
+          - name: "MigReq"
+            abbrev: "bth.migreq"
+            bits: 1
+            value: 1
+            description: "1 = primary path (not alternate/migrated)"
+          - name: "Pad Count"
+            abbrev: "bth.padcnt"
+            bits: 2
+            value: 0
+            description: "Number of pad bytes appended to payload to make it a multiple of 4"
+          - name: "Transport Header Version"
+            abbrev: "bth.thv"
+            bits: 4
+            value: 0
+          - name: "P_Key"
+            abbrev: "bth.pkey"
+            bits: 16
+            value: "0xFFFF"
+            value_hex: "0xFFFF"
+            description: "Full membership P_Key (0xFFFF). Partition Key — defines a virtual fabric partition."
+          - name: "FECN"
+            abbrev: "bth.fecn"
+            bits: 1
+            value: 0
+            description: "Forward ECN — not set"
+          - name: "BECN"
+            abbrev: "bth.becn"
+            bits: 1
+            value: 0
+            description: "Backward ECN — not set"
+          - name: "Dest QP"
+            abbrev: "bth.dqpn"
+            bits: 24
+            value: "0x000300"
+            description: "Server RC QP"
+          - name: "Acknowledge Request (A)"
+            abbrev: "bth.ackreq"
+            bits: 1
+            value: 1
+            description: "Requester requests acknowledgement"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 2
+            description: "Client PSN continues from PUT phase"
+      - name: "S3/RDMA GET REQUEST Payload"
+        abbrev: "s3rdma.get_req"
+        layer: 7
+        total_bytes: 88
+        fields:
+          - name: "Message Type"
+            abbrev: "s3rdma.msg_type"
+            bits: 8
+            value: "0x20"
+            # REVIEW: GET_REQUEST message type value is assumed.
+            description: "GET_REQUEST message type"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Bucket Name"
+            abbrev: "s3rdma.bucket_name"
+            bits: "variable"
+            value: "training-data"
+            description: "S3 bucket name"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Object Key"
+            abbrev: "s3rdma.object_key"
+            bits: "variable"
+            value: "checkpoint/model_epoch_42.pt"
+            description: "S3 object key"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Byte Range Start"
+            abbrev: "s3rdma.range_start"
+            bits: 64
+            value: 0
+            description: "Start offset (0 = beginning)"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Byte Range End"
+            abbrev: "s3rdma.range_end"
+            bits: 64
+            value: 0
+            description: "End offset (0 = full object)"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Dest VAddr"
+            abbrev: "s3rdma.dest_vaddr"
+            bits: 64
+            value: "0x7f8000000000"
+            description: "Client GPU buffer (pre-registered in CONNECT)"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Dest rkey"
+            abbrev: "s3rdma.dest_rkey"
+            bits: 32
+            value: "0xABCD1234"
+            description: "Client MR rkey"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Transfer ID"
+            abbrev: "s3rdma.transfer_id"
+            bits: 32
+            value: "0x00000043"
+            description: "Unique transfer ID for this GET"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+
+  - id: "s3_get_rdma_write"
+    name: "RDMA WRITE (GET Data Push)"
+    description: >
+      Server RDMA WRITEs object data directly into client GPU memory.
+      Server RNIC DMA-reads from storage and writes to client buffer.
+      Client CPU is not involved. Same mechanism as a normal RDMA WRITE -
+      the S3/RDMA library has simply arranged the addressing.
+    from: "s3_server"
+    to: "ai_client"
+    via: ["switch"]
+    timestamp_ns: 51000000
+    total_bytes: 4142
+    color: "#2ecc71"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:10:00:01"
+            description: "Client MAC"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:20:00:01"
+            description: "Server MAC"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.100.20"
+            description: "Server IP"
+          - name: "Destination"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.100.10"
+            description: "Client IP"
+          - name: "ECN"
+            abbrev: "ip.ecn"
+            bits: 2
+            value: "ECT(0)"
+            description: "ECN-Capable Transport"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 49200
+            description: "Entropy source port"
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+            description: "RoCEv2"
+      - name: "BTH (Base Transport Header)"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "Opcode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x06"
+            value_hex: "0x06"
+            description: "RC RDMA Write First - server pushes data into client GPU memory"
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.7.5"
+                title: "RC RDMA Write First"
+                url: "https://www.infinibandta.org/ibta-specification/"
+            kernel_ref:
+              file: "drivers/infiniband/hw/mlx5/qp.c"
+              function: "mlx5_post_one_wr()"
+              notes: "Server RNIC posts RDMA WRITE WQE. DMA reads from local storage buffer and transmits to client."
+          - name: "Solicited Event (SE)"
+            abbrev: "bth.se"
+            bits: 1
+            value: 0
+            description: "Not last packet — multi-packet RDMA WRITE (First)"
+          - name: "MigReq"
+            abbrev: "bth.migreq"
+            bits: 1
+            value: 1
+            description: "1 = primary path (not alternate/migrated)"
+          - name: "Pad Count"
+            abbrev: "bth.padcnt"
+            bits: 2
+            value: 0
+            description: "Number of pad bytes appended to payload to make it a multiple of 4"
+          - name: "Transport Header Version"
+            abbrev: "bth.thv"
+            bits: 4
+            value: 0
+          - name: "P_Key"
+            abbrev: "bth.pkey"
+            bits: 16
+            value: "0xFFFF"
+            value_hex: "0xFFFF"
+            description: "Full membership P_Key (0xFFFF). Partition Key — defines a virtual fabric partition."
+          - name: "FECN"
+            abbrev: "bth.fecn"
+            bits: 1
+            value: 0
+            description: "Forward ECN — not set"
+          - name: "BECN"
+            abbrev: "bth.becn"
+            bits: 1
+            value: 0
+            description: "Backward ECN — not set"
+          - name: "Dest QP"
+            abbrev: "bth.dqpn"
+            bits: 24
+            value: "0x000200"
+            description: "Client RC QP"
+          - name: "Acknowledge Request (A)"
+            abbrev: "bth.ackreq"
+            bits: 1
+            value: 1
+            description: "Requester requests acknowledgement"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 2
+            description: "Server PSN continues"
+      - name: "RETH (RDMA Extended Transport Header)"
+        abbrev: "reth"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - name: "Virtual Address"
+            abbrev: "reth.va"
+            bits: 64
+            value: "0x7f8000000000"
+            description: "Client GPU buffer address (from CONNECT/GET REQUEST)"
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.7.5.3"
+                title: "RETH Virtual Address"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "R_Key"
+            abbrev: "reth.rkey"
+            bits: 32
+            value: "0xABCD1234"
+            description: "Client rkey (from CONNECT) - authorizes RDMA WRITE into client GPU memory"
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.7.5.3"
+                title: "RETH R_Key"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "DMA Length"
+            abbrev: "reth.dma_len"
+            bits: 32
+            value: 67108864
+            description: "64MB chunk of 1GB object"
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.7.5.3"
+                title: "RETH DMA Length"
+                url: "https://www.infinibandta.org/ibta-specification/"
+      - name: "Payload (first 4KB shown)"
+        abbrev: "data"
+        layer: 7
+        total_bytes: 4096
+        fields:
+          - name: "RDMA WRITE Data"
+            abbrev: "data.payload"
+            bits: 32768
+            value: "[AI checkpoint data - server pushes directly to client GPU buffer]"
+            description: >
+              Object data DMA-read from server storage by RNIC and written directly
+              into client GPU memory. Neither server CPU nor client CPU touches this data.
+
+  - id: "s3_get_complete"
+    name: "S3 GET COMPLETE"
+    description: >
+      Server signals GET completion. Client now knows data is in its GPU buffer
+      and can begin the training forward pass immediately.
+    from: "s3_server"
+    to: "ai_client"
+    via: ["switch"]
+    timestamp_ns: 60000000
+    total_bytes: 130
+    color: "#2ecc71"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:10:00:01"
+            description: "Client MAC"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:20:00:01"
+            description: "Server MAC"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.100.20"
+            description: "Server IP"
+          - name: "Destination"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.100.10"
+            description: "Client IP"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+            description: "RoCEv2"
+      - name: "BTH (Base Transport Header)"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "Opcode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+            value_hex: "0x04"
+            description: "RC Send Only - GET completion notification"
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.7.5"
+                title: "RC Send Only"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "Solicited Event (SE)"
+            abbrev: "bth.se"
+            bits: 1
+            value: 1
+            description: "Last (only) packet of message — solicited event"
+          - name: "MigReq"
+            abbrev: "bth.migreq"
+            bits: 1
+            value: 1
+            description: "1 = primary path (not alternate/migrated)"
+          - name: "Pad Count"
+            abbrev: "bth.padcnt"
+            bits: 2
+            value: 0
+            description: "Number of pad bytes appended to payload to make it a multiple of 4"
+          - name: "Transport Header Version"
+            abbrev: "bth.thv"
+            bits: 4
+            value: 0
+          - name: "P_Key"
+            abbrev: "bth.pkey"
+            bits: 16
+            value: "0xFFFF"
+            value_hex: "0xFFFF"
+            description: "Full membership P_Key (0xFFFF). Partition Key — defines a virtual fabric partition."
+          - name: "FECN"
+            abbrev: "bth.fecn"
+            bits: 1
+            value: 0
+            description: "Forward ECN — not set"
+          - name: "BECN"
+            abbrev: "bth.becn"
+            bits: 1
+            value: 0
+            description: "Backward ECN — not set"
+          - name: "Dest QP"
+            abbrev: "bth.dqpn"
+            bits: 24
+            value: "0x000200"
+            description: "Client RC QP"
+          - name: "Acknowledge Request (A)"
+            abbrev: "bth.ackreq"
+            bits: 1
+            value: 0
+            description: "Response — no acknowledgement requested"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 3
+            description: "Server PSN 3"
+      - name: "S3/RDMA GET COMPLETE Payload"
+        abbrev: "s3rdma.get_complete"
+        layer: 7
+        total_bytes: 76
+        fields:
+          - name: "Message Type"
+            abbrev: "s3rdma.msg_type"
+            bits: 8
+            value: "0x22"
+            # REVIEW: GET_COMPLETE message type value is assumed.
+            description: "GET_COMPLETE message type"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Transfer ID"
+            abbrev: "s3rdma.transfer_id"
+            bits: 32
+            value: "0x00000043"
+            description: "Matches GET REQUEST transfer ID"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Content Length"
+            abbrev: "s3rdma.content_length"
+            bits: 64
+            value: 1073741824
+            description: "1GB object"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "ETag"
+            abbrev: "s3rdma.etag"
+            bits: "variable"
+            value: "d41d8cd98f00b204e9800998ecf8427e"
+            description: "S3 ETag"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Content Type"
+            abbrev: "s3rdma.content_type"
+            bits: "variable"
+            value: "application/octet-stream"
+            description: "MIME type"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Bytes Transferred"
+            abbrev: "s3rdma.bytes_transferred"
+            bits: 64
+            value: 1073741824
+            description: "1GB confirmed transferred"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+          - name: "Status"
+            abbrev: "s3rdma.status"
+            bits: 16
+            value: "200 OK"
+            description: "S3 status code"
+            spec_note: >
+              Pre-standard. Field encoding subject to change pending SNIA
+              Accelerated Object I/O TWG specification publication.
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+
+  # ── Phase 0: S3/TCP vs S3/RDMA Contrast ──────────────────────
+  - id: "evt_contrast_intro"
+    type: "annotation"
+    t_ns: 0
+    annotation:
+      text: "Traditional S3 vs S3/RDMA — Why This Matters"
+      detail: >
+        Traditional S3 GET: HTTP GET request -> TCP connection -> TLS handshake ->
+        HTTP response with object data -> kernel copies data through TCP socket
+        buffers -> application copies from socket to buffer. Every byte touches the
+        CPU twice. CPU utilization: high. Latency: 100s of microseconds to milliseconds.
+
+        S3/RDMA GET: QP setup (one time) -> RDMA WRITE of object data directly into
+        pre-registered client buffer. Zero CPU copies. Zero kernel involvement in data
+        path. CPU utilization for data transfer: ~0%. Latency: single-digit microseconds.
+
+  # ── Phase 1: Link Training ──────────────────────────────────────
+  - id: "evt_phy_signal_link_a"
+    type: "state_change"
+    t_ns: 100000
+    annotation:
+      text: "Link A: signal detected — Client <-> Switch port A"
+      detail: >
+        Optical transceiver on client detects light from switch port A.
+        Auto-Negotiation begins per IEEE 802.3cd clause 73.
+      spec_refs:
+        - document: "IEEE 802.3cd"
+          section: "73"
+          title: "Auto-Negotiation for 100GBASE-KR4"
+          url: "https://standards.ieee.org/ieee/802.3cd/7387/"
+    state_after:
+      - actor_id: "ai_client"
+        layers:
+          - layer: 1
+            name: "Physical / RS-FEC"
+            state_fields:
+              phy_state: "AN_IN_PROGRESS"
+              signal_detect: true
+              an_state: "ABILITY_DETECT"
+      - actor_id: "switch"
+        layers:
+          - layer: 1
+            name: "Physical (per-port)"
+            state_fields:
+              port_a_phy: "AN_IN_PROGRESS"
+              port_a_an: "ABILITY_DETECT"
+
+  - id: "evt_phy_signal_link_b"
+    type: "state_change"
+    t_ns: 200000
+    annotation:
+      text: "Link B: signal detected — Switch port B <-> Server"
+    state_after:
+      - actor_id: "s3_server"
+        layers:
+          - layer: 1
+            name: "Physical / RS-FEC"
+            state_fields:
+              phy_state: "AN_IN_PROGRESS"
+              signal_detect: true
+              an_state: "ABILITY_DETECT"
+      - actor_id: "switch"
+        layers:
+          - layer: 1
+            name: "Physical (per-port)"
+            state_fields:
+              port_b_phy: "AN_IN_PROGRESS"
+              port_b_an: "ABILITY_DETECT"
+
+  - id: "evt_an_complete_both"
+    type: "state_change"
+    t_ns: 2000000
+    annotation:
+      text: "Both links: AN complete — 100GbE + RS(544,514) FEC, links UP"
+      detail: >
+        Both links negotiate 100GBASE-SR4 with RS(544,514) FEC (mandatory for 100G).
+        Link Training equalizes channels. Links are UP and ready for traffic.
+    state_after:
+      - actor_id: "ai_client"
+        layers:
+          - layer: 1
+            name: "Physical / RS-FEC"
+            state_fields:
+              phy_state: "UP"
+              an_state: "COMPLETE"
+              speed: "100GbE"
+          - layer: 2
+            name: "Ethernet / PFC 802.1Qbb"
+            state_fields:
+              link_state: "up"
+              pfc_enabled: true
+      - actor_id: "s3_server"
+        layers:
+          - layer: 1
+            name: "Physical / RS-FEC"
+            state_fields:
+              phy_state: "UP"
+              an_state: "COMPLETE"
+              speed: "100GbE"
+          - layer: 2
+            name: "Ethernet / PFC"
+            state_fields:
+              link_state: "up"
+              pfc_enabled: true
+      - actor_id: "switch"
+        layers:
+          - layer: 1
+            name: "Physical (per-port)"
+            state_fields:
+              port_a_phy: "UP"
+              port_a_an: "COMPLETE"
+              port_b_phy: "UP"
+              port_b_an: "COMPLETE"
+          - layer: 2
+            name: "Ethernet Switching / PFC"
+            state_fields:
+              fwd_table_entries: 0
+
+  - id: "evt_pfc_enabled"
+    type: "state_change"
+    t_ns: 3000000
+    annotation:
+      text: "PFC enabled on priority 3 — lossless Ethernet for RoCEv2"
+      detail: >
+        Priority Flow Control (IEEE 802.1Qbb) enabled on priority class 3.
+        This prevents packet loss under congestion, which is critical for RDMA.
+        S3/RDMA uses the same lossless fabric as any RoCEv2 workload.
+
+  # ── Phase 2: ARP ────────────────────────────────────────────────
+  - id: "evt_arp_request"
+    type: "frame_tx"
+    t_ns: 5000000
+    frame_id: "arp_request"
+    annotation:
+      text: "ARP: Client resolves server IP 192.168.100.20"
+    state_after:
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "Ethernet Switching / PFC"
+            state_fields:
+              fwd_table_entries: 1
+
+  - id: "evt_arp_reply"
+    type: "frame_tx"
+    t_ns: 5200000
+    frame_id: "arp_reply"
+    annotation:
+      text: "ARP Reply: Server MAC 00:02:c9:20:00:01"
+    state_after:
+      - actor_id: "ai_client"
+        layers:
+          - layer: 3
+            name: "IP / ECN"
+            state_fields:
+              dst_ip: "192.168.100.20"
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "Ethernet Switching / PFC"
+            state_fields:
+              fwd_table_entries: 2
+
+  # ── Phase 3: Library Initialization ─────────────────────────────
+  - id: "evt_client_lib_init"
+    type: "state_change"
+    t_ns: 10000000
+    annotation:
+      text: "Client: s3_rdma_client_init() — S3/RDMA library initialized"
+      detail: >
+        Client calls s3_rdma_client_init(). Library registers a large Memory Region
+        covering the GPU/CPU buffer pool (ibv_reg_mr() -> MLX5_CMD_OP_CREATE_MKEY).
+        Creates a pool of RC QPs pre-allocated for S3 operations. This is a one-time
+        cost amortized across all subsequent S3 operations.
+    state_after:
+      - actor_id: "ai_client"
+        layers:
+          - layer: 7
+            name: "S3/RDMA Application"
+            state_fields:
+              s3_state: "LIB_INITIALIZED"
+              gpu_buffer_ptr: "0x7f8000000000"
+          - layer: 6
+            name: "NVIDIA S3/RDMA Client Library"
+            state_fields:
+              library_state: "INITIALIZED"
+              mr_registered: true
+              rkey_local: "0xABCD1234"
+          - layer: 5
+            name: "IB Transport (RC QP)"
+            state_fields:
+              qp_state: "RESET"
+              qp_num: "0x000200"
+
+  - id: "evt_server_lib_ready"
+    type: "state_change"
+    t_ns: 10000000
+    annotation:
+      text: "Server: S3/RDMA server library pre-initialized, ready for connections"
+      detail: >
+        Server has pre-initialized its NVIDIA S3/RDMA server library on startup.
+        Pool of QPs ready to accept client connections. Integrated with Dell ObjectScale
+        storage engine.
+    state_after:
+      - actor_id: "s3_server"
+        layers:
+          - layer: 6
+            name: "NVIDIA S3/RDMA Server Library"
+            state_fields:
+              library_state: "READY_FOR_CONNECTIONS"
+          - layer: 5
+            name: "IB Transport (RC QP)"
+            state_fields:
+              qp_state: "RESET"
+              qp_num: "0x000300"
+
+  # ── Phase 4: S3/RDMA Connect ───────────────────────────────────
+  - id: "evt_connect_req"
+    type: "frame_tx"
+    t_ns: 20000000
+    frame_id: "s3rdma_connect_req"
+    annotation:
+      text: "S3/RDMA CONNECT Request — client sends QP info, rkey, buffer address"
+      detail: >
+        Client sends connection request via UD SEND to the well-known S3/RDMA
+        service QP on the server. Carries client QP number, GID, rkey, and buffer
+        virtual address. The server will use this rkey/vaddr to RDMA WRITE data
+        directly into the client's GPU memory.
+    state_after:
+      - actor_id: "ai_client"
+        layers:
+          - layer: 6
+            name: "NVIDIA S3/RDMA Client Library"
+            state_fields:
+              library_state: "CONNECTING"
+              qp_state_lib: "CONNECTING"
+
+  - id: "evt_connect_resp"
+    type: "frame_tx"
+    t_ns: 20500000
+    frame_id: "s3rdma_connect_resp"
+    annotation:
+      text: "S3/RDMA CONNECT Response — server assigns RC QP, returns rkey"
+      detail: >
+        Server assigns an RC QP from its pool and responds with server QP number,
+        rkey, and connection ID. Both sides now have all information needed to
+        transition QPs from RESET to RTS.
+    state_after:
+      - actor_id: "s3_server"
+        layers:
+          - layer: 6
+            name: "NVIDIA S3/RDMA Server Library"
+            state_fields:
+              library_state: "CONNECTED"
+              client_buffer_vaddr: "0x7f8000000000"
+              client_rkey: "0xABCD1234"
+
+  - id: "evt_qp_rts"
+    type: "state_change"
+    t_ns: 21000000
+    annotation:
+      text: "QP transitions: RESET -> INIT -> RTR -> RTS on both sides"
+      detail: >
+        Both client and server call modify_qp() to bring their RC QPs through
+        the standard IB state machine: RESET -> INIT -> RTR -> RTS. This is the
+        same QP bring-up sequence used by all RoCEv2 applications. After RTS,
+        the QP pair is ready for RDMA SEND and RDMA WRITE operations.
+    state_after:
+      - actor_id: "ai_client"
+        layers:
+          - layer: 6
+            name: "NVIDIA S3/RDMA Client Library"
+            state_fields:
+              library_state: "CONNECTED"
+              qp_state_lib: "READY"
+          - layer: 5
+            name: "IB Transport (RC QP)"
+            state_fields:
+              qp_state: "RTS"
+              remote_qpn: "0x000300"
+              pmtu: "4096"
+              rkey_remote: "0xDEAD5678"
+              psn_send: 0
+              psn_recv: 0
+      - actor_id: "s3_server"
+        layers:
+          - layer: 5
+            name: "IB Transport (RC QP)"
+            state_fields:
+              qp_state: "RTS"
+              remote_qpn: "0x000200"
+              psn_send: 0
+              psn_recv: 0
+
+  # ── Phase 5: S3 PUT ─────────────────────────────────────────────
+  - id: "evt_put_request"
+    type: "frame_tx"
+    t_ns: 30000000
+    frame_id: "s3_put_request"
+    annotation:
+      text: "S3 PUT REQUEST — metadata only (bucket, key, 1GB size). No data in this message."
+      detail: >
+        Client sends PUT metadata via RDMA SEND. This small control message contains
+        the S3 operation details (bucket, key, size, checksum algorithm) and the
+        client buffer location. In traditional S3 this would be an HTTP PUT with the
+        entire 1GB body. In S3/RDMA, the data transfer happens separately via RDMA WRITE.
+    state_after:
+      - actor_id: "ai_client"
+        layers:
+          - layer: 7
+            name: "S3/RDMA Application"
+            state_fields:
+              s3_operation: "PUT"
+              object_key: "checkpoint/model_epoch_42.pt"
+              object_size: 1073741824
+              s3_state: "PUT_REQUEST_SENT"
+          - layer: 5
+            name: "IB Transport (RC QP)"
+            state_fields:
+              psn_send: 1
+
+  - id: "evt_put_ready"
+    type: "frame_tx"
+    t_ns: 30500000
+    frame_id: "s3_put_ready"
+    annotation:
+      text: "S3 PUT READY — server returns destination vaddr + rkey for RDMA WRITE"
+      detail: >
+        Server allocates storage space, registers a Memory Region for the incoming
+        data, and sends back the destination address and rkey. This is the PUT
+        inversion: unlike HTTP PUT where the client pushes data, here the server
+        tells the client WHERE to write, and the client RDMA WRITEs to that location.
+    state_after:
+      - actor_id: "s3_server"
+        layers:
+          - layer: 7
+            name: "S3/RDMA Server"
+            state_fields:
+              s3_operation: "PUT"
+              object_key: "checkpoint/model_epoch_42.pt"
+              s3_state: "PUT_READY_SENT"
+              storage_backend: "ObjectScale"
+          - layer: 6
+            name: "NVIDIA S3/RDMA Server Library"
+            state_fields:
+              rkey_advertised: "0xDEAD5678"
+          - layer: 5
+            name: "IB Transport (RC QP)"
+            state_fields:
+              psn_send: 1
+      - actor_id: "ai_client"
+        layers:
+          - layer: 7
+            name: "S3/RDMA Application"
+            state_fields:
+              s3_state: "PUT_WRITING_DATA"
+
+  - id: "evt_put_rdma_write"
+    type: "frame_tx"
+    t_ns: 31000000
+    frame_id: "s3_put_rdma_write"
+    annotation:
+      text: "RDMA WRITE — client pushes 64MB chunk (1 of 16) directly into server memory"
+      detail: >
+        Client RNIC DMA-reads 64MB from GPU memory and RDMA WRITEs directly into
+        server memory at the address from PUT READY. For the full 1GB object,
+        16 such RDMA WRITEs occur (16 x 64MB). Server CPU never touches the data.
+        Client CPU never copies the data. This is standard RoCEv2 RDMA WRITE —
+        the only thing S3/RDMA adds is the control plane that arranged the addressing.
+    state_after:
+      - actor_id: "ai_client"
+        layers:
+          - layer: 5
+            name: "IB Transport (RC QP)"
+            state_fields:
+              psn_send: 2
+      - actor_id: "s3_server"
+        layers:
+          - layer: 7
+            name: "S3/RDMA Server"
+            state_fields:
+              cpu_involvement: "NONE - RNIC DMA writes data directly to storage buffer"
+
+  - id: "evt_put_complete"
+    type: "frame_tx"
+    t_ns: 40000000
+    frame_id: "s3_put_complete"
+    annotation:
+      text: "S3 PUT COMPLETE — 1GB uploaded, checksum verified, ETag returned"
+      detail: >
+        Server confirms PUT success after verifying CRC32C checksum. Returns S3 ETag
+        and version ID. The object is now durable in ObjectScale storage.
+    state_after:
+      - actor_id: "ai_client"
+        layers:
+          - layer: 7
+            name: "S3/RDMA Application"
+            state_fields:
+              s3_state: "PUT_COMPLETE"
+      - actor_id: "s3_server"
+        layers:
+          - layer: 7
+            name: "S3/RDMA Server"
+            state_fields:
+              s3_state: "PUT_COMPLETE"
+
+  - id: "evt_put_contrast"
+    type: "annotation"
+    t_ns: 40100000
+    annotation:
+      text: "Contrast: S3/TCP PUT vs S3/RDMA PUT"
+      detail: >
+        Traditional S3 PUT equivalent: HTTP PUT with 1GB body -> TLS encrypt 1GB ->
+        TCP segment 1GB into ~1400B packets -> kernel copies each packet to NIC ->
+        NIC transmits -> server NIC receives -> kernel copies to socket buffer ->
+        HTTP server reads from socket -> copies to storage buffer -> writes to disk.
+        CPU touches every byte multiple times. Throughput bounded by single-core
+        memory bandwidth (~50 GB/s). Latency dominated by TCP congestion control.
+
+        S3/RDMA PUT: 2 control messages (PUT REQUEST + PUT READY) + 16 RDMA WRITEs
+        (16 x 64MB). Server CPU never touched the data. Client CPU never copied the
+        data. Throughput bounded by RNIC DMA bandwidth and network bandwidth, not
+        CPU. At 100GbE: ~12.5 GB/s sustained.
+
+  # ── Phase 6: S3 GET ─────────────────────────────────────────────
+  - id: "evt_get_request"
+    type: "frame_tx"
+    t_ns: 50000000
+    frame_id: "s3_get_request"
+    annotation:
+      text: "S3 GET REQUEST — client requests object, provides destination buffer info"
+      detail: >
+        Client sends GET request with bucket/key and destination buffer address/rkey.
+        The server will RDMA WRITE the object data directly into this buffer.
+    state_after:
+      - actor_id: "ai_client"
+        layers:
+          - layer: 7
+            name: "S3/RDMA Application"
+            state_fields:
+              s3_operation: "GET"
+              s3_state: "GET_REQUEST_SENT"
+          - layer: 5
+            name: "IB Transport (RC QP)"
+            state_fields:
+              psn_send: 3
+
+  - id: "evt_get_rdma_write"
+    type: "frame_tx"
+    t_ns: 51000000
+    frame_id: "s3_get_rdma_write"
+    annotation:
+      text: "RDMA WRITE — server pushes 64MB chunk (1 of 16) directly into client GPU memory"
+      detail: >
+        Server RNIC DMA-reads object data from storage and RDMA WRITEs directly into
+        client GPU memory. Client CPU is not involved. For the full 1GB object, 16 such
+        RDMA WRITEs occur. This is the same mechanism as any RDMA WRITE — S3/RDMA
+        simply arranges the addressing so the server knows where to write.
+    state_after:
+      - actor_id: "s3_server"
+        layers:
+          - layer: 7
+            name: "S3/RDMA Server"
+            state_fields:
+              s3_operation: "GET"
+              s3_state: "GET_WRITING_DATA"
+              cpu_involvement: "NONE - RNIC DMA read storage and wrote to client"
+          - layer: 5
+            name: "IB Transport (RC QP)"
+            state_fields:
+              psn_send: 3
+
+  - id: "evt_get_complete"
+    type: "frame_tx"
+    t_ns: 60000000
+    frame_id: "s3_get_complete"
+    annotation:
+      text: "S3 GET COMPLETE — 1GB in client GPU buffer, ready for training"
+      detail: >
+        Server signals completion. Object data is now in the client GPU buffer at
+        0x7f8000000000, ready for the training forward pass. Client CPU was never
+        involved in data movement. No intermediate copy to host memory required
+        if using GPUDirect Storage mode.
+    state_after:
+      - actor_id: "ai_client"
+        layers:
+          - layer: 7
+            name: "S3/RDMA Application"
+            state_fields:
+              s3_state: "GET_COMPLETE"
+              gpu_buffer_ptr: "0x7f8000000000"
+          - layer: 6
+            name: "NVIDIA S3/RDMA Client Library"
+            state_fields:
+              library_state: "CONNECTED"
+      - actor_id: "s3_server"
+        layers:
+          - layer: 7
+            name: "S3/RDMA Server"
+            state_fields:
+              s3_state: "GET_COMPLETE"
+              cpu_involvement: "NONE - RNIC DMA read storage and wrote to client"
+
+  - id: "evt_get_contrast"
+    type: "annotation"
+    t_ns: 60100000
+    annotation:
+      text: "Contrast: S3/TCP GET vs S3/RDMA GET"
+      detail: >
+        The client's AI training loop called s3_rdma_get(). The object data is now
+        in the GPU buffer at 0x7f8000000000. The client CPU was never involved in
+        the data movement. The training forward pass can begin immediately — no
+        intermediate copy to host memory required if using GPUDirect Storage mode.
+
+        Traditional S3 GET: HTTP GET -> TCP -> TLS decrypt -> kernel socket buffer ->
+        user-space copy -> GPU upload via PCIe. Every byte crosses CPU twice minimum.
+        S3/RDMA GET: 1 control message + 16 RDMA WRITEs. Zero CPU, zero copies.
+
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
+glossary:
+  - term: "S3/RDMA"
+    definition: >
+      Protocol that implements S3 PUT/GET semantics using RDMA for the data path.
+      Control messages (bucket, key, addressing) use small RDMA SENDs. Object data
+      uses RDMA WRITE directly into pre-registered Memory Regions. Zero CPU
+      involvement in the data path.
+    spec_refs:
+      - document: "NVIDIA RDMA for S3-compatible storage (pre-standard)"
+        section: "Architecture Overview"
+        url: "https://blogs.nvidia.com/blog/s3-compatible-ai-storage/"
+
+  - term: "NVIDIA S3/RDMA Library"
+    definition: >
+      Client and server libraries developed by NVIDIA to implement S3/RDMA. Client
+      library ships in CUDA Toolkit. Server library integrated by storage vendors
+      (Dell ObjectScale, Cloudian HyperStore, HPE Alletra). Architecture is open;
+      wire format pending SNIA standardization.
+    spec_refs:
+      - document: "NVIDIA S3/RDMA Library (pre-standard)"
+        section: "Architecture"
+        url: "https://blogs.nvidia.com/blog/s3-compatible-ai-storage/"
+
+  - term: "SNIA Accelerated Object I/O TWG"
+    definition: >
+      SNIA Technical Work Group chartered to produce an interoperable specification
+      for S3 over RDMA optimized for AI/ML workloads.
+    spec_refs:
+      - document: "SNIA TWG"
+        section: "Charter"
+        url: "https://www.snia.org/technical-work-groups"
+
+  - term: "Control Path vs Data Path"
+    definition: >
+      In S3/RDMA, the control path carries S3 metadata (bucket, key, size, ETag)
+      via small RDMA SEND messages. The data path carries object data via RDMA WRITE
+      with zero CPU involvement. This separation is fundamental to S3/RDMA efficiency.
+
+  - term: "Transfer ID"
+    definition: >
+      A correlation identifier in S3/RDMA control messages that ties together the
+      REQUEST, READY, and COMPLETE messages for a single object operation.
+      Functionally similar to an HTTP request ID or exchange ID.
+
+  - term: "PUT Inversion"
+    definition: >
+      Unlike traditional HTTP PUT (client sends data in request body), S3/RDMA PUT
+      has the client advertise a source buffer and rkey, the server returns a
+      destination address and rkey, and the client RDMA WRITEs to the server.
+      This allows the server to control destination addressing and flow.
+
+  - term: "Queue Pair"
+    abbrev: "QP"
+    definition: "The fundamental RDMA endpoint. Consists of a Send Queue (SQ) and Receive Queue (RQ). S3/RDMA uses RC (Reliable Connected) QPs for data transfer and UD (Unreliable Datagram) QPs for initial connection setup."
+    spec_refs:
+      - document: "IBTA Vol1"
+        section: "11.2"
+        title: "Queue Pair"
+        url: "https://www.infinibandta.org/ibta-specification/"
+
+  - term: "Memory Region"
+    abbrev: "MR"
+    definition: "A contiguous virtual memory range registered with the RNIC. In S3/RDMA, the client registers GPU memory as an MR so the server can RDMA WRITE object data directly into it. Returns lkey (local access) and rkey (remote access authorization)."
+    spec_refs:
+      - document: "IBTA Vol1"
+        section: "10.6.3"
+        title: "Memory Region Registration"
+        url: "https://www.infinibandta.org/ibta-specification/"
+
+  - term: "Priority Flow Control"
+    abbrev: "PFC"
+    definition: "IEEE 802.1Qbb extension enabling per-priority pause frames for lossless Ethernet. S3/RDMA relies on PFC (priority 3) to prevent packet loss, same as any RoCEv2 workload."
+    spec_refs:
+      - document: "IEEE 802.1Qbb"
+        section: "36"
+        title: "Priority-based Flow Control"
+        url: "https://standards.ieee.org/ieee/802.1Qbb/4788/"

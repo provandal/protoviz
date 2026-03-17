@@ -1105,6 +1105,12 @@ frames:
             abbrev: "fc.ox_id"
             bits: 16
             value: "0x0005"
+            description: "Same OX_ID as the PRLI request — correlates request and response"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0005"
+            description: "Responder Exchange ID assigned by storage for this PRLI exchange"
       - name: "PRLI ACC Payload"
         abbrev: "fc.els.prli_acc"
         layer: 6
@@ -1462,17 +1468,18 @@ frames:
             value: 4096
             description: "Host may send up to 4096 bytes of write data"
 
-  # ── WRITE Data ─────────────────────────────────────────────────
-  - id: "fcp_write_data"
-    name: "FCP_DATA: Write Payload"
+  # ── WRITE Data (frame 1 of 2) ──────────────────────────────────
+  - id: "fcp_write_data_1"
+    name: "FCP_DATA: Write Payload (1/2)"
     description: >
-      Host sends 4KB of write data to the storage. The data is sent as FCP_DATA
-      frames. For small writes like this one, a single frame suffices.
+      First FCP_DATA frame carrying 2048 bytes of the 4KB write. FC Recv_Size
+      negotiated during FLOGI limits each frame's data field to 2112 bytes,
+      so the 4096-byte transfer requires two frames. Relative offset 0.
     from: "initiator"
     to: "target"
     via: ["switch"]
     timestamp_ns: 12400000
-    total_bytes: 4120
+    total_bytes: 2072
     color: "#dc2626"
     headers:
       - name: "FC Frame Header"
@@ -1497,6 +1504,16 @@ frames:
             abbrev: "fc.type"
             bits: 8
             value: "0x08"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x010000"
+            description: "First sequence — exchange originator, first but not last frame in sequence"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count 0 — first frame in the data sequence"
           - name: "OX_ID"
             abbrev: "fc.ox_id"
             bits: 16
@@ -1505,17 +1522,83 @@ frames:
             abbrev: "fc.parameter"
             bits: 32
             value: "0x00000000"
-            description: "Data starts at offset 0"
+            description: "Data starts at byte offset 0"
       - name: "Write Data Payload"
         abbrev: "fcp.data"
         layer: 7
-        total_bytes: 4096
+        total_bytes: 2048
         fields:
           - name: "Data"
             abbrev: "fcp.data.payload"
-            bits: 32768
-            value: "[4096 bytes of application data]"
-            description: "Application write data — 8 blocks at LBA 0"
+            bits: 16384
+            value: "[2048 bytes — first half of write data]"
+            description: "First 2048 bytes (blocks 0-3) of the 4KB write"
+
+  # ── WRITE Data (frame 2 of 2) ──────────────────────────────────
+  - id: "fcp_write_data_2"
+    name: "FCP_DATA: Write Payload (2/2)"
+    description: >
+      Second and final FCP_DATA frame carrying the remaining 2048 bytes.
+      Relative offset 2048 tells the target where this data belongs in the
+      overall transfer.
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 12500000
+    total_bytes: 2072
+    color: "#dc2626"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 4
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x01"
+            description: "Solicited Data — FCP_DATA (write direction)"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x08"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x090000"
+            description: "Last sequence — exchange originator, last frame in sequence (end sequence bit set)"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 1
+            description: "Sequence count 1 — second frame in the data sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0020"
+          - name: "Parameter (Relative Offset)"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000800"
+            description: "Data starts at byte offset 2048 (0x800) — second half of transfer"
+      - name: "Write Data Payload"
+        abbrev: "fcp.data"
+        layer: 7
+        total_bytes: 2048
+        fields:
+          - name: "Data"
+            abbrev: "fcp.data.payload"
+            bits: 16384
+            value: "[2048 bytes — second half of write data]"
+            description: "Final 2048 bytes (blocks 4-7) of the 4KB write"
 
   # ── WRITE FCP_RSP ──────────────────────────────────────────────
   - id: "fcp_write_rsp"
@@ -1641,16 +1724,17 @@ frames:
             value: 4096
 
   # ── READ Data ──────────────────────────────────────────────────
-  - id: "fcp_read_data"
-    name: "FCP_DATA: Read Payload"
+  - id: "fcp_read_data_1"
+    name: "FCP_DATA: Read Payload (1/2)"
     description: >
-      Storage sends 4KB of read data. No XFER_RDY was needed — the target
-      sends FCP_DATA immediately after receiving the READ command.
+      First FCP_DATA frame carrying 2048 bytes of the 4KB read. No XFER_RDY
+      was needed — the target sends FCP_DATA immediately after receiving the
+      READ command. FC Recv_Size (2112) requires splitting across two frames.
     from: "target"
     to: "initiator"
     via: ["switch"]
     timestamp_ns: 14200000
-    total_bytes: 4120
+    total_bytes: 2072
     color: "#7c3aed"
     headers:
       - name: "FC Frame Header"
@@ -1675,20 +1759,99 @@ frames:
             abbrev: "fc.type"
             bits: 8
             value: "0x08"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x800000"
+            description: "Exchange responder, first but not last frame in sequence"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count 0 — first frame in the data sequence"
           - name: "OX_ID"
             abbrev: "fc.ox_id"
             bits: 16
             value: "0x0021"
+          - name: "Parameter (Relative Offset)"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Data starts at byte offset 0"
       - name: "Read Data Payload"
         abbrev: "fcp.data"
         layer: 7
-        total_bytes: 4096
+        total_bytes: 2048
         fields:
           - name: "Data"
             abbrev: "fcp.data.payload"
-            bits: 32768
-            value: "[4096 bytes — same data that was written]"
-            description: "Read data should match the write — verifying end-to-end data integrity"
+            bits: 16384
+            value: "[2048 bytes — first half of read data]"
+            description: "First 2048 bytes (blocks 0-3) of the 4KB read"
+
+  - id: "fcp_read_data_2"
+    name: "FCP_DATA: Read Payload (2/2)"
+    description: >
+      Second and final FCP_DATA frame carrying the remaining 2048 bytes of
+      the read. Relative offset 2048.
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 14300000
+    total_bytes: 2072
+    color: "#7c3aed"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 4
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x01"
+            description: "Solicited Data — FCP_DATA (read direction)"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010200"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x08"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x880000"
+            description: "Exchange responder, last frame in sequence (end sequence bit set)"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 1
+            description: "Sequence count 1 — second frame in the data sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0021"
+          - name: "Parameter (Relative Offset)"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000800"
+            description: "Data starts at byte offset 2048 (0x800) — second half of transfer"
+      - name: "Read Data Payload"
+        abbrev: "fcp.data"
+        layer: 7
+        total_bytes: 2048
+        fields:
+          - name: "Data"
+            abbrev: "fcp.data.payload"
+            bits: 16384
+            value: "[2048 bytes — second half of read data]"
+            description: "Final 2048 bytes (blocks 4-7) — should match what was written"
 
   # ── READ FCP_RSP ───────────────────────────────────────────────
   - id: "fcp_read_rsp"
@@ -2197,16 +2360,26 @@ timeline:
             state_fields:
               last_cmd_received: "WRITE(10)"
 
-  - id: "evt_write_data"
+  - id: "evt_write_data_1"
     type: "frame_tx"
     t_ns: 12400000
-    frame_id: "fcp_write_data"
+    frame_id: "fcp_write_data_1"
     annotation:
-      text: "FCP_DATA — host sends 4KB write payload"
+      text: "FCP_DATA (1/2) — first 2048 bytes of write at offset 0"
       detail: >
-        Host sends the actual write data as FCP_DATA frames. For this 4KB write,
-        a single frame is sufficient (max FC payload is 2112 bytes, so in practice
-        this would be 2 frames, but shown as one for clarity).
+        FC Recv_Size negotiated during FLOGI is 2112 bytes, so the 4KB write
+        must be split across two FCP_DATA frames. SEQ_CNT=0, relative offset 0.
+    state_after: []
+
+  - id: "evt_write_data_2"
+    type: "frame_tx"
+    t_ns: 12500000
+    frame_id: "fcp_write_data_2"
+    annotation:
+      text: "FCP_DATA (2/2) — final 2048 bytes of write at offset 2048"
+      detail: >
+        Second FCP_DATA frame completes the 4KB transfer. SEQ_CNT=1,
+        relative offset 0x800 (2048). End-of-sequence bit set in F_CTL.
     state_after: []
 
   - id: "evt_write_rsp"
@@ -2258,16 +2431,16 @@ timeline:
             state_fields:
               active_exchanges: 1
 
-  - id: "evt_read_data"
+  - id: "evt_read_data_1"
     type: "frame_tx"
     t_ns: 14200000
-    frame_id: "fcp_read_data"
+    frame_id: "fcp_read_data_1"
     annotation:
-      text: "FCP_DATA — storage sends 4KB read data (no XFER_RDY needed)"
+      text: "FCP_DATA (1/2) — first 2048 bytes of read at offset 0"
       detail: >
-        Storage sends the read data immediately — unlike writes, reads do not
-        require an XFER_RDY handshake. The data returned should match what was
-        written at LBA 0.
+        Storage sends read data immediately — unlike writes, reads do not
+        require an XFER_RDY handshake. Same Recv_Size constraint applies:
+        4KB split across two frames. SEQ_CNT=0, relative offset 0.
     state_after:
       - actor_id: "target"
         layers:
@@ -2275,6 +2448,17 @@ timeline:
             name: "SCSI Target / LUNs"
             state_fields:
               last_cmd_received: "READ(10)"
+
+  - id: "evt_read_data_2"
+    type: "frame_tx"
+    t_ns: 14300000
+    frame_id: "fcp_read_data_2"
+    annotation:
+      text: "FCP_DATA (2/2) — final 2048 bytes of read at offset 2048"
+      detail: >
+        Second FCP_DATA frame completes the 4KB read. SEQ_CNT=1,
+        relative offset 0x800 (2048). Data should match what was written.
+    state_after: []
 
   - id: "evt_read_rsp"
     type: "frame_tx"

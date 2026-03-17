@@ -1,0 +1,1652 @@
+meta:
+  id: "gpudirect-storage-nvme-to-gpu"
+  title: "GPUDirect Storage: NVMe Read Direct to GPU Memory"
+  protocol: "NVMe + GPUDirect Storage"
+  protocol_family: "Storage"
+  version: "1.0.0"
+  description: >
+    A complete GPUDirect Storage (GDS) exchange showing how data is read from an NVMe SSD
+    directly into GPU memory (BAR1) bypassing the CPU page cache entirely. This is a LOCAL
+    protocol scenario — all three actors (GPU, Host CPU/OS, NVMe SSD) are components within
+    a single machine connected via PCIe, not networked endpoints. The scenario contrasts the
+    traditional storage read path (NVMe SSD → page cache → user buffer → cudaMemcpy → GPU =
+    multiple CPU-mediated copies) with the GDS path (NVMe SSD → GPU BAR memory = zero CPU
+    copies). Covers the cuFile API (cuFileDriverOpen, cuFileHandleRegister, cuFileBufRegister,
+    cuFileRead, cuFileWrite), the nvidia-fs kernel module that intercepts NVMe submissions to
+    redirect DMA targets to GPU BAR1 addresses, and the PCIe peer-to-peer (P2P) transactions
+    that make this possible. This is the key technology enabling fast AI training data loading
+    and checkpoint I/O in GPU-accelerated computing.
+
+  learning_objectives:
+    - "Understand why the traditional storage I/O path (NVMe → page cache → cudaMemcpy) is inefficient for GPU workloads"
+    - "Learn how GPUDirect Storage eliminates CPU bounce buffers by targeting NVMe DMA directly at GPU BAR1 memory"
+    - "Trace the cuFile API lifecycle: cuFileDriverOpen → cuFileHandleRegister → cuFileBufRegister → cuFileRead/cuFileWrite"
+    - "Understand the role of the nvidia-fs kernel module as a shim between the NVMe driver and GPU memory management"
+    - "See how PCIe peer-to-peer (P2P) DMA enables NVMe controllers to write directly to GPU BAR1 without CPU involvement"
+    - "Observe NVMe command submission with PRP/SGL entries pointing to GPU physical addresses instead of host DRAM"
+    - "Understand why GDS requires GPU BAR1 memory to be registered — the nvidia-fs module must pin and map GPU pages for DMA"
+    - "See how cuFileWrite reverses the path: GPU memory → NVMe SSD for AI checkpoint saves"
+
+  difficulty: "advanced"
+
+  authors:
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+    - name: "Generated via NVIDIA GDS documentation and Linux kernel source analysis"
+      org: "proto-viz"
+      github: ""
+
+  created: "2026-03-17"
+  updated: "2026-03-17"
+
+  tags:
+    - "GPUDirect Storage"
+    - "GDS"
+    - "NVMe"
+    - "CUDA"
+    - "cuFile"
+    - "nvidia-fs"
+    - "GPU"
+    - "PCIe"
+    - "P2P DMA"
+    - "AI infrastructure"
+    - "storage"
+    - "zero-copy"
+    - "education"
+
+  primary_specs:
+    - document: "NVMe Base Spec 2.1"
+      section: "4.1"
+      title: "Submission Queue and Completion Queue Definition"
+      url: "https://nvmexpress.org/specifications/"
+      alt_url: "https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.1-2024.08.05-Ratified.pdf"
+    - document: "NVMe Base Spec 2.1"
+      section: "4.1.1"
+      title: "Physical Region Page (PRP) Entry and List"
+      url: "https://nvmexpress.org/specifications/"
+      alt_url: ""
+    - document: "NVMe Base Spec 2.1"
+      section: "3.4"
+      title: "NVM Read Command"
+      url: "https://nvmexpress.org/specifications/"
+      alt_url: ""
+    - document: "NVMe Base Spec 2.1"
+      section: "3.3"
+      title: "NVM Write Command"
+      url: "https://nvmexpress.org/specifications/"
+      alt_url: ""
+    - document: "NVIDIA cuFile API Reference"
+      section: ""
+      title: "GPUDirect Storage cuFile API"
+      url: "https://docs.nvidia.com/gpudirect-storage/api-reference-guide/index.html"
+      alt_url: "https://docs.nvidia.com/gpudirect-storage/overview-guide/index.html"
+    - document: "PCIe Base Spec 6.0"
+      section: "2.2"
+      title: "Transaction Layer — Memory Read/Write Requests"
+      url: "https://pcisig.com/specifications"
+      alt_url: "https://docs.kernel.org/PCI/index.html"
+
+  content_disclaimer: >
+    Protocol descriptions in this scenario are based on NVIDIA public documentation
+    (GPUDirect Storage Design Guide, cuFile API Reference), Linux kernel NVMe host
+    driver source (drivers/nvme/host/), and NVMe public specifications. No proprietary
+    source code or specification text has been reproduced. nvidia-fs kernel module
+    behavior is described based on publicly documented interfaces and API semantics.
+
+  source_references:
+    - repo: "torvalds/linux"
+      path: "drivers/nvme/host/pci.c"
+      description: "NVMe PCIe host driver — submission/completion queue handling, DMA mapping, interrupt management"
+    - repo: "torvalds/linux"
+      path: "drivers/nvme/host/core.c"
+      description: "NVMe core — namespace management, command submission, block layer integration"
+    - repo: "torvalds/linux"
+      path: "include/linux/nvme.h"
+      description: "NVMe command structures, opcodes, PRP/SGL definitions"
+    - repo: "torvalds/linux"
+      path: "drivers/nvme/host/multipath.c"
+      description: "NVMe multipath — namespace routing and path selection"
+    - repo: "NVIDIA/gds-nvidia-fs"
+      path: "src/nvidia-fs.c"
+      description: "nvidia-fs kernel module — DMA intercept for GPUDirect Storage, GPU BAR mapping, P2P coordination"
+    - repo: "NVIDIA/cuda-samples"
+      path: "Samples/5_Domain_Specific/simpleGDS/simpleGDS.cu"
+      description: "cuFile API usage example — cuFileRead/cuFileWrite with GPU buffers"
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# This is a LOCAL scenario — all actors are within a single machine,
+# connected via PCIe bus. Not a network topology.
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "gpu"
+      type: "host"
+      label: "NVIDIA H100 GPU"
+      description: "NVIDIA H100 SXM GPU with 80GB HBM3, PCIe Gen5 x16 or NVLink. Exposes BAR1 aperture for peer-to-peer DMA from NVMe. Runs CUDA kernels that consume/produce training data."
+      hardware: "NVIDIA H100 SXM5 80GB"
+      position: "left"
+
+    - id: "cpu_os"
+      type: "switch"
+      label: "Host CPU / Linux"
+      description: "x86_64 host CPU running Linux with NVIDIA GPU driver, nvidia-fs kernel module, and NVMe host driver. Orchestrates the GDS data path: sets up DMA mappings, submits NVMe commands, but does NOT touch the data payload. Acts as control plane only."
+      hardware: "AMD EPYC 9004 / Intel Xeon w9"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      position: "center"
+
+    - id: "nvme_ssd"
+      type: "target"
+      label: "NVMe SSD"
+      description: "PCIe Gen5 NVMe SSD (e.g., 7.68TB datacenter SSD). NVMe controller performs DMA to host-specified addresses — in the GDS case, these addresses point to GPU BAR1 instead of host DRAM."
+      hardware: "PCIe Gen5 x4 NVMe SSD"
+      position: "right"
+
+  links:
+    - id: "link-gpu-cpu"
+      from: "gpu"
+      to: "cpu_os"
+      speed_gbps: 64
+      media: "backplane"
+    - id: "link-cpu-nvme"
+      from: "cpu_os"
+      to: "nvme_ssd"
+      speed_gbps: 32
+      media: "backplane"
+
+# ─────────────────────────────────────────────────────────────────
+# OSI LAYER DEFINITIONS (per actor)
+# For a local PCIe-based protocol, the "OSI layers" represent
+# software/hardware abstraction layers rather than network layers.
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  gpu:
+    - layer: 7
+      name: "AI Application / PyTorch"
+      components: ["PyTorch DataLoader", "DALI", "kvikio", "user application"]
+      state_schema:
+        app_state:
+          type: "string"
+          description: "Application state"
+          initial: "idle"
+        training_step:
+          type: "integer"
+          description: "Current training iteration"
+          initial: 0
+        gpu_buffer_ready:
+          type: "boolean"
+          description: "Whether GPU buffer contains valid data for compute"
+          initial: false
+
+    - layer: 6
+      name: "CUDA Runtime / cuFile API"
+      components: ["libcufile.so", "CUDA runtime", "cuFile API"]
+      state_schema:
+        cufile_driver:
+          type: "string"
+          description: "cuFile driver state"
+          initial: "not loaded"
+        file_handle:
+          type: "string"
+          description: "cuFileHandle state"
+          initial: "none"
+        buf_registered:
+          type: "boolean"
+          description: "GPU buffer registered with cuFile for DMA"
+          initial: false
+        io_pending:
+          type: "boolean"
+          description: "cuFile I/O operation in progress"
+          initial: false
+
+    - layer: 5
+      name: "GPU Memory / BAR1"
+      components: ["NVIDIA GPU driver (nvidia.ko)", "GPU MMU", "BAR1 aperture"]
+      state_schema:
+        bar1_mapped:
+          type: "boolean"
+          description: "BAR1 region mapped for P2P DMA"
+          initial: false
+        gpu_va:
+          type: "string"
+          description: "GPU virtual address of registered buffer"
+          initial: "null"
+        gpu_pa:
+          type: "string"
+          description: "GPU physical (BAR1) address for DMA target"
+          initial: "null"
+        buffer_size_bytes:
+          type: "integer"
+          description: "Size of registered GPU buffer"
+          initial: 0
+
+  cpu_os:
+    - layer: 7
+      name: "Application (User Space)"
+      components: ["AI training application", "cuFile user-space library"]
+      state_schema:
+        app_state:
+          type: "string"
+          description: "User-space application state"
+          initial: "idle"
+        fd:
+          type: "string"
+          description: "File descriptor for open file"
+          initial: "none"
+        file_path:
+          type: "string"
+          description: "Path to data file on NVMe"
+          initial: "none"
+
+    - layer: 6
+      name: "nvidia-fs Kernel Module"
+      components: ["nvidia-fs.ko", "GPU driver (nvidia.ko) callbacks"]
+      state_schema:
+        nvidia_fs_state:
+          type: "string"
+          description: "nvidia-fs module state"
+          initial: "not loaded"
+        dma_mapping:
+          type: "string"
+          description: "DMA mapping state for current operation"
+          initial: "none"
+        gpu_bar1_pa:
+          type: "string"
+          description: "Physical address of GPU BAR1 region registered for DMA"
+          initial: "null"
+        p2p_capable:
+          type: "boolean"
+          description: "Whether GPU and NVMe are on same PCIe root complex (P2P capable)"
+          initial: false
+
+    - layer: 5
+      name: "NVMe Driver"
+      components: ["drivers/nvme/host/pci.c", "drivers/nvme/host/core.c", "block layer"]
+      state_schema:
+        nvme_state:
+          type: "string"
+          description: "NVMe driver state"
+          initial: "idle"
+        sq_tail:
+          type: "integer"
+          description: "Submission Queue tail pointer"
+          initial: 0
+        cq_head:
+          type: "integer"
+          description: "Completion Queue head pointer"
+          initial: 0
+        nsid:
+          type: "integer"
+          description: "NVMe namespace ID"
+          initial: 1
+        slba:
+          type: "string"
+          description: "Starting Logical Block Address for current I/O"
+          initial: "null"
+        nlb:
+          type: "integer"
+          description: "Number of Logical Blocks for current I/O"
+          initial: 0
+        prp1:
+          type: "string"
+          description: "PRP Entry 1 — DMA target address (GPU BAR1 PA for GDS)"
+          initial: "null"
+
+    - layer: 4
+      name: "PCIe Root Complex"
+      components: ["PCIe RC", "IOMMU/SMMU", "ACS", "P2P routing"]
+      state_schema:
+        p2p_enabled:
+          type: "boolean"
+          description: "PCIe P2P routing enabled between GPU and NVMe"
+          initial: false
+        acs_override:
+          type: "boolean"
+          description: "ACS (Access Control Services) override for P2P"
+          initial: false
+        dma_direction:
+          type: "string"
+          description: "Current DMA direction"
+          initial: "none"
+
+  nvme_ssd:
+    - layer: 7
+      name: "Flash Translation Layer"
+      components: ["FTL", "SSD firmware", "NAND flash management"]
+      state_schema:
+        ftl_state:
+          type: "string"
+          description: "FTL state"
+          initial: "idle"
+        nand_read_pending:
+          type: "boolean"
+          description: "NAND flash read in progress"
+          initial: false
+        data_ready:
+          type: "boolean"
+          description: "Data read from NAND into SSD DRAM buffer"
+          initial: false
+
+    - layer: 6
+      name: "NVMe Controller"
+      components: ["NVMe controller firmware", "Submission/Completion Queue logic"]
+      state_schema:
+        controller_state:
+          type: "string"
+          description: "NVMe controller state"
+          initial: "ready"
+        current_cid:
+          type: "string"
+          description: "Command Identifier being processed"
+          initial: "null"
+        sqe_fetched:
+          type: "boolean"
+          description: "Submission Queue Entry fetched from host"
+          initial: false
+        phase_tag:
+          type: "integer"
+          description: "CQ phase tag for completion"
+          initial: 1
+
+    - layer: 5
+      name: "PCIe Endpoint"
+      components: ["PCIe endpoint controller", "DMA engine", "MSI-X"]
+      state_schema:
+        pcie_state:
+          type: "string"
+          description: "PCIe link state"
+          initial: "L0 (active)"
+        dma_state:
+          type: "string"
+          description: "DMA engine state"
+          initial: "idle"
+        dma_target:
+          type: "string"
+          description: "DMA target address (host DRAM or GPU BAR1)"
+          initial: "null"
+        max_payload:
+          type: "integer"
+          description: "PCIe Max Payload Size (bytes)"
+          initial: 256
+
+# ─────────────────────────────────────────────────────────────────
+# FRAME DEFINITIONS
+# For GPUDirect Storage, "frames" represent PCIe transactions and
+# NVMe commands rather than network packets. The structure is the
+# same — headers represent protocol layers at different abstraction
+# levels within the PCIe/NVMe stack.
+# ─────────────────────────────────────────────────────────────────
+frames:
+
+  # ── GDS Initialization ──
+  - id: "cufile_driver_open"
+    name: "cuFileDriverOpen()"
+    description: "Application initializes the GDS subsystem by calling cuFileDriverOpen(), which loads nvidia-fs and registers GPU memory services with the NVMe driver."
+    from: "gpu"
+    to: "cpu_os"
+    total_bytes: 0
+    color: "#7c3aed"
+    headers:
+      - name: "cuFile API Call"
+        abbrev: "cufile"
+        layer: 7
+        fields:
+          - name: "Function"
+            abbrev: "cufile.func"
+            bits: 0
+            value: "cuFileDriverOpen()"
+            description: "Initializes the cuFile subsystem. Must be called before any cuFile operations. Loads the nvidia-fs kernel module if not already loaded and establishes communication between user-space cuFile library and the kernel module."
+            kernel_ref:
+              file: "src/nvidia-fs.c"
+              function: "nvidia_fs_init"
+              notes: "Module initialization — registers with NVMe driver via nvme_register_fs(), sets up GPU memory callback hooks"
+          - name: "Return"
+            abbrev: "cufile.ret"
+            bits: 32
+            value: "CU_FILE_SUCCESS"
+            description: "Returns CU_FILE_SUCCESS (0) on success. Can fail if nvidia-fs module is not installed or GPU driver is incompatible."
+      - name: "nvidia-fs Registration"
+        abbrev: "nvidia-fs"
+        layer: 6
+        fields:
+          - name: "Operation"
+            abbrev: "nvidia-fs.op"
+            bits: 0
+            value: "register_nvme_dma_ops"
+            description: "nvidia-fs registers DMA callback operations with the NVMe host driver. This allows nvidia-fs to intercept NVMe DMA mapping calls and substitute GPU BAR1 physical addresses for host DRAM addresses."
+            kernel_ref:
+              file: "drivers/nvme/host/pci.c"
+              function: "nvme_register_fs"
+              notes: "NVMe driver exports nvme_register_fs() / nvme_unregister_fs() for nvidia-fs to hook DMA operations"
+          - name: "P2P Topology Check"
+            abbrev: "nvidia-fs.p2p"
+            bits: 0
+            value: "GPU and NVMe on same PCIe root — P2P capable"
+            description: "nvidia-fs checks PCIe topology to verify the GPU and NVMe device are under the same root complex or connected via NVSwitch/PCIe switch, enabling peer-to-peer DMA without traversing the CPU."
+            kernel_ref:
+              file: "src/nvidia-fs.c"
+              function: "nvidia_fs_check_p2p"
+              notes: "Validates PCIe P2P routing capability between GPU and NVMe device using pci_p2pdma_distance()"
+
+  - id: "cufile_handle_register"
+    name: "cuFileHandleRegister()"
+    description: "Application registers a file descriptor with cuFile, creating a GDS file handle that wraps the standard POSIX fd."
+    from: "gpu"
+    to: "cpu_os"
+    total_bytes: 0
+    color: "#7c3aed"
+    headers:
+      - name: "cuFile API Call"
+        abbrev: "cufile"
+        layer: 7
+        fields:
+          - name: "Function"
+            abbrev: "cufile.func"
+            bits: 0
+            value: "cuFileHandleRegister(cfh, &descr)"
+            description: "Registers an open file descriptor (obtained via POSIX open()) with the cuFile subsystem. The CUfileDescr contains fd and file type (CU_FILE_HANDLE_TYPE_OPAQUE_FD). This creates the mapping between the user-space file handle and the NVMe block device path."
+            kernel_ref:
+              file: "src/nvidia-fs.c"
+              function: "nvidia_fs_register_handle"
+              notes: "Validates file is on a supported filesystem (ext4, XFS, or raw block device), gets block device info"
+          - name: "File Descriptor"
+            abbrev: "cufile.fd"
+            bits: 32
+            value: "fd=5"
+            description: "The POSIX file descriptor returned by open(\"/data/training/imagenet_shard_0042.bin\", O_RDONLY | O_DIRECT). O_DIRECT is required — GDS bypasses the page cache, so buffered I/O is incompatible."
+          - name: "Handle Type"
+            abbrev: "cufile.type"
+            bits: 32
+            value: "CU_FILE_HANDLE_TYPE_OPAQUE_FD"
+            description: "Indicates a standard POSIX file descriptor (not a cuFile-native handle). This is the most common type."
+      - name: "Filesystem / Block Layer"
+        abbrev: "vfs"
+        layer: 6
+        fields:
+          - name: "Filesystem"
+            abbrev: "vfs.fs"
+            bits: 0
+            value: "ext4"
+            description: "File resides on ext4 filesystem. GDS supports ext4, XFS, and raw block devices. The filesystem maps the file offset to logical block addresses (LBAs) on the NVMe namespace."
+          - name: "Block Device"
+            abbrev: "vfs.bdev"
+            bits: 0
+            value: "/dev/nvme0n1p1"
+            description: "Underlying NVMe block device. cuFile resolves the file descriptor to this block device to submit NVMe commands directly."
+            kernel_ref:
+              file: "drivers/nvme/host/core.c"
+              function: "nvme_alloc_ns"
+              notes: "NVMe namespace is registered as a block device — cuFile uses this to find the NVMe controller"
+
+  - id: "cufile_buf_register"
+    name: "cuFileBufRegister()"
+    description: "Application registers a GPU memory buffer for DMA, pinning the GPU pages and creating a BAR1 mapping accessible by the NVMe controller."
+    from: "gpu"
+    to: "cpu_os"
+    total_bytes: 0
+    color: "#7c3aed"
+    headers:
+      - name: "cuFile API Call"
+        abbrev: "cufile"
+        layer: 7
+        fields:
+          - name: "Function"
+            abbrev: "cufile.func"
+            bits: 0
+            value: "cuFileBufRegister(gpu_buf, size, 0)"
+            description: "Registers a CUDA device pointer (allocated via cudaMalloc) for cuFile I/O. This pins the GPU memory pages and creates a DMA mapping in the GPU's BAR1 aperture so that PCIe peers (the NVMe controller) can DMA directly to/from this GPU memory region."
+            kernel_ref:
+              file: "src/nvidia-fs.c"
+              function: "nvidia_fs_register_buf"
+              notes: "Calls nvidia GPU driver to pin GPU pages and map them into BAR1 for P2P DMA access"
+          - name: "GPU Buffer Pointer"
+            abbrev: "cufile.devptr"
+            bits: 64
+            value: "0x7f1a_0000_0000 (GPU VA)"
+            description: "CUDA device pointer to GPU memory. This is a GPU virtual address allocated by cudaMalloc(). The cuFile subsystem translates this to a physical BAR1 address for NVMe DMA."
+          - name: "Buffer Size"
+            abbrev: "cufile.size"
+            bits: 64
+            value: "4194304 (4 MiB)"
+            description: "Size of the GPU buffer to register. Typical training data batch size. Must be aligned to GPU page boundaries (typically 64KB or 2MB huge pages)."
+      - name: "GPU Memory Mapping"
+        abbrev: "gpu-mem"
+        layer: 5
+        fields:
+          - name: "Operation"
+            abbrev: "gpu-mem.op"
+            bits: 0
+            value: "Pin GPU pages + Create BAR1 mapping"
+            description: "The NVIDIA GPU driver pins the GPU memory pages (prevents migration/eviction) and creates a mapping in the GPU's BAR1 MMIO aperture. BAR1 is a PCIe Base Address Register that maps GPU memory into the system physical address space, making it addressable by other PCIe devices."
+            spec_refs:
+              - document: "PCIe Base Spec 6.0"
+                section: "7.5.1"
+                title: "Base Address Registers (BARs)"
+                url: "https://pcisig.com/specifications"
+          - name: "GPU VA"
+            abbrev: "gpu-mem.va"
+            bits: 64
+            value: "0x7f1a_0000_0000"
+            description: "GPU virtual address (visible to CUDA kernels)"
+          - name: "BAR1 Physical Address"
+            abbrev: "gpu-mem.bar1_pa"
+            bits: 64
+            value: "0x0000_3a00_0000_0000"
+            description: "Physical address in the GPU's BAR1 aperture. This is the address the NVMe controller will use as the DMA target. It is a system physical address that the PCIe root complex routes to the GPU."
+          - name: "Page Size"
+            abbrev: "gpu-mem.page_size"
+            bits: 0
+            value: "65536 (64 KiB)"
+            description: "GPU page size for the BAR1 mapping. Larger pages reduce TLB pressure."
+
+  # ── GDS Read Path ──
+  - id: "cufile_read_request"
+    name: "cuFileRead() → NVMe Submit"
+    description: "Application calls cuFileRead(). nvidia-fs translates this into an NVMe Read command with PRP entries pointing to GPU BAR1 physical addresses."
+    from: "gpu"
+    to: "cpu_os"
+    total_bytes: 64
+    color: "#059669"
+    headers:
+      - name: "cuFile API Call"
+        abbrev: "cufile"
+        layer: 7
+        fields:
+          - name: "Function"
+            abbrev: "cufile.func"
+            bits: 0
+            value: "cuFileRead(cfh, gpu_buf, 4194304, 0, 0)"
+            description: "Reads 4 MiB from the file (starting at file offset 0) directly into GPU memory (gpu_buf, device offset 0). This single call triggers the entire GDS pipeline: file offset → LBA translation, NVMe command construction with GPU BAR1 addresses, submission, DMA, and completion."
+            kernel_ref:
+              file: "src/nvidia-fs.c"
+              function: "nvidia_fs_read"
+              notes: "Entry point for GDS read — resolves file offset to LBA, builds NVMe command with GPU PRP addresses"
+          - name: "File Handle"
+            abbrev: "cufile.cfh"
+            bits: 64
+            value: "cfh (registered handle)"
+            description: "cuFile handle created by cuFileHandleRegister(). Contains the file descriptor and block device mapping."
+          - name: "Buffer"
+            abbrev: "cufile.buf"
+            bits: 64
+            value: "0x7f1a_0000_0000 (GPU VA)"
+            description: "Destination GPU buffer — data will be DMA'd here directly"
+          - name: "Size"
+            abbrev: "cufile.size"
+            bits: 64
+            value: "4194304 (4 MiB)"
+            description: "Read size. GDS can handle multi-MiB reads efficiently because data never passes through CPU memory."
+          - name: "File Offset"
+            abbrev: "cufile.file_offset"
+            bits: 64
+            value: "0"
+            description: "Byte offset within the file to start reading from"
+          - name: "Device Offset"
+            abbrev: "cufile.dev_offset"
+            bits: 64
+            value: "0"
+            description: "Byte offset within the GPU buffer to write to"
+      - name: "nvidia-fs DMA Setup"
+        abbrev: "nvidia-fs"
+        layer: 6
+        fields:
+          - name: "Operation"
+            abbrev: "nvidia-fs.op"
+            bits: 0
+            value: "Map GPU BAR1 PA into NVMe PRP entries"
+            description: "nvidia-fs resolves the GPU virtual address to BAR1 physical addresses and constructs PRP (Physical Region Page) entries for the NVMe command. Instead of pointing to host DRAM pages, the PRP entries point to GPU BAR1 pages. The NVMe controller does not know or care that the DMA target is GPU memory — it just DMAs to the physical addresses in the PRPs."
+            kernel_ref:
+              file: "src/nvidia-fs.c"
+              function: "nvidia_fs_dma_map_sg"
+              notes: "Overrides the normal NVMe dma_map_sg() to return GPU BAR1 physical addresses instead of host DRAM addresses"
+          - name: "PRP1 Address"
+            abbrev: "nvidia-fs.prp1"
+            bits: 64
+            value: "0x0000_3a00_0000_0000 (GPU BAR1)"
+            description: "First Physical Region Page entry points to GPU BAR1 physical address. This is the key GDS mechanism — the NVMe controller will DMA data here, which is physically GPU memory."
+          - name: "PRP2 / PRP List"
+            abbrev: "nvidia-fs.prp2"
+            bits: 64
+            value: "PRP List in host DRAM (GPU BAR1 pages for 4 MiB)"
+            description: "For transfers larger than one PRP entry (4KB), PRP2 points to a PRP list in host DRAM. Each entry in the list is a GPU BAR1 physical address for the next 4KB page of the transfer."
+
+  - id: "nvme_read_submit"
+    name: "NVMe Read Command (SQE → SSD)"
+    description: "The NVMe driver writes a Submission Queue Entry to the SQ and rings the doorbell. The NVMe SSD fetches the SQE via PCIe DMA."
+    from: "cpu_os"
+    to: "nvme_ssd"
+    total_bytes: 64
+    color: "#059669"
+    headers:
+      - name: "NVMe Submission Queue Entry"
+        abbrev: "nvme.sqe"
+        layer: 5
+        total_bytes: 64
+        fields:
+          - name: "Opcode"
+            abbrev: "nvme.sqe.opc"
+            bits: 8
+            offset_bits: 0
+            value: "0x02 (Read)"
+            description: "NVMe I/O Read command. The SSD will read data from NAND and DMA it to the addresses specified in PRP1/PRP2."
+            spec_refs:
+              - document: "NVMe Base Spec 2.1"
+                section: "3.4"
+                title: "Read Command"
+                url: "https://nvmexpress.org/specifications/"
+            kernel_ref:
+              file: "drivers/nvme/host/core.c"
+              function: "nvme_setup_rw"
+              notes: "Constructs the NVMe read command SQE with opcode, NSID, SLBA, NLB, PRP"
+          - name: "Command ID (CID)"
+            abbrev: "nvme.sqe.cid"
+            bits: 16
+            offset_bits: 16
+            value: "0x0042"
+            description: "Unique command identifier within this SQ. Used to match completions to submissions."
+          - name: "Namespace ID (NSID)"
+            abbrev: "nvme.sqe.nsid"
+            bits: 32
+            offset_bits: 32
+            value: "1"
+            description: "NVMe namespace to read from. Namespace 1 is typically the first user data namespace."
+            spec_refs:
+              - document: "NVMe Base Spec 2.1"
+                section: "4.1"
+                title: "Namespace ID"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "PRP Entry 1"
+            abbrev: "nvme.sqe.prp1"
+            bits: 64
+            offset_bits: 192
+            value: "0x0000_3a00_0000_0000"
+            value_hex: "0x00003a0000000000"
+            description: "Physical Region Page Entry 1 — points to GPU BAR1 physical address. THIS IS THE GDS MAGIC: the NVMe controller will DMA data directly to this GPU memory address via PCIe P2P, completely bypassing host DRAM and CPU page cache."
+            spec_refs:
+              - document: "NVMe Base Spec 2.1"
+                section: "4.1.1"
+                title: "Physical Region Page Entry"
+                url: "https://nvmexpress.org/specifications/"
+            kernel_ref:
+              file: "src/nvidia-fs.c"
+              function: "nvidia_fs_dma_map_sg"
+              notes: "nvidia-fs overrides PRP address to GPU BAR1 PA instead of host DRAM PA"
+          - name: "PRP Entry 2 / PRP List"
+            abbrev: "nvme.sqe.prp2"
+            bits: 64
+            offset_bits: 256
+            value: "0x0000_0000_1234_5000 (PRP list in host DRAM)"
+            description: "Points to a PRP list in host DRAM. Each 8-byte entry in the PRP list contains a GPU BAR1 physical address for the next 4KB page of the 4 MiB transfer (1024 entries total)."
+          - name: "Starting LBA (SLBA)"
+            abbrev: "nvme.sqe.slba"
+            bits: 64
+            offset_bits: 320
+            value: "0x00000000 (LBA 0)"
+            description: "Starting Logical Block Address. The filesystem translates the file offset to an LBA on the NVMe namespace."
+            spec_refs:
+              - document: "NVMe Base Spec 2.1"
+                section: "3.4"
+                title: "Starting LBA field"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "Number of Logical Blocks (NLB)"
+            abbrev: "nvme.sqe.nlb"
+            bits: 16
+            offset_bits: 384
+            value: "8191 (= 8192 blocks - 1 = 4 MiB at 512B/block)"
+            description: "Number of logical blocks to read, 0-based. 8191 means 8192 blocks = 4 MiB. NLB is 0-based per NVMe spec."
+      - name: "PCIe Transaction (SQ Doorbell)"
+        abbrev: "pcie"
+        layer: 4
+        fields:
+          - name: "TLP Type"
+            abbrev: "pcie.tlp.type"
+            bits: 8
+            value: "Memory Write (MWr)"
+            description: "CPU writes the new SQ tail pointer to the NVMe controller's doorbell register via a PCIe Memory Write TLP. This notifies the SSD that new commands are available in the Submission Queue."
+            spec_refs:
+              - document: "PCIe Base Spec 6.0"
+                section: "2.2.7"
+                title: "Memory Write Request"
+                url: "https://pcisig.com/specifications"
+          - name: "Address"
+            abbrev: "pcie.addr"
+            bits: 64
+            value: "0x0000_fb00_1000 (NVMe BAR0 + SQ0 Tail Doorbell)"
+            description: "MMIO address of the NVMe controller's SQ Tail Doorbell register. Writing here tells the SSD controller to fetch new SQEs."
+            kernel_ref:
+              file: "drivers/nvme/host/pci.c"
+              function: "nvme_write_sq_db"
+              notes: "writel(sq->tail, sq->q_db) — write SQ tail to doorbell MMIO register"
+          - name: "Data"
+            abbrev: "pcie.data"
+            bits: 32
+            value: "SQ Tail = 1"
+            description: "New SQ tail pointer value. The SSD controller will process entries from old tail to new tail."
+
+  - id: "nvme_sqe_fetch"
+    name: "NVMe SQE Fetch (SSD DMA ← Host)"
+    description: "NVMe controller fetches the Submission Queue Entry from host memory via PCIe DMA read."
+    from: "nvme_ssd"
+    to: "cpu_os"
+    total_bytes: 64
+    color: "#059669"
+    headers:
+      - name: "PCIe Transaction (SQE Fetch)"
+        abbrev: "pcie"
+        layer: 5
+        fields:
+          - name: "TLP Type"
+            abbrev: "pcie.tlp.type"
+            bits: 8
+            value: "Memory Read (MRd)"
+            description: "NVMe controller issues a PCIe Memory Read to fetch the 64-byte SQE from the Submission Queue in host DRAM."
+            spec_refs:
+              - document: "PCIe Base Spec 6.0"
+                section: "2.2.6"
+                title: "Memory Read Request"
+                url: "https://pcisig.com/specifications"
+          - name: "Address"
+            abbrev: "pcie.addr"
+            bits: 64
+            value: "0x0000_0000_5678_0000 (SQ base in host DRAM)"
+            description: "Host physical address of the SQE in the Submission Queue. The NVMe controller was given the SQ base address during controller initialization (CC.EN)."
+          - name: "Length"
+            abbrev: "pcie.length"
+            bits: 32
+            value: "64 bytes"
+            description: "One NVMe SQE is exactly 64 bytes."
+
+  - id: "nvme_p2p_dma_read"
+    name: "P2P DMA: NVMe SSD → GPU BAR1 Memory"
+    description: "The NVMe controller reads data from NAND flash and DMAs it directly to GPU BAR1 memory via PCIe peer-to-peer, bypassing host DRAM entirely."
+    from: "nvme_ssd"
+    to: "gpu"
+    total_bytes: 4194304
+    color: "#dc2626"
+    headers:
+      - name: "PCIe P2P Memory Write (Data Transfer)"
+        abbrev: "pcie.p2p"
+        layer: 5
+        fields:
+          - name: "TLP Type"
+            abbrev: "pcie.tlp.type"
+            bits: 8
+            value: "Memory Write (MWr) — Peer-to-Peer"
+            description: "NVMe controller issues PCIe Memory Write TLPs targeting GPU BAR1 addresses. The PCIe root complex routes these TLPs directly to the GPU without involving host DRAM or the CPU. This is the zero-copy data path — data flows NVMe NAND → SSD DRAM → PCIe → GPU HBM without ever touching host memory."
+            spec_refs:
+              - document: "PCIe Base Spec 6.0"
+                section: "2.2.7"
+                title: "Memory Write Request"
+                url: "https://pcisig.com/specifications"
+          - name: "Destination Address"
+            abbrev: "pcie.p2p.dst"
+            bits: 64
+            value: "0x0000_3a00_0000_0000 (GPU BAR1)"
+            description: "GPU BAR1 physical address. The PCIe fabric treats this like any other physical address — the root complex decodes it and routes the TLP to the GPU's PCIe endpoint."
+          - name: "Source"
+            abbrev: "pcie.p2p.src"
+            bits: 0
+            value: "NVMe SSD internal DRAM buffer"
+            description: "Data read from NAND flash into the SSD's internal DRAM, then DMA'd out via PCIe Memory Write TLPs."
+          - name: "Total Transfer Size"
+            abbrev: "pcie.p2p.total"
+            bits: 0
+            value: "4194304 bytes (4 MiB)"
+            description: "Full 4 MiB transfer split into Max Payload Size (MPS) chunks, typically 256B per TLP for PCIe Gen5. This means ~16,384 PCIe TLPs for the full transfer."
+          - name: "Max Payload Size"
+            abbrev: "pcie.p2p.mps"
+            bits: 0
+            value: "256 bytes"
+            description: "Each PCIe MWr TLP carries up to MPS bytes of data. Determined during PCIe enumeration as the minimum MPS of all devices in the path."
+            spec_refs:
+              - document: "PCIe Base Spec 6.0"
+                section: "7.5.3"
+                title: "Max Payload Size"
+                url: "https://pcisig.com/specifications"
+          - name: "P2P Routing"
+            abbrev: "pcie.p2p.route"
+            bits: 0
+            value: "NVMe EP → PCIe Switch/RC → GPU EP (no host DRAM involved)"
+            description: "The PCIe root complex (or PCIe switch, if GPU and NVMe share one) decodes the BAR1 address and routes the write TLP directly to the GPU. The CPU and host DRAM are not involved in the data path. The CPU only set up the NVMe command — it never touches the 4 MiB payload."
+
+  - id: "nvme_read_completion"
+    name: "NVMe Completion (CQE + MSI-X)"
+    description: "NVMe controller posts a Completion Queue Entry to host memory and fires an MSI-X interrupt to signal command completion."
+    from: "nvme_ssd"
+    to: "cpu_os"
+    total_bytes: 16
+    color: "#059669"
+    headers:
+      - name: "NVMe Completion Queue Entry"
+        abbrev: "nvme.cqe"
+        layer: 6
+        total_bytes: 16
+        fields:
+          - name: "Command ID (CID)"
+            abbrev: "nvme.cqe.cid"
+            bits: 16
+            value: "0x0042"
+            description: "Matches the CID from the submission — host uses this to correlate completion with the original cuFileRead() request."
+          - name: "Status Field"
+            abbrev: "nvme.cqe.status"
+            bits: 16
+            value: "0x0000 (Success)"
+            description: "Status Code Type = 0 (Generic), Status Code = 0 (Successful Completion). The 4 MiB read completed successfully — data is now in GPU memory."
+            spec_refs:
+              - document: "NVMe Base Spec 2.1"
+                section: "4.6.1"
+                title: "Status Field in CQE"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "SQ Head Pointer"
+            abbrev: "nvme.cqe.sqhd"
+            bits: 16
+            value: "1"
+            description: "Updated SQ head pointer — tells host how far the SSD has consumed the SQ."
+          - name: "Phase Tag"
+            abbrev: "nvme.cqe.p"
+            bits: 1
+            value: "1"
+            description: "Phase tag toggles each time CQ wraps. Host polls for phase tag change to detect new completions (polling mode) or is interrupted via MSI-X."
+      - name: "PCIe MSI-X Interrupt"
+        abbrev: "pcie.msix"
+        layer: 5
+        fields:
+          - name: "TLP Type"
+            abbrev: "pcie.msix.tlp"
+            bits: 8
+            value: "Memory Write (MSI-X vector)"
+            description: "MSI-X interrupt is delivered as a PCIe Memory Write TLP to the MSI-X address programmed during driver initialization. This interrupts the CPU to process the completion."
+            spec_refs:
+              - document: "PCIe Base Spec 6.0"
+                section: "6.8.2"
+                title: "MSI-X Mechanism"
+                url: "https://pcisig.com/specifications"
+            kernel_ref:
+              file: "drivers/nvme/host/pci.c"
+              function: "nvme_irq"
+              notes: "NVMe interrupt handler — processes CQEs, wakes waiting threads"
+          - name: "Vector"
+            abbrev: "pcie.msix.vector"
+            bits: 32
+            value: "IO Queue 0 vector"
+            description: "MSI-X vector for this I/O queue. Each NVMe I/O queue has its own interrupt vector for per-CPU affinity."
+
+  - id: "cufile_read_complete"
+    name: "cuFileRead() Returns → Data in GPU Memory"
+    description: "cuFileRead() returns to the application. The 4 MiB of training data is now in GPU memory, ready for CUDA kernel consumption — no CPU copies occurred."
+    from: "cpu_os"
+    to: "gpu"
+    total_bytes: 0
+    color: "#059669"
+    headers:
+      - name: "cuFile Completion"
+        abbrev: "cufile"
+        layer: 7
+        fields:
+          - name: "Return Value"
+            abbrev: "cufile.ret"
+            bits: 64
+            value: "4194304 (bytes read)"
+            description: "cuFileRead() returns the number of bytes successfully read. The 4 MiB is now in GPU memory at the registered buffer address, ready to be consumed by a CUDA kernel (e.g., PyTorch DataLoader tensor)."
+          - name: "CPU Copies"
+            abbrev: "cufile.copies"
+            bits: 0
+            value: "0 (zero-copy path)"
+            description: "ZERO CPU copies occurred. Compare with the traditional path: read() → page cache → user buffer → cudaMemcpyHostToDevice = 2-3 CPU copies. GDS eliminates all of them."
+          - name: "Data Location"
+            abbrev: "cufile.location"
+            bits: 0
+            value: "GPU HBM3 at VA 0x7f1a_0000_0000"
+            description: "Data is in GPU HBM3 memory, accessible to CUDA kernels. The GPU can immediately begin tensor operations on this data."
+
+  # ── GDS Write Path ──
+  - id: "cufile_write_request"
+    name: "cuFileWrite() → NVMe Submit"
+    description: "Application calls cuFileWrite() to write GPU memory contents to NVMe SSD — used for AI checkpoint saves."
+    from: "gpu"
+    to: "cpu_os"
+    total_bytes: 64
+    color: "#2563eb"
+    headers:
+      - name: "cuFile API Call"
+        abbrev: "cufile"
+        layer: 7
+        fields:
+          - name: "Function"
+            abbrev: "cufile.func"
+            bits: 0
+            value: "cuFileWrite(cfh, gpu_buf, 4194304, 0, 0)"
+            description: "Writes 4 MiB from GPU memory to the file. Used for saving model checkpoints, gradient accumulation results, or intermediate computation outputs. Like cuFileRead, this triggers NVMe command submission with GPU BAR1 addresses — but now the DMA direction is reversed."
+            kernel_ref:
+              file: "src/nvidia-fs.c"
+              function: "nvidia_fs_write"
+              notes: "Entry point for GDS write — builds NVMe Write command with GPU BAR1 PRP addresses"
+          - name: "Direction"
+            abbrev: "cufile.dir"
+            bits: 0
+            value: "GPU → NVMe SSD (checkpoint save)"
+            description: "Write path: NVMe controller reads from GPU BAR1 memory via PCIe P2P and writes to NAND flash."
+
+  - id: "nvme_write_submit"
+    name: "NVMe Write Command (SQE → SSD)"
+    description: "NVMe Write command submitted with PRP entries pointing to GPU BAR1 — SSD will DMA-read from GPU memory."
+    from: "cpu_os"
+    to: "nvme_ssd"
+    total_bytes: 64
+    color: "#2563eb"
+    headers:
+      - name: "NVMe Submission Queue Entry"
+        abbrev: "nvme.sqe"
+        layer: 5
+        total_bytes: 64
+        fields:
+          - name: "Opcode"
+            abbrev: "nvme.sqe.opc"
+            bits: 8
+            offset_bits: 0
+            value: "0x01 (Write)"
+            description: "NVMe I/O Write command. The SSD will DMA-read data from the PRP addresses (GPU BAR1) and write it to NAND flash."
+            spec_refs:
+              - document: "NVMe Base Spec 2.1"
+                section: "3.3"
+                title: "Write Command"
+                url: "https://nvmexpress.org/specifications/"
+            kernel_ref:
+              file: "drivers/nvme/host/core.c"
+              function: "nvme_setup_rw"
+              notes: "Same command path as read, but opcode = nvme_cmd_write (0x01)"
+          - name: "Command ID (CID)"
+            abbrev: "nvme.sqe.cid"
+            bits: 16
+            offset_bits: 16
+            value: "0x0043"
+            description: "Next sequential command ID"
+          - name: "Namespace ID"
+            abbrev: "nvme.sqe.nsid"
+            bits: 32
+            offset_bits: 32
+            value: "1"
+          - name: "PRP Entry 1"
+            abbrev: "nvme.sqe.prp1"
+            bits: 64
+            offset_bits: 192
+            value: "0x0000_3a00_0000_0000 (GPU BAR1)"
+            value_hex: "0x00003a0000000000"
+            description: "For writes, PRP1 is the DMA source — the NVMe controller will read from this GPU BAR1 address. Same GPU memory region as the read case, but now the data direction is reversed: GPU → SSD."
+          - name: "Starting LBA"
+            abbrev: "nvme.sqe.slba"
+            bits: 64
+            offset_bits: 320
+            value: "0x00100000 (LBA for checkpoint file)"
+            description: "Starting LBA for the checkpoint write. Different LBA range from the read — this is the checkpoint save area."
+          - name: "Number of Logical Blocks"
+            abbrev: "nvme.sqe.nlb"
+            bits: 16
+            offset_bits: 384
+            value: "8191 (4 MiB)"
+
+  - id: "nvme_p2p_dma_write"
+    name: "P2P DMA: NVMe SSD ← GPU BAR1 Memory"
+    description: "NVMe controller reads data from GPU BAR1 memory via PCIe P2P and writes it to NAND flash."
+    from: "gpu"
+    to: "nvme_ssd"
+    total_bytes: 4194304
+    color: "#dc2626"
+    headers:
+      - name: "PCIe P2P Memory Read (Data Transfer)"
+        abbrev: "pcie.p2p"
+        layer: 5
+        fields:
+          - name: "TLP Type"
+            abbrev: "pcie.tlp.type"
+            bits: 8
+            value: "Memory Read (MRd) — Peer-to-Peer"
+            description: "NVMe controller issues PCIe Memory Read TLPs to GPU BAR1 addresses. The PCIe root complex routes these reads to the GPU, which returns the data. The NVMe controller then writes this data to NAND flash. Again, host DRAM and CPU are not in the data path."
+            spec_refs:
+              - document: "PCIe Base Spec 6.0"
+                section: "2.2.6"
+                title: "Memory Read Request"
+                url: "https://pcisig.com/specifications"
+          - name: "Source Address"
+            abbrev: "pcie.p2p.src"
+            bits: 64
+            value: "0x0000_3a00_0000_0000 (GPU BAR1)"
+            description: "GPU BAR1 physical address — NVMe controller reads checkpoint data from GPU memory"
+          - name: "Total Transfer Size"
+            abbrev: "pcie.p2p.total"
+            bits: 0
+            value: "4194304 bytes (4 MiB)"
+            description: "Full checkpoint data read from GPU memory. Split into Max Read Request Size chunks."
+          - name: "P2P Routing"
+            abbrev: "pcie.p2p.route"
+            bits: 0
+            value: "NVMe EP → PCIe RC → GPU EP → Completion Data → NVMe EP"
+            description: "PCIe read is a split transaction: NVMe sends MRd request to GPU BAR1, PCIe RC routes to GPU, GPU returns Completion with Data (CplD) TLPs back to NVMe controller."
+
+  - id: "nvme_write_completion"
+    name: "NVMe Write Completion (CQE)"
+    description: "NVMe controller completes the write command — checkpoint data is now persisted on NAND flash."
+    from: "nvme_ssd"
+    to: "cpu_os"
+    total_bytes: 16
+    color: "#2563eb"
+    headers:
+      - name: "NVMe Completion Queue Entry"
+        abbrev: "nvme.cqe"
+        layer: 6
+        total_bytes: 16
+        fields:
+          - name: "Command ID"
+            abbrev: "nvme.cqe.cid"
+            bits: 16
+            value: "0x0043"
+            description: "Matches the Write command CID"
+          - name: "Status"
+            abbrev: "nvme.cqe.status"
+            bits: 16
+            value: "0x0000 (Success)"
+            description: "Write completed successfully. Checkpoint data is persisted on NAND flash."
+          - name: "SQ Head Pointer"
+            abbrev: "nvme.cqe.sqhd"
+            bits: 16
+            value: "2"
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+
+  # ── Phase 1: Traditional Path (Annotation Only) ──
+  # Educational contrast — explain what happens WITHOUT GDS
+  - id: "evt_traditional_path"
+    type: "annotation"
+    t_ns: 0
+    annotation:
+      text: "Traditional Path (without GDS): NVMe → Page Cache → User Buffer → cudaMemcpy → GPU"
+      detail: >
+        WITHOUT GPUDirect Storage, reading NVMe data into GPU memory requires multiple
+        CPU-mediated copies: (1) Application calls read() or pread(). (2) NVMe driver
+        submits an NVMe Read command with PRP entries pointing to host DRAM pages allocated
+        by the page cache. (3) NVMe SSD DMAs data into host DRAM (page cache). (4) The
+        kernel copies data from page cache to the user-space buffer (if not using O_DIRECT).
+        (5) Application calls cudaMemcpyHostToDevice() to copy the user buffer into GPU
+        memory. (6) CUDA runtime DMAs data from pinned host DRAM to GPU via PCIe. Each
+        copy consumes CPU cycles, memory bandwidth, and adds latency. For AI training
+        workloads reading TBs of data per epoch, this becomes a severe bottleneck. The CPU
+        becomes a bridge between storage and GPU — wasting both CPU time and PCIe bandwidth
+        (data crosses PCIe twice: SSD→host, then host→GPU).
+      spec_refs:
+        - document: "NVIDIA cuFile API Reference"
+          section: "Overview"
+          title: "Traditional vs GDS data path"
+          url: "https://docs.nvidia.com/gpudirect-storage/overview-guide/index.html"
+    state_after:
+      - actor_id: "gpu"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "need training data"
+              gpu_buffer_ready: false
+          - layer: 6
+            state_fields:
+              cufile_driver: "not loaded"
+      - actor_id: "cpu_os"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "idle"
+          - layer: 6
+            state_fields:
+              nvidia_fs_state: "not loaded"
+          - layer: 5
+            state_fields:
+              nvme_state: "idle"
+      - actor_id: "nvme_ssd"
+        layers:
+          - layer: 6
+            state_fields:
+              controller_state: "ready"
+
+  - id: "evt_traditional_path_detail"
+    type: "annotation"
+    t_ns: 100
+    annotation:
+      text: "Traditional path bandwidth penalty: data crosses PCIe bus TWICE"
+      detail: >
+        In the traditional path, NVMe read data crosses the PCIe bus twice:
+        (1) NVMe SSD → Host DRAM (PCIe x4 Gen5 = 32 GB/s),
+        (2) Host DRAM → GPU via cudaMemcpy (PCIe x16 Gen5 = 64 GB/s).
+        With GDS, data crosses PCIe only ONCE: NVMe SSD → GPU directly.
+        For a 7 GB/s NVMe SSD feeding an H100 GPU, GDS can deliver the full
+        SSD bandwidth to GPU memory. The traditional path wastes host DRAM
+        bandwidth and pollutes the CPU L3 cache with streaming I/O data
+        that the CPU never processes. GDS also reduces latency by eliminating
+        kernel-to-user copy and cudaMemcpy scheduling overhead. For large-scale
+        AI training with many GPUs reading from many SSDs, the aggregate
+        bandwidth savings are substantial.
+
+  # ── Phase 2: GDS Initialization ──
+  - id: "evt_cufile_driver_open"
+    type: "frame_tx"
+    t_ns: 1000000
+    frame_id: "cufile_driver_open"
+    annotation:
+      text: "cuFileDriverOpen() — Initialize GPUDirect Storage subsystem"
+      detail: >
+        The application (or framework like DALI/kvikio) calls cuFileDriverOpen() to
+        initialize the GDS subsystem. This triggers loading of the nvidia-fs kernel
+        module (if not already loaded). nvidia-fs registers DMA operation callbacks
+        with the NVMe host driver via nvme_register_fs(). It also queries the PCIe
+        topology to verify that the GPU and NVMe SSD are P2P-capable (same root
+        complex or connected via a PCIe switch). If P2P is not possible, GDS falls
+        back to a bounce-buffer path through host DRAM (still faster than the
+        traditional path due to fewer copies). The nvidia-fs module also coordinates
+        with the NVIDIA GPU driver (nvidia.ko) to access GPU memory management APIs
+        for BAR1 mapping and page pinning.
+    state_after:
+      - actor_id: "gpu"
+        layers:
+          - layer: 6
+            state_fields:
+              cufile_driver: "loaded"
+      - actor_id: "cpu_os"
+        layers:
+          - layer: 6
+            state_fields:
+              nvidia_fs_state: "registered"
+              p2p_capable: true
+          - layer: 4
+            state_fields:
+              p2p_enabled: true
+              acs_override: true
+
+  # ── Phase 3: File Open ──
+  - id: "evt_file_open"
+    type: "state_change"
+    t_ns: 2000000
+    annotation:
+      text: "open(\"/data/training/imagenet_shard_0042.bin\", O_RDONLY | O_DIRECT)"
+      detail: >
+        Standard POSIX open() with O_DIRECT flag. O_DIRECT is required for GDS —
+        it bypasses the Linux page cache, which is exactly what we want since GDS
+        sends data directly to GPU memory. Without O_DIRECT, the kernel would
+        allocate page cache buffers in host DRAM and copy data there first,
+        defeating the purpose of GDS. The returned fd will be wrapped by
+        cuFileHandleRegister() next.
+    state_after:
+      - actor_id: "cpu_os"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "file open"
+              fd: "5"
+              file_path: "/data/training/imagenet_shard_0042.bin"
+
+  - id: "evt_cufile_handle_register"
+    type: "frame_tx"
+    t_ns: 2500000
+    frame_id: "cufile_handle_register"
+    annotation:
+      text: "cuFileHandleRegister() — Register file descriptor with GDS"
+      detail: >
+        Wraps the POSIX fd in a cuFile handle. nvidia-fs validates that the file
+        resides on a supported filesystem (ext4, XFS, or raw block device) and
+        resolves the file to the underlying NVMe block device (/dev/nvme0n1p1).
+        This mapping allows cuFileRead/cuFileWrite to submit NVMe commands directly
+        to the correct NVMe controller and namespace, bypassing the generic block
+        layer I/O scheduler for maximum performance.
+    state_after:
+      - actor_id: "gpu"
+        layers:
+          - layer: 6
+            state_fields:
+              file_handle: "registered"
+      - actor_id: "cpu_os"
+        layers:
+          - layer: 5
+            state_fields:
+              nvme_state: "mapped"
+              nsid: 1
+
+  # ── Phase 4: Buffer Registration ──
+  - id: "evt_cufile_buf_register"
+    type: "frame_tx"
+    t_ns: 3000000
+    frame_id: "cufile_buf_register"
+    annotation:
+      text: "cuFileBufRegister() — Pin GPU memory and create BAR1 DMA mapping"
+      detail: >
+        This is the critical setup step. cuFileBufRegister() pins the GPU memory
+        pages (preventing the GPU driver from migrating or evicting them) and creates
+        a BAR1 aperture mapping. The GPU's BAR1 is a PCIe Base Address Register that
+        exposes a window of GPU memory (HBM) in the system physical address space.
+        After this call, the GPU buffer at VA 0x7f1a_0000_0000 is accessible at
+        physical address 0x0000_3a00_0000_0000 via PCIe — any PCIe device (including
+        the NVMe controller) can DMA to this address. The IOMMU (if present) must
+        also be configured to allow the NVMe device to access this GPU BAR1 range.
+    state_after:
+      - actor_id: "gpu"
+        layers:
+          - layer: 6
+            state_fields:
+              buf_registered: true
+          - layer: 5
+            state_fields:
+              bar1_mapped: true
+              gpu_va: "0x7f1a_0000_0000"
+              gpu_pa: "0x0000_3a00_0000_0000"
+              buffer_size_bytes: 4194304
+      - actor_id: "cpu_os"
+        layers:
+          - layer: 6
+            state_fields:
+              gpu_bar1_pa: "0x0000_3a00_0000_0000"
+              dma_mapping: "GPU BAR1 ready"
+
+  # ── Phase 5: GDS Read (NVMe → GPU) ──
+  - id: "evt_cufile_read"
+    type: "frame_tx"
+    t_ns: 4000000
+    frame_id: "cufile_read_request"
+    annotation:
+      text: "cuFileRead() — Begin direct NVMe → GPU read (4 MiB)"
+      detail: >
+        The application calls cuFileRead() with the cuFile handle, GPU buffer, and
+        transfer size. nvidia-fs translates the file offset to NVMe LBAs (via the
+        filesystem extent map), constructs NVMe Read SQE(s) with PRP entries pointing
+        to GPU BAR1 physical addresses, and submits them to the NVMe driver. The key
+        innovation: nvidia-fs hooks into the NVMe driver's DMA mapping path
+        (dma_map_sg) and replaces the normal host DRAM scatter-gather entries with
+        GPU BAR1 physical addresses. The NVMe driver itself is unmodified — it just
+        sees physical addresses in the PRPs and submits them normally.
+    state_after:
+      - actor_id: "gpu"
+        layers:
+          - layer: 6
+            state_fields:
+              io_pending: true
+      - actor_id: "cpu_os"
+        layers:
+          - layer: 6
+            state_fields:
+              dma_mapping: "GPU BAR1 mapped into NVMe PRPs"
+          - layer: 5
+            state_fields:
+              nvme_state: "read pending"
+              slba: "0x00000000"
+              nlb: 8192
+              prp1: "0x0000_3a00_0000_0000 (GPU BAR1)"
+          - layer: 4
+            state_fields:
+              dma_direction: "NVMe → GPU (P2P read)"
+
+  - id: "evt_nvme_read_submit"
+    type: "frame_tx"
+    t_ns: 4100000
+    frame_id: "nvme_read_submit"
+    annotation:
+      text: "NVMe Read SQE submitted — doorbell rung"
+      detail: >
+        The NVMe host driver writes the 64-byte SQE to the Submission Queue in host
+        DRAM and writes the new SQ tail pointer to the NVMe controller's doorbell
+        register (MMIO write via PCIe). The SQE contains opcode=0x02 (Read),
+        NSID=1, SLBA=0, NLB=8191 (4 MiB), and critically: PRP1 = GPU BAR1 physical
+        address (0x0000_3a00_0000_0000). The NVMe controller does not know or care
+        that PRP1 points to GPU memory — it will blindly DMA data to that address.
+    state_after:
+      - actor_id: "cpu_os"
+        layers:
+          - layer: 5
+            state_fields:
+              sq_tail: 1
+      - actor_id: "nvme_ssd"
+        layers:
+          - layer: 6
+            state_fields:
+              controller_state: "processing"
+
+  - id: "evt_sqe_fetch"
+    type: "frame_tx"
+    t_ns: 4200000
+    frame_id: "nvme_sqe_fetch"
+    annotation:
+      text: "NVMe SSD fetches SQE from host memory"
+      detail: >
+        The NVMe controller detects the doorbell write (new SQ tail) and issues a
+        PCIe Memory Read to fetch the 64-byte SQE from the Submission Queue in host
+        DRAM. The controller parses the SQE, extracts the Read opcode, NSID, SLBA,
+        NLB, and PRP addresses. It then initiates a NAND flash read for the
+        requested LBA range.
+    state_after:
+      - actor_id: "nvme_ssd"
+        layers:
+          - layer: 7
+            state_fields:
+              ftl_state: "reading NAND"
+              nand_read_pending: true
+          - layer: 6
+            state_fields:
+              current_cid: "0x0042"
+              sqe_fetched: true
+
+  - id: "evt_p2p_dma_read"
+    type: "frame_tx"
+    t_ns: 4500000
+    frame_id: "nvme_p2p_dma_read"
+    annotation:
+      text: "P2P DMA: 4 MiB flowing NVMe SSD → GPU BAR1 (zero CPU copies)"
+      detail: >
+        THE KEY EDUCATIONAL MOMENT. The NVMe controller reads data from NAND flash
+        into its internal DRAM buffer, then issues PCIe Memory Write TLPs targeting
+        the GPU BAR1 address from PRP1/PRP list. The PCIe root complex decodes the
+        BAR1 address and routes the TLPs directly to the GPU — the data never enters
+        host DRAM and the CPU never sees the payload bytes. At PCIe Gen5 x4 (32 GB/s
+        link bandwidth), the 4 MiB transfer completes in approximately 125 microseconds.
+        The GPU's memory controller receives the writes and places the data in HBM3.
+        Compare: the traditional path would require ~250 us (two PCIe crossings plus
+        CPU memcpy overhead and page cache allocation).
+    state_after:
+      - actor_id: "nvme_ssd"
+        layers:
+          - layer: 7
+            state_fields:
+              ftl_state: "NAND read complete"
+              data_ready: true
+          - layer: 5
+            state_fields:
+              dma_state: "P2P write to GPU BAR1"
+              dma_target: "0x0000_3a00_0000_0000 (GPU BAR1)"
+      - actor_id: "gpu"
+        layers:
+          - layer: 5
+            state_fields:
+              bar1_mapped: true
+
+  - id: "evt_nvme_read_completion"
+    type: "frame_tx"
+    t_ns: 4700000
+    frame_id: "nvme_read_completion"
+    annotation:
+      text: "NVMe completion — CQE posted, MSI-X fired"
+      detail: >
+        After all data has been DMA'd to GPU BAR1, the NVMe controller posts a 16-byte
+        Completion Queue Entry (CQE) to the CQ in host DRAM and fires an MSI-X
+        interrupt. The CQE contains CID=0x0042 (matching the Read command), status=0
+        (success), and the updated SQ head pointer. The NVMe host driver's interrupt
+        handler processes the CQE and wakes the nvidia-fs thread waiting on this
+        completion.
+    state_after:
+      - actor_id: "cpu_os"
+        layers:
+          - layer: 5
+            state_fields:
+              nvme_state: "completion received"
+              cq_head: 1
+      - actor_id: "nvme_ssd"
+        layers:
+          - layer: 6
+            state_fields:
+              controller_state: "ready"
+              current_cid: "null"
+              sqe_fetched: false
+          - layer: 7
+            state_fields:
+              ftl_state: "idle"
+              nand_read_pending: false
+
+  - id: "evt_cufile_read_complete"
+    type: "frame_tx"
+    t_ns: 4800000
+    frame_id: "cufile_read_complete"
+    annotation:
+      text: "cuFileRead() returns — 4 MiB training data is in GPU memory"
+      detail: >
+        cuFileRead() returns 4194304 (bytes read successfully). The training data is
+        now in GPU HBM3 at the registered buffer address, immediately accessible to
+        CUDA kernels. The PyTorch DataLoader (or DALI pipeline) can feed this tensor
+        directly to the model's forward pass. Total CPU involvement: writing a 64-byte
+        NVMe SQE + ringing one doorbell + processing one 16-byte CQE. The CPU never
+        touched a single byte of the 4 MiB payload. This is the power of GPUDirect
+        Storage: storage I/O at NVMe wire speed with zero CPU data-plane overhead.
+    state_after:
+      - actor_id: "gpu"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "data loaded"
+              gpu_buffer_ready: true
+              training_step: 1
+          - layer: 6
+            state_fields:
+              io_pending: false
+      - actor_id: "cpu_os"
+        layers:
+          - layer: 5
+            state_fields:
+              nvme_state: "idle"
+              slba: "null"
+              nlb: 0
+              prp1: "null"
+          - layer: 6
+            state_fields:
+              dma_mapping: "none"
+          - layer: 4
+            state_fields:
+              dma_direction: "none"
+
+  # ── Phase 6: GDS Write (GPU → NVMe) — Checkpoint Save ──
+  - id: "evt_cufile_write"
+    type: "frame_tx"
+    t_ns: 10000000
+    frame_id: "cufile_write_request"
+    annotation:
+      text: "cuFileWrite() — Save checkpoint from GPU memory to NVMe (4 MiB)"
+      detail: >
+        After training computation completes, the application saves a checkpoint by
+        calling cuFileWrite(). This writes GPU memory contents directly to the NVMe
+        SSD without staging through host DRAM. The write path is the mirror of the
+        read path: nvidia-fs constructs an NVMe Write SQE with PRP entries pointing
+        to GPU BAR1 addresses, but now the NVMe controller will DMA-read from those
+        addresses (GPU → SSD). This is critical for large model checkpoint saves
+        where the model parameters (potentially GBs) reside in GPU memory.
+    state_after:
+      - actor_id: "gpu"
+        layers:
+          - layer: 6
+            state_fields:
+              io_pending: true
+      - actor_id: "cpu_os"
+        layers:
+          - layer: 5
+            state_fields:
+              nvme_state: "write pending"
+              slba: "0x00100000"
+              nlb: 8192
+              prp1: "0x0000_3a00_0000_0000 (GPU BAR1)"
+          - layer: 4
+            state_fields:
+              dma_direction: "GPU → NVMe (P2P write)"
+
+  - id: "evt_nvme_write_submit"
+    type: "frame_tx"
+    t_ns: 10100000
+    frame_id: "nvme_write_submit"
+    annotation:
+      text: "NVMe Write SQE submitted — PRP1 = GPU BAR1"
+      detail: >
+        The NVMe Write command SQE is identical in structure to the Read command but
+        with opcode 0x01 (Write). PRP1 still points to the GPU BAR1 address — but
+        now the NVMe controller will issue PCIe Memory READ TLPs to this address
+        (reading GPU memory) instead of Memory Write TLPs (writing to GPU memory).
+        The PCIe root complex routes the reads to the GPU, which returns the data.
+    state_after:
+      - actor_id: "cpu_os"
+        layers:
+          - layer: 5
+            state_fields:
+              sq_tail: 2
+
+  - id: "evt_p2p_dma_write"
+    type: "frame_tx"
+    t_ns: 10400000
+    frame_id: "nvme_p2p_dma_write"
+    annotation:
+      text: "P2P DMA: 4 MiB flowing GPU BAR1 → NVMe SSD (checkpoint save)"
+      detail: >
+        The NVMe controller reads 4 MiB from GPU BAR1 memory via PCIe P2P Memory
+        Read TLPs. PCIe reads are split transactions — the NVMe controller sends
+        MRd request TLPs, the PCIe fabric routes them to the GPU, and the GPU
+        returns CplD (Completion with Data) TLPs. The NVMe controller accumulates
+        the data in its internal write buffer and programs the NAND flash. Again,
+        host DRAM and CPU are not in the data path.
+    state_after:
+      - actor_id: "nvme_ssd"
+        layers:
+          - layer: 7
+            state_fields:
+              ftl_state: "writing NAND"
+          - layer: 5
+            state_fields:
+              dma_state: "P2P read from GPU BAR1"
+              dma_target: "0x0000_3a00_0000_0000 (GPU BAR1)"
+
+  - id: "evt_nvme_write_completion"
+    type: "frame_tx"
+    t_ns: 10800000
+    frame_id: "nvme_write_completion"
+    annotation:
+      text: "NVMe Write completion — checkpoint persisted to NAND"
+      detail: >
+        The NVMe controller completes the write to NAND flash and posts a CQE
+        with status=success. cuFileWrite() returns 4194304 (bytes written).
+        The checkpoint is now safely persisted on the SSD. The entire save
+        operation used zero CPU copies — the CPU only orchestrated the NVMe
+        command submission and processed the completion interrupt.
+    state_after:
+      - actor_id: "gpu"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "checkpoint saved"
+          - layer: 6
+            state_fields:
+              io_pending: false
+      - actor_id: "cpu_os"
+        layers:
+          - layer: 5
+            state_fields:
+              nvme_state: "idle"
+              sq_tail: 2
+              cq_head: 2
+              slba: "null"
+              nlb: 0
+              prp1: "null"
+          - layer: 6
+            state_fields:
+              dma_mapping: "none"
+          - layer: 4
+            state_fields:
+              dma_direction: "none"
+      - actor_id: "nvme_ssd"
+        layers:
+          - layer: 7
+            state_fields:
+              ftl_state: "idle"
+          - layer: 6
+            state_fields:
+              controller_state: "ready"
+          - layer: 5
+            state_fields:
+              dma_state: "idle"
+              dma_target: "null"
+
+  # ── Summary Annotation ──
+  - id: "evt_summary"
+    type: "annotation"
+    t_ns: 11000000
+    annotation:
+      text: "GDS Summary: Zero-copy I/O between NVMe and GPU at full PCIe bandwidth"
+      detail: >
+        GPUDirect Storage eliminates the CPU from the storage data path entirely.
+        The CPU's only role is control plane: submitting 64-byte NVMe command
+        descriptors and processing 16-byte completion entries. All bulk data
+        movement happens via PCIe peer-to-peer DMA between the NVMe SSD and GPU.
+        For AI training workloads: GDS enables reading training data at full
+        NVMe bandwidth (7+ GB/s per SSD) directly into GPU memory, and saving
+        checkpoints at the same speed. With 8 NVMe SSDs feeding one H100 GPU,
+        GDS can deliver 50+ GB/s of training data bandwidth with zero CPU overhead.
+        Key components: cuFile API (user space), nvidia-fs kernel module (kernel
+        space), NVMe driver (unmodified), PCIe P2P routing (hardware).
+
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
+glossary:
+  - term: "GPUDirect Storage"
+    abbrev: "GDS"
+    definition: "NVIDIA technology that enables direct DMA transfers between NVMe storage and GPU memory, bypassing the CPU page cache and host DRAM. Uses the cuFile API and nvidia-fs kernel module. Part of the NVIDIA Magnum IO stack."
+    spec_refs:
+      - document: "NVIDIA cuFile API Reference"
+        section: ""
+        title: "GPUDirect Storage Overview"
+        url: "https://docs.nvidia.com/gpudirect-storage/overview-guide/index.html"
+
+  - term: "cuFile API"
+    definition: "NVIDIA user-space API for GPUDirect Storage I/O. Key functions: cuFileDriverOpen() initializes GDS, cuFileHandleRegister() wraps a file descriptor, cuFileBufRegister() registers GPU memory for DMA, cuFileRead()/cuFileWrite() perform zero-copy I/O between files and GPU memory."
+    spec_refs:
+      - document: "NVIDIA cuFile API Reference"
+        section: ""
+        title: "cuFile API Reference"
+        url: "https://docs.nvidia.com/gpudirect-storage/api-reference-guide/index.html"
+
+  - term: "nvidia-fs"
+    definition: "NVIDIA kernel module that enables GPUDirect Storage. Registers DMA operation callbacks with the NVMe driver to intercept DMA mapping and redirect PRP/SGL entries to GPU BAR1 physical addresses instead of host DRAM. Coordinates with the NVIDIA GPU driver for GPU memory pinning and BAR1 aperture management."
+    spec_refs:
+      - document: "NVIDIA cuFile API Reference"
+        section: ""
+        title: "nvidia-fs Architecture"
+        url: "https://docs.nvidia.com/gpudirect-storage/overview-guide/index.html"
+
+  - term: "Base Address Register 1"
+    abbrev: "BAR1"
+    definition: "A PCIe Base Address Register on the GPU that maps a window of GPU memory (HBM) into the system physical address space. This makes GPU memory addressable by other PCIe endpoints (like NVMe controllers) for peer-to-peer DMA. BAR1 size on H100 is configurable up to 256GB."
+    spec_refs:
+      - document: "PCIe Base Spec 6.0"
+        section: "7.5.1"
+        title: "Base Address Registers"
+        url: "https://pcisig.com/specifications"
+
+  - term: "Physical Region Page"
+    abbrev: "PRP"
+    definition: "NVMe data transfer addressing mechanism. A PRP entry is a 64-bit physical address pointing to a 4KB-aligned memory page. For transfers larger than 4KB, PRP2 points to a PRP list (array of PRP entries) in host memory. In GDS, PRP entries point to GPU BAR1 physical addresses instead of host DRAM."
+    spec_refs:
+      - document: "NVMe Base Spec 2.1"
+        section: "4.1.1"
+        title: "Physical Region Page Entry and List"
+        url: "https://nvmexpress.org/specifications/"
+
+  - term: "PCIe Peer-to-Peer DMA"
+    abbrev: "P2P DMA"
+    definition: "Direct DMA transfers between two PCIe endpoints (e.g., NVMe SSD and GPU) without data passing through host DRAM. The PCIe root complex or PCIe switch routes TLPs based on the destination physical address. Requires both devices to be in the same PCIe hierarchy and ACS (Access Control Services) to permit P2P routing."
+    spec_refs:
+      - document: "PCIe Base Spec 6.0"
+        section: "2.2"
+        title: "Transaction Layer"
+        url: "https://pcisig.com/specifications"
+
+  - term: "Submission Queue / Completion Queue"
+    abbrev: "SQ/CQ"
+    definition: "NVMe command interface. Applications submit commands by writing 64-byte Submission Queue Entries (SQEs) to the SQ in host memory and ringing a doorbell register. The NVMe controller fetches SQEs, processes them, and posts 16-byte Completion Queue Entries (CQEs) to the CQ, then fires an MSI-X interrupt."
+    spec_refs:
+      - document: "NVMe Base Spec 2.1"
+        section: "4.1"
+        title: "Submission and Completion Queue Definition"
+        url: "https://nvmexpress.org/specifications/"
+
+  - term: "O_DIRECT"
+    definition: "Linux open() flag that bypasses the kernel page cache for file I/O. Required for GPUDirect Storage because GDS sends data directly to GPU memory — page cache buffering would defeat the purpose. O_DIRECT also requires user buffers to be aligned to filesystem block boundaries."
+
+  - term: "kvikio"
+    definition: "RAPIDS Python library that provides a high-level, Pythonic interface to cuFile/GDS. Integrates with NumPy, CuPy, and PyTorch for transparent GPU-direct file I/O. Supports both GDS (when available) and fallback to POSIX + cudaMemcpy."

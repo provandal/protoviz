@@ -224,6 +224,33 @@ function inferPhase(event, lastPhase) {
   if (/rdma\s*read|\bread\b.*response|\bread\b.*posted/i.test(text)
       || /read/.test(id)) return 'RDMA Read';
 
+  // S3/RDMA phases
+  if (/s3.?rdma.*connect|connect.*request|connect.*response/i.test(text)
+      || /s3rdma_connect|s3_connect/.test(id)) return 'S3/RDMA Connect';
+  if (/\bs3.*put\b|put.*request|put.*ready|put.*complete/i.test(text)
+      || /s3_put|put_req|put_ready|put_complete/.test(id)) return 'S3 PUT';
+  if (/\bs3.*get\b|get.*request|get.*complete/i.test(text)
+      || /s3_get|get_req|get_complete/.test(id)) return 'S3 GET';
+  if (/library.*init|s3_rdma.*init|server.*init/i.test(text)
+      || /lib_init|library_init/.test(id)) return 'Library Init';
+
+  // GPUDirect RDMA phases
+  if (/\bgpu\b|cuda|peermem|bar1/i.test(text) || /gpu_/.test(id)) return 'GPU Memory Setup';
+
+  // GPUDirect Storage phases
+  if (/cufiledriveropen|gds.*init|nvidia-fs.*init/i.test(text)
+      || /gds_init|cufile_driver/.test(id)) return 'GDS Init';
+  if (/cufilehandleregister|gds.*file.*open/i.test(text)
+      || /gds_file|cufile_handle/.test(id)) return 'GDS File Open';
+  if (/cufilebufregister|gds.*buffer/i.test(text)
+      || /gds_buf|cufile_buf/.test(id)) return 'GDS Buffer Register';
+  if (/p2p.*dma|peer.*dma|bar1.*dma/i.test(text)
+      || /p2p_dma/.test(id)) return 'P2P DMA';
+  if (/cufileread|gds.*read/i.test(text)
+      || /gds_read|cufile_read/.test(id)) return 'GDS Read';
+  if (/cufilewrite|gds.*write/i.test(text)
+      || /gds_write|cufile_write/.test(id)) return 'GDS Write';
+
   // Infrastructure
   if (/\barp\b/.test(text) || /arp/.test(id)) return 'ARP';
   if (/physical|link|auto.?neg|fec|signal/i.test(text)

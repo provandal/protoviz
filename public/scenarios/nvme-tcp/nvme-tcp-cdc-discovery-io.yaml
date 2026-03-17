@@ -1102,7 +1102,7 @@ frames:
           - name: "Fabrics Command Type"
             abbrev: "nvme.fabrics.fctype"
             bits: 8
-            value: "DIM"
+            value: "0x02 (DIM)"
             description: "Discovery Information Management command"
           - name: "Task"
             abbrev: "nvme.dim.tas"
@@ -1566,7 +1566,7 @@ frames:
           - name: "Fabrics Command Type"
             abbrev: "nvme.fabrics.fctype"
             bits: 8
-            value: "DIM"
+            value: "0x02 (DIM)"
             description: "Discovery Information Management — register with DDC"
           - name: "Task"
             abbrev: "nvme.dim.tas"

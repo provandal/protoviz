@@ -29,6 +29,36 @@
       "description": "Complete NVMe over TCP flow with three-tier discovery: mDNS → CDC (DIM registration, DDC referrals) → DDC on storage (IO Controller details) → IOC connection, Identify Controller/Namespace, NVMe Write and Read.",
       "tags": ["NVMe", "NVMe-oF", "NVMe/TCP", "CDC", "DIM", "storage", "TP8009", "TP8013", "education"],
       "path": "nvme-tcp/nvme-tcp-cdc-discovery-io.yaml"
+    },
+    {
+      "slug": "gpudirect-rdma-write-to-gpu",
+      "title": "GPUDirect RDMA: RoCEv2 WRITE Direct to GPU Memory",
+      "protocol": "RoCEv2 + GPUDirect",
+      "protocol_family": "RDMA",
+      "difficulty": "advanced",
+      "description": "GPUDirect RDMA showing RDMA WRITE landing directly in GPU HBM via nvidia-peermem, bypassing host DRAM entirely. Covers cuMemAlloc, GPU BAR1 exposure, MR registration against GPU memory, and the zero-copy DMA data path.",
+      "tags": ["RDMA", "RoCEv2", "GPUDirect", "GPU", "CUDA", "nvidia-peermem", "AI-infrastructure", "100GbE"],
+      "path": "gpudirect/gpudirect-rdma-write-to-gpu.yaml"
+    },
+    {
+      "slug": "gpudirect-storage-nvme-to-gpu",
+      "title": "GPUDirect Storage: NVMe Read Direct to GPU Memory",
+      "protocol": "NVMe + GPUDirect Storage",
+      "protocol_family": "Storage",
+      "difficulty": "advanced",
+      "description": "GPUDirect Storage (GDS) showing NVMe SSD data read directly into GPU memory via cuFile API and nvidia-fs, bypassing the CPU page cache entirely. Contrasts traditional storage path (3 copies) with GDS zero-copy P2P DMA.",
+      "tags": ["GPUDirect", "GDS", "NVMe", "GPU", "CUDA", "cuFile", "nvidia-fs", "AI-storage", "PCIe"],
+      "path": "gpudirect-storage/gpudirect-storage-nvme-to-gpu.yaml"
+    },
+    {
+      "slug": "s3-rdma-object-put-get",
+      "title": "S3/RDMA: Object PUT and GET over RoCEv2 (NVIDIA Library Architecture)",
+      "protocol": "S3/RDMA",
+      "protocol_family": "RDMA",
+      "difficulty": "advanced",
+      "description": "Pre-standard S3/RDMA flow using NVIDIA RDMA for S3-compatible storage library: Library Init, QP connect via UD SEND, S3 PUT (inverted — client RDMA WRITEs to server), S3 GET (server RDMA WRITEs to client). Zero CPU data path. Contrasts with traditional S3 over TCP/HTTP.",
+      "tags": ["S3", "RDMA", "RoCEv2", "object-storage", "AI-storage", "GPUDirect", "pre-standard", "100GbE"],
+      "path": "s3-rdma/s3-rdma-object-put-get.yaml"
     }
   ]
 }
