@@ -35,8 +35,10 @@ export default function Gallery() {
 
   return (
     <div style={{
-      minHeight: '100vh', background: '#020817', color: '#e2e8f0',
+      height: '100vh', display: 'flex', flexDirection: 'column',
+      background: '#020817', color: '#e2e8f0',
       fontFamily: "'IBM Plex Sans',system-ui,sans-serif",
+      overflow: 'hidden',
     }}>
       {/* Header */}
       <div style={{
@@ -90,37 +92,39 @@ export default function Gallery() {
         difficulties={difficulties}
       />
 
-      {/* Scenario grid */}
-      <div style={{ padding: '24px', maxWidth: 1000, margin: '0 auto' }}>
-        {loading ? (
-          <div style={{ textAlign: 'center', color: '#475569', padding: 40 }}>
-            Loading scenarios...
-          </div>
-        ) : filtered.length === 0 ? (
-          <div style={{ textAlign: 'center', color: '#475569', padding: 40 }}>
-            No scenarios match your filters
-          </div>
-        ) : (
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
-            gap: 16,
-          }}>
-            {filtered.map(s => (
-              <ScenarioCard
-                key={s.slug}
-                scenario={s}
-                onClick={() => navigate(`/${s.slug}`)}
-              />
-            ))}
-          </div>
-        )}
+      {/* Scenario grid — scrollable, takes remaining space */}
+      <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
+        <div style={{ padding: '24px', maxWidth: 1000, margin: '0 auto' }}>
+          {loading ? (
+            <div style={{ textAlign: 'center', color: '#475569', padding: 40 }}>
+              Loading scenarios...
+            </div>
+          ) : filtered.length === 0 ? (
+            <div style={{ textAlign: 'center', color: '#475569', padding: 40 }}>
+              No scenarios match your filters
+            </div>
+          ) : (
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+              gap: 16,
+            }}>
+              {filtered.map(s => (
+                <ScenarioCard
+                  key={s.slug}
+                  scenario={s}
+                  onClick={() => navigate(`/${s.slug}`)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* About section */}
+      {/* About section — always visible at bottom */}
       <div style={{
-        padding: '40px 24px', borderTop: '1px solid #1e293b', marginTop: 40,
-        background: '#0a0f1a',
+        padding: '24px 24px', borderTop: '1px solid #1e293b',
+        background: '#0a0f1a', flexShrink: 0,
       }}>
         <div style={{ maxWidth: 600, margin: '0 auto', textAlign: 'center' }}>
           <div style={{ color: '#475569', fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 16 }}>
@@ -172,15 +176,15 @@ export default function Gallery() {
             >
               GitHub
             </a>
-            <span style={{ color: '#1e293b', fontSize: 11, padding: '4px 0' }}>
+            <span style={{ color: '#64748b', fontSize: 11, padding: '4px 0' }}>
               MIT License
             </span>
-            <span style={{ color: '#334155', fontSize: 11, padding: '4px 0' }}>
+            <span style={{ color: '#64748b', fontSize: 11, padding: '4px 0' }}>
               v{__APP_VERSION__}
             </span>
           </div>
 
-          <div style={{ color: '#334155', fontSize: 9, textAlign: 'center', lineHeight: 1.6, maxWidth: 500, marginTop: 16 }}>
+          <div style={{ color: '#64748b', fontSize: 9, textAlign: 'center', lineHeight: 1.6, maxWidth: 500, marginTop: 16 }}>
             Protocol descriptions are based on open-source implementations (Linux kernel, rdma-core)
             and public RFCs. Specification references are citations for further reading — no proprietary
             text has been reproduced.
