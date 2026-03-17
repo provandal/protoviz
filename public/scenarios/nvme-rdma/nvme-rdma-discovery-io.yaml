@@ -1,0 +1,2033 @@
+meta:
+  id: "nvme-rdma-discovery-io"
+  title: "NVMe-oF/RDMA: Discovery → Fabrics Connect → NVMe Write & Read over RoCEv2"
+  protocol: "NVMe-oF/RDMA"
+  protocol_family: "NVMe-oF"
+  version: "1.0.0"
+  description: >
+    Complete NVMe over Fabrics using RDMA (RoCEv2) transport. Starting from physical
+    link establishment and ARP resolution, through CM-based RDMA connection setup,
+    NVMe-oF Fabrics Connect to the Discovery Controller, Discovery Log Page retrieval,
+    IO Controller connection, Identify Controller/Namespace, and NVMe Write and Read
+    operations. Contrasts with the NVMe/TCP scenario — here, NVMe commands travel via
+    RDMA SEND, data via RDMA WRITE (controller→host) and RDMA READ (host→controller),
+    and completions via RDMA SEND. The CPU is not involved in the data path.
+
+  learning_objectives:
+    - "Understand how NVMe-oF uses RDMA as a transport binding — commands via SEND, data via WRITE/READ"
+    - "See the RDMA CM connection setup that precedes NVMe-oF Fabrics Connect"
+    - "Follow the Fabrics Connect command to establish Admin and IO queues over RDMA"
+    - "Observe Discovery Log Pages returned via RDMA to locate IO Controllers"
+    - "Trace NVMe Write: host sends command via RDMA SEND, controller fetches data via RDMA READ"
+    - "Trace NVMe Read: host sends command via RDMA SEND, controller delivers data via RDMA WRITE"
+    - "Understand SGL (Scatter-Gather List) usage for RDMA data placement"
+    - "Compare RDMA transport binding with TCP — zero-copy vs kernel-mediated data path"
+
+  difficulty: "advanced"
+
+  authors:
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+    - name: "Generated via NVMe specification and Linux kernel source analysis"
+      org: "proto-viz"
+      github: ""
+
+  created: "2026-03-17"
+  updated: "2026-03-17"
+
+  tags:
+    - "NVMe"
+    - "NVMe-oF"
+    - "NVMe-oF/RDMA"
+    - "RDMA"
+    - "RoCEv2"
+    - "storage"
+    - "discovery"
+    - "100GbE"
+    - "education"
+
+  primary_specs:
+    - document: "NVMe-oF Spec 1.1a"
+      section: "3"
+      title: "NVMe over Fabrics Architecture"
+      url: "https://nvmexpress.org/specifications/"
+      alt_url: ""
+    - document: "NVMe-oF Spec 1.1a"
+      section: "4.2"
+      title: "RDMA Transport Binding"
+      url: "https://nvmexpress.org/specifications/"
+      alt_url: ""
+    - document: "NVMe Base Spec 2.1"
+      section: "5"
+      title: "Admin Command Set"
+      url: "https://nvmexpress.org/specifications/"
+      alt_url: ""
+    - document: "IBTA Vol1"
+      section: "9.7"
+      title: "Reliable Connection Service"
+      url: "https://www.infinibandta.org/ibta-specification/"
+      alt_url: ""
+
+  content_disclaimer: >
+    Protocol descriptions are based on open-source implementations (Linux kernel
+    nvme-rdma driver, rdma-core) and public NVMe/IBTA specifications. No proprietary
+    specification text has been reproduced.
+
+  source_references:
+    - repo: "torvalds/linux"
+      path: "drivers/nvme/host/rdma.c"
+      description: "NVMe-oF RDMA host driver — connection setup, command submission, completion handling"
+    - repo: "torvalds/linux"
+      path: "drivers/nvme/target/rdma.c"
+      description: "NVMe-oF RDMA target driver — queue pair management, command reception, data transfer"
+    - repo: "torvalds/linux"
+      path: "drivers/nvme/host/fabrics.c"
+      description: "NVMe-oF common fabrics layer — Fabrics Connect, Discovery, Property Get/Set"
+    - repo: "torvalds/linux"
+      path: "drivers/infiniband/core/cm.c"
+      description: "IB Connection Manager — CM REQ/REP/RTU state machine"
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "host"
+      type: "initiator"
+      label: "NVMe Host"
+      description: "NVMe-oF initiator — Linux host running nvme-rdma driver"
+      hardware: "100GbE RNIC (e.g., ConnectX-6 Dx)"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "192.168.100.10"
+      gid: "fe80::0002:c903:0012:3456"
+      mac: "00:02:c9:12:34:56"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "Lossless 100GbE Switch"
+      description: "Data center switch with PFC enabled on priority 3 for RoCEv2"
+      hardware: "100GbE switch"
+      position: "center"
+
+    - id: "target"
+      type: "target"
+      label: "NVMe-oF Storage Target"
+      description: "NVMe-oF RDMA target — storage array exposing NVMe namespaces over RoCEv2"
+      hardware: "100GbE RNIC + NVMe SSDs"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "192.168.100.20"
+      gid: "fe80::0002:c903:00ab:cdef"
+      mac: "00:02:c9:ab:cd:ef"
+      position: "right"
+
+  links:
+    - id: "link-host-sw"
+      from: "host"
+      to: "switch"
+      speed_gbps: 100
+      media: "fiber_sr"
+      fec: "RS(544,514)"
+      autoneg: true
+    - id: "link-sw-target"
+      from: "switch"
+      to: "target"
+      speed_gbps: 100
+      media: "fiber_sr"
+      fec: "RS(544,514)"
+      autoneg: true
+
+# ─────────────────────────────────────────────────────────────────
+# OSI LAYER DEFINITIONS
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  host:
+    - layer: 7
+      name: "NVMe Host Driver"
+      components: ["drivers/nvme/host/rdma.c", "drivers/nvme/host/core.c", "drivers/nvme/host/fabrics.c"]
+      state_schema:
+        nvme_state:
+          type: "string"
+          description: "NVMe host state"
+          initial: "disconnected"
+        admin_qid:
+          type: "integer"
+          description: "Admin queue ID (always 0)"
+          initial: 0
+        io_qid:
+          type: "integer"
+          description: "IO queue ID"
+          initial: 0
+        cntlid:
+          type: "string"
+          description: "Controller ID assigned by target"
+          initial: "—"
+        nsid:
+          type: "integer"
+          description: "Active Namespace ID"
+          initial: 0
+
+    - layer: 6
+      name: "NVMe-oF Fabrics"
+      components: ["drivers/nvme/host/fabrics.c"]
+      state_schema:
+        fabrics_state:
+          type: "string"
+          description: "Fabrics connection state"
+          initial: "idle"
+        hostnqn:
+          type: "string"
+          description: "Host NVMe Qualified Name"
+          initial: "nqn.2014-08.org.nvmexpress:uuid:host-001"
+        subnqn:
+          type: "string"
+          description: "Target subsystem NQN"
+          initial: "—"
+
+    - layer: 5
+      name: "IB Transport (RC QP)"
+      components: ["drivers/infiniband/hw/mlx5/qp.c", "drivers/infiniband/core/cm.c"]
+      state_schema:
+        qp_state:
+          type: "string"
+          initial: "RESET"
+        qp_num:
+          type: "string"
+          initial: "null"
+        cm_state:
+          type: "string"
+          description: "Connection Manager state"
+          initial: "idle"
+
+    - layer: 4
+      name: "UDP (RoCEv2)"
+      components: ["RNIC hardware offload"]
+      state_schema:
+        dst_port:
+          type: "integer"
+          initial: 4791
+
+    - layer: 3
+      name: "IP / Routing"
+      components: ["kernel IP stack"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "192.168.100.10"
+        dst_ip:
+          type: "string"
+          initial: "null"
+        ecn_state:
+          type: "string"
+          initial: "ECT(0)"
+
+    - layer: 2
+      name: "Ethernet / PFC"
+      components: ["mlx5 driver", "IEEE 802.1Qbb"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "down"
+        pfc_enabled:
+          type: "boolean"
+          initial: false
+
+    - layer: 1
+      name: "Physical (100GbE)"
+      components: ["IEEE 802.3cd", "100GBASE-SR4"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "down"
+        speed:
+          type: "string"
+          initial: "unknown"
+
+  target:
+    - layer: 7
+      name: "NVMe Target Subsystem"
+      components: ["drivers/nvme/target/rdma.c", "drivers/nvme/target/core.c"]
+      state_schema:
+        nvme_state:
+          type: "string"
+          initial: "listening"
+        subsys_nqn:
+          type: "string"
+          initial: "nqn.2024-01.com.example:subsys-array01"
+        namespaces:
+          type: "integer"
+          description: "Number of namespaces exported"
+          initial: 1
+        ns1_size_gb:
+          type: "integer"
+          description: "Namespace 1 size in GB"
+          initial: 1024
+
+    - layer: 6
+      name: "NVMe-oF Fabrics"
+      components: ["drivers/nvme/target/fabrics.c"]
+      state_schema:
+        fabrics_state:
+          type: "string"
+          initial: "listening"
+        cntlid_assigned:
+          type: "string"
+          description: "Controller ID assigned to this host"
+          initial: "—"
+
+    - layer: 5
+      name: "IB Transport (RC QP)"
+      components: ["drivers/infiniband/hw/mlx5/qp.c"]
+      state_schema:
+        qp_state:
+          type: "string"
+          initial: "RESET"
+        qp_num:
+          type: "string"
+          initial: "null"
+        cm_state:
+          type: "string"
+          initial: "listening"
+
+    - layer: 4
+      name: "UDP (RoCEv2)"
+      components: ["RNIC hardware offload"]
+      state_schema:
+        dst_port:
+          type: "integer"
+          initial: 4791
+
+    - layer: 3
+      name: "IP / Routing"
+      components: ["kernel IP stack"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "192.168.100.20"
+        ecn_state:
+          type: "string"
+          initial: "ECT(0)"
+
+    - layer: 2
+      name: "Ethernet / PFC"
+      components: ["mlx5 driver", "IEEE 802.1Qbb"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "down"
+        pfc_enabled:
+          type: "boolean"
+          initial: false
+
+    - layer: 1
+      name: "Physical (100GbE)"
+      components: ["IEEE 802.3cd", "100GBASE-SR4"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "down"
+        speed:
+          type: "string"
+          initial: "unknown"
+
+  switch:
+    - layer: 2
+      name: "Ethernet Switching / PFC"
+      components: ["802.1Q bridge", "802.1Qbb PFC"]
+      state_schema:
+        fwd_table_entries:
+          type: "integer"
+          initial: 0
+    - layer: 1
+      name: "Physical (per-port)"
+      components: ["100GBASE-SR4", "RS(544,514) FEC"]
+      state_schema:
+        port_host_phy:
+          type: "string"
+          initial: "down"
+        port_target_phy:
+          type: "string"
+          initial: "down"
+
+# ─────────────────────────────────────────────────────────────────
+# FRAMES
+# ─────────────────────────────────────────────────────────────────
+frames:
+  # ── ARP ─────────────────────────────────────────────────────────
+  - id: "arp_request"
+    name: "ARP Request"
+    from: "host"
+    to: "broadcast"
+    via: ["switch"]
+    timestamp_ns: 5000000
+    total_bytes: 42
+    color: "#b45309"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "ff:ff:ff:ff:ff:ff"
+            description: "Broadcast"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:12:34:56"
+            description: "Host's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0806"
+            description: "ARP"
+      - name: "ARP"
+        abbrev: "arp"
+        layer: 3
+        total_bytes: 28
+        fields:
+          - name: "Opcode"
+            abbrev: "arp.opcode"
+            bits: 16
+            value: 1
+            description: "ARP Request — 'Who has 192.168.100.20?'"
+          - name: "Sender IP"
+            abbrev: "arp.src.proto_ipv4"
+            bits: 32
+            value: "192.168.100.10"
+            description: "Host's IP"
+          - name: "Target IP"
+            abbrev: "arp.dst.proto_ipv4"
+            bits: 32
+            value: "192.168.100.20"
+            description: "Storage target's IP"
+
+  - id: "arp_reply"
+    name: "ARP Reply"
+    from: "target"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 5050000
+    total_bytes: 42
+    color: "#b45309"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:12:34:56"
+            description: "Host's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:ab:cd:ef"
+            description: "Storage target's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0806"
+            description: "ARP"
+      - name: "ARP"
+        abbrev: "arp"
+        layer: 3
+        total_bytes: 28
+        fields:
+          - name: "Opcode"
+            abbrev: "arp.opcode"
+            bits: 16
+            value: 2
+            description: "ARP Reply — '192.168.100.20 is at 00:02:c9:ab:cd:ef'"
+
+  # ── CM REQ/REP/RTU (Admin Queue) ───────────────────────────────
+  - id: "cm_req_admin"
+    name: "CM REQ (Admin Queue)"
+    description: "Host initiates RDMA connection for NVMe Admin Queue"
+    from: "host"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 10000000
+    total_bytes: 334
+    color: "#1e40af"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.100.10"
+            description: "Host"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.100.20"
+            description: "Storage target"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+            description: "RoCEv2 port"
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x64"
+            description: "UD SEND (0x64) — CM messages use Unreliable Datagram"
+          - name: "Destination QP"
+            abbrev: "bth.dqp"
+            bits: 24
+            value: "0x000001"
+            description: "QP1 — well-known GSI (General Service Interface) QP for CM"
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.3"
+                title: "Connection Management"
+                url: "https://www.infinibandta.org/ibta-specification/"
+      - name: "CM REQ (Connection Request)"
+        abbrev: "cm"
+        layer: 6
+        total_bytes: 232
+        fields:
+          - name: "Local Communication ID"
+            abbrev: "cm.local_comm_id"
+            bits: 32
+            value: "0x00010001"
+            description: "Unique ID for this connection request"
+          - name: "Service ID"
+            abbrev: "cm.service_id"
+            bits: 64
+            value: "0x0000000000004420"
+            description: "NVMe-oF RDMA service ID — identifies this as an NVMe-oF connection request. The target's CM listener matches on this service ID."
+            spec_refs:
+              - document: "NVMe-oF Spec 1.1a"
+                section: "4.2"
+                title: "RDMA Transport Binding"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "Local QPN"
+            abbrev: "cm.local_qpn"
+            bits: 24
+            value: "0x000080"
+            description: "Host's QP number for this connection"
+          - name: "Responder Resources"
+            abbrev: "cm.resp_resources"
+            bits: 8
+            value: 4
+            description: "Max outstanding RDMA READ requests (as responder)"
+          - name: "Initiator Depth"
+            abbrev: "cm.init_depth"
+            bits: 8
+            value: 4
+            description: "Max outstanding RDMA READ requests (as initiator)"
+          - name: "Private Data"
+            abbrev: "cm.private_data"
+            bits: 224
+            value: "RDMA_CM + NVMe-oF RDMA Private Data"
+            description: "Contains NVMe-oF RDMA transport-specific parameters: HRQSIZE (host receive queue size) = 128 entries, HSQSIZE (host send queue size) = 128 entries. These negotiate NVMe queue depths over the RDMA connection."
+            spec_refs:
+              - document: "NVMe-oF Spec 1.1a"
+                section: "4.2.3"
+                title: "RDMA CM Private Data"
+                url: "https://nvmexpress.org/specifications/"
+            kernel_ref:
+              file: "drivers/nvme/host/rdma.c"
+              function: "nvme_rdma_alloc_queue"
+              notes: "Sets up QP, posts receive WQEs, sends CM REQ with NVMe-oF private data"
+
+  - id: "cm_rep_admin"
+    name: "CM REP (Admin Queue)"
+    description: "Target accepts RDMA connection for Admin Queue"
+    from: "target"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 10050000
+    total_bytes: 334
+    color: "#1e40af"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.100.20"
+            description: "Storage target"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.100.10"
+            description: "Host"
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x64"
+            description: "UD SEND"
+          - name: "Destination QP"
+            abbrev: "bth.dqp"
+            bits: 24
+            value: "0x000001"
+            description: "QP1 — GSI"
+      - name: "CM REP (Connection Reply)"
+        abbrev: "cm"
+        layer: 6
+        total_bytes: 232
+        fields:
+          - name: "Local Communication ID"
+            abbrev: "cm.local_comm_id"
+            bits: 32
+            value: "0x00020001"
+            description: "Target's communication ID"
+          - name: "Remote Communication ID"
+            abbrev: "cm.remote_comm_id"
+            bits: 32
+            value: "0x00010001"
+            description: "Matches host's CM REQ"
+          - name: "Local QPN"
+            abbrev: "cm.local_qpn"
+            bits: 24
+            value: "0x000100"
+            description: "Target's QP number for this connection"
+          - name: "Private Data"
+            abbrev: "cm.private_data"
+            bits: 224
+            value: "NVMe-oF RDMA Accept: CRQSIZE=128"
+            description: "Target responds with CRQSIZE (controller receive queue size). The minimum of HSQSIZE and CRQSIZE determines the effective queue depth."
+            kernel_ref:
+              file: "drivers/nvme/target/rdma.c"
+              function: "nvme_rdma_accept"
+              notes: "Target allocates QP, posts receive WQEs, sends CM REP with CRQSIZE"
+
+  - id: "cm_rtu_admin"
+    name: "CM RTU (Admin Queue Ready)"
+    description: "Host confirms — RDMA connection established for Admin Queue"
+    from: "host"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 10100000
+    total_bytes: 100
+    color: "#1e40af"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x64"
+            description: "UD SEND"
+      - name: "CM RTU (Ready To Use)"
+        abbrev: "cm"
+        layer: 6
+        total_bytes: 36
+        fields:
+          - name: "Local Communication ID"
+            abbrev: "cm.local_comm_id"
+            bits: 32
+            value: "0x00010001"
+            description: "Host's communication ID"
+          - name: "Remote Communication ID"
+            abbrev: "cm.remote_comm_id"
+            bits: 32
+            value: "0x00020001"
+            description: "Target's communication ID"
+
+  # ── Fabrics Connect (Discovery Controller) ──────────────────────
+  - id: "fabrics_connect_discovery"
+    name: "Fabrics Connect (Discovery Controller)"
+    description: "NVMe Fabrics Connect command to Discovery Controller via RDMA SEND"
+    from: "host"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 20000000
+    total_bytes: 166
+    color: "#1e40af"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.100.10"
+            description: "Host"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.100.20"
+            description: "Target"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+            description: "RoCEv2"
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "RC SEND Only (0x04) — NVMe commands travel via RDMA SEND. This is a key difference from NVMe/TCP: the command arrives directly in a pre-posted receive WQE buffer on the target, zero-copy."
+            spec_refs:
+              - document: "NVMe-oF Spec 1.1a"
+                section: "4.2.4"
+                title: "Capsule Command — RDMA SEND"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "Destination QP"
+            abbrev: "bth.dqp"
+            bits: 24
+            value: "0x000100"
+            description: "Target's Admin Queue QP"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 0
+            description: "First packet on this QP"
+      - name: "NVMe Fabrics Connect Command"
+        abbrev: "nvme_fabrics"
+        layer: 7
+        total_bytes: 64
+        fields:
+          - name: "Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x7F"
+            description: "Fabrics Command (0x7F) — NVMe-oF-specific admin command"
+            spec_refs:
+              - document: "NVMe-oF Spec 1.1a"
+                section: "3.3"
+                title: "Fabrics Command Set"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "Fabrics Command Type"
+            abbrev: "nvme.fabrics.fctype"
+            bits: 8
+            value: "0x01"
+            description: "Connect (0x01) — establish association with controller"
+          - name: "Queue ID"
+            abbrev: "nvme.fabrics.qid"
+            bits: 16
+            value: 0
+            description: "Queue 0 = Admin Queue. IO queues are connected separately after discovery."
+          - name: "SQ Size"
+            abbrev: "nvme.fabrics.sqsize"
+            bits: 16
+            value: 127
+            description: "Submission queue size (0-based) = 128 entries"
+          - name: "Host NQN"
+            abbrev: "nvme.fabrics.hostnqn"
+            bits: 0
+            value: "nqn.2014-08.org.nvmexpress:uuid:host-001"
+            description: "Host's NVMe Qualified Name — unique identifier for this host"
+          - name: "SubNQN"
+            abbrev: "nvme.fabrics.subnqn"
+            bits: 0
+            value: "nqn.2014-08.org.nvmexpress.discovery"
+            description: "Discovery Controller well-known NQN"
+            spec_refs:
+              - document: "NVMe-oF Spec 1.1a"
+                section: "3.1.2"
+                title: "Discovery Controller"
+                url: "https://nvmexpress.org/specifications/"
+
+  - id: "fabrics_connect_disc_resp"
+    name: "Fabrics Connect Response (Discovery)"
+    description: "Discovery Controller accepts connection, assigns controller ID"
+    from: "target"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 20050000
+    total_bytes: 118
+    color: "#1e40af"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "RC SEND Only — completion delivered via RDMA SEND"
+          - name: "Destination QP"
+            abbrev: "bth.dqp"
+            bits: 24
+            value: "0x000080"
+            description: "Host's Admin Queue QP"
+      - name: "NVMe Completion"
+        abbrev: "nvme_cqe"
+        layer: 7
+        total_bytes: 16
+        fields:
+          - name: "Status"
+            abbrev: "nvme.cqe.status"
+            bits: 16
+            value: "0x0000"
+            description: "Success"
+          - name: "Controller ID"
+            abbrev: "nvme.cqe.connect.cntlid"
+            bits: 16
+            value: "0xFFFF"
+            description: "Dynamic controller ID (0xFFFF) — Discovery Controller"
+
+  # ── Discovery Log Page ──────────────────────────────────────────
+  - id: "get_log_page_discovery"
+    name: "Get Log Page (Discovery)"
+    description: "Host requests Discovery Log Page via RDMA SEND, data returned via RDMA WRITE"
+    from: "host"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 30000000
+    total_bytes: 130
+    color: "#0369a1"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "RC SEND — NVMe command capsule"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 1
+            description: "Second command on Admin Queue"
+      - name: "NVMe Get Log Page Command"
+        abbrev: "nvme"
+        layer: 7
+        total_bytes: 64
+        fields:
+          - name: "Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x02"
+            description: "Get Log Page (0x02)"
+          - name: "Log Page Identifier"
+            abbrev: "nvme.cmd.get_log.lid"
+            bits: 8
+            value: "0x70"
+            description: "Discovery Log Page (0x70) — lists available IO controllers"
+            spec_refs:
+              - document: "NVMe-oF Spec 1.1a"
+                section: "5.3"
+                title: "Discovery Log Page"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "SGL Descriptor"
+            abbrev: "nvme.cmd.sgl"
+            bits: 128
+            value: "Keyed SGL: rkey=0x0000ABCD, va=0x7f8000100000, len=4096"
+            description: "SGL (Scatter-Gather List) tells the target WHERE to RDMA WRITE the log page data. The target will use this rkey and virtual address to perform an RDMA WRITE directly into the host's pre-registered memory — zero CPU involvement on the host."
+            spec_refs:
+              - document: "NVMe-oF Spec 1.1a"
+                section: "4.2.5"
+                title: "SGL Usage in RDMA Transport"
+                url: "https://nvmexpress.org/specifications/"
+            kernel_ref:
+              file: "drivers/nvme/host/rdma.c"
+              function: "nvme_rdma_map_data"
+              notes: "Maps host buffer, creates SGL with rkey for target to RDMA WRITE into"
+
+  - id: "discovery_log_write"
+    name: "Discovery Log Data (RDMA WRITE)"
+    description: "Target RDMA WRITEs Discovery Log Page directly into host memory"
+    from: "target"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 30050000
+    total_bytes: 1134
+    color: "#0369a1"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x0a"
+            description: "RC RDMA WRITE Only (0x0a) — target writes log data directly into host's pre-registered buffer using the SGL rkey. No receive WQE consumed on the host — data lands silently in memory."
+            spec_refs:
+              - document: "NVMe-oF Spec 1.1a"
+                section: "4.2.5"
+                title: "Data Transfer — RDMA WRITE"
+                url: "https://nvmexpress.org/specifications/"
+      - name: "RETH"
+        abbrev: "reth"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - name: "Virtual Address"
+            abbrev: "reth.va"
+            bits: 64
+            value: "0x00007f8000100000"
+            description: "Host buffer VA from the SGL in the NVMe command"
+          - name: "R_Key"
+            abbrev: "reth.rkey"
+            bits: 32
+            value: "0x0000ABCD"
+            description: "Host's memory region key — authorizes this RDMA WRITE"
+          - name: "DMA Length"
+            abbrev: "reth.dma_len"
+            bits: 32
+            value: 1056
+            description: "Discovery Log Page header (16B) + 1 entry (1040B)"
+      - name: "Discovery Log Page Data"
+        abbrev: "nvme_disc"
+        layer: 7
+        total_bytes: 1056
+        fields:
+          - name: "Number of Records"
+            abbrev: "nvme_disc.numrec"
+            bits: 64
+            value: 1
+            description: "One IO Controller entry available"
+          - name: "Entry[0]: Transport Type"
+            abbrev: "nvme_disc.entry.trtype"
+            bits: 8
+            value: "0x01"
+            description: "RDMA transport (0x01)"
+          - name: "Entry[0]: SubNQN"
+            abbrev: "nvme_disc.entry.subnqn"
+            bits: 0
+            value: "nqn.2024-01.com.example:subsys-array01"
+            description: "IO subsystem NQN — use this for the Fabrics Connect to the IO Controller"
+          - name: "Entry[0]: Transport Address"
+            abbrev: "nvme_disc.entry.traddr"
+            bits: 0
+            value: "192.168.100.20"
+            description: "Target's IP for IO Controller connection"
+          - name: "Entry[0]: Transport Service ID"
+            abbrev: "nvme_disc.entry.trsvcid"
+            bits: 0
+            value: "4420"
+            description: "RDMA CM service ID for NVMe-oF (IANA assigned)"
+
+  - id: "discovery_log_cqe"
+    name: "Get Log Page Completion (RDMA SEND)"
+    description: "Target sends NVMe completion after RDMA WRITE of log data"
+    from: "target"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 30100000
+    total_bytes: 118
+    color: "#0369a1"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "RC SEND — NVMe completion via RDMA SEND. The ordering is: (1) RDMA WRITE data, (2) RDMA SEND completion. RDMA ordering guarantees the data is visible before the completion arrives."
+      - name: "NVMe Completion"
+        abbrev: "nvme_cqe"
+        layer: 7
+        total_bytes: 16
+        fields:
+          - name: "Status"
+            abbrev: "nvme.cqe.status"
+            bits: 16
+            value: "0x0000"
+            description: "Success — log page data is now in host memory"
+
+  # ── Fabrics Connect (IO Controller) ─────────────────────────────
+  - id: "fabrics_connect_io"
+    name: "Fabrics Connect (IO Controller, QID=1)"
+    description: "Host connects IO queue to the subsystem discovered via log page"
+    from: "host"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 40000000
+    total_bytes: 166
+    color: "#1e40af"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "RC SEND — Fabrics Connect command"
+          - name: "Destination QP"
+            abbrev: "bth.dqp"
+            bits: 24
+            value: "0x000102"
+            description: "Target's IO Queue QP (separate RDMA connection from Admin)"
+      - name: "NVMe Fabrics Connect"
+        abbrev: "nvme_fabrics"
+        layer: 7
+        total_bytes: 64
+        fields:
+          - name: "Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x7F"
+            description: "Fabrics Command"
+          - name: "Fabrics Command Type"
+            abbrev: "nvme.fabrics.fctype"
+            bits: 8
+            value: "0x01"
+            description: "Connect"
+          - name: "Queue ID"
+            abbrev: "nvme.fabrics.qid"
+            bits: 16
+            value: 1
+            description: "IO Queue 1 — separate from Admin Queue (QID=0). Each IO queue gets its own RDMA QP for isolation."
+          - name: "SQ Size"
+            abbrev: "nvme.fabrics.sqsize"
+            bits: 16
+            value: 127
+            description: "128 entries — IO queue depth"
+          - name: "SubNQN"
+            abbrev: "nvme.fabrics.subnqn"
+            bits: 0
+            value: "nqn.2024-01.com.example:subsys-array01"
+            description: "IO subsystem NQN from Discovery Log Page"
+
+  - id: "fabrics_connect_io_resp"
+    name: "Fabrics Connect Response (IO Controller)"
+    from: "target"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 40050000
+    total_bytes: 118
+    color: "#1e40af"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "RC SEND — completion"
+      - name: "NVMe Completion"
+        abbrev: "nvme_cqe"
+        layer: 7
+        total_bytes: 16
+        fields:
+          - name: "Status"
+            abbrev: "nvme.cqe.status"
+            bits: 16
+            value: "0x0000"
+            description: "Success"
+          - name: "Controller ID"
+            abbrev: "nvme.cqe.connect.cntlid"
+            bits: 16
+            value: "0x0041"
+            description: "Controller ID 65 — assigned by target for this host's IO connection"
+
+  # ── NVMe Write (RDMA READ for data) ────────────────────────────
+  - id: "nvme_write_cmd"
+    name: "NVMe Write Command (RDMA SEND)"
+    description: "Host sends NVMe Write command — target will RDMA READ the data"
+    from: "host"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 50000000
+    total_bytes: 130
+    color: "#991b1b"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "RC SEND — NVMe command capsule"
+          - name: "Destination QP"
+            abbrev: "bth.dqp"
+            bits: 24
+            value: "0x000102"
+            description: "Target's IO Queue QP"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 1
+            description: "Second packet on IO Queue QP"
+      - name: "NVMe Write Command"
+        abbrev: "nvme"
+        layer: 7
+        total_bytes: 64
+        fields:
+          - name: "Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x01"
+            description: "NVMe Write (0x01)"
+          - name: "NSID"
+            abbrev: "nvme.cmd.nsid"
+            bits: 32
+            value: 1
+            description: "Namespace 1"
+          - name: "Starting LBA"
+            abbrev: "nvme.cmd.slba"
+            bits: 64
+            value: "0x0000000000000000"
+            description: "LBA 0 — start of namespace"
+          - name: "Number of Logical Blocks"
+            abbrev: "nvme.cmd.nlb"
+            bits: 16
+            value: 7
+            description: "8 blocks (0-based) × 512B = 4KB write"
+          - name: "SGL Descriptor"
+            abbrev: "nvme.cmd.sgl"
+            bits: 128
+            value: "Keyed SGL: rkey=0x0000BCDE, va=0x7f8000200000, len=4096"
+            description: "SGL pointing to host's write data buffer. The target will RDMA READ from this address to fetch the write data — the host's CPU is NOT involved in the data transfer."
+            spec_refs:
+              - document: "NVMe-oF Spec 1.1a"
+                section: "4.2.6"
+                title: "Write Command — RDMA READ by Controller"
+                url: "https://nvmexpress.org/specifications/"
+
+  - id: "nvme_write_rdma_read"
+    name: "RDMA READ (Target Fetches Write Data)"
+    description: "Target RDMA READs 4KB write data from host's buffer — zero CPU involvement on host"
+    from: "target"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 50050000
+    total_bytes: 98
+    color: "#991b1b"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x0c"
+            description: "RC RDMA READ Request (0x0c) — target asks host's RNIC to return data from the SGL address. The host's RNIC responds with an RDMA READ Response containing the data. No CPU interrupt on the host."
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.7.5"
+                title: "RDMA READ Operation"
+                url: "https://www.infinibandta.org/ibta-specification/"
+      - name: "RETH"
+        abbrev: "reth"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - name: "Virtual Address"
+            abbrev: "reth.va"
+            bits: 64
+            value: "0x00007f8000200000"
+            description: "Host's write data buffer address (from NVMe command SGL)"
+          - name: "R_Key"
+            abbrev: "reth.rkey"
+            bits: 32
+            value: "0x0000BCDE"
+            description: "Host's memory region key authorizing read access"
+          - name: "DMA Length"
+            abbrev: "reth.dma_len"
+            bits: 32
+            value: 4096
+            description: "4KB — matches NVMe write command transfer length"
+
+  - id: "nvme_write_rdma_read_resp"
+    name: "RDMA READ Response (Host → Target with Write Data)"
+    description: "Host's RNIC returns 4KB write data to target — CPU not involved"
+    from: "host"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 50100000
+    total_bytes: 4162
+    color: "#991b1b"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x10"
+            description: "RC RDMA READ Response (0x10) — host's RNIC DMA-reads data from the registered memory region and sends it to the target. The host CPU is completely uninvolved."
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 0
+            description: "Response PSN matches READ request"
+      - name: "AETH"
+        abbrev: "aeth"
+        layer: 5
+        total_bytes: 4
+        fields:
+          - name: "Syndrome"
+            abbrev: "aeth.syndrome"
+            bits: 8
+            value: "0x00"
+            description: "ACK — read data follows"
+      - name: "Payload"
+        abbrev: "payload"
+        layer: 7
+        total_bytes: 4096
+        fields:
+          - name: "Write Data"
+            abbrev: "nvme.data"
+            bits: 32768
+            value: "4096 bytes of application write data"
+            description: "The actual data being written to NVMe namespace. Delivered via RDMA READ Response — zero-copy from host memory to target NIC, then to NVMe SSD."
+
+  - id: "nvme_write_cqe"
+    name: "NVMe Write Completion (RDMA SEND)"
+    description: "Target confirms NVMe Write completed after writing data to SSD"
+    from: "target"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 50200000
+    total_bytes: 118
+    color: "#991b1b"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "RC SEND — completion delivered via RDMA SEND to host's receive WQE"
+      - name: "NVMe Completion"
+        abbrev: "nvme_cqe"
+        layer: 7
+        total_bytes: 16
+        fields:
+          - name: "Status"
+            abbrev: "nvme.cqe.status"
+            bits: 16
+            value: "0x0000"
+            description: "Success — 4KB written to LBA 0"
+          - name: "SQ ID"
+            abbrev: "nvme.cqe.sqid"
+            bits: 16
+            value: 1
+            description: "IO Queue 1"
+
+  # ── NVMe Read (RDMA WRITE for data) ────────────────────────────
+  - id: "nvme_read_cmd"
+    name: "NVMe Read Command (RDMA SEND)"
+    description: "Host sends NVMe Read command — target will RDMA WRITE the data back"
+    from: "host"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 60000000
+    total_bytes: 130
+    color: "#6b21a8"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "RC SEND — NVMe command capsule"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 2
+            description: "Third command on IO Queue QP"
+      - name: "NVMe Read Command"
+        abbrev: "nvme"
+        layer: 7
+        total_bytes: 64
+        fields:
+          - name: "Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x02"
+            description: "NVMe Read (0x02)"
+          - name: "NSID"
+            abbrev: "nvme.cmd.nsid"
+            bits: 32
+            value: 1
+            description: "Namespace 1"
+          - name: "Starting LBA"
+            abbrev: "nvme.cmd.slba"
+            bits: 64
+            value: "0x0000000000000000"
+            description: "LBA 0 — same block we just wrote"
+          - name: "Number of Logical Blocks"
+            abbrev: "nvme.cmd.nlb"
+            bits: 16
+            value: 7
+            description: "8 blocks × 512B = 4KB read"
+          - name: "SGL Descriptor"
+            abbrev: "nvme.cmd.sgl"
+            bits: 128
+            value: "Keyed SGL: rkey=0x0000CDEF, va=0x7f8000300000, len=4096"
+            description: "SGL pointing to host's read data buffer. The target will RDMA WRITE data directly into this address — read data arrives in host memory without any CPU involvement."
+
+  - id: "nvme_read_rdma_write"
+    name: "RDMA WRITE (Target Delivers Read Data)"
+    description: "Target RDMA WRITEs 4KB read data into host's buffer — zero CPU on host"
+    from: "target"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 60100000
+    total_bytes: 4162
+    color: "#6b21a8"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x0a"
+            description: "RC RDMA WRITE Only (0x0a) — target writes read data directly into the host's buffer at the SGL address. The host's CPU is not interrupted — data appears silently in memory."
+            spec_refs:
+              - document: "NVMe-oF Spec 1.1a"
+                section: "4.2.7"
+                title: "Read Command — RDMA WRITE by Controller"
+                url: "https://nvmexpress.org/specifications/"
+      - name: "RETH"
+        abbrev: "reth"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - name: "Virtual Address"
+            abbrev: "reth.va"
+            bits: 64
+            value: "0x00007f8000300000"
+            description: "Host's read buffer address from the SGL"
+          - name: "R_Key"
+            abbrev: "reth.rkey"
+            bits: 32
+            value: "0x0000CDEF"
+            description: "Host's memory region key"
+          - name: "DMA Length"
+            abbrev: "reth.dma_len"
+            bits: 32
+            value: 4096
+            description: "4KB read data"
+      - name: "Payload"
+        abbrev: "payload"
+        layer: 7
+        total_bytes: 4096
+        fields:
+          - name: "Read Data"
+            abbrev: "nvme.data"
+            bits: 32768
+            value: "4096 bytes of data read from NVMe SSD"
+            description: "The data that was previously written to LBA 0. Delivered via RDMA WRITE — zero-copy from NVMe SSD through target NIC directly into host's registered memory."
+
+  - id: "nvme_read_cqe"
+    name: "NVMe Read Completion (RDMA SEND)"
+    description: "Target sends completion after RDMA WRITE of read data — host processes data"
+    from: "target"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 60150000
+    total_bytes: 118
+    color: "#6b21a8"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "RC SEND — completion. RDMA ordering guarantees: by the time this SEND arrives in the host's CQ, the RDMA WRITE data is already visible in the host's buffer."
+      - name: "NVMe Completion"
+        abbrev: "nvme_cqe"
+        layer: 7
+        total_bytes: 16
+        fields:
+          - name: "Status"
+            abbrev: "nvme.cqe.status"
+            bits: 16
+            value: "0x0000"
+            description: "Success — 4KB read from LBA 0, data is in host buffer"
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+  # ── Link ────────────────────────────────────────────────────────
+  - id: "evt_phy_link"
+    type: "state_change"
+    t_ns: 0
+    annotation:
+      text: "Physical link up — 100GbE with PFC enabled on both segments"
+      detail: >
+        Both 100GbE links come up via Auto-Negotiation with RS-FEC. PFC is
+        enabled on priority 3 for lossless RoCEv2 transport. This is the
+        same lossless fabric foundation described in the PFC/ECN/DCQCN scenario.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 1
+            state_fields:
+              phy_state: "up"
+              speed: "100 Gbps"
+          - layer: 2
+            state_fields:
+              link_state: "up"
+              pfc_enabled: true
+          - layer: 3
+            state_fields:
+              dst_ip: "192.168.100.20"
+      - actor_id: "target"
+        layers:
+          - layer: 1
+            state_fields:
+              phy_state: "up"
+              speed: "100 Gbps"
+          - layer: 2
+            state_fields:
+              link_state: "up"
+              pfc_enabled: true
+      - actor_id: "switch"
+        layers:
+          - layer: 1
+            state_fields:
+              port_host_phy: "up"
+              port_target_phy: "up"
+
+  # ── ARP ─────────────────────────────────────────────────────────
+  - id: "evt_arp_req"
+    type: "frame_tx"
+    t_ns: 5000000
+    frame_id: "arp_request"
+    annotation:
+      text: "ARP Request — Host resolves storage target's MAC address"
+      detail: >
+        The NVMe host needs the target's MAC address before it can establish
+        an RDMA connection. ARP request is broadcast; switch floods to all ports.
+    state_after:
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            state_fields:
+              fwd_table_entries: 1
+
+  - id: "evt_arp_rep"
+    type: "frame_tx"
+    t_ns: 5050000
+    frame_id: "arp_reply"
+    annotation:
+      text: "ARP Reply — Target responds with MAC 00:02:c9:ab:cd:ef"
+      detail: >
+        ARP cache updated on both sides. The host can now create RDMA connections.
+    state_after:
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            state_fields:
+              fwd_table_entries: 2
+
+  # ── CM Connection Setup (Admin Queue) ───────────────────────────
+  - id: "evt_cm_req_admin"
+    type: "frame_tx"
+    t_ns: 10000000
+    frame_id: "cm_req_admin"
+    annotation:
+      text: "CM REQ → Host initiates RDMA connection for NVMe Admin Queue"
+      detail: >
+        The nvme-rdma driver calls rdma_connect() which triggers the IB CM
+        (Connection Manager) to send a CM REQ. This is sent via UD (Unreliable
+        Datagram) to the well-known QP1 (GSI — General Service Interface).
+
+        The CM REQ carries NVMe-oF RDMA private data specifying:
+        • HRQSIZE = 128 (host receive queue size)
+        • HSQSIZE = 128 (host send queue size)
+
+        This is a key difference from NVMe/TCP: the RDMA transport requires
+        explicit QP connection setup via the IB CM before any NVMe commands
+        can flow. The NVMe/TCP transport simply opens a TCP connection.
+      spec_refs:
+        - document: "IBTA Vol1"
+          section: "12.6"
+          title: "CM REQ Message"
+          url: "https://www.infinibandta.org/ibta-specification/"
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 5
+            state_fields:
+              qp_state: "INIT"
+              qp_num: "0x000080"
+              cm_state: "REQ_SENT"
+
+  - id: "evt_cm_rep_admin"
+    type: "frame_tx"
+    t_ns: 10050000
+    frame_id: "cm_rep_admin"
+    annotation:
+      text: "CM REP ← Target accepts RDMA connection, allocates QP"
+      detail: >
+        The target's nvme-rdma driver accepts the connection. It allocates a QP,
+        posts receive WQEs (for incoming NVMe command capsules), and sends CM REP
+        with CRQSIZE = 128 (controller receive queue size).
+
+        The QP transitions: RESET → INIT → RTR (Ready to Receive).
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 5
+            state_fields:
+              qp_state: "RTR"
+              qp_num: "0x000100"
+              cm_state: "REP_SENT"
+
+  - id: "evt_cm_rtu_admin"
+    type: "frame_tx"
+    t_ns: 10100000
+    frame_id: "cm_rtu_admin"
+    annotation:
+      text: "CM RTU → RDMA connection established — Admin Queue ready"
+      detail: >
+        The host sends CM RTU (Ready To Use), both QPs transition to RTS
+        (Ready To Send). The RDMA connection is fully established.
+
+        NVMe-oF/RDMA uses one RDMA QP per NVMe queue:
+        • Admin Queue (QID 0) → QP pair 0x000080 ↔ 0x000100
+        • IO Queue 1 (QID 1) → separate QP pair (connected later)
+
+        This per-queue isolation means a stalled IO queue doesn't block
+        admin operations — important for controller management.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 5
+            state_fields:
+              qp_state: "RTS"
+              cm_state: "established"
+          - layer: 6
+            state_fields:
+              fabrics_state: "RDMA connected"
+      - actor_id: "target"
+        layers:
+          - layer: 5
+            state_fields:
+              qp_state: "RTS"
+              cm_state: "established"
+
+  # ── Fabrics Connect (Discovery) ─────────────────────────────────
+  - id: "evt_fabrics_connect_disc"
+    type: "frame_tx"
+    t_ns: 20000000
+    frame_id: "fabrics_connect_discovery"
+    annotation:
+      text: "Fabrics Connect → Host connects to Discovery Controller"
+      detail: >
+        With the RDMA connection established, the host sends an NVMe Fabrics
+        Connect command via RDMA SEND (BTH opcode 0x04). The command capsule
+        lands directly in a pre-posted receive WQE on the target — zero-copy
+        into the target's command buffer.
+
+        The host connects to the well-known Discovery Controller NQN:
+        nqn.2014-08.org.nvmexpress.discovery
+
+        This is analogous to the NVMe/TCP scenario's mDNS → CDC flow, but
+        simpler: in the RDMA case, the host typically knows the target's IP
+        address from static configuration (nvme connect-all -t rdma -a 192.168.100.20).
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 7
+            state_fields:
+              nvme_state: "connecting to discovery"
+          - layer: 6
+            state_fields:
+              subnqn: "nqn.2014-08.org.nvmexpress.discovery"
+
+  - id: "evt_fabrics_connect_disc_resp"
+    type: "frame_tx"
+    t_ns: 20050000
+    frame_id: "fabrics_connect_disc_resp"
+    annotation:
+      text: "Fabrics Connect Response ← Discovery Controller ready"
+      detail: >
+        The target accepts the Fabrics Connect and returns a dynamic controller
+        ID (0xFFFF for Discovery Controllers). The host's Admin Queue is now
+        associated with the Discovery Controller.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 7
+            state_fields:
+              nvme_state: "discovery connected"
+              cntlid: "0xFFFF"
+
+  # ── Discovery Log Page ──────────────────────────────────────────
+  - id: "evt_get_log_cmd"
+    type: "frame_tx"
+    t_ns: 30000000
+    frame_id: "get_log_page_discovery"
+    annotation:
+      text: "Get Log Page → Host requests Discovery Log via RDMA SEND"
+      detail: >
+        The host sends a Get Log Page command (LID 0x70) via RDMA SEND.
+        The command includes a Keyed SGL descriptor that tells the target
+        exactly where to RDMA WRITE the log page data in host memory:
+        rkey=0x0000ABCD, va=0x7f8000100000, len=4096.
+
+        This is the fundamental NVMe-oF/RDMA data transfer pattern for
+        controller-to-host data:
+        1. Host sends command via RDMA SEND (with SGL pointing to host buffer)
+        2. Target RDMA WRITEs data directly into host buffer (using SGL rkey/va)
+        3. Target sends completion via RDMA SEND
+
+        The host's CPU does not touch the data — it goes from target NIC
+        directly into host memory via RDMA WRITE. Compare with NVMe/TCP
+        where the kernel must copy data from socket buffers to the target buffer.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 7
+            state_fields:
+              nvme_state: "retrieving discovery log"
+
+  - id: "evt_discovery_log_write"
+    type: "frame_tx"
+    t_ns: 30050000
+    frame_id: "discovery_log_write"
+    annotation:
+      text: "RDMA WRITE ← Target delivers Discovery Log Page into host memory"
+      detail: >
+        The target reads the Discovery Log Page from its configuration and
+        RDMA WRITEs it directly into the host's pre-registered buffer using
+        the rkey and virtual address from the command's SGL.
+
+        The log page contains one entry:
+        • SubNQN: nqn.2024-01.com.example:subsys-array01
+        • Transport: RDMA (0x01)
+        • Address: 192.168.100.20
+        • Service ID: 4420
+
+        The host will use this information to connect to the IO Controller.
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            state_fields:
+              nvme_state: "discovery log sent"
+
+  - id: "evt_discovery_log_cqe"
+    type: "frame_tx"
+    t_ns: 30100000
+    frame_id: "discovery_log_cqe"
+    annotation:
+      text: "Completion ← Discovery Log Page retrieved successfully"
+      detail: >
+        The target sends the NVMe completion via RDMA SEND. RDMA ordering
+        guarantees that the RDMA WRITE (data) is visible in host memory
+        BEFORE this SEND (completion) arrives. The host can immediately
+        access the Discovery Log Page data.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 7
+            state_fields:
+              nvme_state: "discovery complete"
+          - layer: 6
+            state_fields:
+              subnqn: "nqn.2024-01.com.example:subsys-array01"
+
+  # ── Fabrics Connect (IO Controller) ─────────────────────────────
+  - id: "evt_fabrics_connect_io"
+    type: "frame_tx"
+    t_ns: 40000000
+    frame_id: "fabrics_connect_io"
+    annotation:
+      text: "Fabrics Connect → Host connects IO Queue to storage subsystem"
+      detail: >
+        The host establishes a second RDMA connection (separate CM REQ/REP/RTU,
+        omitted for brevity) and sends Fabrics Connect for IO Queue 1 (QID=1)
+        to the subsystem NQN discovered in the log page.
+
+        Each NVMe IO queue maps to a separate RDMA QP. In production, a host
+        typically creates one IO queue per CPU core (e.g., 32 QPs for 32 cores)
+        for maximum parallelism. Each queue operates independently.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 7
+            state_fields:
+              nvme_state: "connecting IO queue"
+              io_qid: 1
+
+  - id: "evt_fabrics_connect_io_resp"
+    type: "frame_tx"
+    t_ns: 40050000
+    frame_id: "fabrics_connect_io_resp"
+    annotation:
+      text: "Fabrics Connect Response ← IO Controller ready, CNTLID=0x0041"
+      detail: >
+        The target assigns controller ID 0x0041 and the IO queue is ready
+        for NVMe I/O operations. The host can now issue NVMe Read and Write
+        commands on this queue.
+
+        At this point the full NVMe-oF/RDMA stack is established:
+        • Admin Queue: QP 0x000080 ↔ 0x000100 (for admin commands, discovery)
+        • IO Queue 1: QP 0x000082 ↔ 0x000102 (for NVMe Read/Write I/O)
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 7
+            state_fields:
+              nvme_state: "IO queue connected"
+              cntlid: "0x0041"
+              nsid: 1
+          - layer: 6
+            state_fields:
+              fabrics_state: "IO connected"
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            state_fields:
+              nvme_state: "IO connected"
+          - layer: 6
+            state_fields:
+              cntlid_assigned: "0x0041"
+
+  # ── NVMe Write ──────────────────────────────────────────────────
+  - id: "evt_nvme_write_cmd"
+    type: "frame_tx"
+    t_ns: 50000000
+    frame_id: "nvme_write_cmd"
+    annotation:
+      text: "NVMe Write → Host sends 4KB write command (RDMA SEND)"
+      detail: >
+        The host application issues a 4KB write to LBA 0. The nvme-rdma driver:
+        1. Registers the write data buffer as an MR (Memory Region)
+        2. Builds an NVMe Write command with a Keyed SGL pointing to the buffer
+        3. Sends the command via RDMA SEND (ibv_post_send with SEND opcode)
+
+        The SGL tells the target: "My write data is at va=0x7f8000200000,
+        rkey=0x0000BCDE, length=4096. RDMA READ it from there."
+
+        This is the OPPOSITE of NVMe Read data flow: for Writes, the TARGET
+        fetches data FROM the host via RDMA READ. For Reads, the target
+        delivers data TO the host via RDMA WRITE.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 7
+            state_fields:
+              nvme_state: "write pending"
+
+  - id: "evt_nvme_write_rdma_read"
+    type: "frame_tx"
+    t_ns: 50050000
+    frame_id: "nvme_write_rdma_read"
+    annotation:
+      text: "RDMA READ ← Target fetches write data from host memory"
+      detail: >
+        The target's NVMe driver issues an RDMA READ to fetch the 4KB write
+        data from the host's buffer. The target's RNIC sends an RDMA READ
+        Request (BTH opcode 0x0c) with the host's rkey and virtual address.
+
+        The host's RNIC receives this request, DMA-reads the data from the
+        host's registered memory region, and returns it as an RDMA READ
+        Response — ALL IN HARDWARE. The host CPU is not interrupted.
+
+        This is a fundamental advantage of the RDMA transport over TCP:
+        in NVMe/TCP, the host kernel must copy write data from user buffers
+        into kernel socket buffers, then the NIC DMAs from kernel memory.
+        In NVMe-oF/RDMA, the data goes directly from user-space memory
+        to the wire without any CPU copy.
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            state_fields:
+              nvme_state: "fetching write data"
+
+  - id: "evt_nvme_write_rdma_read_resp"
+    type: "frame_tx"
+    t_ns: 50100000
+    frame_id: "nvme_write_rdma_read_resp"
+    annotation:
+      text: "RDMA READ Response → 4KB write data delivered to target"
+      detail: >
+        The host's RNIC returns the 4KB data payload. The target receives it,
+        and the NVMe target driver writes it to the backend NVMe SSD at LBA 0.
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            state_fields:
+              nvme_state: "writing to SSD"
+
+  - id: "evt_nvme_write_cqe"
+    type: "frame_tx"
+    t_ns: 50200000
+    frame_id: "nvme_write_cqe"
+    annotation:
+      text: "NVMe Write Completion ← 4KB written to LBA 0 successfully"
+      detail: >
+        The target confirms the NVMe Write completed. The NVMe completion
+        is delivered via RDMA SEND to the host's completion queue (receive WQE).
+
+        NVMe Write data path summary (RDMA transport):
+        1. Host → Target: RDMA SEND (NVMe Write command with SGL)
+        2. Target → Host: RDMA READ Request (fetch write data)
+        3. Host → Target: RDMA READ Response (4KB data, zero-copy)
+        4. Target → Host: RDMA SEND (NVMe completion)
+        Total: 4 RDMA operations, 0 CPU copies on host.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 7
+            state_fields:
+              nvme_state: "write complete"
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            state_fields:
+              nvme_state: "IO ready"
+
+  # ── NVMe Read ──────────────────────────────────────────────────
+  - id: "evt_nvme_read_cmd"
+    type: "frame_tx"
+    t_ns: 60000000
+    frame_id: "nvme_read_cmd"
+    annotation:
+      text: "NVMe Read → Host sends 4KB read command (RDMA SEND)"
+      detail: >
+        The host sends an NVMe Read command for the same LBA 0 (4KB).
+        The command includes a Keyed SGL telling the target where to RDMA
+        WRITE the read data in host memory:
+        rkey=0x0000CDEF, va=0x7f8000300000, len=4096.
+
+        For Read operations, the data path is simpler than Write:
+        the target reads from SSD and RDMA WRITEs directly into the
+        host's buffer, then sends the completion.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 7
+            state_fields:
+              nvme_state: "read pending"
+
+  - id: "evt_nvme_read_rdma_write"
+    type: "frame_tx"
+    t_ns: 60100000
+    frame_id: "nvme_read_rdma_write"
+    annotation:
+      text: "RDMA WRITE ← Target delivers 4KB read data into host memory"
+      detail: >
+        The target reads 4KB from the NVMe SSD at LBA 0 and RDMA WRITEs it
+        directly into the host's registered buffer using the SGL rkey and
+        virtual address. The host's CPU is not involved — data lands silently
+        in user-space memory.
+
+        This is the same data delivery mechanism used for the Discovery Log
+        Page earlier, and it's the fundamental pattern for all controller-to-host
+        data in NVMe-oF/RDMA.
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            state_fields:
+              nvme_state: "read data sent"
+
+  - id: "evt_nvme_read_cqe"
+    type: "frame_tx"
+    t_ns: 60150000
+    frame_id: "nvme_read_cqe"
+    annotation:
+      text: "NVMe Read Completion ← 4KB read from LBA 0 successfully"
+      detail: >
+        The target sends the completion via RDMA SEND. RDMA ordering guarantees
+        the WRITE data is visible before this completion arrives.
+
+        NVMe Read data path summary (RDMA transport):
+        1. Host → Target: RDMA SEND (NVMe Read command with SGL)
+        2. Target → Host: RDMA WRITE (4KB data, zero-copy into host buffer)
+        3. Target → Host: RDMA SEND (NVMe completion)
+        Total: 3 RDMA operations, 0 CPU copies on host.
+
+        Comparison with NVMe/TCP:
+        • NVMe/TCP Read: command (TCP SEND) → data (TCP C2HData PDU, kernel copy) → completion
+        • NVMe-oF/RDMA Read: command (RDMA SEND) → data (RDMA WRITE, zero-copy) → completion
+        The RDMA path eliminates all CPU data copies and kernel transitions.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 7
+            state_fields:
+              nvme_state: "read complete"
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            state_fields:
+              nvme_state: "IO ready"
+
+  # ── Summary ─────────────────────────────────────────────────────
+  - id: "evt_summary"
+    type: "annotation"
+    t_ns: 100000000
+    annotation:
+      text: "⟳ Scenario complete — NVMe-oF/RDMA discovery and I/O"
+      detail: >
+        This scenario demonstrated NVMe over Fabrics using the RDMA transport binding:
+
+        1. LINK — 100GbE physical establishment with PFC for lossless fabric
+        2. ARP — MAC address resolution
+        3. CM — IB Connection Manager QP setup (REQ/REP/RTU) for Admin Queue
+        4. FABRICS CONNECT — Discovery Controller connection, Discovery Log Page retrieval
+        5. IO CONNECT — IO Controller queue setup over separate RDMA QP
+        6. NVMe WRITE — command via SEND, data fetched via RDMA READ (3 operations)
+        7. NVMe READ — command via SEND, data delivered via RDMA WRITE (2 operations)
+
+        RDMA Transport Binding — Data Path Summary:
+        ┌─────────────────────────┬──────────────────────┬─────────────────────┐
+        │ Operation               │ Command Direction    │ Data Direction      │
+        ├─────────────────────────┼──────────────────────┼─────────────────────┤
+        │ NVMe Read               │ Host→Target (SEND)   │ Target→Host (WRITE) │
+        │ NVMe Write              │ Host→Target (SEND)   │ Target←Host (READ)  │
+        │ Admin (Get Log Page)    │ Host→Target (SEND)   │ Target→Host (WRITE) │
+        │ Completion (any)        │ Target→Host (SEND)   │ —                   │
+        └─────────────────────────┴──────────────────────┴─────────────────────┘
+
+        Key advantages over NVMe/TCP:
+        • Zero CPU data copies — RNIC DMA handles all data movement
+        • Lower latency — no kernel socket buffer transitions
+        • Higher throughput — line-rate achievable with single QP
+        • Per-queue isolation — each NVMe queue on its own RDMA QP
+
+        Trade-off: requires lossless Ethernet fabric (PFC + ECN/DCQCN),
+        RDMA-capable NICs, and more complex configuration.
+
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
+glossary:
+  - term: "Keyed SGL"
+    abbrev: "SGL"
+    definition: "Scatter-Gather List descriptor in NVMe-oF/RDMA that provides the remote memory key (rkey) and virtual address for RDMA data placement. The host includes SGLs in NVMe commands to tell the target where to RDMA WRITE (for reads) or RDMA READ (for writes)."
+    spec_refs:
+      - document: "NVMe-oF Spec 1.1a"
+        section: "4.2.5"
+        title: "SGL Usage"
+        url: "https://nvmexpress.org/specifications/"
+
+  - term: "Command Capsule"
+    definition: "An NVMe command sent as an RDMA SEND. The capsule contains the 64-byte NVMe command and optionally inline data (for small writes). Large data transfers use the SGL mechanism instead."
+
+  - term: "RDMA Transport Binding"
+    definition: "The NVMe-oF specification's mapping of NVMe commands and data to RDMA operations. Commands → RDMA SEND, host-to-controller data → RDMA READ, controller-to-host data → RDMA WRITE, completions → RDMA SEND."
+    spec_refs:
+      - document: "NVMe-oF Spec 1.1a"
+        section: "4.2"
+        title: "RDMA Transport Binding"
+        url: "https://nvmexpress.org/specifications/"
+
+  - term: "Admin Queue"
+    abbrev: "AQ"
+    definition: "NVMe Queue ID 0 — used for admin commands (Identify, Get Log Page, Fabrics Connect). In NVMe-oF/RDMA, the Admin Queue maps to a dedicated RDMA QP pair."
+
+  - term: "IO Queue"
+    definition: "NVMe Queue IDs 1-N — used for NVMe Read/Write I/O operations. Each IO queue maps to its own RDMA QP, providing per-queue isolation and per-core parallelism."
+
+  - term: "NVMe Qualified Name"
+    abbrev: "NQN"
+    definition: "Globally unique identifier for NVMe subsystems and hosts. Format: nqn.YYYY-MM.reverse-domain:user-string. The Discovery Controller uses the well-known NQN nqn.2014-08.org.nvmexpress.discovery."
+    spec_refs:
+      - document: "NVMe Base Spec 2.1"
+        section: "4.5"
+        title: "NVMe Qualified Name"
+        url: "https://nvmexpress.org/specifications/"
+
+  - term: "RDMA READ vs RDMA WRITE"
+    definition: "In NVMe-oF/RDMA: RDMA WRITE delivers data TO the host (NVMe Read, Log Pages). RDMA READ fetches data FROM the host (NVMe Write). This is because the target initiates data transfer in both cases, using the SGL keys provided by the host."

@@ -21,6 +21,16 @@
       "path": "pfc-ecn-dcqcn/pfc-ecn-dcqcn-congestion-control.yaml"
     },
     {
+      "slug": "nvme-rdma-discovery-io",
+      "title": "NVMe-oF/RDMA: Discovery → Fabrics Connect → NVMe Write & Read over RoCEv2",
+      "protocol": "NVMe-oF/RDMA",
+      "protocol_family": "NVMe-oF",
+      "difficulty": "advanced",
+      "description": "Complete NVMe over Fabrics using RDMA transport: CM connection setup, Fabrics Connect to Discovery Controller, Discovery Log retrieval via RDMA WRITE, IO Controller queue setup, NVMe Write (data via RDMA READ) and NVMe Read (data via RDMA WRITE). Zero-copy data path throughout.",
+      "tags": ["NVMe", "NVMe-oF", "NVMe-oF/RDMA", "RDMA", "RoCEv2", "storage", "100GbE", "education"],
+      "path": "nvme-rdma/nvme-rdma-discovery-io.yaml"
+    },
+    {
       "slug": "roce-v2-rc-connection-rdma-write-read",
       "title": "RoCEv2 RC: Link Training \u2192 QP Connection \u2192 RDMA WRITE \u2192 RDMA READ",
       "protocol": "RoCEv2",
