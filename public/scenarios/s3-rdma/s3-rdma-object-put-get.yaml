@@ -9,7 +9,7 @@
 
 meta:
   id: "s3-rdma-object-put-get"
-  title: "S3/RDMA: Object PUT and GET over RoCEv2 (NVIDIA Library Architecture)"
+  title: "[WIP] S3/RDMA: Object PUT and GET over RoCEv2 (NVIDIA Library Architecture)"
   protocol: "S3/RDMA"
   protocol_family: "RDMA"
   version: "1.0.0"
