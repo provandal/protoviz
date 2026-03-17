@@ -265,6 +265,12 @@ function inferPhase(event, lastPhase) {
   if (/rate\s*recover|rate\s*increase|recovering/i.test(text)
       || /rate_recovery/.test(id)) return 'Recovery';
 
+  // iSCSI phases
+  if (/\biscsi\b.*login|login.*(?:security|operational|full feature)/i.test(text)
+      || /login_security|login_operational|login_final/.test(id)) return 'iSCSI Login';
+  if (/\biscsi\b.*r2t|ready.?to.?transfer|data.?out/i.test(text)
+      || /write_r2t|write_data/.test(id)) return 'SCSI Write';
+
   // TCP phases
   if (/\btcp\b.*\bsyn\b|\b3.?way\b.*handshake|handshake.*complete/i.test(text)
       || /tcp_syn|tcp_ack_handshake/.test(id)) return 'TCP Handshake';

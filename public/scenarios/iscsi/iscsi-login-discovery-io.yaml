@@ -1,0 +1,1465 @@
+meta:
+  id: "iscsi-login-discovery-io"
+  title: "iSCSI: Login → Discovery → SCSI INQUIRY → WRITE(10) → READ(10)"
+  protocol: "iSCSI"
+  protocol_family: "SAN"
+  version: "1.0.0"
+  description: >
+    Complete iSCSI session lifecycle over 10GbE TCP/IP: TCP 3-way handshake,
+    iSCSI Login phase (authentication and parameter negotiation), SendTargets
+    discovery, target login, SCSI INQUIRY to identify the LUN, SCSI WRITE(10)
+    and READ(10) for data I/O. iSCSI is the most widely deployed SAN protocol,
+    carrying SCSI commands over standard TCP/IP networks — no special hardware
+    required. This scenario shows how SCSI block storage works over Ethernet,
+    contrasting with Fibre Channel (dedicated SAN fabric) and NVMe-oF (next-gen).
+
+  learning_objectives:
+    - "Understand how iSCSI maps SCSI commands onto TCP connections using PDU framing"
+    - "Follow the iSCSI Login phase: security negotiation, operational parameter exchange"
+    - "See SendTargets discovery — how an initiator learns available targets and LUNs"
+    - "Observe iSCSI session and connection identifiers (ISID, TSIH, CID)"
+    - "Trace SCSI INQUIRY to discover device type, vendor, and capacity"
+    - "Follow a SCSI WRITE(10) through iSCSI: command PDU, Data-Out PDUs, Response PDU"
+    - "Follow a SCSI READ(10): command PDU, Data-In PDUs, Response PDU"
+    - "Understand iSCSI header/data digests (CRC32C) for data integrity"
+
+  difficulty: "intermediate"
+
+  authors:
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+    - name: "Generated via Linux kernel source analysis"
+      org: "proto-viz"
+      github: ""
+
+  created: "2026-03-17"
+  updated: "2026-03-17"
+
+  tags:
+    - "iSCSI"
+    - "SCSI"
+    - "SAN"
+    - "storage"
+    - "TCP/IP"
+    - "block storage"
+    - "LUN"
+    - "intermediate"
+    - "education"
+
+  primary_specs:
+    - document: "RFC 7143"
+      section: "11"
+      title: "iSCSI Login Phase"
+      url: "https://datatracker.ietf.org/doc/html/rfc7143#section-11"
+      alt_url: ""
+    - document: "RFC 7143"
+      section: "12"
+      title: "iSCSI Full Feature Phase"
+      url: "https://datatracker.ietf.org/doc/html/rfc7143#section-12"
+      alt_url: ""
+    - document: "RFC 7143"
+      section: "11.14"
+      title: "SendTargets Text Request"
+      url: "https://datatracker.ietf.org/doc/html/rfc7143#section-11.14"
+      alt_url: ""
+    - document: "SAM-6"
+      section: "5"
+      title: "SCSI Architecture Model — Command Processing"
+      url: "https://www.t10.org/members/w_sam6.htm"
+      alt_url: ""
+
+  content_disclaimer: >
+    Protocol descriptions are based on open-source implementations (Linux kernel
+    open-iscsi initiator, LIO target) and public RFCs. No proprietary specification
+    text has been reproduced.
+
+  source_references:
+    - repo: "torvalds/linux"
+      path: "drivers/scsi/scsi_transport_iscsi.c"
+      description: "iSCSI transport interface — session/connection management"
+    - repo: "torvalds/linux"
+      path: "drivers/target/iscsi/iscsi_target_login.c"
+      description: "LIO iSCSI target — login phase processing"
+    - repo: "torvalds/linux"
+      path: "drivers/target/iscsi/iscsi_target.c"
+      description: "LIO iSCSI target — PDU processing, SCSI command handling"
+    - repo: "open-iscsi/open-iscsi"
+      path: "usr/initiator.c"
+      description: "open-iscsi userspace — discovery, login, session management"
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "initiator"
+      type: "initiator"
+      label: "iSCSI Initiator"
+      description: "Linux host running open-iscsi — connects to remote storage over TCP/IP"
+      hardware: "Generic 10GbE NIC"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "10.0.1.100"
+      mac: "00:50:56:aa:bb:01"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "10GbE Switch"
+      description: "Standard Ethernet switch — no special SAN configuration required"
+      hardware: "Generic 10GbE switch"
+      position: "center"
+
+    - id: "target"
+      type: "target"
+      label: "iSCSI Target"
+      description: "Linux LIO iSCSI target — exports LUNs over TCP/IP"
+      hardware: "Generic 10GbE NIC + SAS/NVMe SSDs"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "10.0.1.200"
+      mac: "00:50:56:aa:bb:02"
+      position: "right"
+
+  links:
+    - id: "link-init-sw"
+      from: "initiator"
+      to: "switch"
+      speed_gbps: 10
+      media: "copper_dac"
+      fec: "FC-FEC"
+      autoneg: true
+    - id: "link-sw-tgt"
+      from: "switch"
+      to: "target"
+      speed_gbps: 10
+      media: "copper_dac"
+      fec: "FC-FEC"
+      autoneg: true
+
+# ─────────────────────────────────────────────────────────────────
+# OSI LAYER DEFINITIONS
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  initiator:
+    - layer: 7
+      name: "SCSI / Block Layer"
+      components: ["drivers/scsi/sd.c", "block/blk-core.c"]
+      state_schema:
+        scsi_state:
+          type: "string"
+          description: "SCSI device discovery state"
+          initial: "no devices"
+        lun_count:
+          type: "integer"
+          description: "Number of LUNs discovered"
+          initial: 0
+        device_type:
+          type: "string"
+          description: "SCSI device type from INQUIRY"
+          initial: "—"
+
+    - layer: 6
+      name: "iSCSI Session"
+      components: ["drivers/scsi/scsi_transport_iscsi.c", "open-iscsi"]
+      state_schema:
+        session_state:
+          type: "string"
+          description: "iSCSI session state"
+          initial: "FREE"
+        isid:
+          type: "string"
+          description: "Initiator Session ID — unique per session"
+          initial: "—"
+        tsih:
+          type: "string"
+          description: "Target Session Identifying Handle — assigned by target"
+          initial: "0x0000"
+        initiator_name:
+          type: "string"
+          description: "iSCSI Qualified Name"
+          initial: "iqn.2024-01.com.example:host01"
+        target_name:
+          type: "string"
+          description: "Target IQN"
+          initial: "—"
+        cmd_sn:
+          type: "integer"
+          description: "Command Sequence Number — ordering commands across connections"
+          initial: 1
+        max_recv_data_segment:
+          type: "integer"
+          description: "Max data segment length this side can receive"
+          initial: 0
+
+    - layer: 4
+      name: "TCP"
+      components: ["net/ipv4/tcp.c"]
+      state_schema:
+        tcp_state:
+          type: "string"
+          initial: "CLOSED"
+        local_port:
+          type: "integer"
+          initial: 0
+        remote_port:
+          type: "integer"
+          initial: 3260
+
+    - layer: 3
+      name: "IP / Routing"
+      components: ["net/ipv4/ip_output.c"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "10.0.1.100"
+        dst_ip:
+          type: "string"
+          initial: "null"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver", "IEEE 802.3"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "down"
+
+    - layer: 1
+      name: "Physical (10GbE)"
+      components: ["IEEE 802.3", "10GBASE-CR"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "down"
+        speed:
+          type: "string"
+          initial: "unknown"
+
+  target:
+    - layer: 7
+      name: "SCSI Target / LIO"
+      components: ["drivers/target/target_core_sbc.c", "drivers/target/iscsi/"]
+      state_schema:
+        target_state:
+          type: "string"
+          initial: "listening"
+        luns_exported:
+          type: "integer"
+          description: "Number of LUNs available"
+          initial: 1
+        lun0_size_gb:
+          type: "integer"
+          initial: 100
+
+    - layer: 6
+      name: "iSCSI Session"
+      components: ["drivers/target/iscsi/iscsi_target.c"]
+      state_schema:
+        session_state:
+          type: "string"
+          initial: "LISTENING"
+        tsih:
+          type: "string"
+          description: "Target-assigned session handle"
+          initial: "—"
+        target_name:
+          type: "string"
+          initial: "iqn.2024-01.com.example:target01"
+        stat_sn:
+          type: "integer"
+          description: "Status Sequence Number — ordering responses"
+          initial: 1
+        max_recv_data_segment:
+          type: "integer"
+          initial: 0
+
+    - layer: 4
+      name: "TCP"
+      components: ["net/ipv4/tcp.c"]
+      state_schema:
+        tcp_state:
+          type: "string"
+          initial: "LISTEN"
+        local_port:
+          type: "integer"
+          initial: 3260
+
+    - layer: 3
+      name: "IP / Routing"
+      components: ["net/ipv4/ip_output.c"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "10.0.1.200"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "down"
+
+    - layer: 1
+      name: "Physical (10GbE)"
+      components: ["IEEE 802.3"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "down"
+        speed:
+          type: "string"
+          initial: "unknown"
+
+# ─────────────────────────────────────────────────────────────────
+# FRAMES
+# ─────────────────────────────────────────────────────────────────
+frames:
+  # ── iSCSI Login (Security Negotiation) ──────────────────────────
+  - id: "iscsi_login_req"
+    name: "iSCSI Login Request (Security Negotiation)"
+    description: "Initiator sends Login PDU with security parameters"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 10000000
+    total_bytes: 162
+    color: "#0f766e"
+    headers:
+      - name: "TCP Segment"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 20
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 54321
+            description: "Ephemeral port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 3260
+            description: "iSCSI well-known port (IANA assigned)"
+            spec_refs:
+              - document: "RFC 7143"
+                section: "13"
+                title: "iSCSI Default Port"
+                url: "https://datatracker.ietf.org/doc/html/rfc7143#section-13"
+
+      - name: "iSCSI Login Request PDU"
+        abbrev: "iscsi"
+        layer: 6
+        total_bytes: 48
+        fields:
+          - name: "Opcode"
+            abbrev: "iscsi.opcode"
+            bits: 6
+            value: "0x03"
+            description: "Login Request (0x03)"
+            spec_refs:
+              - document: "RFC 7143"
+                section: "11.12"
+                title: "Login Request"
+                url: "https://datatracker.ietf.org/doc/html/rfc7143#section-11.12"
+          - name: "Transit Bit (T)"
+            abbrev: "iscsi.login.T"
+            bits: 1
+            value: 0
+            description: "T=0 — not ready to transition to next stage yet"
+          - name: "Continue Bit (C)"
+            abbrev: "iscsi.login.C"
+            bits: 1
+            value: 0
+            description: "C=0 — no continuation"
+          - name: "CSG (Current Stage)"
+            abbrev: "iscsi.login.csg"
+            bits: 2
+            value: 0
+            description: "Stage 0 = Security Negotiation"
+          - name: "NSG (Next Stage)"
+            abbrev: "iscsi.login.nsg"
+            bits: 2
+            value: 1
+            description: "Stage 1 = Operational Negotiation (requested)"
+          - name: "Version Max"
+            abbrev: "iscsi.login.version_max"
+            bits: 8
+            value: 0
+            description: "iSCSI version 0 (RFC 7143)"
+          - name: "ISID"
+            abbrev: "iscsi.login.isid"
+            bits: 48
+            value: "0x00023d000001"
+            description: "Initiator Session ID — 6 bytes uniquely identifying this session from this initiator"
+            spec_refs:
+              - document: "RFC 7143"
+                section: "11.12.5"
+                title: "ISID"
+                url: "https://datatracker.ietf.org/doc/html/rfc7143#section-11.12.5"
+          - name: "TSIH"
+            abbrev: "iscsi.login.tsih"
+            bits: 16
+            value: "0x0000"
+            description: "TSIH=0 — new session (not resuming an existing one)"
+          - name: "CmdSN"
+            abbrev: "iscsi.cmdsn"
+            bits: 32
+            value: 1
+            description: "Command Sequence Number — starts at 1 for login"
+          - name: "Data Segment"
+            abbrev: "iscsi.login.data"
+            bits: 0
+            value: "InitiatorName=iqn.2024-01.com.example:host01\nAuthMethod=None"
+            description: "Key-value pairs: initiator identifies itself and proposes no authentication (AuthMethod=None). In production, CHAP authentication is common."
+            kernel_ref:
+              file: "drivers/target/iscsi/iscsi_target_login.c"
+              function: "iscsi_target_do_login"
+              notes: "Target processes login key-value pairs, validates initiator name against ACL"
+
+  - id: "iscsi_login_resp_security"
+    name: "iSCSI Login Response (Security → Operational)"
+    description: "Target accepts security stage, transitions to operational negotiation"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 10050000
+    total_bytes: 162
+    color: "#0f766e"
+    headers:
+      - name: "iSCSI Login Response PDU"
+        abbrev: "iscsi"
+        layer: 6
+        total_bytes: 48
+        fields:
+          - name: "Opcode"
+            abbrev: "iscsi.opcode"
+            bits: 6
+            value: "0x23"
+            description: "Login Response (0x23)"
+          - name: "Transit Bit (T)"
+            abbrev: "iscsi.login.T"
+            bits: 1
+            value: 1
+            description: "T=1 — security stage complete, transitioning"
+          - name: "CSG"
+            abbrev: "iscsi.login.csg"
+            bits: 2
+            value: 0
+            description: "Currently in Security Negotiation"
+          - name: "NSG"
+            abbrev: "iscsi.login.nsg"
+            bits: 2
+            value: 1
+            description: "Moving to Operational Negotiation"
+          - name: "Status Class"
+            abbrev: "iscsi.login.status_class"
+            bits: 8
+            value: 0
+            description: "Success"
+          - name: "TSIH"
+            abbrev: "iscsi.login.tsih"
+            bits: 16
+            value: "0x0001"
+            description: "Target assigns Session Handle 0x0001 — this TSIH+ISID pair uniquely identifies the session"
+          - name: "StatSN"
+            abbrev: "iscsi.statsn"
+            bits: 32
+            value: 1
+            description: "Status Sequence Number"
+          - name: "Data Segment"
+            abbrev: "iscsi.login.data"
+            bits: 0
+            value: "AuthMethod=None\nTargetPortalGroupTag=1"
+            description: "Target accepts AuthMethod=None and reports portal group"
+
+  - id: "iscsi_login_req_operational"
+    name: "iSCSI Login Request (Operational Parameters)"
+    description: "Initiator proposes operational parameters"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 10100000
+    total_bytes: 300
+    color: "#0f766e"
+    headers:
+      - name: "iSCSI Login Request PDU"
+        abbrev: "iscsi"
+        layer: 6
+        total_bytes: 48
+        fields:
+          - name: "Transit Bit (T)"
+            abbrev: "iscsi.login.T"
+            bits: 1
+            value: 1
+            description: "T=1 — ready to transition to Full Feature Phase"
+          - name: "CSG"
+            abbrev: "iscsi.login.csg"
+            bits: 2
+            value: 1
+            description: "Operational Negotiation"
+          - name: "NSG"
+            abbrev: "iscsi.login.nsg"
+            bits: 2
+            value: 3
+            description: "Stage 3 = Full Feature Phase (requested)"
+          - name: "Data Segment"
+            abbrev: "iscsi.login.data"
+            bits: 0
+            value: "MaxRecvDataSegmentLength=262144\nFirstBurstLength=262144\nMaxBurstLength=524288\nMaxOutstandingR2T=1\nHeaderDigest=None\nDataDigest=None\nInitialR2T=Yes\nImmediateData=Yes\nDefaultTime2Wait=2\nDefaultTime2Retain=0\nMaxConnections=1"
+            description: "Operational parameters govern data transfer. MaxRecvDataSegmentLength=256KB limits individual PDU data segment size. FirstBurstLength controls unsolicited data (sent before R2T)."
+            spec_refs:
+              - document: "RFC 7143"
+                section: "13"
+                title: "Operational Parameter Negotiation"
+                url: "https://datatracker.ietf.org/doc/html/rfc7143#section-13"
+
+  - id: "iscsi_login_resp_final"
+    name: "iSCSI Login Response (Full Feature Phase)"
+    description: "Target accepts parameters — session in Full Feature Phase"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 10150000
+    total_bytes: 300
+    color: "#0f766e"
+    headers:
+      - name: "iSCSI Login Response PDU"
+        abbrev: "iscsi"
+        layer: 6
+        total_bytes: 48
+        fields:
+          - name: "Transit Bit (T)"
+            abbrev: "iscsi.login.T"
+            bits: 1
+            value: 1
+            description: "T=1 — transitioning to Full Feature Phase"
+          - name: "CSG"
+            abbrev: "iscsi.login.csg"
+            bits: 2
+            value: 1
+            description: "Operational Negotiation (current)"
+          - name: "NSG"
+            abbrev: "iscsi.login.nsg"
+            bits: 2
+            value: 3
+            description: "Full Feature Phase — login complete!"
+          - name: "Status Class"
+            abbrev: "iscsi.login.status_class"
+            bits: 8
+            value: 0
+            description: "Success — session established"
+          - name: "Data Segment"
+            abbrev: "iscsi.login.data"
+            bits: 0
+            value: "MaxRecvDataSegmentLength=262144\nTargetAlias=LIO-Target\nFirstBurstLength=262144\nMaxBurstLength=524288"
+            description: "Target confirms negotiated parameters"
+
+  # ── SCSI INQUIRY ────────────────────────────────────────────────
+  - id: "scsi_inquiry_cmd"
+    name: "SCSI INQUIRY (iSCSI Command PDU)"
+    description: "Initiator sends SCSI INQUIRY to discover device characteristics"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 20000000
+    total_bytes: 120
+    color: "#6d28d9"
+    headers:
+      - name: "iSCSI SCSI Command PDU"
+        abbrev: "iscsi"
+        layer: 6
+        total_bytes: 48
+        fields:
+          - name: "Opcode"
+            abbrev: "iscsi.opcode"
+            bits: 6
+            value: "0x01"
+            description: "SCSI Command (0x01) — carries a SCSI CDB in the PDU"
+            spec_refs:
+              - document: "RFC 7143"
+                section: "11.3"
+                title: "SCSI Command PDU"
+                url: "https://datatracker.ietf.org/doc/html/rfc7143#section-11.3"
+          - name: "Read Bit (R)"
+            abbrev: "iscsi.scsi_cmd.R"
+            bits: 1
+            value: 1
+            description: "R=1 — data flows from target to initiator (INQUIRY returns data)"
+          - name: "Write Bit (W)"
+            abbrev: "iscsi.scsi_cmd.W"
+            bits: 1
+            value: 0
+            description: "W=0 — no data from initiator to target"
+          - name: "LUN"
+            abbrev: "iscsi.scsi_cmd.lun"
+            bits: 64
+            value: "0x0000000000000000"
+            description: "LUN 0"
+          - name: "Expected Data Transfer Length"
+            abbrev: "iscsi.scsi_cmd.edtl"
+            bits: 32
+            value: 96
+            description: "Expect 96 bytes of INQUIRY response data"
+          - name: "CmdSN"
+            abbrev: "iscsi.cmdsn"
+            bits: 32
+            value: 1
+            description: "Command Sequence Number"
+      - name: "SCSI CDB (INQUIRY)"
+        abbrev: "scsi"
+        layer: 7
+        total_bytes: 16
+        fields:
+          - name: "Operation Code"
+            abbrev: "scsi.cdb.opcode"
+            bits: 8
+            value: "0x12"
+            description: "INQUIRY (0x12) — the fundamental SCSI discovery command"
+            spec_refs:
+              - document: "SPC-6"
+                section: "6.6"
+                title: "INQUIRY command"
+                url: "https://www.t10.org/members/w_spc6.htm"
+          - name: "Allocation Length"
+            abbrev: "scsi.inquiry.alloc_len"
+            bits: 16
+            value: 96
+            description: "Maximum response bytes the initiator can receive"
+
+  - id: "scsi_inquiry_resp"
+    name: "SCSI INQUIRY Response (iSCSI Data-In PDU)"
+    description: "Target returns INQUIRY data identifying the device"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 20050000
+    total_bytes: 214
+    color: "#6d28d9"
+    headers:
+      - name: "iSCSI SCSI Data-In PDU"
+        abbrev: "iscsi"
+        layer: 6
+        total_bytes: 48
+        fields:
+          - name: "Opcode"
+            abbrev: "iscsi.opcode"
+            bits: 6
+            value: "0x25"
+            description: "SCSI Data-In (0x25) — target sending data to initiator"
+          - name: "Status Bit (S)"
+            abbrev: "iscsi.data_in.S"
+            bits: 1
+            value: 1
+            description: "S=1 — SCSI status included (combines Data-In with Response)"
+          - name: "SCSI Status"
+            abbrev: "iscsi.data_in.status"
+            bits: 8
+            value: "0x00"
+            description: "GOOD — INQUIRY succeeded"
+          - name: "StatSN"
+            abbrev: "iscsi.statsn"
+            bits: 32
+            value: 2
+            description: "Status Sequence Number"
+      - name: "SCSI INQUIRY Data"
+        abbrev: "scsi"
+        layer: 7
+        total_bytes: 96
+        fields:
+          - name: "Peripheral Device Type"
+            abbrev: "scsi.inquiry.devtype"
+            bits: 5
+            value: "0x00"
+            description: "0x00 = Direct-access block device (disk)"
+            spec_refs:
+              - document: "SPC-6"
+                section: "6.6.2"
+                title: "Standard INQUIRY data"
+                url: "https://www.t10.org/members/w_spc6.htm"
+          - name: "Vendor Identification"
+            abbrev: "scsi.inquiry.vendor"
+            bits: 64
+            value: "LIO-ORG"
+            description: "Vendor — LIO (Linux-IO) target framework"
+          - name: "Product Identification"
+            abbrev: "scsi.inquiry.product"
+            bits: 128
+            value: "IBLOCK"
+            description: "Product — LIO iblock backstore (block device backend)"
+          - name: "Product Revision"
+            abbrev: "scsi.inquiry.revision"
+            bits: 32
+            value: "4.0"
+            description: "Firmware revision"
+
+  # ── SCSI WRITE(10) ─────────────────────────────────────────────
+  - id: "scsi_write_cmd"
+    name: "SCSI WRITE(10) Command"
+    description: "Initiator sends WRITE(10) command for 4KB at LBA 0"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 30000000
+    total_bytes: 120
+    color: "#991b1b"
+    headers:
+      - name: "iSCSI SCSI Command PDU"
+        abbrev: "iscsi"
+        layer: 6
+        total_bytes: 48
+        fields:
+          - name: "Opcode"
+            abbrev: "iscsi.opcode"
+            bits: 6
+            value: "0x01"
+            description: "SCSI Command"
+          - name: "Write Bit (W)"
+            abbrev: "iscsi.scsi_cmd.W"
+            bits: 1
+            value: 1
+            description: "W=1 — data flows from initiator to target"
+          - name: "Immediate Data"
+            abbrev: "iscsi.scsi_cmd.F"
+            bits: 1
+            value: 0
+            description: "No immediate data in this PDU — waiting for R2T"
+          - name: "LUN"
+            abbrev: "iscsi.scsi_cmd.lun"
+            bits: 64
+            value: "0x0000000000000000"
+            description: "LUN 0"
+          - name: "Expected Data Transfer Length"
+            abbrev: "iscsi.scsi_cmd.edtl"
+            bits: 32
+            value: 4096
+            description: "4096 bytes = 4KB write"
+          - name: "CmdSN"
+            abbrev: "iscsi.cmdsn"
+            bits: 32
+            value: 2
+            description: "Command Sequence Number 2"
+      - name: "SCSI CDB (WRITE(10))"
+        abbrev: "scsi"
+        layer: 7
+        total_bytes: 10
+        fields:
+          - name: "Operation Code"
+            abbrev: "scsi.cdb.opcode"
+            bits: 8
+            value: "0x2A"
+            description: "WRITE(10) (0x2A)"
+            spec_refs:
+              - document: "SBC-5"
+                section: "5.39"
+                title: "WRITE(10) command"
+                url: "https://www.t10.org/members/w_sbc5.htm"
+          - name: "LBA"
+            abbrev: "scsi.write10.lba"
+            bits: 32
+            value: 0
+            description: "Logical Block Address 0"
+          - name: "Transfer Length"
+            abbrev: "scsi.write10.transfer_len"
+            bits: 16
+            value: 8
+            description: "8 blocks × 512 bytes = 4KB"
+
+  - id: "iscsi_r2t"
+    name: "iSCSI R2T (Ready to Transfer)"
+    description: "Target signals initiator to send write data"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 30050000
+    total_bytes: 114
+    color: "#991b1b"
+    headers:
+      - name: "iSCSI R2T PDU"
+        abbrev: "iscsi"
+        layer: 6
+        total_bytes: 48
+        fields:
+          - name: "Opcode"
+            abbrev: "iscsi.opcode"
+            bits: 6
+            value: "0x31"
+            description: "Ready to Transfer (0x31) — target grants permission to send write data"
+            spec_refs:
+              - document: "RFC 7143"
+                section: "11.8"
+                title: "Ready To Transfer (R2T)"
+                url: "https://datatracker.ietf.org/doc/html/rfc7143#section-11.8"
+          - name: "Target Transfer Tag"
+            abbrev: "iscsi.r2t.ttt"
+            bits: 32
+            value: "0x00000001"
+            description: "Tag that the initiator must echo in the Data-Out PDU"
+          - name: "R2TSN"
+            abbrev: "iscsi.r2t.r2tsn"
+            bits: 32
+            value: 0
+            description: "R2T Sequence Number"
+          - name: "Buffer Offset"
+            abbrev: "iscsi.r2t.buffer_offset"
+            bits: 32
+            value: 0
+            description: "Start sending from offset 0 in the write buffer"
+          - name: "Desired Data Transfer Length"
+            abbrev: "iscsi.r2t.ddtl"
+            bits: 32
+            value: 4096
+            description: "Target wants all 4096 bytes"
+
+  - id: "iscsi_data_out"
+    name: "iSCSI Data-Out (Write Data)"
+    description: "Initiator sends 4KB write data"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 30100000
+    total_bytes: 4214
+    color: "#991b1b"
+    headers:
+      - name: "iSCSI SCSI Data-Out PDU"
+        abbrev: "iscsi"
+        layer: 6
+        total_bytes: 48
+        fields:
+          - name: "Opcode"
+            abbrev: "iscsi.opcode"
+            bits: 6
+            value: "0x05"
+            description: "SCSI Data-Out (0x05) — initiator sending data to target"
+            spec_refs:
+              - document: "RFC 7143"
+                section: "11.7"
+                title: "SCSI Data-Out and SCSI Data-In"
+                url: "https://datatracker.ietf.org/doc/html/rfc7143#section-11.7"
+          - name: "Final Bit (F)"
+            abbrev: "iscsi.data_out.F"
+            bits: 1
+            value: 1
+            description: "F=1 — final data PDU for this sequence"
+          - name: "Target Transfer Tag"
+            abbrev: "iscsi.data_out.ttt"
+            bits: 32
+            value: "0x00000001"
+            description: "Echoes the R2T's transfer tag"
+          - name: "Data Segment Length"
+            abbrev: "iscsi.data_out.dsl"
+            bits: 24
+            value: 4096
+            description: "4096 bytes of write data follow"
+      - name: "Write Data Payload"
+        abbrev: "payload"
+        layer: 7
+        total_bytes: 4096
+        fields:
+          - name: "Data"
+            abbrev: "scsi.data"
+            bits: 32768
+            value: "4096 bytes of application data"
+            description: "Write data — carried in iSCSI PDU data segment over TCP"
+
+  - id: "scsi_write_resp"
+    name: "SCSI WRITE(10) Response"
+    description: "Target confirms write completed"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 30200000
+    total_bytes: 114
+    color: "#991b1b"
+    headers:
+      - name: "iSCSI SCSI Response PDU"
+        abbrev: "iscsi"
+        layer: 6
+        total_bytes: 48
+        fields:
+          - name: "Opcode"
+            abbrev: "iscsi.opcode"
+            bits: 6
+            value: "0x21"
+            description: "SCSI Response (0x21)"
+            spec_refs:
+              - document: "RFC 7143"
+                section: "11.4"
+                title: "SCSI Response"
+                url: "https://datatracker.ietf.org/doc/html/rfc7143#section-11.4"
+          - name: "SCSI Status"
+            abbrev: "iscsi.scsi_resp.status"
+            bits: 8
+            value: "0x00"
+            description: "GOOD — write completed successfully"
+          - name: "StatSN"
+            abbrev: "iscsi.statsn"
+            bits: 32
+            value: 3
+            description: "Status Sequence Number 3"
+
+  # ── SCSI READ(10) ──────────────────────────────────────────────
+  - id: "scsi_read_cmd"
+    name: "SCSI READ(10) Command"
+    description: "Initiator sends READ(10) for same 4KB block"
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 40000000
+    total_bytes: 120
+    color: "#6b21a8"
+    headers:
+      - name: "iSCSI SCSI Command PDU"
+        abbrev: "iscsi"
+        layer: 6
+        total_bytes: 48
+        fields:
+          - name: "Opcode"
+            abbrev: "iscsi.opcode"
+            bits: 6
+            value: "0x01"
+            description: "SCSI Command"
+          - name: "Read Bit (R)"
+            abbrev: "iscsi.scsi_cmd.R"
+            bits: 1
+            value: 1
+            description: "R=1 — data flows target to initiator"
+          - name: "Expected Data Transfer Length"
+            abbrev: "iscsi.scsi_cmd.edtl"
+            bits: 32
+            value: 4096
+            description: "4KB read"
+          - name: "CmdSN"
+            abbrev: "iscsi.cmdsn"
+            bits: 32
+            value: 3
+            description: "Command Sequence Number 3"
+      - name: "SCSI CDB (READ(10))"
+        abbrev: "scsi"
+        layer: 7
+        total_bytes: 10
+        fields:
+          - name: "Operation Code"
+            abbrev: "scsi.cdb.opcode"
+            bits: 8
+            value: "0x28"
+            description: "READ(10) (0x28)"
+            spec_refs:
+              - document: "SBC-5"
+                section: "5.25"
+                title: "READ(10) command"
+                url: "https://www.t10.org/members/w_sbc5.htm"
+          - name: "LBA"
+            abbrev: "scsi.read10.lba"
+            bits: 32
+            value: 0
+            description: "LBA 0"
+          - name: "Transfer Length"
+            abbrev: "scsi.read10.transfer_len"
+            bits: 16
+            value: 8
+            description: "8 blocks = 4KB"
+
+  - id: "scsi_read_data"
+    name: "SCSI READ(10) Data-In"
+    description: "Target returns 4KB read data with SCSI status"
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 40100000
+    total_bytes: 4214
+    color: "#6b21a8"
+    headers:
+      - name: "iSCSI SCSI Data-In PDU"
+        abbrev: "iscsi"
+        layer: 6
+        total_bytes: 48
+        fields:
+          - name: "Opcode"
+            abbrev: "iscsi.opcode"
+            bits: 6
+            value: "0x25"
+            description: "SCSI Data-In (0x25)"
+          - name: "Final Bit (F)"
+            abbrev: "iscsi.data_in.F"
+            bits: 1
+            value: 1
+            description: "F=1 — final data PDU"
+          - name: "Status Bit (S)"
+            abbrev: "iscsi.data_in.S"
+            bits: 1
+            value: 1
+            description: "S=1 — SCSI status piggybacked with final data"
+          - name: "SCSI Status"
+            abbrev: "iscsi.data_in.status"
+            bits: 8
+            value: "0x00"
+            description: "GOOD"
+          - name: "Data Segment Length"
+            abbrev: "iscsi.data_in.dsl"
+            bits: 24
+            value: 4096
+            description: "4096 bytes of read data"
+      - name: "Read Data Payload"
+        abbrev: "payload"
+        layer: 7
+        total_bytes: 4096
+        fields:
+          - name: "Data"
+            abbrev: "scsi.data"
+            bits: 32768
+            value: "4096 bytes — same data written earlier"
+            description: "Read data from LBA 0, carried in iSCSI Data-In PDU over TCP"
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+  # ── Link ────────────────────────────────────────────────────────
+  - id: "evt_phy_link"
+    type: "state_change"
+    t_ns: 0
+    annotation:
+      text: "Physical link up — 10GbE on both segments"
+      detail: >
+        Standard 10GbE Ethernet links come up. Unlike FC (dedicated SAN fabric)
+        or RoCEv2 (requiring PFC/lossless Ethernet), iSCSI runs on any standard
+        IP network. No special switch configuration is needed — TCP handles
+        reliability and flow control.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 1
+            state_fields:
+              phy_state: "up"
+              speed: "10 Gbps"
+          - layer: 2
+            state_fields:
+              link_state: "up"
+          - layer: 3
+            state_fields:
+              dst_ip: "10.0.1.200"
+      - actor_id: "target"
+        layers:
+          - layer: 1
+            state_fields:
+              phy_state: "up"
+              speed: "10 Gbps"
+          - layer: 2
+            state_fields:
+              link_state: "up"
+
+  # ── TCP Handshake ───────────────────────────────────────────────
+  - id: "evt_tcp_handshake"
+    type: "state_change"
+    t_ns: 5000000
+    annotation:
+      text: "TCP 3-way handshake → Connection to port 3260 established"
+      detail: >
+        The initiator's iscsid daemon opens a TCP connection to the target's
+        well-known iSCSI port 3260 (IANA assigned). The standard TCP SYN →
+        SYN-ACK → ACK handshake establishes a reliable byte stream.
+
+        iSCSI frames its PDUs over this TCP connection. Unlike protocols that
+        use UDP (RoCEv2) or dedicated framing (FC), iSCSI relies on TCP for
+        reliability, ordering, and flow control. This means:
+        • No special NIC required (any TCP/IP stack works)
+        • Works across routed networks (not limited to L2)
+        • TCP congestion control limits throughput under load
+        • TCP processing overhead consumes CPU cycles
+
+        See the TCP scenario for details on the 3-way handshake.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "ESTABLISHED"
+              local_port: 54321
+      - actor_id: "target"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "ESTABLISHED"
+
+  # ── iSCSI Login Phase ──────────────────────────────────────────
+  - id: "evt_login_security"
+    type: "frame_tx"
+    t_ns: 10000000
+    frame_id: "iscsi_login_req"
+    annotation:
+      text: "iSCSI Login → Security negotiation (AuthMethod=None)"
+      detail: >
+        The initiator sends the first Login PDU. iSCSI login has two stages:
+        1. Security Negotiation (CSG=0) — authentication method selection
+        2. Operational Negotiation (CSG=1) — session parameter tuning
+
+        This PDU carries key-value pairs:
+        • InitiatorName=iqn.2024-01.com.example:host01 (initiator's IQN)
+        • AuthMethod=None (no authentication — CHAP is common in production)
+
+        The ISID (Initiator Session ID) is a 6-byte value that, combined with
+        the target's TSIH, uniquely identifies this iSCSI session. If the
+        initiator reconnects with the same ISID, the target can resume the
+        session instead of creating a new one.
+      spec_refs:
+        - document: "RFC 7143"
+          section: "11.12"
+          title: "Login Request"
+          url: "https://datatracker.ietf.org/doc/html/rfc7143#section-11.12"
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 6
+            state_fields:
+              session_state: "LOGIN_SECURITY"
+              isid: "0x00023d000001"
+              initiator_name: "iqn.2024-01.com.example:host01"
+
+  - id: "evt_login_security_resp"
+    type: "frame_tx"
+    t_ns: 10050000
+    frame_id: "iscsi_login_resp_security"
+    annotation:
+      text: "Login Response ← Security accepted, TSIH=0x0001 assigned"
+      detail: >
+        The target accepts AuthMethod=None and assigns TSIH (Target Session
+        Identifying Handle) = 0x0001. The T (Transit) bit is set, moving
+        to the Operational Negotiation stage.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 6
+            state_fields:
+              tsih: "0x0001"
+      - actor_id: "target"
+        layers:
+          - layer: 6
+            state_fields:
+              session_state: "LOGIN"
+              tsih: "0x0001"
+
+  - id: "evt_login_operational"
+    type: "frame_tx"
+    t_ns: 10100000
+    frame_id: "iscsi_login_req_operational"
+    annotation:
+      text: "Login → Operational parameter negotiation"
+      detail: >
+        The initiator proposes operational parameters that govern data transfer:
+
+        • MaxRecvDataSegmentLength = 262144 (256KB) — max data per PDU
+        • FirstBurstLength = 262144 — unsolicited data allowed before R2T
+        • MaxBurstLength = 524288 — max total data per R2T sequence
+        • InitialR2T = Yes — target must send R2T before write data
+        • ImmediateData = Yes — small write data can piggyback on command PDU
+        • HeaderDigest = None — no CRC on iSCSI headers (common on reliable LANs)
+        • DataDigest = None — no CRC on data segments
+
+        These parameters are negotiated — the actual values are the minimum
+        or maximum of what each side proposes, depending on the parameter.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 6
+            state_fields:
+              session_state: "LOGIN_OPERATIONAL"
+
+  - id: "evt_login_final"
+    type: "frame_tx"
+    t_ns: 10150000
+    frame_id: "iscsi_login_resp_final"
+    annotation:
+      text: "Login Complete ← Full Feature Phase — session established"
+      detail: >
+        The target accepts the operational parameters and transitions
+        the session to Full Feature Phase (NSG=3). The iSCSI session
+        is now fully established and ready for SCSI commands.
+
+        Session identifiers:
+        • ISID = 0x00023d000001 (initiator-assigned)
+        • TSIH = 0x0001 (target-assigned)
+        • (ISID + TSIH) uniquely identifies this session globally
+
+        Negotiated parameters:
+        • MaxRecvDataSegmentLength = 256KB
+        • FirstBurstLength = 256KB
+        • MaxBurstLength = 512KB
+        • InitialR2T = Yes, ImmediateData = Yes
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 6
+            state_fields:
+              session_state: "LOGGED_IN"
+              target_name: "iqn.2024-01.com.example:target01"
+              max_recv_data_segment: 262144
+      - actor_id: "target"
+        layers:
+          - layer: 6
+            state_fields:
+              session_state: "LOGGED_IN"
+              max_recv_data_segment: 262144
+
+  # ── SCSI Discovery ─────────────────────────────────────────────
+  - id: "evt_inquiry_cmd"
+    type: "frame_tx"
+    t_ns: 20000000
+    frame_id: "scsi_inquiry_cmd"
+    annotation:
+      text: "SCSI INQUIRY → Initiator discovers LUN 0 device characteristics"
+      detail: >
+        The Linux SCSI mid-layer automatically sends INQUIRY to each LUN
+        to discover device type, vendor, and capabilities. This is the
+        same SCSI INQUIRY command used in the Fibre Channel scenario —
+        iSCSI simply transports it over TCP instead of FCP.
+
+        The INQUIRY command is wrapped in an iSCSI SCSI Command PDU
+        (opcode 0x01) with the 16-byte CDB embedded in the PDU header.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 6
+            state_fields:
+              cmd_sn: 2
+
+  - id: "evt_inquiry_resp"
+    type: "frame_tx"
+    t_ns: 20050000
+    frame_id: "scsi_inquiry_resp"
+    annotation:
+      text: "INQUIRY Response ← Direct-access block device (LIO-ORG IBLOCK)"
+      detail: >
+        The target returns INQUIRY data identifying the device as a
+        direct-access block device (type 0x00). The Linux initiator
+        creates /dev/sdX device for this LUN.
+
+        The response is delivered as an iSCSI SCSI Data-In PDU with the
+        Status bit set — combining data delivery and SCSI status in
+        one PDU (optimization for small responses).
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 7
+            state_fields:
+              scsi_state: "LUN 0 discovered"
+              lun_count: 1
+              device_type: "disk (0x00)"
+
+  # ── SCSI Write ──────────────────────────────────────────────────
+  - id: "evt_write_cmd"
+    type: "frame_tx"
+    t_ns: 30000000
+    frame_id: "scsi_write_cmd"
+    annotation:
+      text: "SCSI WRITE(10) → 4KB write to LBA 0"
+      detail: >
+        The application writes 4KB to the block device. The iSCSI initiator
+        sends the SCSI WRITE(10) CDB wrapped in an iSCSI SCSI Command PDU.
+
+        Because InitialR2T=Yes was negotiated, the initiator doesn't send
+        write data yet — it waits for the target to signal readiness via R2T.
+        (If ImmediateData were used, small write data could piggyback on
+        the command PDU itself.)
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 6
+            state_fields:
+              cmd_sn: 3
+
+  - id: "evt_write_r2t"
+    type: "frame_tx"
+    t_ns: 30050000
+    frame_id: "iscsi_r2t"
+    annotation:
+      text: "R2T ← Target ready to receive 4KB write data"
+      detail: >
+        The target sends an R2T (Ready to Transfer) PDU, granting the
+        initiator permission to send write data. The R2T specifies:
+        • Buffer Offset = 0 (start of transfer)
+        • Desired Data Transfer Length = 4096 (send all 4KB)
+        • Target Transfer Tag = 0x00000001 (initiator echoes in Data-Out)
+
+        R2T provides flow control — the target won't be overwhelmed by
+        write data it's not ready to receive. This is important for targets
+        that may have limited buffer space. Compare with NVMe-oF/RDMA where
+        the target RDMA READs data at its own pace.
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 6
+            state_fields:
+              stat_sn: 3
+
+  - id: "evt_write_data"
+    type: "frame_tx"
+    t_ns: 30100000
+    frame_id: "iscsi_data_out"
+    annotation:
+      text: "Data-Out → Initiator sends 4KB write data"
+      detail: >
+        The initiator sends the write data in an iSCSI SCSI Data-Out PDU
+        (opcode 0x05). The entire 4KB fits in one PDU since
+        MaxRecvDataSegmentLength = 256KB.
+
+        For larger writes (> MaxRecvDataSegmentLength), the data would be
+        split across multiple Data-Out PDUs, each referencing the same
+        Target Transfer Tag from the R2T.
+
+        Data path comparison for a 4KB write:
+        • iSCSI: app → kernel SCSI → iSCSI PDU → TCP/IP stack → NIC DMA (2 copies)
+        • NVMe-oF/RDMA: app → registered MR → RDMA READ by target (0 host CPU copies)
+        • FC: app → kernel SCSI → FCP → FC driver → HBA DMA (1 copy)
+
+  - id: "evt_write_resp"
+    type: "frame_tx"
+    t_ns: 30200000
+    frame_id: "scsi_write_resp"
+    annotation:
+      text: "WRITE Response ← GOOD — 4KB written to LBA 0"
+      detail: >
+        The target confirms the SCSI WRITE(10) completed with GOOD status.
+        The data has been written to the backend block device.
+
+        iSCSI Write flow summary:
+        1. Initiator → Target: SCSI Command PDU (WRITE CDB)
+        2. Target → Initiator: R2T PDU (ready for data)
+        3. Initiator → Target: Data-Out PDU (4KB write data)
+        4. Target → Initiator: SCSI Response PDU (GOOD status)
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            state_fields:
+              target_state: "write complete"
+
+  # ── SCSI Read ───────────────────────────────────────────────────
+  - id: "evt_read_cmd"
+    type: "frame_tx"
+    t_ns: 40000000
+    frame_id: "scsi_read_cmd"
+    annotation:
+      text: "SCSI READ(10) → 4KB read from LBA 0"
+      detail: >
+        The initiator sends a READ(10) for the same 4KB block. No R2T
+        is needed for reads — the target sends Data-In PDUs directly.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 6
+            state_fields:
+              cmd_sn: 4
+
+  - id: "evt_read_data"
+    type: "frame_tx"
+    t_ns: 40100000
+    frame_id: "scsi_read_data"
+    annotation:
+      text: "Data-In ← 4KB read data with GOOD status"
+      detail: >
+        The target reads 4KB from LBA 0 and returns it in an iSCSI SCSI
+        Data-In PDU. The Status bit is set (S=1), piggybacking the SCSI
+        GOOD status on the final data PDU — avoiding a separate Response PDU.
+
+        iSCSI Read flow summary:
+        1. Initiator → Target: SCSI Command PDU (READ CDB)
+        2. Target → Initiator: Data-In PDU (4KB + GOOD status)
+
+        Reads are simpler than writes because there's no R2T handshake.
+        For large reads, the data would be split across multiple Data-In PDUs.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 7
+            state_fields:
+              scsi_state: "IO complete"
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            state_fields:
+              target_state: "IO ready"
+
+  # ── Summary ─────────────────────────────────────────────────────
+  - id: "evt_summary"
+    type: "annotation"
+    t_ns: 100000000
+    annotation:
+      text: "⟳ Scenario complete — iSCSI session lifecycle"
+      detail: >
+        This scenario demonstrated a complete iSCSI session:
+
+        1. LINK — Standard 10GbE Ethernet, no special configuration
+        2. TCP — 3-way handshake to port 3260
+        3. LOGIN — Two-stage negotiation (security → operational → Full Feature Phase)
+        4. DISCOVERY — SCSI INQUIRY to identify LUN 0 (disk)
+        5. WRITE — Command → R2T → Data-Out → Response (4 PDU exchange)
+        6. READ — Command → Data-In+Status (2 PDU exchange)
+
+        iSCSI vs other SAN protocols:
+        ┌────────────────┬──────────────┬──────────────┬────────────────┐
+        │ Feature        │ iSCSI        │ FC           │ NVMe-oF/RDMA   │
+        ├────────────────┼──────────────┼──────────────┼────────────────┤
+        │ Transport      │ TCP/IP       │ FC fabric    │ RoCEv2/RDMA    │
+        │ Network        │ Any Ethernet │ Dedicated FC │ Lossless Eth   │
+        │ Special HW     │ No           │ FC HBA       │ RDMA NIC       │
+        │ CPU overhead   │ High (TCP)   │ Low (HBA)    │ Near-zero      │
+        │ Latency        │ ~100-500μs   │ ~10-50μs     │ ~5-20μs        │
+        │ Complexity     │ Low          │ High         │ Medium         │
+        │ Cost           │ Low          │ High         │ Medium         │
+        │ Max throughput │ ~40 Gbps     │ 64 Gbps      │ 100+ Gbps      │
+        └────────────────┴──────────────┴──────────────┴────────────────┘
+
+        iSCSI's strength is simplicity — it works on existing IP networks
+        with no special hardware, making it the most accessible and
+        widely deployed SAN protocol.
+
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
+glossary:
+  - term: "iSCSI Qualified Name"
+    abbrev: "IQN"
+    definition: "Globally unique name for iSCSI initiators and targets. Format: iqn.YYYY-MM.reverse-domain:unique-string. Used for access control (ACLs) and session identification."
+    spec_refs:
+      - document: "RFC 7143"
+        section: "4.2.7"
+        title: "iSCSI Name"
+        url: "https://datatracker.ietf.org/doc/html/rfc7143#section-4.2.7"
+
+  - term: "Protocol Data Unit"
+    abbrev: "PDU"
+    definition: "iSCSI frames SCSI commands and data into PDUs transmitted over TCP. Each PDU has a 48-byte Basic Header Segment (BHS) plus optional header/data segments. PDU types: Login, SCSI Command, Data-In, Data-Out, R2T, SCSI Response, etc."
+
+  - term: "Ready to Transfer"
+    abbrev: "R2T"
+    definition: "Target-to-initiator PDU granting permission to send write data. Provides flow control — the target won't be overwhelmed by unsolicited data. Contains a Target Transfer Tag that the initiator echoes in Data-Out PDUs."
+    spec_refs:
+      - document: "RFC 7143"
+        section: "11.8"
+        title: "Ready To Transfer (R2T)"
+        url: "https://datatracker.ietf.org/doc/html/rfc7143#section-11.8"
+
+  - term: "Target Session Identifying Handle"
+    abbrev: "TSIH"
+    definition: "16-bit value assigned by the target to identify an iSCSI session. Combined with the initiator's ISID, it uniquely identifies the session. TSIH=0 in the first Login Request indicates a new session."
+
+  - term: "Full Feature Phase"
+    definition: "The iSCSI session state after successful login negotiation. SCSI commands can only be sent in Full Feature Phase. Reached after completing Security and Operational negotiation stages."
+
+  - term: "Command Sequence Number"
+    abbrev: "CmdSN"
+    definition: "32-bit sequence number assigned to each iSCSI command PDU. Ensures commands are processed in order across potentially multiple TCP connections in a session. The target tracks an expected CmdSN window."
+
+  - term: "SendTargets"
+    definition: "iSCSI discovery mechanism where the initiator sends a Text Request with 'SendTargets=All' and the target responds with available target names and portal addresses. Used by iscsiadm --mode discovery."
+    spec_refs:
+      - document: "RFC 7143"
+        section: "11.14"
+        title: "Text Request/Response"
+        url: "https://datatracker.ietf.org/doc/html/rfc7143#section-11.14"
+
+  - term: "LIO"
+    definition: "Linux-IO Target — the Linux kernel's built-in SCSI target framework. Supports iSCSI, FC, and other SCSI transports. Configured via targetcli. Provides backstores for block devices, files, and RAM disks."

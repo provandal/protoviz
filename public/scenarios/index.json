@@ -31,6 +31,16 @@
       "path": "nvme-rdma/nvme-rdma-discovery-io.yaml"
     },
     {
+      "slug": "iscsi-login-discovery-io",
+      "title": "iSCSI: Login → Discovery → SCSI INQUIRY → WRITE(10) → READ(10)",
+      "protocol": "iSCSI",
+      "protocol_family": "SAN",
+      "difficulty": "intermediate",
+      "description": "Complete iSCSI session: TCP connection, two-stage Login negotiation (security + operational), SCSI INQUIRY to discover LUN, WRITE(10) with R2T flow control, and READ(10). The most widely deployed SAN protocol — standard TCP/IP, no special hardware.",
+      "tags": ["iSCSI", "SCSI", "SAN", "storage", "TCP/IP", "block storage", "education"],
+      "path": "iscsi/iscsi-login-discovery-io.yaml"
+    },
+    {
       "slug": "roce-v2-rc-connection-rdma-write-read",
       "title": "RoCEv2 RC: Link Training \u2192 QP Connection \u2192 RDMA WRITE \u2192 RDMA READ",
       "protocol": "RoCEv2",
