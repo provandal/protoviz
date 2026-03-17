@@ -1,0 +1,3030 @@
+# ─────────────────────────────────────────────────────────────────
+# GPUDirect Storage: Remote NVMe-oF Read/Write to GPU Memory over RoCEv2
+# ─────────────────────────────────────────────────────────────────
+meta:
+  id: "gpudirect-storage-rdma-remote"
+  title: "[WIP] GPUDirect Storage: Remote NVMe-oF Read/Write to GPU Memory over RoCEv2"
+  protocol: "NVMe-oF/RDMA + GPUDirect Storage"
+  protocol_family: "Storage"
+  version: "1.0.0"
+  description: >
+    A GPUDirect Storage scenario showing how a GPU reads and writes data on a remote
+    NVMe-oF/RDMA storage target with data landing directly in GPU HBM — bypassing host
+    DRAM entirely. The traditional remote storage path bounces data twice (storage → RDMA →
+    host DRAM → CPU memcpy → GPU). GDS over RDMA eliminates both bounces: the storage
+    target's RDMA WRITE delivers data straight to the GPU's PCIe BAR1 aperture, and
+    cuFileWrite data is pulled directly from GPU HBM via RDMA READ. The flow covers
+    physical link establishment, ARP, IB CM QP setup, NVMe-oF Fabrics Connect (admin +
+    I/O queues), GDS initialization (cuFileDriverOpen, cuFileHandleRegister, cuFileBufRegister),
+    a cuFileRead that triggers NVMe READ over RDMA with data written directly to GPU memory,
+    and a cuFileWrite that triggers NVMe WRITE with data read directly from GPU memory.
+
+  learning_objectives:
+    - "Understand how GPUDirect Storage (GDS) eliminates the host DRAM bounce buffer for remote storage I/O"
+    - "See how cuFileRead triggers an NVMe-oF READ whose RDMA WRITE lands data directly in GPU HBM via BAR1"
+    - "See how cuFileWrite triggers an NVMe-oF WRITE whose data is pulled from GPU HBM via RDMA READ"
+    - "Trace the NVMe-oF/RDMA transport binding: NVMe commands via RDMA SEND, data via RDMA WRITE/READ"
+    - "Follow NVMe-oF Fabrics Connect to establish admin and I/O queue pairs over RDMA"
+    - "Observe how nvidia-fs and nvidia-peermem cooperate to register GPU memory for RDMA"
+    - "Contrast traditional path (storage → DRAM → GPU) vs GDS path (storage → GPU directly)"
+    - "Follow IB Connection Manager MAD exchange to bring a Queue Pair from RESET to RTS"
+
+  difficulty: "advanced"
+
+  authors:
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+
+  created: "2026-03-17"
+  updated: "2026-03-17"
+
+  tags:
+    - "RDMA"
+    - "RoCEv2"
+    - "GPUDirect Storage"
+    - "GDS"
+    - "NVMe-oF"
+    - "NVMe"
+    - "cuFile"
+    - "nvidia-fs"
+    - "GPU"
+    - "100GbE"
+    - "lossless-ethernet"
+    - "PFC"
+    - "AI-infrastructure"
+    - "education"
+
+  primary_specs:
+    - document: "NVMe 2.0 Base Specification"
+      section: "3"
+      title: "NVMe Command Set"
+      url: "https://nvmexpress.org/specifications/"
+    - document: "NVMe-oF 1.1"
+      section: "3"
+      title: "NVMe over Fabrics Transport Bindings"
+      url: "https://nvmexpress.org/specifications/"
+    - document: "NVMe-oF RDMA Transport Binding (TP8010)"
+      section: "2"
+      title: "RDMA Transport Binding for NVMe-oF"
+      url: "https://nvmexpress.org/specifications/"
+    - document: "IBTA Vol1"
+      section: "9.7"
+      title: "Reliable Connection Service"
+      url: "https://www.infinibandta.org/ibta-specification/"
+
+  content_disclaimer: >
+    Protocol descriptions in this scenario are based on open-source implementations
+    (Linux kernel nvme-rdma, rdma-core, nvidia-fs, nvidia-peermem, CUDA documentation)
+    and public specifications. No proprietary specification text has been reproduced.
+
+  source_references:
+    - repo: "torvalds/linux"
+      path: "drivers/nvme/host/rdma.c"
+      description: "NVMe-oF/RDMA host initiator — Fabrics Connect, I/O submission, RDMA operations"
+    - repo: "torvalds/linux"
+      path: "drivers/nvme/target/rdma.c"
+      description: "NVMe-oF/RDMA target — capsule processing, RDMA WRITE for read data"
+    - repo: "Mellanox/nv_peer_memory"
+      path: "nv_peer_mem.c"
+      description: "nvidia-peermem — ib_peer_memory_client for GPU memory RDMA registration"
+    - repo: "torvalds/linux"
+      path: "drivers/nvme/host/core.c"
+      description: "NVMe core — command submission, completion processing"
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "gpu_node"
+      type: "initiator"
+      label: "GPU Compute Node (GPU + RNIC)"
+      description: "GPU-accelerated compute node running GDS (cuFile API). nvidia-fs and nvidia-peermem enable RDMA data to land directly in GPU HBM, e.g. NVIDIA H100 + ConnectX-7."
+      hardware: "GPU + 100GbE RNIC (PCIe Gen5), e.g. NVIDIA H100 + ConnectX-7"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "192.168.1.10"
+      mac: "00:02:c9:12:34:56"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "100GbE RoCEv2 Switch"
+      description: "Lossless 100GbE datacenter switch with PFC and ECN/WRED for RoCEv2 traffic."
+      hardware: "100GbE datacenter switch"
+      position: "center"
+
+    - id: "storage_target"
+      type: "target"
+      label: "NVMe-oF/RDMA Storage Target"
+      description: "Remote NVMe-oF storage subsystem exporting NVMe namespaces over RDMA transport. Performs RDMA WRITE to deliver read data and RDMA READ to fetch write data."
+      hardware: "100GbE RNIC + NVMe storage array, e.g. ConnectX-7 + NVMe SSDs"
+      os: "Linux 6.x / Storage OS"
+      ip: "192.168.1.20"
+      mac: "00:02:c9:ab:cd:ef"
+      position: "right"
+
+  links:
+    - id: "link-gpu-sw"
+      from: "gpu_node"
+      to: "switch"
+      speed_gbps: 100
+      media: "fiber_sr"
+      fec: "RS(544,514)"
+      autoneg: true
+    - id: "link-sw-storage"
+      from: "switch"
+      to: "storage_target"
+      speed_gbps: 100
+      media: "fiber_sr"
+      fec: "RS(544,514)"
+      autoneg: true
+
+# ─────────────────────────────────────────────────────────────────
+# OSI LAYER DEFINITIONS
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  gpu_node:
+    - layer: 7
+      name: "GDS / cuFile API"
+      components: ["libcufile.so", "cuFileDriverOpen", "cuFileRead", "cuFileWrite"]
+      state_schema:
+        gds_state:
+          type: "string"
+          description: "GDS driver state"
+          initial: "uninitialized"
+        cufile_handle:
+          type: "string"
+          description: "cuFile handle for remote NVMe-oF namespace"
+          initial: "null"
+        gpu_buf_ptr:
+          type: "string"
+          description: "GPU device pointer registered with GDS"
+          initial: "null"
+        gpu_buf_size:
+          type: "integer"
+          description: "Size of GPU buffer in bytes"
+          initial: 0
+        io_state:
+          type: "string"
+          description: "Current I/O operation state"
+          initial: "idle"
+
+    - layer: 6
+      name: "nvidia-fs / nvidia-peermem"
+      components: ["nvidia-fs kernel module", "nvidia-peermem", "drivers/nvme/host/rdma.c"]
+      state_schema:
+        nvfs_state:
+          type: "string"
+          description: "nvidia-fs module state"
+          initial: "not_loaded"
+        peermem_state:
+          type: "string"
+          description: "nvidia-peermem registration state"
+          initial: "not_loaded"
+        gpu_pages_pinned:
+          type: "boolean"
+          description: "GPU pages pinned for RDMA via nvidia_peermem_get_pages()"
+          initial: false
+        bounce_buffer:
+          type: "string"
+          description: "Host DRAM bounce buffer status — bypassed when GDS active"
+          initial: "required"
+
+    - layer: 5
+      name: "NVMe-oF/RDMA Transport"
+      components: ["drivers/nvme/host/rdma.c", "drivers/infiniband/core/verbs.c"]
+      state_schema:
+        qp_state:
+          type: "string"
+          description: "RDMA Queue Pair state"
+          initial: "RESET"
+        qp_num:
+          type: "string"
+          initial: "null"
+        admin_queue:
+          type: "string"
+          description: "Admin queue connection state"
+          initial: "disconnected"
+        io_queue:
+          type: "string"
+          description: "I/O queue connection state"
+          initial: "disconnected"
+        ctrl_id:
+          type: "string"
+          description: "NVMe-oF controller ID assigned by target"
+          initial: "null"
+        nsid:
+          type: "integer"
+          description: "Active NVMe namespace ID"
+          initial: 0
+        psn_send:
+          type: "integer"
+          initial: 0
+        psn_recv_expected:
+          type: "integer"
+          initial: 0
+        remote_qpn:
+          type: "string"
+          initial: "null"
+
+    - layer: 4
+      name: "UDP (RoCEv2 encapsulation)"
+      components: ["kernel UDP stack", "RNIC hardware offload"]
+      state_schema:
+        src_port:
+          type: "integer"
+          initial: 0
+        dst_port:
+          type: "integer"
+          description: "Always 4791 for RoCEv2"
+          initial: 4791
+
+    - layer: 3
+      name: "IP / Routing"
+      components: ["kernel IP stack", "RNIC GID table"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "192.168.1.10"
+        dst_ip:
+          type: "string"
+          initial: "null"
+        dscp:
+          type: "integer"
+          initial: 0
+        ecn_state:
+          type: "string"
+          initial: "Not-ECT"
+        ttl:
+          type: "integer"
+          initial: 64
+
+    - layer: 2
+      name: "Ethernet / PFC"
+      components: ["mlx5 driver", "IEEE 802.1Qbb PFC"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "down"
+        pfc_enabled:
+          type: "boolean"
+          initial: false
+        pfc_priority:
+          type: "integer"
+          initial: 3
+
+    - layer: 1
+      name: "Physical / RS-FEC"
+      components: ["IEEE 802.3cd", "100GBASE-SR4", "RS(544,514) FEC"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "down"
+        an_state:
+          type: "string"
+          initial: "idle"
+        lt_state:
+          type: "string"
+          initial: "idle"
+        fec_mode:
+          type: "string"
+          initial: "RS(544,514)"
+        speed:
+          type: "string"
+          initial: "unknown"
+        signal_detect:
+          type: "boolean"
+          initial: false
+
+  storage_target:
+    - layer: 7
+      name: "NVMe Target Subsystem"
+      components: ["drivers/nvme/target/core.c", "drivers/nvme/target/rdma.c"]
+      state_schema:
+        subsys_state:
+          type: "string"
+          initial: "ready"
+        namespaces:
+          type: "integer"
+          description: "Number of exported NVMe namespaces"
+          initial: 1
+        ctrl_count:
+          type: "integer"
+          description: "Connected controller count"
+          initial: 0
+
+    - layer: 6
+      name: "NVMe-oF Transport Layer"
+      components: ["drivers/nvme/target/rdma.c", "librdmacm"]
+      state_schema:
+        transport_state:
+          type: "string"
+          initial: "listening"
+        rdma_cm_state:
+          type: "string"
+          initial: "idle"
+
+    - layer: 5
+      name: "IB Transport (RC QP)"
+      components: ["drivers/infiniband/hw/mlx5/qp.c"]
+      state_schema:
+        qp_state:
+          type: "string"
+          initial: "RESET"
+        qp_num:
+          type: "string"
+          initial: "null"
+        psn_send:
+          type: "integer"
+          initial: 0
+        psn_recv_expected:
+          type: "integer"
+          initial: 0
+        lkey:
+          type: "string"
+          initial: "null"
+        rkey:
+          type: "string"
+          initial: "null"
+        remote_qpn:
+          type: "string"
+          initial: "null"
+
+    - layer: 4
+      name: "UDP (RoCEv2 encapsulation)"
+      components: ["kernel UDP stack", "RNIC hardware offload"]
+      state_schema:
+        dst_port:
+          type: "integer"
+          initial: 4791
+
+    - layer: 3
+      name: "IP / Routing"
+      components: ["kernel IP stack"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "192.168.1.20"
+        ecn_state:
+          type: "string"
+          initial: "Not-ECT"
+
+    - layer: 2
+      name: "Ethernet / PFC"
+      components: ["mlx5 driver", "IEEE 802.1Qbb PFC"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "down"
+        pfc_enabled:
+          type: "boolean"
+          initial: false
+
+    - layer: 1
+      name: "Physical / RS-FEC"
+      components: ["IEEE 802.3cd", "100GBASE-SR4"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "down"
+        an_state:
+          type: "string"
+          initial: "idle"
+        lt_state:
+          type: "string"
+          initial: "idle"
+        speed:
+          type: "string"
+          initial: "unknown"
+        signal_detect:
+          type: "boolean"
+          initial: false
+
+  switch:
+    - layer: 3
+      name: "IP Forwarding / ECN"
+      components: ["L3 forwarding", "ECN/WRED marking"]
+      state_schema:
+        ecn_marking_enabled:
+          type: "boolean"
+          initial: true
+        wred_threshold_bytes:
+          type: "integer"
+          initial: 153600
+    - layer: 2
+      name: "Ethernet Switching / PFC"
+      components: ["802.1Q bridge", "802.1Qbb PFC"]
+      state_schema:
+        fwd_table_entries:
+          type: "integer"
+          initial: 0
+        port_a_pfc_xoff:
+          type: "boolean"
+          initial: false
+        port_b_pfc_xoff:
+          type: "boolean"
+          initial: false
+    - layer: 1
+      name: "Physical (per-port)"
+      components: ["IEEE 802.3cd 100GBASE-SR4"]
+      state_schema:
+        port_a_phy:
+          type: "string"
+          initial: "down"
+        port_a_an:
+          type: "string"
+          initial: "idle"
+        port_a_lt:
+          type: "string"
+          initial: "idle"
+        port_b_phy:
+          type: "string"
+          initial: "down"
+        port_b_an:
+          type: "string"
+          initial: "idle"
+        port_b_lt:
+          type: "string"
+          initial: "idle"
+
+# ─────────────────────────────────────────────────────────────────
+# FRAMES
+# ─────────────────────────────────────────────────────────────────
+frames:
+  # ── ARP ───────────────────────────────────────────────────────
+  - id: "arp_request"
+    name: "ARP Request"
+    description: "GPU node broadcasts ARP to resolve storage target IP"
+    from: "gpu_node"
+    to: "broadcast"
+    via: ["switch"]
+    total_bytes: 42
+    color: "#f0c040"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "ff:ff:ff:ff:ff:ff"
+            description: "Broadcast MAC"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:12:34:56"
+            description: "GPU node MAC"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0806"
+            description: "EtherType 0x0806 = ARP"
+      - name: "ARP"
+        abbrev: "arp"
+        layer: 3
+        total_bytes: 28
+        fields:
+          - name: "Hardware Type"
+            abbrev: "arp.hw.type"
+            bits: 16
+            value: 1
+            description: "1 = Ethernet"
+          - name: "Protocol Type"
+            abbrev: "arp.proto.type"
+            bits: 16
+            value: "0x0800"
+            description: "0x0800 = IPv4"
+          - name: "Opcode"
+            abbrev: "arp.opcode"
+            bits: 16
+            value: 1
+            description: "1 = Request"
+          - name: "Sender MAC"
+            abbrev: "arp.src.hw_mac"
+            bits: 48
+            value: "00:02:c9:12:34:56"
+          - name: "Sender IP"
+            abbrev: "arp.src.proto_ipv4"
+            bits: 32
+            value: "192.168.1.10"
+          - name: "Target MAC"
+            abbrev: "arp.dst.hw_mac"
+            bits: 48
+            value: "00:00:00:00:00:00"
+            description: "Unknown — this is what we are resolving"
+          - name: "Target IP"
+            abbrev: "arp.dst.proto_ipv4"
+            bits: 32
+            value: "192.168.1.20"
+
+  - id: "arp_reply"
+    name: "ARP Reply"
+    description: "Storage target responds with its MAC address"
+    from: "storage_target"
+    to: "gpu_node"
+    via: ["switch"]
+    total_bytes: 42
+    color: "#f0c040"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:12:34:56"
+            description: "Unicast reply to GPU node"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:ab:cd:ef"
+            description: "Storage target MAC"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0806"
+      - name: "ARP"
+        abbrev: "arp"
+        layer: 3
+        total_bytes: 28
+        fields:
+          - name: "Opcode"
+            abbrev: "arp.opcode"
+            bits: 16
+            value: 2
+            description: "2 = Reply"
+          - name: "Sender MAC"
+            abbrev: "arp.src.hw_mac"
+            bits: 48
+            value: "00:02:c9:ab:cd:ef"
+            description: "Storage target MAC — the answer"
+          - name: "Sender IP"
+            abbrev: "arp.src.proto_ipv4"
+            bits: 32
+            value: "192.168.1.20"
+
+  # ── CM REQ/REP/RTU (322 bytes each) ──────────────────────────
+  - id: "cm_req"
+    name: "CM REQ (Connection Request)"
+    description: >
+      IB Connection Manager Request. GPU node proposes QP parameters for the
+      NVMe-oF/RDMA transport connection. Carried as MAD over UD QP1.
+    from: "gpu_node"
+    to: "storage_target"
+    via: ["switch"]
+    total_bytes: 322
+    color: "#5b8dd9"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:ab:cd:ef"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:12:34:56"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 308
+            description: "20 (IP) + 288 (UDP with IB payload)"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 17
+            description: "17 = UDP"
+          - name: "Source"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.1.10"
+          - name: "Destination"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.1.20"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 49152
+            description: "Ephemeral port for ECMP hashing"
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+            description: "RoCEv2 well-known port"
+          - name: "Length"
+            abbrev: "udp.length"
+            bits: 16
+            value: 288
+            description: "8 (UDP) + 12 (BTH) + 8 (DETH) + 256 (MAD) + 4 (ICRC)"
+          - name: "Checksum"
+            abbrev: "udp.checksum"
+            bits: 16
+            value: "0x0000"
+            description: "Always 0 for RoCEv2 — ICRC covers integrity"
+      - name: "IB BTH (Base Transport Header)"
+        abbrev: "infiniband.bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "Opcode"
+            abbrev: "infiniband.bth.opcode"
+            bits: 8
+            value: "0x64"
+            description: "0x64 = UD Send Only — all CM messages use UD SEND"
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "5.3.1"
+                title: "BTH Opcode encoding"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "Solicited Event (SE)"
+            abbrev: "infiniband.bth.se"
+            bits: 1
+            value: 0
+          - name: "MigReq"
+            abbrev: "infiniband.bth.migreq"
+            bits: 1
+            value: 1
+            description: "1 = primary path"
+          - name: "Pad Count"
+            abbrev: "infiniband.bth.padcnt"
+            bits: 2
+            value: 0
+          - name: "Transport Header Version"
+            abbrev: "infiniband.bth.tver"
+            bits: 4
+            value: 0
+          - name: "P_Key"
+            abbrev: "infiniband.bth.pkey"
+            bits: 16
+            value: "0xFFFF"
+            description: "Full membership partition key"
+          - name: "FECN"
+            abbrev: "infiniband.bth.fecn"
+            bits: 1
+            value: 0
+          - name: "BECN"
+            abbrev: "infiniband.bth.becn"
+            bits: 1
+            value: 0
+          - name: "Destination QP"
+            abbrev: "infiniband.bth.destqp"
+            bits: 24
+            value: "0x000001"
+            description: "QP1 = GSI (General Services Interface) for CM"
+          - name: "Acknowledge Request (A)"
+            abbrev: "infiniband.bth.ackreq"
+            bits: 1
+            value: 1
+          - name: "Packet Sequence Number (PSN)"
+            abbrev: "infiniband.bth.psn"
+            bits: 24
+            value: 0
+      - name: "IB DETH (Datagram Extended Transport Header)"
+        abbrev: "infiniband.deth"
+        layer: 5
+        total_bytes: 8
+        fields:
+          - name: "Queue Key (Q_Key)"
+            abbrev: "infiniband.deth.q_key"
+            bits: 32
+            value: "0x80010000"
+            description: "Well-known Q_Key for CM MADs"
+          - name: "Source QP"
+            abbrev: "infiniband.deth.srcqp"
+            bits: 24
+            value: "0x000001"
+      - name: "IB MAD (CM REQ)"
+        abbrev: "infiniband.mad"
+        layer: 6
+        total_bytes: 256
+        fields:
+          - name: "Management Class"
+            abbrev: "infiniband.mad.mgmt_class"
+            bits: 8
+            value: "0x07"
+            description: "0x07 = Communication Management"
+          - name: "Method"
+            abbrev: "infiniband.mad.method"
+            bits: 8
+            value: "0x03"
+            description: "0x03 = Send"
+          - name: "Attribute ID"
+            abbrev: "infiniband.mad.attr_id"
+            bits: 16
+            value: "0x0010"
+            description: "0x0010 = CM_REQ"
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "12.6.5"
+                title: "CM REQ Message"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "Local Communication ID"
+            abbrev: "infiniband.mad.cm.local_comm_id"
+            bits: 32
+            value: "0xGDS0C3D4"
+          - name: "Service ID"
+            abbrev: "infiniband.mad.cm.service_id"
+            bits: 64
+            value: "0x0000000001000000"
+            description: "NVMe-oF/RDMA transport service"
+          - name: "Local QPN"
+            abbrev: "infiniband.mad.cm.local_qpn"
+            bits: 24
+            value: "0x00A001"
+            description: "GPU node's QP number"
+          - name: "Starting PSN"
+            abbrev: "infiniband.mad.cm.starting_psn"
+            bits: 24
+            value: 2345678
+          - name: "Path MTU"
+            abbrev: "infiniband.mad.cm.path_mtu"
+            bits: 4
+            value: 5
+            description: "5 = 4096 bytes"
+          - name: "Retry Count"
+            abbrev: "infiniband.mad.cm.retry_count"
+            bits: 3
+            value: 7
+          - name: "RNR Retry Count"
+            abbrev: "infiniband.mad.cm.rnr_retry_count"
+            bits: 3
+            value: 7
+          - name: "Private Data"
+            abbrev: "infiniband.mad.cm.private_data"
+            bits: 1792
+            value: "<nvmf_rdma_cm_req: recfmt=0, qid=0, hrqsize=128, hsqsize=128>"
+            description: "NVMe-oF/RDMA CM private data — queue ID, host RQ/SQ sizes per TP8010"
+      - name: "IB ICRC"
+        abbrev: "infiniband.icrc"
+        layer: 5
+        total_bytes: 4
+        fields:
+          - name: "Invariant CRC"
+            abbrev: "infiniband.icrc"
+            bits: 32
+            value: "0x12345678"
+
+  - id: "cm_rep"
+    name: "CM REP (Connection Reply)"
+    description: "Storage target accepts connection, provides its QP number and PSN"
+    from: "storage_target"
+    to: "gpu_node"
+    via: ["switch"]
+    total_bytes: 322
+    color: "#5b8dd9"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:12:34:56"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:ab:cd:ef"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 308
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 17
+          - name: "Source"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.1.20"
+          - name: "Destination"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.1.10"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 49153
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+          - name: "Length"
+            abbrev: "udp.length"
+            bits: 16
+            value: 288
+          - name: "Checksum"
+            abbrev: "udp.checksum"
+            bits: 16
+            value: "0x0000"
+      - name: "IB BTH (Base Transport Header)"
+        abbrev: "infiniband.bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "Opcode"
+            abbrev: "infiniband.bth.opcode"
+            bits: 8
+            value: "0x64"
+            description: "0x64 = UD Send Only"
+          - name: "Solicited Event (SE)"
+            abbrev: "infiniband.bth.se"
+            bits: 1
+            value: 0
+          - name: "MigReq"
+            abbrev: "infiniband.bth.migreq"
+            bits: 1
+            value: 1
+          - name: "Pad Count"
+            abbrev: "infiniband.bth.padcnt"
+            bits: 2
+            value: 0
+          - name: "Transport Header Version"
+            abbrev: "infiniband.bth.tver"
+            bits: 4
+            value: 0
+          - name: "P_Key"
+            abbrev: "infiniband.bth.pkey"
+            bits: 16
+            value: "0xFFFF"
+          - name: "FECN"
+            abbrev: "infiniband.bth.fecn"
+            bits: 1
+            value: 0
+          - name: "BECN"
+            abbrev: "infiniband.bth.becn"
+            bits: 1
+            value: 0
+          - name: "Destination QP"
+            abbrev: "infiniband.bth.destqp"
+            bits: 24
+            value: "0x000001"
+          - name: "Acknowledge Request (A)"
+            abbrev: "infiniband.bth.ackreq"
+            bits: 1
+            value: 1
+          - name: "Packet Sequence Number (PSN)"
+            abbrev: "infiniband.bth.psn"
+            bits: 24
+            value: 0
+      - name: "IB DETH"
+        abbrev: "infiniband.deth"
+        layer: 5
+        total_bytes: 8
+        fields:
+          - name: "Queue Key (Q_Key)"
+            abbrev: "infiniband.deth.q_key"
+            bits: 32
+            value: "0x80010000"
+          - name: "Source QP"
+            abbrev: "infiniband.deth.srcqp"
+            bits: 24
+            value: "0x000001"
+      - name: "IB MAD (CM REP)"
+        abbrev: "infiniband.mad"
+        layer: 6
+        total_bytes: 256
+        fields:
+          - name: "Management Class"
+            abbrev: "infiniband.mad.mgmt_class"
+            bits: 8
+            value: "0x07"
+          - name: "Attribute ID"
+            abbrev: "infiniband.mad.attr_id"
+            bits: 16
+            value: "0x0013"
+            description: "0x0013 = CM_REP"
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "12.6.10"
+                title: "CM REP Message"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "Local Communication ID"
+            abbrev: "infiniband.mad.cm.local_comm_id"
+            bits: 32
+            value: "0xSTOR5678"
+          - name: "Remote Communication ID"
+            abbrev: "infiniband.mad.cm.remote_comm_id"
+            bits: 32
+            value: "0xGDS0C3D4"
+          - name: "Local QPN"
+            abbrev: "infiniband.mad.cm.local_qpn"
+            bits: 24
+            value: "0x00B002"
+            description: "Storage target's QP number"
+          - name: "Starting PSN"
+            abbrev: "infiniband.mad.cm.starting_psn"
+            bits: 24
+            value: 8765432
+          - name: "Target ACK Delay"
+            abbrev: "infiniband.mad.cm.target_ack_delay"
+            bits: 5
+            value: 14
+          - name: "Private Data"
+            abbrev: "infiniband.mad.cm.private_data"
+            bits: 1792
+            value: "<nvmf_rdma_cm_rep: recfmt=0>"
+            description: "NVMe-oF/RDMA CM reply private data per TP8010"
+      - name: "IB ICRC"
+        abbrev: "infiniband.icrc"
+        layer: 5
+        total_bytes: 4
+        fields:
+          - name: "Invariant CRC"
+            abbrev: "infiniband.icrc"
+            bits: 32
+            value: "0xABCDEF01"
+
+  - id: "cm_rtu"
+    name: "CM RTU (Ready To Use)"
+    description: "GPU node confirms connection ready. Both QPs transition to RTS."
+    from: "gpu_node"
+    to: "storage_target"
+    via: ["switch"]
+    total_bytes: 322
+    color: "#5b8dd9"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:ab:cd:ef"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:12:34:56"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 308
+          - name: "Source"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.1.10"
+          - name: "Destination"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.1.20"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+          - name: "Length"
+            abbrev: "udp.length"
+            bits: 16
+            value: 288
+      - name: "IB BTH (Base Transport Header)"
+        abbrev: "infiniband.bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "Opcode"
+            abbrev: "infiniband.bth.opcode"
+            bits: 8
+            value: "0x64"
+            description: "0x64 = UD Send Only"
+          - name: "Solicited Event (SE)"
+            abbrev: "infiniband.bth.se"
+            bits: 1
+            value: 0
+          - name: "MigReq"
+            abbrev: "infiniband.bth.migreq"
+            bits: 1
+            value: 1
+          - name: "Pad Count"
+            abbrev: "infiniband.bth.padcnt"
+            bits: 2
+            value: 0
+          - name: "Transport Header Version"
+            abbrev: "infiniband.bth.tver"
+            bits: 4
+            value: 0
+          - name: "P_Key"
+            abbrev: "infiniband.bth.pkey"
+            bits: 16
+            value: "0xFFFF"
+          - name: "FECN"
+            abbrev: "infiniband.bth.fecn"
+            bits: 1
+            value: 0
+          - name: "BECN"
+            abbrev: "infiniband.bth.becn"
+            bits: 1
+            value: 0
+          - name: "Destination QP"
+            abbrev: "infiniband.bth.destqp"
+            bits: 24
+            value: "0x000001"
+          - name: "Acknowledge Request (A)"
+            abbrev: "infiniband.bth.ackreq"
+            bits: 1
+            value: 1
+          - name: "Packet Sequence Number (PSN)"
+            abbrev: "infiniband.bth.psn"
+            bits: 24
+            value: 0
+      - name: "IB DETH"
+        abbrev: "infiniband.deth"
+        layer: 5
+        total_bytes: 8
+        fields:
+          - name: "Queue Key (Q_Key)"
+            abbrev: "infiniband.deth.q_key"
+            bits: 32
+            value: "0x80010000"
+          - name: "Source QP"
+            abbrev: "infiniband.deth.srcqp"
+            bits: 24
+            value: "0x000001"
+      - name: "IB MAD (CM RTU)"
+        abbrev: "infiniband.mad"
+        layer: 6
+        total_bytes: 256
+        fields:
+          - name: "Management Class"
+            abbrev: "infiniband.mad.mgmt_class"
+            bits: 8
+            value: "0x07"
+          - name: "Attribute ID"
+            abbrev: "infiniband.mad.attr_id"
+            bits: 16
+            value: "0x0014"
+            description: "0x0014 = CM_RTU"
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "12.6.11"
+                title: "CM RTU Message"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "Local Communication ID"
+            abbrev: "infiniband.mad.cm.local_comm_id"
+            bits: 32
+            value: "0xGDS0C3D4"
+          - name: "Remote Communication ID"
+            abbrev: "infiniband.mad.cm.remote_comm_id"
+            bits: 32
+            value: "0xSTOR5678"
+      - name: "IB ICRC"
+        abbrev: "infiniband.icrc"
+        layer: 5
+        total_bytes: 4
+        fields:
+          - name: "Invariant CRC"
+            abbrev: "infiniband.icrc"
+            bits: 32
+            value: "0x9876FEDC"
+
+  # ── NVMe-oF Fabrics Connect ──────────────────────────────────
+  # Eth(14)+IP(20)+UDP(8)+BTH(12)+NVMe_Cmd(64)+ICRC(4) = 122 bytes
+  - id: "fabrics_connect_admin"
+    name: "NVMe-oF Fabrics Connect (Admin Queue)"
+    description: "Fabrics Connect command to establish admin queue. NVMe command capsule sent via RDMA SEND."
+    from: "gpu_node"
+    to: "storage_target"
+    via: ["switch"]
+    total_bytes: 122
+    color: "#22d3ee"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:ab:cd:ef"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:12:34:56"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 108
+            description: "20 (IP) + 8 (UDP) + 12 (BTH) + 64 (NVMe cmd) + 4 (ICRC)"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 17
+          - name: "Source"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.1.10"
+          - name: "Destination"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.1.20"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 49152
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+          - name: "Length"
+            abbrev: "udp.length"
+            bits: 16
+            value: 88
+            description: "8 (UDP) + 12 (BTH) + 64 (NVMe cmd) + 4 (ICRC)"
+      - name: "IB BTH (Base Transport Header)"
+        abbrev: "infiniband.bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "Opcode"
+            abbrev: "infiniband.bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "0x04 = RC Send Only — NVMe-oF commands sent via RDMA SEND"
+            spec_refs:
+              - document: "NVMe-oF RDMA Transport Binding"
+                section: "2.2"
+                title: "Capsule Command via RDMA SEND"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "Solicited Event (SE)"
+            abbrev: "infiniband.bth.se"
+            bits: 1
+            value: 0
+          - name: "MigReq"
+            abbrev: "infiniband.bth.migreq"
+            bits: 1
+            value: 0
+          - name: "Pad Count"
+            abbrev: "infiniband.bth.padcnt"
+            bits: 2
+            value: 0
+          - name: "Transport Header Version"
+            abbrev: "infiniband.bth.tver"
+            bits: 4
+            value: 0
+          - name: "P_Key"
+            abbrev: "infiniband.bth.pkey"
+            bits: 16
+            value: "0xFFFF"
+          - name: "FECN"
+            abbrev: "infiniband.bth.fecn"
+            bits: 1
+            value: 0
+          - name: "BECN"
+            abbrev: "infiniband.bth.becn"
+            bits: 1
+            value: 0
+          - name: "Destination QP"
+            abbrev: "infiniband.bth.destqp"
+            bits: 24
+            value: "0x00B002"
+            description: "Storage target's QPN from CM REP"
+          - name: "Acknowledge Request (A)"
+            abbrev: "infiniband.bth.ackreq"
+            bits: 1
+            value: 1
+          - name: "Packet Sequence Number (PSN)"
+            abbrev: "infiniband.bth.psn"
+            bits: 24
+            value: 2345678
+      - name: "NVMe Fabrics Connect Command"
+        abbrev: "nvme.fabrics"
+        layer: 7
+        total_bytes: 64
+        fields:
+          - name: "Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x7F"
+            description: "0x7F = Fabrics command type"
+            spec_refs:
+              - document: "NVMe-oF 1.1"
+                section: "3.3"
+                title: "Fabrics Command Set"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "Fabrics Command Type (fctype)"
+            abbrev: "nvme.fabrics.fctype"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Connect — establishes association between host and controller"
+          - name: "Command ID (CID)"
+            abbrev: "nvme.cmd.cid"
+            bits: 16
+            value: 0
+          - name: "SGL Descriptor"
+            abbrev: "nvme.cmd.sgl"
+            bits: 128
+            value: "Keyed SGL → RDMA buffer with Connect Data (1024 bytes)"
+            description: "SGL points to registered RDMA buffer containing NVMe-oF Connect Data structure (hostnqn, subnqn, hostid)"
+            spec_refs:
+              - document: "NVMe-oF RDMA Transport Binding"
+                section: "2.3.2"
+                title: "SGL for data transfer"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "Queue ID (QID)"
+            abbrev: "nvme.fabrics.connect.qid"
+            bits: 16
+            value: 0
+            description: "QID=0 = Admin Queue"
+          - name: "SQ Size (SQSIZE)"
+            abbrev: "nvme.fabrics.connect.sqsize"
+            bits: 16
+            value: 127
+            description: "Submission Queue size (0-based, 127 = 128 entries)"
+      - name: "IB ICRC"
+        abbrev: "infiniband.icrc"
+        layer: 5
+        total_bytes: 4
+        fields:
+          - name: "Invariant CRC"
+            abbrev: "infiniband.icrc"
+            bits: 32
+            value: "0x11223344"
+
+  # Fabrics Connect Admin Response — Eth(14)+IP(20)+UDP(8)+BTH(12)+CQE(16)+ICRC(4) = 74
+  - id: "fabrics_connect_admin_resp"
+    name: "NVMe-oF Fabrics Connect Response (Admin)"
+    description: "Storage target accepts Fabrics Connect, assigns controller ID"
+    from: "storage_target"
+    to: "gpu_node"
+    via: ["switch"]
+    total_bytes: 74
+    color: "#22d3ee"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:12:34:56"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:ab:cd:ef"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 60
+          - name: "Source"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.1.20"
+          - name: "Destination"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.1.10"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+          - name: "Length"
+            abbrev: "udp.length"
+            bits: 16
+            value: 40
+      - name: "IB BTH (Base Transport Header)"
+        abbrev: "infiniband.bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "Opcode"
+            abbrev: "infiniband.bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "0x04 = RC Send Only — CQE sent as RDMA SEND"
+          - name: "Solicited Event (SE)"
+            abbrev: "infiniband.bth.se"
+            bits: 1
+            value: 1
+            description: "SE=1: completion generates solicited event on host"
+          - name: "MigReq"
+            abbrev: "infiniband.bth.migreq"
+            bits: 1
+            value: 0
+          - name: "Pad Count"
+            abbrev: "infiniband.bth.padcnt"
+            bits: 2
+            value: 0
+          - name: "Transport Header Version"
+            abbrev: "infiniband.bth.tver"
+            bits: 4
+            value: 0
+          - name: "P_Key"
+            abbrev: "infiniband.bth.pkey"
+            bits: 16
+            value: "0xFFFF"
+          - name: "FECN"
+            abbrev: "infiniband.bth.fecn"
+            bits: 1
+            value: 0
+          - name: "BECN"
+            abbrev: "infiniband.bth.becn"
+            bits: 1
+            value: 0
+          - name: "Destination QP"
+            abbrev: "infiniband.bth.destqp"
+            bits: 24
+            value: "0x00A001"
+            description: "GPU node's QPN"
+          - name: "Acknowledge Request (A)"
+            abbrev: "infiniband.bth.ackreq"
+            bits: 1
+            value: 1
+          - name: "Packet Sequence Number (PSN)"
+            abbrev: "infiniband.bth.psn"
+            bits: 24
+            value: 8765432
+      - name: "NVMe Completion Queue Entry"
+        abbrev: "nvme.cqe"
+        layer: 7
+        total_bytes: 16
+        fields:
+          - name: "Status Code Type (SCT)"
+            abbrev: "nvme.cqe.sct"
+            bits: 3
+            value: 0
+            description: "0 = Generic Command Status"
+          - name: "Status Code (SC)"
+            abbrev: "nvme.cqe.sc"
+            bits: 8
+            value: 0
+            description: "0 = Successful Completion"
+          - name: "Command ID"
+            abbrev: "nvme.cqe.cid"
+            bits: 16
+            value: 0
+          - name: "Controller ID (CNTLID)"
+            abbrev: "nvme.cqe.connect.cntlid"
+            bits: 16
+            value: 1
+            description: "Assigned controller ID — host uses this for subsequent operations"
+            spec_refs:
+              - document: "NVMe-oF 1.1"
+                section: "3.3.1"
+                title: "Connect Response"
+                url: "https://nvmexpress.org/specifications/"
+      - name: "IB ICRC"
+        abbrev: "infiniband.icrc"
+        layer: 5
+        total_bytes: 4
+        fields:
+          - name: "Invariant CRC"
+            abbrev: "infiniband.icrc"
+            bits: 32
+            value: "0x55667788"
+
+  # Fabrics Connect IO Queue — same structure as admin, QID=1
+  - id: "fabrics_connect_ioq"
+    name: "NVMe-oF Fabrics Connect (I/O Queue)"
+    description: "Fabrics Connect for I/O Queue (QID=1). After this, NVMe I/O commands can flow."
+    from: "gpu_node"
+    to: "storage_target"
+    via: ["switch"]
+    total_bytes: 122
+    color: "#22d3ee"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:ab:cd:ef"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:12:34:56"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 108
+          - name: "Source"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.1.10"
+          - name: "Destination"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.1.20"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+          - name: "Length"
+            abbrev: "udp.length"
+            bits: 16
+            value: 88
+      - name: "IB BTH (Base Transport Header)"
+        abbrev: "infiniband.bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "Opcode"
+            abbrev: "infiniband.bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "0x04 = RC Send Only"
+          - name: "Solicited Event (SE)"
+            abbrev: "infiniband.bth.se"
+            bits: 1
+            value: 0
+          - name: "MigReq"
+            abbrev: "infiniband.bth.migreq"
+            bits: 1
+            value: 0
+          - name: "Pad Count"
+            abbrev: "infiniband.bth.padcnt"
+            bits: 2
+            value: 0
+          - name: "Transport Header Version"
+            abbrev: "infiniband.bth.tver"
+            bits: 4
+            value: 0
+          - name: "P_Key"
+            abbrev: "infiniband.bth.pkey"
+            bits: 16
+            value: "0xFFFF"
+          - name: "FECN"
+            abbrev: "infiniband.bth.fecn"
+            bits: 1
+            value: 0
+          - name: "BECN"
+            abbrev: "infiniband.bth.becn"
+            bits: 1
+            value: 0
+          - name: "Destination QP"
+            abbrev: "infiniband.bth.destqp"
+            bits: 24
+            value: "0x00B002"
+          - name: "Acknowledge Request (A)"
+            abbrev: "infiniband.bth.ackreq"
+            bits: 1
+            value: 1
+          - name: "Packet Sequence Number (PSN)"
+            abbrev: "infiniband.bth.psn"
+            bits: 24
+            value: 2345679
+      - name: "NVMe Fabrics Connect Command"
+        abbrev: "nvme.fabrics"
+        layer: 7
+        total_bytes: 64
+        fields:
+          - name: "Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x7F"
+            description: "Fabrics command"
+          - name: "Fabrics Command Type (fctype)"
+            abbrev: "nvme.fabrics.fctype"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Connect"
+          - name: "Queue ID (QID)"
+            abbrev: "nvme.fabrics.connect.qid"
+            bits: 16
+            value: 1
+            description: "QID=1 = first I/O Queue"
+          - name: "SQ Size (SQSIZE)"
+            abbrev: "nvme.fabrics.connect.sqsize"
+            bits: 16
+            value: 127
+      - name: "IB ICRC"
+        abbrev: "infiniband.icrc"
+        layer: 5
+        total_bytes: 4
+        fields:
+          - name: "Invariant CRC"
+            abbrev: "infiniband.icrc"
+            bits: 32
+            value: "0x99AABB00"
+
+  # ── NVMe READ (GDS Read path) ────────────────────────────────
+  # Command: Eth(14)+IP(20)+UDP(8)+BTH(12)+NVMe(64)+ICRC(4) = 122
+  - id: "gds_read_cmd"
+    name: "NVMe Read Command (via RDMA SEND)"
+    description: "cuFileRead triggers NVMe READ. SGL points to GPU memory region — data will land directly in GPU HBM."
+    from: "gpu_node"
+    to: "storage_target"
+    via: ["switch"]
+    total_bytes: 122
+    color: "#34d399"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:ab:cd:ef"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:12:34:56"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 108
+          - name: "Source"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.1.10"
+          - name: "Destination"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.1.20"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+          - name: "Length"
+            abbrev: "udp.length"
+            bits: 16
+            value: 88
+      - name: "IB BTH (Base Transport Header)"
+        abbrev: "infiniband.bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "Opcode"
+            abbrev: "infiniband.bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "0x04 = RC Send Only — NVMe command capsule"
+          - name: "Solicited Event (SE)"
+            abbrev: "infiniband.bth.se"
+            bits: 1
+            value: 0
+          - name: "MigReq"
+            abbrev: "infiniband.bth.migreq"
+            bits: 1
+            value: 0
+          - name: "Pad Count"
+            abbrev: "infiniband.bth.padcnt"
+            bits: 2
+            value: 0
+          - name: "Transport Header Version"
+            abbrev: "infiniband.bth.tver"
+            bits: 4
+            value: 0
+          - name: "P_Key"
+            abbrev: "infiniband.bth.pkey"
+            bits: 16
+            value: "0xFFFF"
+          - name: "FECN"
+            abbrev: "infiniband.bth.fecn"
+            bits: 1
+            value: 0
+          - name: "BECN"
+            abbrev: "infiniband.bth.becn"
+            bits: 1
+            value: 0
+          - name: "Destination QP"
+            abbrev: "infiniband.bth.destqp"
+            bits: 24
+            value: "0x00B002"
+          - name: "Acknowledge Request (A)"
+            abbrev: "infiniband.bth.ackreq"
+            bits: 1
+            value: 1
+          - name: "Packet Sequence Number (PSN)"
+            abbrev: "infiniband.bth.psn"
+            bits: 24
+            value: 2345680
+      - name: "NVMe Read Command"
+        abbrev: "nvme.cmd"
+        layer: 7
+        total_bytes: 64
+        fields:
+          - name: "Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x02"
+            description: "0x02 = NVMe Read"
+            spec_refs:
+              - document: "NVMe 2.0"
+                section: "3.3.5"
+                title: "Read Command"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "Command ID (CID)"
+            abbrev: "nvme.cmd.cid"
+            bits: 16
+            value: 1
+          - name: "Namespace ID (NSID)"
+            abbrev: "nvme.cmd.nsid"
+            bits: 32
+            value: 1
+          - name: "SGL Descriptor"
+            abbrev: "nvme.cmd.sgl"
+            bits: 128
+            value: "Keyed SGL → rkey=0xGPU01234, vaddr=0x00007f4000000000, len=4096"
+            description: "SGL points to GPU memory region registered via nvidia-peermem. The rkey maps to GPU BAR1 — storage target will RDMA WRITE data directly to GPU HBM."
+            spec_refs:
+              - document: "NVMe-oF RDMA Transport Binding"
+                section: "2.3.2"
+                title: "Keyed SGL Data Block Descriptor"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "Starting LBA (SLBA)"
+            abbrev: "nvme.cmd.slba"
+            bits: 64
+            value: 0
+            description: "Starting Logical Block Address"
+          - name: "Number of Logical Blocks (NLB)"
+            abbrev: "nvme.cmd.nlb"
+            bits: 16
+            value: 7
+            description: "0-based: 7 = 8 blocks × 512 bytes = 4096 bytes"
+      - name: "IB ICRC"
+        abbrev: "infiniband.icrc"
+        layer: 5
+        total_bytes: 4
+        fields:
+          - name: "Invariant CRC"
+            abbrev: "infiniband.icrc"
+            bits: 32
+            value: "0xDDEEFF00"
+
+  # Read Data: RDMA WRITE to GPU — Eth(14)+IP(20)+UDP(8)+BTH(12)+RETH(16)+4096+ICRC(4) = 4170
+  - id: "gds_read_data"
+    name: "RDMA WRITE — Storage Data Direct to GPU Memory"
+    description: >
+      Storage target delivers read data via RDMA WRITE targeting the GPU memory region.
+      The RETH virtual address points to GPU BAR1 — the GPU node's RNIC DMAs this data
+      directly into GPU HBM, completely bypassing host DRAM and CPU.
+    from: "storage_target"
+    to: "gpu_node"
+    via: ["switch"]
+    total_bytes: 4170
+    color: "#34d399"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:12:34:56"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:ab:cd:ef"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 4156
+            description: "20 + 8 + 12 + 16 + 4096 + 4"
+          - name: "Source"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.1.20"
+          - name: "Destination"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.1.10"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+          - name: "Length"
+            abbrev: "udp.length"
+            bits: 16
+            value: 4136
+            description: "8 + 12 + 16 + 4096 + 4"
+      - name: "IB BTH (Base Transport Header)"
+        abbrev: "infiniband.bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "Opcode"
+            abbrev: "infiniband.bth.opcode"
+            bits: 8
+            value: "0x0A"
+            description: "0x0A = RC RDMA Write Only — storage target writes data directly to GPU memory"
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.4.1"
+                title: "RDMA WRITE operation"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "Solicited Event (SE)"
+            abbrev: "infiniband.bth.se"
+            bits: 1
+            value: 0
+          - name: "MigReq"
+            abbrev: "infiniband.bth.migreq"
+            bits: 1
+            value: 0
+          - name: "Pad Count"
+            abbrev: "infiniband.bth.padcnt"
+            bits: 2
+            value: 0
+          - name: "Transport Header Version"
+            abbrev: "infiniband.bth.tver"
+            bits: 4
+            value: 0
+          - name: "P_Key"
+            abbrev: "infiniband.bth.pkey"
+            bits: 16
+            value: "0xFFFF"
+          - name: "FECN"
+            abbrev: "infiniband.bth.fecn"
+            bits: 1
+            value: 0
+          - name: "BECN"
+            abbrev: "infiniband.bth.becn"
+            bits: 1
+            value: 0
+          - name: "Destination QP"
+            abbrev: "infiniband.bth.destqp"
+            bits: 24
+            value: "0x00A001"
+            description: "GPU node's QPN — data lands on this QP's memory region (GPU HBM)"
+          - name: "Acknowledge Request (A)"
+            abbrev: "infiniband.bth.ackreq"
+            bits: 1
+            value: 1
+          - name: "Packet Sequence Number (PSN)"
+            abbrev: "infiniband.bth.psn"
+            bits: 24
+            value: 8765433
+      - name: "IB RETH (RDMA Extended Transport Header)"
+        abbrev: "infiniband.reth"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - name: "Virtual Address"
+            abbrev: "infiniband.reth.vaddr"
+            bits: 64
+            value: "0x00007f4000000000"
+            description: "GPU BAR1 virtual address — this is the key to GPUDirect Storage. The address maps to GPU HBM, not host DRAM. The RNIC will DMA to this address via PCIe P2P."
+          - name: "Remote Key (R_Key)"
+            abbrev: "infiniband.reth.rkey"
+            bits: 32
+            value: "0xGPU01234"
+            description: "Memory Region key for GPU buffer — registered via nvidia-peermem"
+          - name: "DMA Length"
+            abbrev: "infiniband.reth.dmalen"
+            bits: 32
+            value: 4096
+            description: "4096 bytes of storage data landing directly in GPU HBM"
+      - name: "Payload (Storage Data)"
+        abbrev: "data"
+        layer: 7
+        total_bytes: 4096
+        fields:
+          - name: "Data"
+            abbrev: "data.payload"
+            bits: 32768
+            value: "<4096 bytes from NVMe namespace LBA 0-7>"
+            description: "Read data from storage. Traditional path: this would go to host DRAM, then CPU copies to GPU. GDS path: goes directly to GPU HBM via RNIC → PCIe BAR1 → GPU HBM. Zero CPU involvement, zero host DRAM bounce."
+      - name: "IB ICRC"
+        abbrev: "infiniband.icrc"
+        layer: 5
+        total_bytes: 4
+        fields:
+          - name: "Invariant CRC"
+            abbrev: "infiniband.icrc"
+            bits: 32
+            value: "0xAABBCCDD"
+
+  # Read Completion: Eth(14)+IP(20)+UDP(8)+BTH(12)+CQE(16)+ICRC(4) = 74
+  - id: "gds_read_cqe"
+    name: "NVMe Read Completion"
+    description: "Storage target sends NVMe completion for the read command"
+    from: "storage_target"
+    to: "gpu_node"
+    via: ["switch"]
+    total_bytes: 74
+    color: "#34d399"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:12:34:56"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:ab:cd:ef"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 60
+          - name: "Source"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.1.20"
+          - name: "Destination"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.1.10"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+          - name: "Length"
+            abbrev: "udp.length"
+            bits: 16
+            value: 40
+      - name: "IB BTH (Base Transport Header)"
+        abbrev: "infiniband.bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "Opcode"
+            abbrev: "infiniband.bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "0x04 = RC Send Only — CQE via RDMA SEND"
+          - name: "Solicited Event (SE)"
+            abbrev: "infiniband.bth.se"
+            bits: 1
+            value: 1
+            description: "SE=1: triggers CQ notification on host"
+          - name: "MigReq"
+            abbrev: "infiniband.bth.migreq"
+            bits: 1
+            value: 0
+          - name: "Pad Count"
+            abbrev: "infiniband.bth.padcnt"
+            bits: 2
+            value: 0
+          - name: "Transport Header Version"
+            abbrev: "infiniband.bth.tver"
+            bits: 4
+            value: 0
+          - name: "P_Key"
+            abbrev: "infiniband.bth.pkey"
+            bits: 16
+            value: "0xFFFF"
+          - name: "FECN"
+            abbrev: "infiniband.bth.fecn"
+            bits: 1
+            value: 0
+          - name: "BECN"
+            abbrev: "infiniband.bth.becn"
+            bits: 1
+            value: 0
+          - name: "Destination QP"
+            abbrev: "infiniband.bth.destqp"
+            bits: 24
+            value: "0x00A001"
+          - name: "Acknowledge Request (A)"
+            abbrev: "infiniband.bth.ackreq"
+            bits: 1
+            value: 1
+          - name: "Packet Sequence Number (PSN)"
+            abbrev: "infiniband.bth.psn"
+            bits: 24
+            value: 8765434
+      - name: "NVMe Completion Queue Entry"
+        abbrev: "nvme.cqe"
+        layer: 7
+        total_bytes: 16
+        fields:
+          - name: "Status Code (SC)"
+            abbrev: "nvme.cqe.sc"
+            bits: 8
+            value: 0
+            description: "0 = Successful Completion"
+          - name: "Command ID"
+            abbrev: "nvme.cqe.cid"
+            bits: 16
+            value: 1
+      - name: "IB ICRC"
+        abbrev: "infiniband.icrc"
+        layer: 5
+        total_bytes: 4
+        fields:
+          - name: "Invariant CRC"
+            abbrev: "infiniband.icrc"
+            bits: 32
+            value: "0xEEFF0011"
+
+  # ── NVMe WRITE (GDS Write path) ──────────────────────────────
+  # Write Command: same size as read = 122
+  - id: "gds_write_cmd"
+    name: "NVMe Write Command (via RDMA SEND)"
+    description: "cuFileWrite triggers NVMe WRITE. SGL provides rkey to GPU memory — storage target will RDMA READ data from GPU HBM."
+    from: "gpu_node"
+    to: "storage_target"
+    via: ["switch"]
+    total_bytes: 122
+    color: "#f97316"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:ab:cd:ef"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:12:34:56"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 108
+          - name: "Source"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.1.10"
+          - name: "Destination"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.1.20"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+          - name: "Length"
+            abbrev: "udp.length"
+            bits: 16
+            value: 88
+      - name: "IB BTH (Base Transport Header)"
+        abbrev: "infiniband.bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "Opcode"
+            abbrev: "infiniband.bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "0x04 = RC Send Only — NVMe WRITE command capsule"
+          - name: "Solicited Event (SE)"
+            abbrev: "infiniband.bth.se"
+            bits: 1
+            value: 0
+          - name: "MigReq"
+            abbrev: "infiniband.bth.migreq"
+            bits: 1
+            value: 0
+          - name: "Pad Count"
+            abbrev: "infiniband.bth.padcnt"
+            bits: 2
+            value: 0
+          - name: "Transport Header Version"
+            abbrev: "infiniband.bth.tver"
+            bits: 4
+            value: 0
+          - name: "P_Key"
+            abbrev: "infiniband.bth.pkey"
+            bits: 16
+            value: "0xFFFF"
+          - name: "FECN"
+            abbrev: "infiniband.bth.fecn"
+            bits: 1
+            value: 0
+          - name: "BECN"
+            abbrev: "infiniband.bth.becn"
+            bits: 1
+            value: 0
+          - name: "Destination QP"
+            abbrev: "infiniband.bth.destqp"
+            bits: 24
+            value: "0x00B002"
+          - name: "Acknowledge Request (A)"
+            abbrev: "infiniband.bth.ackreq"
+            bits: 1
+            value: 1
+          - name: "Packet Sequence Number (PSN)"
+            abbrev: "infiniband.bth.psn"
+            bits: 24
+            value: 2345681
+      - name: "NVMe Write Command"
+        abbrev: "nvme.cmd"
+        layer: 7
+        total_bytes: 64
+        fields:
+          - name: "Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = NVMe Write"
+            spec_refs:
+              - document: "NVMe 2.0"
+                section: "3.3.6"
+                title: "Write Command"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "Command ID (CID)"
+            abbrev: "nvme.cmd.cid"
+            bits: 16
+            value: 2
+          - name: "Namespace ID (NSID)"
+            abbrev: "nvme.cmd.nsid"
+            bits: 32
+            value: 1
+          - name: "SGL Descriptor"
+            abbrev: "nvme.cmd.sgl"
+            bits: 128
+            value: "Keyed SGL → rkey=0xGPU01234, vaddr=0x00007f4000000000, len=4096"
+            description: "SGL points to GPU memory. Storage target will RDMA READ from this address to fetch write data directly from GPU HBM."
+          - name: "Starting LBA (SLBA)"
+            abbrev: "nvme.cmd.slba"
+            bits: 64
+            value: 8
+          - name: "Number of Logical Blocks (NLB)"
+            abbrev: "nvme.cmd.nlb"
+            bits: 16
+            value: 7
+            description: "8 blocks × 512 = 4096 bytes"
+      - name: "IB ICRC"
+        abbrev: "infiniband.icrc"
+        layer: 5
+        total_bytes: 4
+        fields:
+          - name: "Invariant CRC"
+            abbrev: "infiniband.icrc"
+            bits: 32
+            value: "0x22334455"
+
+  # Write Data: RDMA READ Response from GPU — Eth(14)+IP(20)+UDP(8)+BTH(12)+AETH(4)+4096+ICRC(4) = 4158
+  - id: "gds_write_data"
+    name: "RDMA READ Response — GPU Data to Storage"
+    description: >
+      Storage target issued RDMA READ targeting GPU memory. GPU node's RNIC reads
+      from GPU HBM via PCIe BAR1 and sends this response. Data flows directly from
+      GPU to storage without touching host DRAM or CPU.
+    from: "gpu_node"
+    to: "storage_target"
+    via: ["switch"]
+    total_bytes: 4158
+    color: "#f97316"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:ab:cd:ef"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:12:34:56"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 4144
+            description: "20 + 8 + 12 + 4 + 4096 + 4"
+          - name: "Source"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.1.10"
+          - name: "Destination"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.1.20"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+          - name: "Length"
+            abbrev: "udp.length"
+            bits: 16
+            value: 4124
+            description: "8 + 12 + 4 + 4096 + 4"
+      - name: "IB BTH (Base Transport Header)"
+        abbrev: "infiniband.bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "Opcode"
+            abbrev: "infiniband.bth.opcode"
+            bits: 8
+            value: "0x10"
+            description: "0x10 = RC RDMA Read Response Only — GPU node's RNIC autonomously responds with data from GPU HBM"
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.4.2"
+                title: "RDMA READ operation"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "Solicited Event (SE)"
+            abbrev: "infiniband.bth.se"
+            bits: 1
+            value: 0
+          - name: "MigReq"
+            abbrev: "infiniband.bth.migreq"
+            bits: 1
+            value: 0
+          - name: "Pad Count"
+            abbrev: "infiniband.bth.padcnt"
+            bits: 2
+            value: 0
+          - name: "Transport Header Version"
+            abbrev: "infiniband.bth.tver"
+            bits: 4
+            value: 0
+          - name: "P_Key"
+            abbrev: "infiniband.bth.pkey"
+            bits: 16
+            value: "0xFFFF"
+          - name: "FECN"
+            abbrev: "infiniband.bth.fecn"
+            bits: 1
+            value: 0
+          - name: "BECN"
+            abbrev: "infiniband.bth.becn"
+            bits: 1
+            value: 0
+          - name: "Destination QP"
+            abbrev: "infiniband.bth.destqp"
+            bits: 24
+            value: "0x00B002"
+          - name: "Acknowledge Request (A)"
+            abbrev: "infiniband.bth.ackreq"
+            bits: 1
+            value: 1
+          - name: "Packet Sequence Number (PSN)"
+            abbrev: "infiniband.bth.psn"
+            bits: 24
+            value: 2345682
+      - name: "IB AETH (ACK Extended Transport Header)"
+        abbrev: "infiniband.aeth"
+        layer: 5
+        total_bytes: 4
+        fields:
+          - name: "Syndrome"
+            abbrev: "infiniband.aeth.syndrome"
+            bits: 8
+            value: "0x00"
+            description: "0x00 = ACK (bits 7-6 = 00, credit count = 0)"
+          - name: "Message Sequence Number (MSN)"
+            abbrev: "infiniband.aeth.msn"
+            bits: 24
+            value: 1
+      - name: "Payload (GPU Data)"
+        abbrev: "data"
+        layer: 7
+        total_bytes: 4096
+        fields:
+          - name: "Data"
+            abbrev: "data.payload"
+            bits: 32768
+            value: "<4096 bytes from GPU HBM>"
+            description: "Data read directly from GPU HBM via PCIe BAR1 P2P DMA. Traditional path: GPU → CPU memcpy → host DRAM → RDMA. GDS path: GPU HBM → RNIC (via BAR1). Zero CPU, zero bounce."
+      - name: "IB ICRC"
+        abbrev: "infiniband.icrc"
+        layer: 5
+        total_bytes: 4
+        fields:
+          - name: "Invariant CRC"
+            abbrev: "infiniband.icrc"
+            bits: 32
+            value: "0x66778899"
+
+  # Write Completion: 74 bytes
+  - id: "gds_write_cqe"
+    name: "NVMe Write Completion"
+    description: "Storage target confirms write complete"
+    from: "storage_target"
+    to: "gpu_node"
+    via: ["switch"]
+    total_bytes: 74
+    color: "#f97316"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:12:34:56"
+          - name: "Source"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:ab:cd:ef"
+          - name: "Type"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 60
+          - name: "Source"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.1.20"
+          - name: "Destination"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.1.10"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+          - name: "Length"
+            abbrev: "udp.length"
+            bits: 16
+            value: 40
+      - name: "IB BTH (Base Transport Header)"
+        abbrev: "infiniband.bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "Opcode"
+            abbrev: "infiniband.bth.opcode"
+            bits: 8
+            value: "0x04"
+            description: "0x04 = RC Send Only — CQE"
+          - name: "Solicited Event (SE)"
+            abbrev: "infiniband.bth.se"
+            bits: 1
+            value: 1
+          - name: "MigReq"
+            abbrev: "infiniband.bth.migreq"
+            bits: 1
+            value: 0
+          - name: "Pad Count"
+            abbrev: "infiniband.bth.padcnt"
+            bits: 2
+            value: 0
+          - name: "Transport Header Version"
+            abbrev: "infiniband.bth.tver"
+            bits: 4
+            value: 0
+          - name: "P_Key"
+            abbrev: "infiniband.bth.pkey"
+            bits: 16
+            value: "0xFFFF"
+          - name: "FECN"
+            abbrev: "infiniband.bth.fecn"
+            bits: 1
+            value: 0
+          - name: "BECN"
+            abbrev: "infiniband.bth.becn"
+            bits: 1
+            value: 0
+          - name: "Destination QP"
+            abbrev: "infiniband.bth.destqp"
+            bits: 24
+            value: "0x00A001"
+          - name: "Acknowledge Request (A)"
+            abbrev: "infiniband.bth.ackreq"
+            bits: 1
+            value: 1
+          - name: "Packet Sequence Number (PSN)"
+            abbrev: "infiniband.bth.psn"
+            bits: 24
+            value: 8765435
+      - name: "NVMe Completion Queue Entry"
+        abbrev: "nvme.cqe"
+        layer: 7
+        total_bytes: 16
+        fields:
+          - name: "Status Code (SC)"
+            abbrev: "nvme.cqe.sc"
+            bits: 8
+            value: 0
+            description: "0 = Successful Completion"
+          - name: "Command ID"
+            abbrev: "nvme.cqe.cid"
+            bits: 16
+            value: 2
+      - name: "IB ICRC"
+        abbrev: "infiniband.icrc"
+        layer: 5
+        total_bytes: 4
+        fields:
+          - name: "Invariant CRC"
+            abbrev: "infiniband.icrc"
+            bits: 32
+            value: "0xAABB0011"
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+  # ── Link Establishment ────────────────────────────────────────
+  - id: "evt_phy_signal_link_a"
+    type: "state_change"
+    t_ns: 0
+    annotation:
+      text: "Link A: signal detected — GPU Node ↔ Switch"
+      detail: >
+        Optical transceiver on GPU node detects light from switch port A.
+        Auto-Negotiation begins per IEEE 802.3cd clause 73.
+    state_after:
+      - actor_id: "gpu_node"
+        layers:
+          - layer: 1
+            state_fields:
+              phy_state: "AN_IN_PROGRESS"
+              signal_detect: true
+              an_state: "ABILITY_DETECT"
+      - actor_id: "switch"
+        layers:
+          - layer: 1
+            state_fields:
+              port_a_phy: "AN_IN_PROGRESS"
+              port_a_an: "ABILITY_DETECT"
+
+  - id: "evt_phy_signal_link_b"
+    type: "state_change"
+    t_ns: 500000
+    annotation:
+      text: "Link B: signal detected — Switch ↔ Storage Target"
+      detail: >
+        Optical transceiver on storage target detects light from switch port B.
+    state_after:
+      - actor_id: "storage_target"
+        layers:
+          - layer: 1
+            state_fields:
+              phy_state: "AN_IN_PROGRESS"
+              signal_detect: true
+              an_state: "ABILITY_DETECT"
+      - actor_id: "switch"
+        layers:
+          - layer: 1
+            state_fields:
+              port_b_phy: "AN_IN_PROGRESS"
+              port_b_an: "ABILITY_DETECT"
+
+  - id: "evt_link_up_a"
+    type: "state_change"
+    t_ns: 3800000
+    annotation:
+      text: "Link A UP — GPU Node ↔ Switch at 100Gbps with RS-FEC"
+      detail: >
+        AN and Link Training complete. PFC enabled on priority 3 for RoCEv2.
+    state_after:
+      - actor_id: "gpu_node"
+        layers:
+          - layer: 1
+            state_fields:
+              phy_state: "UP"
+              an_state: "COMPLETE"
+              lt_state: "COMPLETE"
+              speed: "100Gbps"
+          - layer: 2
+            state_fields:
+              link_state: "up"
+              pfc_enabled: true
+      - actor_id: "switch"
+        layers:
+          - layer: 1
+            state_fields:
+              port_a_phy: "UP"
+              port_a_an: "COMPLETE"
+              port_a_lt: "COMPLETE"
+
+  - id: "evt_link_up_b"
+    type: "state_change"
+    t_ns: 4000000
+    annotation:
+      text: "Link B UP — Switch ↔ Storage Target at 100Gbps with RS-FEC"
+      detail: >
+        Both links up. End-to-end L2 connectivity established.
+    state_after:
+      - actor_id: "storage_target"
+        layers:
+          - layer: 1
+            state_fields:
+              phy_state: "UP"
+              an_state: "COMPLETE"
+              lt_state: "COMPLETE"
+              speed: "100Gbps"
+          - layer: 2
+            state_fields:
+              link_state: "up"
+              pfc_enabled: true
+      - actor_id: "switch"
+        layers:
+          - layer: 1
+            state_fields:
+              port_b_phy: "UP"
+              port_b_an: "COMPLETE"
+              port_b_lt: "COMPLETE"
+          - layer: 2
+            state_fields:
+              fwd_table_entries: 0
+
+  # ── ARP ───────────────────────────────────────────────────────
+  - id: "evt_arp_req"
+    type: "frame_tx"
+    t_ns: 5000000
+    frame_id: "arp_request"
+    annotation:
+      text: "ARP Request: who has 192.168.1.20?"
+      detail: >
+        GPU node resolves storage target IP to MAC for RoCEv2 GID-to-MAC mapping.
+    state_after:
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            state_fields:
+              fwd_table_entries: 1
+
+  - id: "evt_arp_rep"
+    type: "frame_tx"
+    t_ns: 5200000
+    frame_id: "arp_reply"
+    annotation:
+      text: "ARP Reply: 192.168.1.20 is at 00:02:c9:ab:cd:ef"
+      detail: >
+        Storage target responds. GPU node now has L2 reachability to storage.
+    state_after:
+      - actor_id: "gpu_node"
+        layers:
+          - layer: 3
+            state_fields:
+              dst_ip: "192.168.1.20"
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            state_fields:
+              fwd_table_entries: 2
+
+  # ── CM QP Setup ───────────────────────────────────────────────
+  - id: "evt_cm_req"
+    type: "frame_tx"
+    t_ns: 10000000
+    frame_id: "cm_req"
+    annotation:
+      text: "CM REQ — GPU node proposes QP for NVMe-oF/RDMA transport"
+      detail: >
+        IB Connection Manager Request. GPU node proposes RC QP parameters for the
+        NVMe-oF/RDMA connection. Private data carries NVMe-oF RDMA CM request
+        format per TP8010 (queue ID, SQ/RQ sizes).
+    state_after:
+      - actor_id: "gpu_node"
+        layers:
+          - layer: 5
+            state_fields:
+              qp_state: "RTR"
+              qp_num: "0x00A001"
+              psn_send: 2345678
+
+  - id: "evt_cm_rep"
+    type: "frame_tx"
+    t_ns: 12000000
+    frame_id: "cm_rep"
+    annotation:
+      text: "CM REP — storage target accepts, provides QPN and PSN"
+      detail: >
+        Storage target accepts the connection and provides its QP number (0x00B002)
+        and starting PSN (8765432).
+    state_after:
+      - actor_id: "storage_target"
+        layers:
+          - layer: 5
+            state_fields:
+              qp_state: "RTR"
+              qp_num: "0x00B002"
+              psn_send: 8765432
+              remote_qpn: "0x00A001"
+          - layer: 6
+            state_fields:
+              rdma_cm_state: "REP_SENT"
+
+  - id: "evt_cm_rtu"
+    type: "frame_tx"
+    t_ns: 13000000
+    frame_id: "cm_rtu"
+    annotation:
+      text: "CM RTU — both QPs transition to RTS, RDMA transport ready"
+      detail: >
+        Both QPs move to RTS. The NVMe-oF/RDMA transport layer can now
+        send NVMe command capsules via RDMA SEND and transfer data via
+        RDMA WRITE/READ.
+    state_after:
+      - actor_id: "gpu_node"
+        layers:
+          - layer: 5
+            state_fields:
+              qp_state: "RTS"
+              remote_qpn: "0x00B002"
+              psn_recv_expected: 8765432
+      - actor_id: "storage_target"
+        layers:
+          - layer: 5
+            state_fields:
+              qp_state: "RTS"
+              psn_recv_expected: 2345678
+          - layer: 6
+            state_fields:
+              transport_state: "connected"
+              rdma_cm_state: "ESTABLISHED"
+
+  # ── NVMe-oF Fabrics Connect ──────────────────────────────────
+  - id: "evt_fabrics_connect_admin"
+    type: "frame_tx"
+    t_ns: 14000000
+    frame_id: "fabrics_connect_admin"
+    annotation:
+      text: "Fabrics Connect — Admin Queue (QID=0)"
+      detail: >
+        NVMe-oF Fabrics Connect command sent via RDMA SEND to establish the admin
+        queue association. The Connect Data (sent via SGL) contains hostnqn, subnqn,
+        and hostid. The storage target assigns a controller ID.
+    state_after:
+      - actor_id: "gpu_node"
+        layers:
+          - layer: 5
+            state_fields:
+              admin_queue: "connecting"
+              psn_send: 2345679
+
+  - id: "evt_fabrics_connect_admin_resp"
+    type: "frame_tx"
+    t_ns: 14500000
+    frame_id: "fabrics_connect_admin_resp"
+    annotation:
+      text: "Fabrics Connect Response — Controller ID=1 assigned"
+      detail: >
+        Storage target accepts the Fabrics Connect and assigns controller ID 1.
+        Admin queue is now established — Identify, Get Log Page, and other admin
+        commands can flow.
+    state_after:
+      - actor_id: "gpu_node"
+        layers:
+          - layer: 5
+            state_fields:
+              admin_queue: "connected"
+              ctrl_id: "1"
+      - actor_id: "storage_target"
+        layers:
+          - layer: 7
+            state_fields:
+              ctrl_count: 1
+
+  - id: "evt_fabrics_connect_ioq"
+    type: "frame_tx"
+    t_ns: 15000000
+    frame_id: "fabrics_connect_ioq"
+    annotation:
+      text: "Fabrics Connect — I/O Queue (QID=1)"
+      detail: >
+        Fabrics Connect for I/O Queue 1. After this, NVMe Read/Write commands
+        can be submitted. The I/O queue is where cuFileRead/cuFileWrite
+        commands will be dispatched.
+    state_after:
+      - actor_id: "gpu_node"
+        layers:
+          - layer: 5
+            state_fields:
+              io_queue: "connected"
+              nsid: 1
+              psn_send: 2345680
+
+  # ── GDS Initialization ───────────────────────────────────────
+  - id: "evt_gds_init"
+    type: "state_change"
+    t_ns: 16000000
+    annotation:
+      text: "cuFileDriverOpen() — GDS driver initialized, nvidia-fs loaded"
+      detail: >
+        Application calls cuFileDriverOpen() to initialize GPUDirect Storage.
+        This loads the nvidia-fs kernel module which intercepts NVMe I/O paths
+        and redirects DMA to GPU memory instead of host DRAM. nvidia-peermem
+        registers as an IB peer memory client so RDMA MRs can be backed by GPU pages.
+    state_after:
+      - actor_id: "gpu_node"
+        layers:
+          - layer: 7
+            state_fields:
+              gds_state: "driver_open"
+          - layer: 6
+            state_fields:
+              nvfs_state: "loaded"
+              peermem_state: "registered"
+
+  - id: "evt_gds_file_register"
+    type: "state_change"
+    t_ns: 17000000
+    annotation:
+      text: "cuFileHandleRegister() — remote NVMe-oF namespace registered with GDS"
+      detail: >
+        Application registers the file handle (backed by the remote NVMe-oF
+        namespace) with GDS. This tells nvidia-fs to intercept I/O on this
+        file descriptor and use the GPUDirect path.
+    state_after:
+      - actor_id: "gpu_node"
+        layers:
+          - layer: 7
+            state_fields:
+              gds_state: "file_registered"
+              cufile_handle: "fd=3 → /dev/nvme0n1 (NVMe-oF remote)"
+
+  - id: "evt_gds_buf_register"
+    type: "state_change"
+    t_ns: 18000000
+    annotation:
+      text: "cuFileBufRegister() — GPU buffer registered for RDMA, bounce buffer bypassed"
+      detail: >
+        Application registers a GPU memory buffer with GDS. nvidia-peermem pins
+        the GPU pages via BAR1 and creates an RDMA Memory Region backed by GPU
+        HBM. The RNIC can now DMA directly to/from this GPU buffer. The host
+        DRAM bounce buffer is bypassed — this is the key enabler for zero-copy
+        storage I/O to GPU memory.
+    state_after:
+      - actor_id: "gpu_node"
+        layers:
+          - layer: 7
+            state_fields:
+              gds_state: "buf_registered"
+              gpu_buf_ptr: "0x00007f4000000000"
+              gpu_buf_size: 4096
+          - layer: 6
+            state_fields:
+              gpu_pages_pinned: true
+              bounce_buffer: "bypassed"
+
+  # ── GDS Read (cuFileRead) ────────────────────────────────────
+  - id: "evt_gds_read_post"
+    type: "state_change"
+    t_ns: 20000000
+    annotation:
+      text: "cuFileRead() called — GDS issues NVMe READ with GPU memory as RDMA target"
+      detail: >
+        Application calls cuFileRead(). GDS builds an NVMe Read command with
+        an SGL descriptor pointing to the GPU memory region (rkey=0xGPU01234).
+        When the storage target reads data from disk, it will RDMA WRITE the
+        data directly to this GPU address — the data never touches host DRAM.
+    state_after:
+      - actor_id: "gpu_node"
+        layers:
+          - layer: 7
+            state_fields:
+              io_state: "cuFileRead_pending"
+
+  - id: "evt_gds_read_cmd"
+    type: "frame_tx"
+    t_ns: 20500000
+    frame_id: "gds_read_cmd"
+    annotation:
+      text: "cuFileRead → NVMe Read command sent to storage (SGL → GPU memory)"
+      detail: >
+        NVMe Read command capsule sent via RDMA SEND. The SGL descriptor
+        carries the rkey and virtual address of the GPU memory region.
+        The storage target will use these to RDMA WRITE read data directly
+        to GPU HBM.
+    state_after:
+      - actor_id: "gpu_node"
+        layers:
+          - layer: 5
+            state_fields:
+              psn_send: 2345681
+
+  - id: "evt_gds_read_data"
+    type: "frame_tx"
+    t_ns: 22000000
+    frame_id: "gds_read_data"
+    annotation:
+      text: "Storage RDMA WRITEs read data directly to GPU HBM — zero host DRAM bounce"
+      detail: >
+        THIS IS THE KEY MOMENT: The storage target reads data from its NVMe SSD,
+        then performs an RDMA WRITE targeting the GPU memory region. The RETH header
+        carries the GPU BAR1 virtual address and rkey. The GPU node's RNIC receives
+        this RDMA WRITE and DMAs the payload directly into GPU HBM via PCIe P2P —
+        the data NEVER passes through host DRAM or CPU caches.
+
+        Traditional path: Storage → RDMA WRITE → host DRAM → CPU memcpy → GPU
+        GDS path: Storage → RDMA WRITE → RNIC → PCIe BAR1 → GPU HBM (zero bounce)
+    state_after:
+      - actor_id: "gpu_node"
+        layers:
+          - layer: 5
+            state_fields:
+              psn_recv_expected: 8765434
+          - layer: 6
+            state_fields:
+              bounce_buffer: "bypassed"
+      - actor_id: "storage_target"
+        layers:
+          - layer: 5
+            state_fields:
+              psn_send: 8765434
+
+  - id: "evt_gds_read_cqe"
+    type: "frame_tx"
+    t_ns: 22500000
+    frame_id: "gds_read_cqe"
+    annotation:
+      text: "NVMe Read completion — cuFileRead() returns, data is in GPU HBM"
+      detail: >
+        NVMe completion confirms the read is done. The data is now in GPU HBM
+        and available to CUDA kernels immediately — no additional copy needed.
+    state_after:
+      - actor_id: "gpu_node"
+        layers:
+          - layer: 7
+            state_fields:
+              io_state: "cuFileRead_complete"
+          - layer: 5
+            state_fields:
+              psn_recv_expected: 8765435
+
+  # ── GDS Write (cuFileWrite) ──────────────────────────────────
+  - id: "evt_gds_write_post"
+    type: "state_change"
+    t_ns: 25000000
+    annotation:
+      text: "cuFileWrite() called — GDS issues NVMe WRITE, data sourced from GPU HBM"
+      detail: >
+        Application calls cuFileWrite(). GDS builds an NVMe Write command with
+        an SGL descriptor pointing to GPU memory. The storage target will RDMA
+        READ the write data directly from GPU HBM — the data never bounces
+        through host DRAM.
+    state_after:
+      - actor_id: "gpu_node"
+        layers:
+          - layer: 7
+            state_fields:
+              io_state: "cuFileWrite_pending"
+
+  - id: "evt_gds_write_cmd"
+    type: "frame_tx"
+    t_ns: 25500000
+    frame_id: "gds_write_cmd"
+    annotation:
+      text: "cuFileWrite → NVMe Write command sent (SGL → GPU memory for RDMA READ)"
+      detail: >
+        NVMe Write command capsule sent via RDMA SEND. The SGL provides the
+        rkey and virtual address of the GPU buffer. The storage target will
+        RDMA READ from this address to fetch the write data.
+    state_after:
+      - actor_id: "gpu_node"
+        layers:
+          - layer: 5
+            state_fields:
+              psn_send: 2345682
+
+  - id: "evt_gds_write_data"
+    type: "frame_tx"
+    t_ns: 27000000
+    frame_id: "gds_write_data"
+    annotation:
+      text: "RDMA READ Response — GPU data sent directly from HBM to storage"
+      detail: >
+        The storage target issued an RDMA READ Request targeting the GPU memory
+        region. The GPU node's RNIC autonomously reads from GPU HBM via PCIe
+        BAR1 P2P DMA and sends this RDMA READ Response containing the data.
+        Zero CPU involvement on the GPU node — the RNIC handles everything.
+
+        Traditional path: GPU → CPU memcpy → host DRAM → RDMA SEND → Storage
+        GDS path: GPU HBM → RNIC (via BAR1 P2P) → RDMA READ Response → Storage
+    state_after:
+      - actor_id: "gpu_node"
+        layers:
+          - layer: 5
+            state_fields:
+              psn_send: 2345683
+
+  - id: "evt_gds_write_cqe"
+    type: "frame_tx"
+    t_ns: 28000000
+    frame_id: "gds_write_cqe"
+    annotation:
+      text: "NVMe Write completion — cuFileWrite() returns, data persisted to storage"
+      detail: >
+        NVMe completion confirms the write is done. Data from GPU HBM has been
+        persisted to the remote NVMe storage without ever touching host DRAM.
+    state_after:
+      - actor_id: "gpu_node"
+        layers:
+          - layer: 7
+            state_fields:
+              io_state: "cuFileWrite_complete"
+          - layer: 5
+            state_fields:
+              psn_recv_expected: 8765436
+      - actor_id: "storage_target"
+        layers:
+          - layer: 5
+            state_fields:
+              psn_send: 8765436
+
+  # ── Summary ──────────────────────────────────────────────────
+  - id: "evt_done"
+    type: "annotation"
+    t_ns: 30000000
+    annotation:
+      text: "Scenario complete — GPUDirect Storage over RoCEv2"
+      detail: >
+        Summary: Two 100GbE links came up. RDMA QP established via IB CM. NVMe-oF
+        Fabrics Connect created admin and I/O queues over RDMA. GDS initialized with
+        cuFileDriverOpen, cuFileHandleRegister, and cuFileBufRegister — registering
+        GPU memory for RDMA and bypassing the host DRAM bounce buffer. cuFileRead
+        triggered an NVMe READ whose data was delivered via RDMA WRITE directly to
+        GPU HBM. cuFileWrite triggered an NVMe WRITE whose data was pulled via RDMA
+        READ directly from GPU HBM. In both cases, zero host DRAM bounce, zero CPU
+        involvement in the data path.
+
+glossary:
+  - term: "GPUDirect Storage"
+    abbrev: "GDS"
+    definition: "NVIDIA technology that enables direct DMA between GPU memory and storage, bypassing the CPU and host DRAM bounce buffer. Uses nvidia-fs kernel module and cuFile API."
+  - term: "cuFile API"
+    definition: "User-space API for GPUDirect Storage I/O. Key functions: cuFileDriverOpen, cuFileHandleRegister, cuFileBufRegister, cuFileRead, cuFileWrite."
+  - term: "nvidia-fs"
+    definition: "Linux kernel module that intercepts filesystem/NVMe I/O and redirects DMA to GPU memory via BAR1 when GDS is active."
+  - term: "nvidia-peermem"
+    definition: "Linux kernel module implementing ib_peer_memory_client. Allows RDMA Memory Regions to be backed by GPU pages, enabling RDMA operations to target GPU HBM."
+  - term: "NVMe-oF"
+    abbrev: "NVMe over Fabrics"
+    definition: "Protocol for accessing NVMe storage over a network fabric. Supports RDMA, TCP, and FC transport bindings."
+  - term: "Fabrics Connect"
+    definition: "NVMe-oF command (opcode 0x7F, fctype 0x01) that establishes a queue association between host and target controller."
+  - term: "BAR1"
+    definition: "PCIe Base Address Register 1. On GPUs, BAR1 provides a CPU/RNIC-accessible aperture into GPU HBM, enabling peer-to-peer DMA."
+  - term: "Keyed SGL"
+    definition: "Scatter Gather List entry in NVMe-oF/RDMA that carries an RDMA rkey, virtual address, and length. Enables the remote side to RDMA WRITE/READ directly to the described memory region."
+  - term: "Bounce Buffer"
+    definition: "Host DRAM buffer used in traditional storage I/O. Data is copied: storage → DRAM → GPU. GDS eliminates this by directing DMA to GPU memory."

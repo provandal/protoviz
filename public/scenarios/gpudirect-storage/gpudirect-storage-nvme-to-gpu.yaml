@@ -1,6 +1,6 @@
 meta:
   id: "gpudirect-storage-nvme-to-gpu"
-  title: "[WIP] GPUDirect Storage: NVMe Read Direct to GPU Memory"
+  title: "[WIP] GPUDirect Storage: NVMe Read Direct to GPU Memory (Local PCIe)"
   protocol: "NVMe + GPUDirect Storage"
   protocol_family: "Storage"
   version: "1.0.0"

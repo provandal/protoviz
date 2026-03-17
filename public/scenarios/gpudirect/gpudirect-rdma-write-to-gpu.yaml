@@ -1,6 +1,6 @@
 meta:
   id: "gpudirect-rdma-write-to-gpu"
-  title: "[WIP] GPUDirect RDMA: RoCEv2 WRITE Direct to GPU Memory"
+  title: "GPUDirect RDMA: RoCEv2 WRITE Direct to GPU Memory"
   protocol: "RoCEv2 + GPUDirect"
   protocol_family: "RDMA"
   version: "1.0.0"

@@ -42,7 +42,7 @@
     },
     {
       "slug": "gpudirect-storage-nvme-to-gpu",
-      "title": "GPUDirect Storage: NVMe Read Direct to GPU Memory",
+      "title": "GPUDirect Storage: NVMe Read Direct to GPU Memory (Local PCIe)",
       "protocol": "NVMe + GPUDirect Storage",
       "protocol_family": "Storage",
       "difficulty": "advanced",
@@ -59,6 +59,16 @@
       "description": "Pre-standard S3/RDMA flow using NVIDIA RDMA for S3-compatible storage library: Library Init, QP connect via UD SEND, S3 PUT (inverted — client RDMA WRITEs to server), S3 GET (server RDMA WRITEs to client). Zero CPU data path. Contrasts with traditional S3 over TCP/HTTP.",
       "tags": ["S3", "RDMA", "RoCEv2", "object-storage", "AI-storage", "GPUDirect", "pre-standard", "100GbE"],
       "path": "s3-rdma/s3-rdma-object-put-get.yaml"
+    },
+    {
+      "slug": "gpudirect-storage-rdma-remote",
+      "title": "GPUDirect Storage: Remote NVMe-oF Read/Write to GPU Memory over RoCEv2",
+      "protocol": "NVMe-oF/RDMA + GPUDirect Storage",
+      "protocol_family": "Storage",
+      "difficulty": "advanced",
+      "description": "GPUDirect Storage over RoCEv2 fabric: cuFileRead triggers NVMe-oF READ with RDMA WRITE landing data directly in GPU HBM; cuFileWrite triggers NVMe-oF WRITE with RDMA READ pulling data from GPU HBM. Zero host DRAM bounce.",
+      "tags": ["GPUDirect Storage", "GDS", "NVMe-oF", "RDMA", "RoCEv2", "cuFile", "nvidia-fs", "GPU", "AI-infrastructure", "100GbE"],
+      "path": "gpudirect-storage/gpudirect-storage-rdma-remote.yaml"
     }
   ]
 }
