@@ -117,9 +117,9 @@ topology:
   actors:
     - id: "ai_node"
       type: "initiator"
-      label: "AI Compute Node (DGX H100)"
-      description: "GPU-accelerated compute node with NVIDIA H100 GPU and ConnectX-7 RNIC. nvidia-peermem enables direct RDMA to/from GPU HBM."
-      hardware: "NVIDIA H100 GPU + ConnectX-7 100GbE RNIC (PCIe Gen5 peer-to-peer)"
+      label: "AI Compute Node (GPU + RNIC)"
+      description: "GPU-accelerated compute node with GPU and RNIC (e.g., NVIDIA H100 + ConnectX-7). nvidia-peermem enables direct RDMA to/from GPU HBM."
+      hardware: "GPU + 100GbE RNIC (PCIe Gen5 peer-to-peer), e.g. NVIDIA H100 + ConnectX-7"
       os: "Linux 6.x"
       kernel_version: "6.8"
       ip: "192.168.1.10"
@@ -138,7 +138,7 @@ topology:
       type: "target"
       label: "Remote Server"
       description: "Standard RoCEv2 endpoint — sends data that will land directly in AI node's GPU memory"
-      hardware: "ConnectX-7 100GbE RNIC"
+      hardware: "100GbE RNIC, e.g. ConnectX-7"
       os: "Linux 6.x"
       kernel_version: "6.8"
       ip: "192.168.1.20"
@@ -2275,7 +2275,7 @@ timeline:
       text: "GPU / CUDA Runtime initialized — cuInit() and cuDeviceGet()"
       detail: >
         The application initializes the CUDA driver API. cuInit(0) loads the CUDA
-        driver and enumerates GPUs. cuDeviceGet() selects the H100 GPU. cuCtxCreate()
+        driver and enumerates GPUs. cuDeviceGet() selects the target GPU (e.g., NVIDIA H100). cuCtxCreate()
         creates a CUDA context on the device. At this point the GPU is ready for
         memory allocation but no GPU memory has been allocated yet.
     state_after:
@@ -2298,8 +2298,8 @@ timeline:
         in the GPU's own address space. This memory lives on the GPU die, connected
         via HBM3 at ~3.35 TB/s bandwidth. The pointer is not directly accessible
         by the CPU or RNIC — it must be mapped through the GPU's PCIe BAR1 aperture
-        for peer-to-peer access. The H100 supports up to 256GB of BAR1 aperture
-        (resizable BAR / large BAR mode) to map the full 80GB HBM.
+        for peer-to-peer access. Modern GPUs (e.g., NVIDIA H100) support up to 256GB of BAR1 aperture
+        (resizable BAR / large BAR mode) to map the full HBM.
     state_after:
       - actor_id: "ai_node"
         layers:
@@ -2349,7 +2349,7 @@ timeline:
         nvidia-peermem calls nvidia_p2p_get_pages() which pins the GPU physical pages
         backing the cuMemAlloc'd buffer and returns their PCIe BAR1 physical addresses.
         The BAR1 aperture is the PCIe window through which external devices (like the
-        RNIC) can access GPU memory. On H100 with large BAR enabled, the entire 80GB HBM
+        RNIC) can access GPU memory. On modern GPUs with large BAR enabled (e.g., NVIDIA H100), the entire HBM
         can be mapped through BAR1. The BAR1 address is a PCIe physical address that the
         RNIC DMA engine can target directly — no CPU TLB, no IOMMU for P2P.
         This is the fundamental hardware enabler: PCIe allows peer-to-peer transactions
@@ -2780,7 +2780,7 @@ glossary:
 
   - term: "BAR1 Aperture"
     abbrev: "BAR1"
-    definition: "Base Address Register 1 — the PCIe memory-mapped window through which external devices can access GPU memory. The GPU maps regions of its HBM into PCIe address space via BAR1. When the RNIC targets a BAR1 address in a DMA operation, the PCIe transaction is routed directly to the GPU without CPU involvement. H100 GPUs support up to 256GB BAR1 (resizable BAR / large BAR mode)."
+    definition: "Base Address Register 1 — the PCIe memory-mapped window through which external devices can access GPU memory. The GPU maps regions of its HBM into PCIe address space via BAR1. When the RNIC targets a BAR1 address in a DMA operation, the PCIe transaction is routed directly to the GPU without CPU involvement. Modern GPUs (e.g., NVIDIA H100) support up to 256GB BAR1 (resizable BAR / large BAR mode)."
 
   - term: "Queue Pair"
     abbrev: "QP"
@@ -2837,7 +2837,7 @@ glossary:
 
   - term: "High Bandwidth Memory"
     abbrev: "HBM"
-    definition: "3D-stacked DRAM technology used in modern GPUs and accelerators. H100 uses HBM3 providing ~3.35 TB/s bandwidth. HBM is physically located on the GPU package (on-die or on-interposer). GPUDirect RDMA writes data directly into HBM without passing through host DRAM."
+    definition: "3D-stacked DRAM technology used in modern GPUs and accelerators (e.g., NVIDIA H100 uses HBM3 providing ~3.35 TB/s bandwidth). HBM is physically located on the GPU package (on-die or on-interposer). GPUDirect RDMA writes data directly into HBM without passing through host DRAM."
 
   - term: "NCCL"
     definition: "NVIDIA Collective Communications Library — the standard library for multi-GPU and multi-node collective operations in distributed AI training. NCCL uses GPUDirect RDMA extensively to perform allreduce, allgather, and other collectives directly between GPU memories across the network, avoiding CPU bounce buffers."

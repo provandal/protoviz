@@ -5,7 +5,7 @@ meta:
   protocol_family: "FC"
   version: "1.0.0"
   description: >
-    A complete Fibre Channel SAN login sequence over 32GFC, from physical link
+    A complete Fibre Channel SAN login sequence over 64GFC, from physical link
     establishment through Fabric Login (FLOGI), Name Server discovery, Port Login
     (PLOGI), Process Login (PRLI) for FCP, SCSI LUN discovery via INQUIRY and
     READ CAPACITY, followed by a SCSI WRITE(10) and READ(10) to verify the write.
@@ -43,12 +43,12 @@ meta:
     - "FCP"
     - "FLOGI"
     - "PLOGI"
-    - "32GFC"
+    - "64GFC"
     - "Name Server"
     - "education"
 
   primary_specs:
-    - document: "FC-FS-5"
+    - document: "FC-FS-6"
       section: "1"
       title: "Fibre Channel — Framing and Signaling"
       url: "https://www.t11.org/fcSite/fcretr.html"
@@ -97,8 +97,8 @@ topology:
     - id: "initiator"
       type: "initiator"
       label: "Host (Initiator HBA)"
-      description: "FC initiator — Linux host with dual-port 32GFC HBA running lpfc or qla2xxx driver"
-      hardware: "32GFC dual-port HBA"
+      description: "FC initiator — Linux host with dual-port 64GFC HBA running lpfc or qla2xxx driver"
+      hardware: "64GFC dual-port HBA"
       os: "Linux 6.x"
       kernel_version: "6.8"
       position: "left"
@@ -106,29 +106,29 @@ topology:
     - id: "switch"
       type: "switch"
       label: "FC Switch"
-      description: "32GFC FC switch with embedded Name Server, zoning, and FCID assignment"
-      hardware: "32GFC FC switch"
+      description: "64GFC FC switch with embedded Name Server, zoning, and FCID assignment"
+      hardware: "64GFC FC switch"
       position: "center"
 
     - id: "target"
       type: "target"
       label: "Storage Array (Target)"
       description: "FC storage array presenting SCSI LUNs over FCP"
-      hardware: "32GFC storage array"
+      hardware: "64GFC storage array"
       position: "right"
 
   links:
     - id: "link-host-sw"
       from: "initiator"
       to: "switch"
-      speed_gbps: 32
-      media: "fiber_sfp28"
+      speed_gbps: 64
+      media: "fiber_sfp56"
       fec: "RS-FEC"
     - id: "link-sw-stor"
       from: "switch"
       to: "target"
-      speed_gbps: 32
-      media: "fiber_sfp28"
+      speed_gbps: 64
+      media: "fiber_sfp56"
       fec: "RS-FEC"
 
 # ─────────────────────────────────────────────────────────────────
@@ -228,7 +228,7 @@ osi_layers:
 
     - layer: 1
       name: "FC-0 Physical"
-      components: ["32GFC SFP28", "850nm VCSEL"]
+      components: ["64GFC SFP56", "850nm VCSEL"]
       state_schema:
         phy_state:
           type: "string"
@@ -307,7 +307,7 @@ osi_layers:
 
     - layer: 1
       name: "FC-0 Physical"
-      components: ["32GFC SFP28"]
+      components: ["64GFC SFP56"]
       state_schema:
         phy_state:
           type: "string"
@@ -355,7 +355,7 @@ osi_layers:
           initial: 16
     - layer: 1
       name: "FC-0 Physical (per-port)"
-      components: ["32GFC SFP28"]
+      components: ["64GFC SFP56"]
       state_schema:
         port_a_phy:
           type: "string"
@@ -395,7 +395,7 @@ frames:
             value: "0x22"
             description: "Unsolicited Control — ELS request frame"
             spec_refs:
-              - document: "FC-FS-5"
+              - document: "FC-FS-6"
                 section: "9.3"
                 title: "R_CTL field encoding"
                 url: "https://www.t11.org/fcSite/fcretr.html"
@@ -405,7 +405,7 @@ frames:
             value: "0xFFFFFE"
             description: "Well-known address for Fabric Controller. FLOGI always goes here."
             spec_refs:
-              - document: "FC-FS-5"
+              - document: "FC-FS-6"
                 section: "15.2"
                 title: "Well-known address identifiers"
                 url: "https://www.t11.org/fcSite/fcretr.html"
@@ -425,7 +425,7 @@ frames:
             value: "0x01"
             description: "0x01 = Extended Link Service (ELS)"
             spec_refs:
-              - document: "FC-FS-5"
+              - document: "FC-FS-6"
                 section: "9.7"
                 title: "TYPE field — protocol type identifier"
                 url: "https://www.t11.org/fcSite/fcretr.html"
@@ -435,7 +435,7 @@ frames:
             value: "0x290000"
             description: "Exchange originator, first+last sequence, sequence initiative"
             spec_refs:
-              - document: "FC-FS-5"
+              - document: "FC-FS-6"
                 section: "9.5"
                 title: "F_CTL — Frame Control"
                 url: "https://www.t11.org/fcSite/fcretr.html"
@@ -455,7 +455,7 @@ frames:
             value: "0x0001"
             description: "Originator Exchange ID — tracks this FLOGI exchange"
             spec_refs:
-              - document: "FC-FS-5"
+              - document: "FC-FS-6"
                 section: "9.10"
                 title: "OX_ID and RX_ID — Exchange identification"
                 url: "https://www.t11.org/fcSite/fcretr.html"
@@ -504,7 +504,7 @@ frames:
             value: "21:00:00:0e:1e:12:34:56"
             description: "World Wide Port Name — globally unique 64-bit identifier for this HBA port"
             spec_refs:
-              - document: "FC-FS-5"
+              - document: "FC-FS-6"
                 section: "15.3"
                 title: "Name_Identifier format"
                 url: "https://www.t11.org/fcSite/fcretr.html"
@@ -738,7 +738,7 @@ frames:
             value: "0x02"
             description: "Unsolicited Data — CT request (not ELS)"
             spec_refs:
-              - document: "FC-FS-5"
+              - document: "FC-FS-6"
                 section: "9.3"
                 title: "R_CTL encoding — Data frames"
                 url: "https://www.t11.org/fcSite/fcretr.html"
@@ -1955,9 +1955,9 @@ timeline:
     type: "state_change"
     t_ns: 2000000
     annotation:
-      text: "Link A UP — Host ↔ Switch at 32GFC"
+      text: "Link A UP — Host ↔ Switch at 64GFC"
       detail: >
-        Speed negotiation complete: 32GFC (32.0 Gbps). 64b/66b encoding active.
+        Speed negotiation complete: 64GFC (64.0 Gbps). 64b/66b encoding active.
         FC primitives can now be exchanged. BB_Credit flow control initialized.
     state_after:
       - actor_id: "initiator"
@@ -1966,7 +1966,7 @@ timeline:
             name: "FC-0 Physical"
             state_fields:
               phy_state: "UP"
-              speed: "32GFC"
+              speed: "64GFC"
           - layer: 2
             name: "FC-1 Encode"
             state_fields:
@@ -1982,7 +1982,7 @@ timeline:
     type: "state_change"
     t_ns: 2500000
     annotation:
-      text: "Link B UP — Switch ↔ Storage at 32GFC"
+      text: "Link B UP — Switch ↔ Storage at 64GFC"
       detail: >
         Both physical links are now up. The switch can forward FC frames between ports.
         Storage array was previously logged into the fabric (FCID 0x010200 pre-assigned).
@@ -1993,7 +1993,7 @@ timeline:
             name: "FC-0 Physical"
             state_fields:
               phy_state: "UP"
-              speed: "32GFC"
+              speed: "64GFC"
           - layer: 2
             name: "FC-1 Encode"
             state_fields:
@@ -2487,7 +2487,7 @@ timeline:
     annotation:
       text: "Scenario complete"
       detail: >
-        Summary: Host established 32GFC physical links, performed Fabric Login
+        Summary: Host established 64GFC physical links, performed Fabric Login
         (FLOGI, FCID assigned), discovered storage via Name Server (GID_FT),
         completed Port Login (PLOGI) and Process Login (PRLI) for FCP,
         discovered LUN 0 via SCSI INQUIRY, wrote 4KB at LBA 0, and read it
@@ -2529,7 +2529,7 @@ glossary:
     abbrev: "N_Port ID"
     definition: "A 24-bit address assigned by the fabric to an N_Port during FLOGI. Used as S_ID and D_ID in FC frame headers for routing. Format is typically domain:area:port (e.g., 0x010200 = domain 1, area 2, port 0)."
     spec_refs:
-      - document: "FC-FS-5"
+      - document: "FC-FS-6"
         section: "15.1"
         title: "Address Identifier"
         url: "https://www.t11.org/fcSite/fcretr.html"
@@ -2562,7 +2562,7 @@ glossary:
     abbrev: "Buffer-to-Buffer Credit"
     definition: "Flow control mechanism in FC. Each port advertises how many frames it can buffer (BB_Credit). The sender decrements credit for each frame sent and replenishes when R_RDY primitives are received. Prevents buffer overrun at the receiver."
     spec_refs:
-      - document: "FC-FS-5"
+      - document: "FC-FS-6"
         section: "17.2"
         title: "Buffer-to-buffer flow control"
         url: "https://www.t11.org/fcSite/fcretr.html"
@@ -2570,7 +2570,7 @@ glossary:
   - term: "Exchange"
     definition: "A bidirectional conversation between two N_Ports identified by OX_ID (originator) and RX_ID (responder). An exchange contains one or more sequences. In FCP, each SCSI I/O operation is one exchange."
     spec_refs:
-      - document: "FC-FS-5"
+      - document: "FC-FS-6"
         section: "16"
         title: "Exchange and Sequence Management"
         url: "https://www.t11.org/fcSite/fcretr.html"
@@ -2579,7 +2579,7 @@ glossary:
     abbrev: "World Wide Port Name"
     definition: "A globally unique 64-bit identifier assigned to each FC port. Analogous to a MAC address in Ethernet but assigned by the manufacturer. Used for zoning and persistent binding."
     spec_refs:
-      - document: "FC-FS-5"
+      - document: "FC-FS-6"
         section: "15.3"
         title: "Name_Identifier format"
         url: "https://www.t11.org/fcSite/fcretr.html"
