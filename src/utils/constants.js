@@ -58,5 +58,10 @@ export const PHASE_COLORS = {
   'GDS Read': '#059669',
   'GDS Write': '#2563eb',
   'P2P DMA': '#dc2626',
+  // PFC/ECN/DCQCN congestion control phases
+  'PFC': '#e67e22',
+  'ECN/DCQCN': '#7c3aed',
+  'Congestion': '#dc2626',
+  'Recovery': '#059669',
   'Other': '#475569',
 };

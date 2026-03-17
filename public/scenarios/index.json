@@ -1,6 +1,26 @@
 {
   "scenarios": [
     {
+      "slug": "tcp-3way-handshake-data-fin",
+      "title": "TCP: 3-Way Handshake → Data Transfer → FIN Teardown",
+      "protocol": "TCP",
+      "protocol_family": "TCP/IP",
+      "difficulty": "beginner",
+      "description": "Complete TCP connection lifecycle: 3-way handshake (SYN → SYN-ACK → ACK) with ISN synchronization, HTTP request/response data transfer with sequence number tracking, and graceful 4-way FIN teardown with TIME_WAIT.",
+      "tags": ["TCP", "TCP/IP", "3-way handshake", "transport layer", "beginner", "education"],
+      "path": "tcp/tcp-3way-handshake-data-fin.yaml"
+    },
+    {
+      "slug": "pfc-ecn-dcqcn-congestion-control",
+      "title": "Lossless Ethernet: PFC Pause → ECN Marking → DCQCN Rate Control",
+      "protocol": "RoCEv2 Congestion Control",
+      "protocol_family": "RDMA",
+      "difficulty": "intermediate",
+      "description": "How RoCEv2 achieves lossless transport: PFC PAUSE frames prevent buffer overflow, ECN marks packets with Congestion Experienced instead of dropping, and DCQCN closes the feedback loop with CNP-triggered rate reduction and timer-based recovery.",
+      "tags": ["PFC", "ECN", "DCQCN", "RoCEv2", "lossless Ethernet", "congestion control", "802.1Qbb", "education"],
+      "path": "pfc-ecn-dcqcn/pfc-ecn-dcqcn-congestion-control.yaml"
+    },
+    {
       "slug": "roce-v2-rc-connection-rdma-write-read",
       "title": "RoCEv2 RC: Link Training \u2192 QP Connection \u2192 RDMA WRITE \u2192 RDMA READ",
       "protocol": "RoCEv2",

@@ -1,0 +1,2566 @@
+meta:
+  id: "tcp-3way-handshake-data-fin"
+  title: "TCP: 3-Way Handshake → Data Transfer → FIN Teardown"
+  protocol: "TCP"
+  protocol_family: "TCP/IP"
+  version: "1.0.0"
+  description: >
+    A complete TCP connection lifecycle over 10GbE: physical link establishment,
+    ARP resolution, the classic 3-way handshake (SYN → SYN-ACK → ACK) with
+    sequence/acknowledgment number mechanics, a simple HTTP-style request/response
+    data exchange showing segmentation and sliding window, and graceful 4-way
+    FIN teardown. Every TCP header field is annotated with RFC references and
+    Linux kernel source cross-links. This is the foundation scenario — virtually
+    every other protocol in ProtoViz runs on top of TCP or contrasts with it.
+
+  learning_objectives:
+    - "Understand how TCP's 3-way handshake establishes synchronized sequence numbers between two hosts"
+    - "Trace the SYN → SYN-ACK → ACK exchange and observe the Initial Sequence Number (ISN) selection"
+    - "See how TCP sequence numbers and acknowledgment numbers track every byte of data"
+    - "Observe TCP window size negotiation and how the receiver advertises available buffer space"
+    - "Understand MSS (Maximum Segment Size) negotiation via TCP options during the handshake"
+    - "Follow TCP data segments carrying an HTTP request and response with proper ACKs"
+    - "See the graceful 4-way FIN teardown (FIN → ACK → FIN → ACK) and understand TIME_WAIT"
+    - "Observe TCP state machine transitions on both client and server: CLOSED → SYN_SENT → ESTABLISHED → FIN_WAIT → TIME_WAIT"
+
+  difficulty: "beginner"
+
+  authors:
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+    - name: "Generated via Linux kernel source analysis"
+      org: "proto-viz"
+      github: ""
+
+  created: "2026-03-17"
+  updated: "2026-03-17"
+
+  tags:
+    - "TCP"
+    - "TCP/IP"
+    - "3-way handshake"
+    - "transport layer"
+    - "sequence numbers"
+    - "flow control"
+    - "connection management"
+    - "beginner"
+    - "education"
+
+  primary_specs:
+    - document: "RFC 9293"
+      section: "3.5"
+      title: "TCP Connection State Diagram"
+      url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5"
+      alt_url: "https://www.rfc-editor.org/rfc/rfc9293"
+    - document: "RFC 9293"
+      section: "3.6"
+      title: "TCP Segment Format"
+      url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.6"
+      alt_url: ""
+    - document: "RFC 7323"
+      section: "2"
+      title: "TCP Window Scale Option"
+      url: "https://datatracker.ietf.org/doc/html/rfc7323#section-2"
+      alt_url: ""
+    - document: "RFC 6298"
+      section: "2"
+      title: "Computing TCP Retransmission Timer"
+      url: "https://datatracker.ietf.org/doc/html/rfc6298#section-2"
+      alt_url: ""
+    - document: "IEEE 802.3"
+      section: "3"
+      title: "Ethernet Frame Format"
+      url: "https://standards.ieee.org/ieee/802.3/10422/"
+      alt_url: ""
+
+  content_disclaimer: >
+    Protocol descriptions in this scenario are based on open-source implementations
+    (Linux kernel, Wireshark dissectors) and public RFCs. No proprietary specification
+    text has been reproduced. RFC references are provided as citations for further reading.
+
+  source_references:
+    - repo: "torvalds/linux"
+      path: "net/ipv4/tcp_output.c"
+      description: "TCP segment output — SYN/ACK/FIN generation, window management"
+    - repo: "torvalds/linux"
+      path: "net/ipv4/tcp_input.c"
+      description: "TCP segment input processing — state machine transitions, ACK handling"
+    - repo: "torvalds/linux"
+      path: "net/ipv4/tcp.c"
+      description: "Core TCP functions — connect, accept, close, sendmsg, recvmsg"
+    - repo: "torvalds/linux"
+      path: "net/ipv4/tcp_ipv4.c"
+      description: "IPv4-specific TCP — ISN generation (SipHash), routing, connection lookup"
+    - repo: "torvalds/linux"
+      path: "include/net/tcp.h"
+      description: "TCP header definitions, state machine constants, option parsing"
+    - repo: "torvalds/linux"
+      path: "net/ipv4/arp.c"
+      description: "ARP request/reply handling"
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "client"
+      type: "host"
+      label: "Client"
+      description: "TCP client — initiates the connection with connect()"
+      hardware: "Generic 10GbE NIC"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "10.0.1.10"
+      mac: "00:11:22:33:44:01"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "10GbE Switch"
+      description: "Layer-2 Ethernet switch forwarding frames between client and server"
+      hardware: "Generic 10GbE switch"
+      position: "center"
+
+    - id: "server"
+      type: "host"
+      label: "Server"
+      description: "TCP server — accepts connections with accept(), serves HTTP responses"
+      hardware: "Generic 10GbE NIC"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "10.0.1.20"
+      mac: "00:11:22:33:44:02"
+      position: "right"
+
+  links:
+    - id: "link-c-sw"
+      from: "client"
+      to: "switch"
+      speed_gbps: 10
+      media: "copper_dac"
+      fec: "FC-FEC"
+      autoneg: true
+    - id: "link-sw-s"
+      from: "switch"
+      to: "server"
+      speed_gbps: 10
+      media: "copper_dac"
+      fec: "FC-FEC"
+      autoneg: true
+
+# ─────────────────────────────────────────────────────────────────
+# OSI LAYER DEFINITIONS (per actor)
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  client:
+    - layer: 7
+      name: "Application (HTTP)"
+      components: ["user application", "libc socket API"]
+      state_schema:
+        app_state:
+          type: "string"
+          description: "Application-level state"
+          initial: "idle"
+        socket_fd:
+          type: "string"
+          description: "Socket file descriptor"
+          initial: "none"
+        bytes_sent:
+          type: "integer"
+          description: "Total application bytes sent"
+          initial: 0
+        bytes_received:
+          type: "integer"
+          description: "Total application bytes received"
+          initial: 0
+
+    - layer: 5
+      name: "Session / Socket"
+      components: ["net/socket.c", "net/ipv4/af_inet.c"]
+      state_schema:
+        socket_state:
+          type: "string"
+          description: "Kernel socket state"
+          initial: "SS_UNCONNECTED"
+        local_port:
+          type: "integer"
+          description: "Local (ephemeral) port number"
+          initial: 0
+        remote_port:
+          type: "integer"
+          description: "Remote port number"
+          initial: 0
+
+    - layer: 4
+      name: "TCP"
+      components: ["net/ipv4/tcp.c", "net/ipv4/tcp_output.c", "net/ipv4/tcp_input.c"]
+      state_schema:
+        tcp_state:
+          type: "string"
+          description: "TCP state machine state (RFC 9293 §3.3.2)"
+          initial: "CLOSED"
+        seq_num:
+          type: "string"
+          description: "Next sequence number to send (SND.NXT)"
+          initial: "—"
+        ack_num:
+          type: "string"
+          description: "Next sequence number expected from peer (RCV.NXT)"
+          initial: "—"
+        snd_una:
+          type: "string"
+          description: "Oldest unacknowledged sequence number (SND.UNA)"
+          initial: "—"
+        window_size:
+          type: "integer"
+          description: "Advertised receive window (bytes)"
+          initial: 65535
+        mss:
+          type: "integer"
+          description: "Maximum Segment Size negotiated"
+          initial: 0
+        cwnd:
+          type: "integer"
+          description: "Congestion window (segments)"
+          initial: 10
+        rtt_ms:
+          type: "string"
+          description: "Smoothed round-trip time estimate"
+          initial: "—"
+
+    - layer: 3
+      name: "IP / Routing"
+      components: ["net/ipv4/ip_output.c", "net/ipv4/route.c"]
+      state_schema:
+        src_ip:
+          type: "string"
+          description: "Source IP address"
+          initial: "10.0.1.10"
+        dst_ip:
+          type: "string"
+          description: "Destination IP address"
+          initial: "null"
+        ttl:
+          type: "integer"
+          initial: 64
+        ip_id:
+          type: "integer"
+          description: "IP identification field (for fragmentation)"
+          initial: 0
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver", "IEEE 802.3"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "down"
+        mac_addr:
+          type: "string"
+          initial: "00:11:22:33:44:01"
+        arp_resolved:
+          type: "boolean"
+          description: "Destination MAC known via ARP"
+          initial: false
+
+    - layer: 1
+      name: "Physical (10GbE)"
+      components: ["IEEE 802.3", "10GBASE-CR"]
+      state_schema:
+        phy_state:
+          type: "string"
+          description: "Physical layer state"
+          initial: "down"
+        an_state:
+          type: "string"
+          description: "Auto-Negotiation state"
+          initial: "idle"
+        speed:
+          type: "string"
+          initial: "unknown"
+        signal_detect:
+          type: "boolean"
+          initial: false
+
+  server:
+    - layer: 7
+      name: "Application (HTTP)"
+      components: ["HTTP server", "libc socket API"]
+      state_schema:
+        app_state:
+          type: "string"
+          description: "Application-level state"
+          initial: "listening"
+        socket_fd:
+          type: "string"
+          description: "Socket file descriptor"
+          initial: "listen_fd=3"
+        bytes_sent:
+          type: "integer"
+          description: "Total application bytes sent"
+          initial: 0
+        bytes_received:
+          type: "integer"
+          description: "Total application bytes received"
+          initial: 0
+
+    - layer: 5
+      name: "Session / Socket"
+      components: ["net/socket.c", "net/ipv4/af_inet.c"]
+      state_schema:
+        socket_state:
+          type: "string"
+          description: "Kernel socket state"
+          initial: "SS_UNCONNECTED"
+        local_port:
+          type: "integer"
+          description: "Listening port number"
+          initial: 80
+        remote_port:
+          type: "integer"
+          description: "Remote port number (after accept)"
+          initial: 0
+        backlog:
+          type: "integer"
+          description: "SYN backlog queue depth"
+          initial: 128
+
+    - layer: 4
+      name: "TCP"
+      components: ["net/ipv4/tcp.c", "net/ipv4/tcp_output.c", "net/ipv4/tcp_input.c"]
+      state_schema:
+        tcp_state:
+          type: "string"
+          description: "TCP state machine state (RFC 9293 §3.3.2)"
+          initial: "LISTEN"
+        seq_num:
+          type: "string"
+          description: "Next sequence number to send (SND.NXT)"
+          initial: "—"
+        ack_num:
+          type: "string"
+          description: "Next sequence number expected from peer (RCV.NXT)"
+          initial: "—"
+        snd_una:
+          type: "string"
+          description: "Oldest unacknowledged sequence number (SND.UNA)"
+          initial: "—"
+        window_size:
+          type: "integer"
+          description: "Advertised receive window (bytes)"
+          initial: 65535
+        mss:
+          type: "integer"
+          description: "Maximum Segment Size negotiated"
+          initial: 0
+        cwnd:
+          type: "integer"
+          description: "Congestion window (segments)"
+          initial: 10
+        rtt_ms:
+          type: "string"
+          description: "Smoothed round-trip time estimate"
+          initial: "—"
+
+    - layer: 3
+      name: "IP / Routing"
+      components: ["net/ipv4/ip_output.c", "net/ipv4/route.c"]
+      state_schema:
+        src_ip:
+          type: "string"
+          description: "Source IP address"
+          initial: "10.0.1.20"
+        dst_ip:
+          type: "string"
+          description: "Destination IP address"
+          initial: "null"
+        ttl:
+          type: "integer"
+          initial: 64
+        ip_id:
+          type: "integer"
+          description: "IP identification field"
+          initial: 0
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver", "IEEE 802.3"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "down"
+        mac_addr:
+          type: "string"
+          initial: "00:11:22:33:44:02"
+        arp_resolved:
+          type: "boolean"
+          description: "Destination MAC known via ARP"
+          initial: false
+
+    - layer: 1
+      name: "Physical (10GbE)"
+      components: ["IEEE 802.3", "10GBASE-CR"]
+      state_schema:
+        phy_state:
+          type: "string"
+          description: "Physical layer state"
+          initial: "down"
+        an_state:
+          type: "string"
+          description: "Auto-Negotiation state"
+          initial: "idle"
+        speed:
+          type: "string"
+          initial: "unknown"
+        signal_detect:
+          type: "boolean"
+          initial: false
+
+# ─────────────────────────────────────────────────────────────────
+# FRAMES
+# ─────────────────────────────────────────────────────────────────
+frames:
+  # ── Link / ARP ──────────────────────────────────────────────────
+  - id: "arp_request"
+    name: "ARP Request"
+    description: "Client resolves server's MAC address"
+    from: "client"
+    to: "broadcast"
+    via: ["switch"]
+    timestamp_ns: 200000000
+    total_bytes: 42
+    color: "#b45309"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "ff:ff:ff:ff:ff:ff"
+            value_hex: "0xffffffffffff"
+            description: "Broadcast — ARP request sent to all hosts on the segment"
+            spec_refs:
+              - document: "IEEE 802.3"
+                section: "3.2.3"
+                title: "Destination Address field"
+                url: "https://standards.ieee.org/ieee/802.3/10422/"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            value_hex: "0x001122334401"
+            description: "Client's MAC address"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0806"
+            value_hex: "0x0806"
+            description: "ARP (Address Resolution Protocol)"
+            spec_refs:
+              - document: "RFC 826"
+                section: "1"
+                title: "An Ethernet Address Resolution Protocol"
+                url: "https://datatracker.ietf.org/doc/html/rfc826"
+
+      - name: "ARP"
+        abbrev: "arp"
+        layer: 3
+        total_bytes: 28
+        fields:
+          - name: "Hardware Type"
+            abbrev: "arp.hw.type"
+            bits: 16
+            value: 1
+            value_hex: "0x0001"
+            description: "Ethernet (1)"
+          - name: "Protocol Type"
+            abbrev: "arp.proto.type"
+            bits: 16
+            value: "0x0800"
+            value_hex: "0x0800"
+            description: "IPv4"
+          - name: "Hardware Size"
+            abbrev: "arp.hw.size"
+            bits: 8
+            value: 6
+            description: "MAC address length in bytes"
+          - name: "Protocol Size"
+            abbrev: "arp.proto.size"
+            bits: 8
+            value: 4
+            description: "IPv4 address length in bytes"
+          - name: "Opcode"
+            abbrev: "arp.opcode"
+            bits: 16
+            value: 1
+            value_hex: "0x0001"
+            description: "ARP Request (1)"
+            spec_refs:
+              - document: "RFC 826"
+                section: "1"
+                title: "Packet format"
+                url: "https://datatracker.ietf.org/doc/html/rfc826"
+          - name: "Sender MAC"
+            abbrev: "arp.src.hw_mac"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "Sender IP"
+            abbrev: "arp.src.proto_ipv4"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client's IP address"
+          - name: "Target MAC"
+            abbrev: "arp.dst.hw_mac"
+            bits: 48
+            value: "00:00:00:00:00:00"
+            description: "Unknown — this is what we're resolving"
+          - name: "Target IP"
+            abbrev: "arp.dst.proto_ipv4"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server's IP address — who has this?"
+
+  - id: "arp_reply"
+    name: "ARP Reply"
+    description: "Server responds with its MAC address"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    timestamp_ns: 200050000
+    total_bytes: 42
+    color: "#b45309"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Unicast to client"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC address"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0806"
+            description: "ARP"
+
+      - name: "ARP"
+        abbrev: "arp"
+        layer: 3
+        total_bytes: 28
+        fields:
+          - name: "Opcode"
+            abbrev: "arp.opcode"
+            bits: 16
+            value: 2
+            value_hex: "0x0002"
+            description: "ARP Reply (2) — 'I am 10.0.1.20, my MAC is 00:11:22:33:44:02'"
+            spec_refs:
+              - document: "RFC 826"
+                section: "1"
+                title: "Packet reception"
+                url: "https://datatracker.ietf.org/doc/html/rfc826"
+            kernel_ref:
+              file: "net/ipv4/arp.c"
+              function: "arp_process"
+              notes: "Processes incoming ARP, updates neighbor cache"
+          - name: "Sender MAC"
+            abbrev: "arp.src.hw_mac"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC — the answer to the ARP request"
+          - name: "Sender IP"
+            abbrev: "arp.src.proto_ipv4"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server's IP address"
+          - name: "Target MAC"
+            abbrev: "arp.dst.hw_mac"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "Target IP"
+            abbrev: "arp.dst.proto_ipv4"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client's IP"
+
+  # ── TCP 3-Way Handshake ─────────────────────────────────────────
+  - id: "tcp_syn"
+    name: "TCP SYN"
+    description: "Client initiates connection — first segment of 3-way handshake"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    timestamp_ns: 200100000
+    total_bytes: 74
+    color: "#0f766e"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC (resolved via ARP)"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            value_hex: "0x0800"
+            description: "IPv4"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Version"
+            abbrev: "ip.version"
+            bits: 4
+            value: 4
+            description: "IPv4"
+          - name: "Header Length"
+            abbrev: "ip.hdr_len"
+            bits: 4
+            value: 5
+            description: "5 × 4 = 20 bytes (no IP options)"
+          - name: "DSCP"
+            abbrev: "ip.dsfield.dscp"
+            bits: 6
+            value: 0
+            description: "Default — no QoS marking"
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 60
+            description: "IP header (20) + TCP header with options (40)"
+          - name: "Identification"
+            abbrev: "ip.id"
+            bits: 16
+            value: "0xa1b2"
+            description: "Unique per datagram, used for fragment reassembly"
+          - name: "Flags"
+            abbrev: "ip.flags"
+            bits: 3
+            value: "0x2"
+            description: "Don't Fragment (DF) set — TCP uses Path MTU Discovery"
+            spec_refs:
+              - document: "RFC 1191"
+                section: "3"
+                title: "Path MTU Discovery"
+                url: "https://datatracker.ietf.org/doc/html/rfc1191"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live — decremented by each router"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP (protocol number 6)"
+            spec_refs:
+              - document: "RFC 791"
+                section: "3.1"
+                title: "Internet Header Format"
+                url: "https://datatracker.ietf.org/doc/html/rfc791#section-3.1"
+          - name: "Header Checksum"
+            abbrev: "ip.checksum"
+            bits: 16
+            value: "0x3c7e"
+            description: "IP header checksum (covers header only, not payload)"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client's IP address"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server's IP address"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 40
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49152
+            description: "Ephemeral port chosen by kernel (range 49152–65535)"
+            spec_refs:
+              - document: "RFC 6335"
+                section: "6"
+                title: "Dynamic/Ephemeral Ports"
+                url: "https://datatracker.ietf.org/doc/html/rfc6335#section-6"
+            kernel_ref:
+              file: "net/ipv4/inet_hashtables.c"
+              function: "inet_csk_find_open_port"
+              notes: "Selects ephemeral port from ip_local_port_range"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 80
+            description: "HTTP well-known port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 1000000
+            value_hex: "0x000f4240"
+            description: "Initial Sequence Number (ISN) — chosen pseudo-randomly by the kernel using SipHash to prevent sequence prediction attacks. This is the client's starting byte counter."
+            spec_refs:
+              - document: "RFC 9293"
+                section: "3.4.1"
+                title: "Initial Sequence Number Selection"
+                url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.4.1"
+            kernel_ref:
+              file: "net/ipv4/tcp_ipv4.c"
+              function: "secure_tcp_seq"
+              notes: "SipHash-based ISN generation using source/dest IP+port and a secret key"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 0
+            description: "Zero — not yet valid (ACK flag not set in SYN-only segment)"
+          - name: "Data Offset"
+            abbrev: "tcp.hdr_len"
+            bits: 4
+            value: 10
+            description: "10 × 4 = 40 bytes — TCP header includes 20 bytes of options"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x02"
+            description: "SYN=1 — initiates connection, synchronizes sequence numbers"
+            spec_refs:
+              - document: "RFC 9293"
+                section: "3.6"
+                title: "Header Format — Control Bits"
+                url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.6"
+            fields:
+              - name: "SYN"
+                abbrev: "tcp.flags.syn"
+                bits: 1
+                value: 1
+                description: "Synchronize sequence numbers — connection request"
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 0
+                description: "No acknowledgment yet"
+              - name: "FIN"
+                abbrev: "tcp.flags.fin"
+                bits: 1
+                value: 0
+                description: "Not closing"
+              - name: "RST"
+                abbrev: "tcp.flags.reset"
+                bits: 1
+                value: 0
+                description: "Not resetting"
+              - name: "PSH"
+                abbrev: "tcp.flags.push"
+                bits: 1
+                value: 0
+                description: "No push"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Receiver's advertised window — how many bytes the client can buffer. Will be scaled by Window Scale option."
+            spec_refs:
+              - document: "RFC 9293"
+                section: "3.8.6"
+                title: "Managing the Window"
+                url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.8.6"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x8a4f"
+            description: "TCP checksum over pseudo-header + TCP header + data"
+          - name: "Urgent Pointer"
+            abbrev: "tcp.urgent_pointer"
+            bits: 16
+            value: 0
+            description: "Not used (URG flag not set)"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 160
+            value: "MSS=1460, SACK-Permitted, Window Scale=7, Timestamps"
+            description: "TCP options negotiated during handshake (20 bytes)"
+            fields:
+              - name: "MSS"
+                abbrev: "tcp.options.mss_val"
+                bits: 32
+                value: 1460
+                description: "Maximum Segment Size — largest TCP payload this side will accept. 1460 = 1500 (Ethernet MTU) − 20 (IP) − 20 (TCP base header)"
+                spec_refs:
+                  - document: "RFC 9293"
+                    section: "3.7.1"
+                    title: "Maximum Segment Size Option"
+                    url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.7.1"
+                kernel_ref:
+                  file: "net/ipv4/tcp_output.c"
+                  function: "tcp_syn_options"
+                  notes: "Builds MSS option in SYN segments based on route MTU"
+              - name: "SACK Permitted"
+                abbrev: "tcp.options.sack_perm"
+                bits: 16
+                value: true
+                description: "Selective Acknowledgment permitted — allows receiver to report non-contiguous blocks received"
+                spec_refs:
+                  - document: "RFC 2018"
+                    section: "2"
+                    title: "SACK Option"
+                    url: "https://datatracker.ietf.org/doc/html/rfc2018"
+              - name: "Window Scale"
+                abbrev: "tcp.options.wscale_val"
+                bits: 24
+                value: 7
+                description: "Window scale factor = 7 → actual window = window_size × 2^7 = 65535 × 128 = 8,388,480 bytes (~8MB). Needed for high-bandwidth links."
+                spec_refs:
+                  - document: "RFC 7323"
+                    section: "2"
+                    title: "TCP Window Scale Option"
+                    url: "https://datatracker.ietf.org/doc/html/rfc7323#section-2"
+                kernel_ref:
+                  file: "net/ipv4/tcp_output.c"
+                  function: "tcp_syn_options"
+                  notes: "Window scale value derived from tcp_rmem[2] setting"
+              - name: "Timestamps"
+                abbrev: "tcp.options.timestamp"
+                bits: 80
+                value: "TSval=100000, TSecr=0"
+                description: "TCP Timestamps option — TSval is sender's clock; TSecr echoes peer's TSval for RTT measurement. TSecr=0 because no peer timestamp received yet."
+                spec_refs:
+                  - document: "RFC 7323"
+                    section: "3"
+                    title: "TCP Timestamps Option"
+                    url: "https://datatracker.ietf.org/doc/html/rfc7323#section-3"
+
+  - id: "tcp_syn_ack"
+    name: "TCP SYN-ACK"
+    description: "Server acknowledges client's SYN and sends its own SYN — second segment of handshake"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    timestamp_ns: 200150000
+    total_bytes: 74
+    color: "#0f766e"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 60
+            description: "IP header (20) + TCP header with options (40)"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server's IP"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client's IP"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 40
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 80
+            description: "Server's listening port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 49152
+            description: "Client's ephemeral port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 2000000
+            value_hex: "0x001e8480"
+            description: "Server's ISN — independently chosen, unrelated to client's ISN. This is the server's starting byte counter."
+            kernel_ref:
+              file: "net/ipv4/tcp_ipv4.c"
+              function: "secure_tcp_seq"
+              notes: "Server generates its own ISN via SipHash with its own IP/port pair"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 1000001
+            value_hex: "0x000f4241"
+            description: "Client's ISN + 1 — acknowledges the client's SYN (SYN consumes one sequence number). This says 'I received your byte 1000000, I expect byte 1000001 next.'"
+            spec_refs:
+              - document: "RFC 9293"
+                section: "3.5"
+                title: "Establishing a Connection"
+                url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5"
+          - name: "Data Offset"
+            abbrev: "tcp.hdr_len"
+            bits: 4
+            value: 10
+            description: "10 × 4 = 40 bytes"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x12"
+            description: "SYN=1, ACK=1 — simultaneously acknowledges client's SYN and sends server's own SYN"
+            fields:
+              - name: "SYN"
+                abbrev: "tcp.flags.syn"
+                bits: 1
+                value: 1
+                description: "Server synchronizes its sequence number"
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledges client's SYN"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Server's receive window"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x7b3e"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 160
+            value: "MSS=1460, SACK-Permitted, Window Scale=7, Timestamps"
+            description: "Server echoes compatible options"
+            fields:
+              - name: "MSS"
+                abbrev: "tcp.options.mss_val"
+                bits: 32
+                value: 1460
+                description: "Server also advertises MSS 1460 — negotiated MSS is min(client, server) = 1460"
+              - name: "SACK Permitted"
+                abbrev: "tcp.options.sack_perm"
+                bits: 16
+                value: true
+                description: "Server agrees to SACK"
+              - name: "Window Scale"
+                abbrev: "tcp.options.wscale_val"
+                bits: 24
+                value: 7
+                description: "Server's window scale factor"
+              - name: "Timestamps"
+                abbrev: "tcp.options.timestamp"
+                bits: 80
+                value: "TSval=200000, TSecr=100000"
+                description: "TSval is server's clock; TSecr echoes client's TSval=100000 for RTT measurement"
+
+  - id: "tcp_ack_handshake"
+    name: "TCP ACK (Handshake Complete)"
+    description: "Client acknowledges server's SYN-ACK — third and final segment of handshake. Connection is now ESTABLISHED."
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    timestamp_ns: 200200000
+    total_bytes: 66
+    color: "#0f766e"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 52
+            description: "IP header (20) + TCP header with timestamps (32), no payload"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client's IP"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server's IP"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49152
+            description: "Client's ephemeral port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 80
+            description: "Server's port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 1000001
+            description: "Client's ISN + 1 — SYN consumed one sequence number, so first data byte will be 1000001"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 2000001
+            description: "Server's ISN + 1 — acknowledges the server's SYN. Both sides now agree on starting points."
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x10"
+            description: "ACK=1 — pure acknowledgment, no SYN/FIN/data"
+            fields:
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledges server's SYN"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Scaled window: 65535 × 128 = 8,388,480 bytes"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 96
+            value: "Timestamps TSval=100050, TSecr=200000"
+            description: "Timestamps continue for ongoing RTT measurement"
+
+  # ── Data Transfer ───────────────────────────────────────────────
+  - id: "tcp_http_request"
+    name: "TCP Data: HTTP GET Request"
+    description: "Client sends HTTP GET request as TCP payload"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    timestamp_ns: 300000000
+    total_bytes: 271
+    color: "#0369a1"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 257
+            description: "IP header (20) + TCP header (32) + HTTP payload (205)"
+          - name: "Flags"
+            abbrev: "ip.flags"
+            bits: 3
+            value: "0x2"
+            description: "Don't Fragment"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49152
+            description: "Client's ephemeral port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 80
+            description: "HTTP port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 1000001
+            description: "First data byte = ISN + 1 = 1000001. After this segment: SND.NXT = 1000001 + 205 = 1000206"
+            spec_refs:
+              - document: "RFC 9293"
+                section: "3.4.1"
+                title: "Sequence Numbers"
+                url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.4.1"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 2000001
+            description: "Still expecting server's first data byte"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x18"
+            description: "PSH=1, ACK=1 — push: deliver immediately to application, don't wait to fill buffer"
+            fields:
+              - name: "PSH"
+                abbrev: "tcp.flags.push"
+                bits: 1
+                value: 1
+                description: "Push — tell receiver's TCP to deliver data to application immediately rather than buffering"
+                spec_refs:
+                  - document: "RFC 9293"
+                    section: "3.9.1"
+                    title: "Push Function"
+                    url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.9.1"
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Piggybacked acknowledgment"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Client's receive window"
+
+      - name: "HTTP Request"
+        abbrev: "http"
+        layer: 7
+        total_bytes: 205
+        fields:
+          - name: "Request Line"
+            abbrev: "http.request.line"
+            bits: 0
+            value: "GET /index.html HTTP/1.1"
+            description: "HTTP GET method — retrieve the resource at /index.html"
+          - name: "Host Header"
+            abbrev: "http.host"
+            bits: 0
+            value: "Host: 10.0.1.20"
+            description: "Required in HTTP/1.1 — identifies the target server"
+          - name: "Connection Header"
+            abbrev: "http.connection"
+            bits: 0
+            value: "Connection: keep-alive"
+            description: "Request persistent connection (default in HTTP/1.1)"
+
+  - id: "tcp_ack_request"
+    name: "TCP ACK (Server Acknowledges Request)"
+    description: "Server acknowledges receipt of client's HTTP request"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    timestamp_ns: 300050000
+    total_bytes: 66
+    color: "#0369a1"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 52
+            description: "ACK only — no payload"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 80
+            description: "Server's port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 49152
+            description: "Client's ephemeral port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 2000001
+            description: "Server hasn't sent data yet — still at ISN + 1"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 1000206
+            description: "1000001 + 205 = 1000206 — server has received all 205 bytes of the HTTP request. 'I've received everything up to byte 1000206, send me that byte next.'"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x10"
+            description: "ACK=1 — pure acknowledgment"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Server's receive window (still plenty of space)"
+
+  - id: "tcp_http_response"
+    name: "TCP Data: HTTP 200 Response"
+    description: "Server sends HTTP 200 OK response with HTML body"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    timestamp_ns: 300200000
+    total_bytes: 612
+    color: "#0369a1"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 598
+            description: "IP header (20) + TCP header (32) + HTTP response (546)"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 80
+            description: "Server's port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 49152
+            description: "Client's ephemeral port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 2000001
+            description: "Server's first data byte. After this segment: SND.NXT = 2000001 + 546 = 2000547"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 1000206
+            description: "Piggybacked ACK — still acknowledges all client data received"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x18"
+            description: "PSH=1, ACK=1 — push response to application immediately"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Server's receive window"
+
+      - name: "HTTP Response"
+        abbrev: "http"
+        layer: 7
+        total_bytes: 546
+        fields:
+          - name: "Status Line"
+            abbrev: "http.response.line"
+            bits: 0
+            value: "HTTP/1.1 200 OK"
+            description: "Request succeeded"
+          - name: "Content-Type"
+            abbrev: "http.content_type"
+            bits: 0
+            value: "Content-Type: text/html; charset=utf-8"
+            description: "Response body is HTML"
+          - name: "Content-Length"
+            abbrev: "http.content_length"
+            bits: 0
+            value: "Content-Length: 434"
+            description: "Body is 434 bytes — fits in one TCP segment (< MSS 1460)"
+          - name: "Connection"
+            abbrev: "http.connection"
+            bits: 0
+            value: "Connection: keep-alive"
+            description: "Server agrees to persistent connection"
+
+  - id: "tcp_ack_response"
+    name: "TCP ACK (Client Acknowledges Response)"
+    description: "Client acknowledges receipt of the HTTP response"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    timestamp_ns: 300250000
+    total_bytes: 66
+    color: "#0369a1"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 52
+            description: "ACK only"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49152
+            description: "Client's ephemeral port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 80
+            description: "Server's port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 1000206
+            description: "Client's next byte after the HTTP request"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 2000547
+            description: "2000001 + 546 = 2000547 — client has received all 546 bytes of the HTTP response"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x10"
+            description: "ACK=1 — pure acknowledgment"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Client's receive window"
+
+  # ── TCP FIN Teardown ────────────────────────────────────────────
+  - id: "tcp_fin_client"
+    name: "TCP FIN (Client Initiates Close)"
+    description: "Client sends FIN — 'I have no more data to send.' Client enters FIN_WAIT_1."
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    timestamp_ns: 400000000
+    total_bytes: 66
+    color: "#64748b"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 52
+            description: "FIN segment with no payload"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49152
+            description: "Client's port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 80
+            description: "Server's port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 1000206
+            description: "Same as last — no new data sent. FIN consumes one sequence number (like SYN)."
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 2000547
+            description: "Acknowledges all server data received"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x11"
+            description: "FIN=1, ACK=1 — graceful close initiated"
+            spec_refs:
+              - document: "RFC 9293"
+                section: "3.5.1"
+                title: "Close Call"
+                url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5.1"
+            kernel_ref:
+              file: "net/ipv4/tcp.c"
+              function: "tcp_close"
+              notes: "Application calls close() → kernel sends FIN, enters FIN_WAIT_1"
+            fields:
+              - name: "FIN"
+                abbrev: "tcp.flags.fin"
+                bits: 1
+                value: 1
+                description: "Finish — sender is done transmitting data. Connection is now half-closed."
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Piggybacked acknowledgment"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Client's receive window"
+
+  - id: "tcp_ack_fin_client"
+    name: "TCP ACK (Server Acknowledges Client's FIN)"
+    description: "Server acknowledges client's FIN. Server enters CLOSE_WAIT — can still send data if needed."
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    timestamp_ns: 400050000
+    total_bytes: 66
+    color: "#64748b"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 80
+            description: "Server's port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 49152
+            description: "Client's port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 2000547
+            description: "Server's current position"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 1000207
+            description: "1000206 + 1 = 1000207 — FIN consumes one sequence number, so ACK = client's seq + 1"
+            spec_refs:
+              - document: "RFC 9293"
+                section: "3.5.1"
+                title: "TCP Closing"
+                url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5.1"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x10"
+            description: "ACK=1 — acknowledges FIN"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Server's receive window"
+
+  - id: "tcp_fin_server"
+    name: "TCP FIN (Server Closes Its Side)"
+    description: "Server sends its own FIN — both sides are now closing. Server enters LAST_ACK."
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    timestamp_ns: 400100000
+    total_bytes: 66
+    color: "#64748b"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 80
+            description: "Server's port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 49152
+            description: "Client's port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 2000547
+            description: "Server's FIN sequence number. Like SYN, FIN consumes one sequence number."
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 1000207
+            description: "Same as previous ACK — no new client data to acknowledge"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x11"
+            description: "FIN=1, ACK=1 — server initiates its side of the close"
+            kernel_ref:
+              file: "net/ipv4/tcp.c"
+              function: "tcp_close"
+              notes: "Server's application calls close() → kernel sends FIN, enters LAST_ACK"
+            fields:
+              - name: "FIN"
+                abbrev: "tcp.flags.fin"
+                bits: 1
+                value: 1
+                description: "Server is done sending"
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Piggybacked acknowledgment"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Server's receive window"
+
+  - id: "tcp_ack_fin_server"
+    name: "TCP ACK (Client Acknowledges Server's FIN)"
+    description: "Client acknowledges server's FIN. Client enters TIME_WAIT (waits 2×MSL before fully closing)."
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    timestamp_ns: 400150000
+    total_bytes: 66
+    color: "#64748b"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49152
+            description: "Client's ephemeral port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 80
+            description: "Server's port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 1000207
+            description: "Client's sequence after FIN"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 2000548
+            description: "2000547 + 1 = 2000548 — acknowledges server's FIN (FIN consumes one sequence number)"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x10"
+            description: "ACK=1 — final acknowledgment. Both directions are now closed."
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Client's receive window"
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+  # ── Phase: Link Establishment ───────────────────────────────────
+  - id: "evt_phy_link"
+    type: "state_change"
+    t_ns: 0
+    annotation:
+      text: "Physical link up — 10GbE Auto-Negotiation complete on both segments"
+      detail: >
+        Both 10GbE links (client↔switch and switch↔server) complete IEEE 802.3
+        Auto-Negotiation and achieve link synchronization. The switch learns MAC
+        addresses as frames arrive — no configuration needed for basic L2 forwarding.
+        Unlike enterprise RoCEv2 deployments, this simple TCP scenario uses standard
+        Ethernet without PFC or ECN — TCP's own congestion control handles loss recovery.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 1
+            state_fields:
+              phy_state: "up"
+              an_state: "complete"
+              speed: "10 Gbps"
+              signal_detect: true
+          - layer: 2
+            state_fields:
+              link_state: "up"
+      - actor_id: "server"
+        layers:
+          - layer: 1
+            state_fields:
+              phy_state: "up"
+              an_state: "complete"
+              speed: "10 Gbps"
+              signal_detect: true
+          - layer: 2
+            state_fields:
+              link_state: "up"
+
+  # ── Phase: ARP Resolution ──────────────────────────────────────
+  - id: "evt_arp_req"
+    type: "frame_tx"
+    t_ns: 200000000
+    frame_id: "arp_request"
+    annotation:
+      text: "ARP Request — Client asks 'Who has 10.0.1.20?'"
+      detail: >
+        Before the client can send any IP packet to the server, it needs the
+        server's MAC address. The kernel checks its ARP cache (neighbor table)
+        and finds no entry for 10.0.1.20. It broadcasts an ARP request to all
+        hosts on the L2 segment. The switch floods this frame out all ports
+        except the source port. In Linux, this is handled by the neighbor
+        subsystem (net/core/neighbour.c → arp_solicit).
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 3
+            state_fields:
+              dst_ip: "10.0.1.20"
+
+  - id: "evt_arp_rep"
+    type: "frame_tx"
+    t_ns: 200050000
+    frame_id: "arp_reply"
+    annotation:
+      text: "ARP Reply — Server responds '10.0.1.20 is at 00:11:22:33:44:02'"
+      detail: >
+        The server recognizes its own IP in the ARP request and sends a unicast
+        ARP reply containing its MAC address. Both sides now update their ARP caches.
+        The client can now construct complete Ethernet frames to the server.
+        ARP entries are cached with a timeout (Linux default: gc_stale_time = 60s).
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 2
+            state_fields:
+              arp_resolved: true
+      - actor_id: "server"
+        layers:
+          - layer: 2
+            state_fields:
+              arp_resolved: true
+          - layer: 3
+            state_fields:
+              dst_ip: "10.0.1.10"
+
+  # ── Phase: TCP 3-Way Handshake ──────────────────────────────────
+  - id: "evt_tcp_syn"
+    type: "frame_tx"
+    t_ns: 200100000
+    frame_id: "tcp_syn"
+    annotation:
+      text: "TCP SYN → Client initiates 3-way handshake (connect() system call)"
+      detail: >
+        The application calls connect(). The kernel allocates a socket, selects an
+        ephemeral source port (49152), generates a cryptographically random Initial
+        Sequence Number (ISN = 1000000) using SipHash, and sends a SYN segment.
+
+        The SYN carries critical negotiation parameters as TCP options:
+        • MSS = 1460 (max payload per segment = Ethernet MTU 1500 − 20 IP − 20 TCP)
+        • Window Scale = 7 (effective window = advertised × 2^7 = ~8MB)
+        • SACK Permitted (enables selective acknowledgment for loss recovery)
+        • Timestamps (enables precise RTT measurement and PAWS protection)
+
+        The client enters SYN_SENT state and starts a retransmission timer.
+        If no SYN-ACK arrives, Linux retries with exponential backoff
+        (1s, 2s, 4s... controlled by tcp_syn_retries, default 6).
+      spec_refs:
+        - document: "RFC 9293"
+          section: "3.5"
+          title: "Establishing a Connection"
+          url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5"
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "connecting"
+              socket_fd: "fd=4"
+          - layer: 5
+            state_fields:
+              socket_state: "SS_CONNECTING"
+              local_port: 49152
+              remote_port: 80
+          - layer: 4
+            state_fields:
+              tcp_state: "SYN_SENT"
+              seq_num: "1000001"
+              ack_num: "—"
+              snd_una: "1000000"
+              mss: 1460
+
+  - id: "evt_tcp_syn_ack"
+    type: "frame_tx"
+    t_ns: 200150000
+    frame_id: "tcp_syn_ack"
+    annotation:
+      text: "TCP SYN-ACK ← Server acknowledges SYN, sends its own SYN"
+      detail: >
+        The server was in LISTEN state (application called listen() earlier). Upon
+        receiving the client's SYN, the kernel:
+        1. Allocates a new socket (connection request) in the SYN backlog queue
+        2. Generates its own ISN (2000000) independently via SipHash
+        3. Sends a SYN-ACK: ACK = client_ISN + 1 = 1000001 (acknowledging the SYN)
+           and its own SYN with seq = 2000000
+
+        The ACK number (1000001) means: "I've received everything up to byte 1000001.
+        Send me that byte next." SYN consumes one sequence number even though it
+        carries no data — this is how TCP ensures the handshake is reliably acknowledged.
+
+        Modern Linux uses SYN cookies (net.ipv4.tcp_syncookies) to protect against
+        SYN flood attacks — the ISN itself encodes connection parameters, avoiding
+        state allocation until the final ACK arrives.
+      spec_refs:
+        - document: "RFC 9293"
+          section: "3.5"
+          title: "Establishing a Connection"
+          url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5"
+    state_after:
+      - actor_id: "server"
+        layers:
+          - layer: 5
+            state_fields:
+              socket_state: "SS_CONNECTING"
+              remote_port: 49152
+          - layer: 4
+            state_fields:
+              tcp_state: "SYN_RECEIVED"
+              seq_num: "2000001"
+              ack_num: "1000001"
+              snd_una: "2000000"
+              mss: 1460
+
+  - id: "evt_tcp_ack_handshake"
+    type: "frame_tx"
+    t_ns: 200200000
+    frame_id: "tcp_ack_handshake"
+    annotation:
+      text: "TCP ACK → Handshake complete — both sides now ESTABLISHED"
+      detail: >
+        The client receives the SYN-ACK, validates the ACK number (must be ISN + 1),
+        and sends the final ACK with ack = server_ISN + 1 = 2000001. Both sides
+        transition to ESTABLISHED.
+
+        At this point, the 3-way handshake has accomplished:
+        1. Both sides agreed on initial sequence numbers (ISNs)
+        2. Both sides know each other's MSS (1460 bytes)
+        3. Both sides negotiated Window Scale (factor 7 → ~8MB effective window)
+        4. Both sides agreed to SACK and Timestamps
+
+        The server's accept() call now returns with a new connected socket fd.
+        Data can flow in both directions. The first RTT sample is measured from
+        the SYN timestamp to the SYN-ACK arrival (~50μs in this LAN scenario).
+
+        Key insight: TCP requires this 1-RTT handshake before any data can flow.
+        This is why protocols like QUIC (which combines TLS and transport handshakes)
+        were developed — to reduce connection setup latency.
+      spec_refs:
+        - document: "RFC 9293"
+          section: "3.5"
+          title: "Establishing a Connection"
+          url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5"
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "connected"
+          - layer: 5
+            state_fields:
+              socket_state: "SS_CONNECTED"
+          - layer: 4
+            state_fields:
+              tcp_state: "ESTABLISHED"
+              seq_num: "1000001"
+              ack_num: "2000001"
+              snd_una: "1000001"
+              rtt_ms: "~0.05"
+      - actor_id: "server"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "connected"
+              socket_fd: "conn_fd=5"
+          - layer: 5
+            state_fields:
+              socket_state: "SS_CONNECTED"
+          - layer: 4
+            state_fields:
+              tcp_state: "ESTABLISHED"
+              ack_num: "1000001"
+              rtt_ms: "~0.05"
+
+  # ── Phase: TCP Data Transfer ────────────────────────────────────
+  - id: "evt_tcp_data_request"
+    type: "frame_tx"
+    t_ns: 300000000
+    frame_id: "tcp_http_request"
+    annotation:
+      text: "TCP Data → Client sends HTTP GET request (205 bytes)"
+      detail: >
+        The application calls send() with an HTTP GET request. The kernel's TCP
+        stack segments the data (in this case it fits in one segment since
+        205 bytes < MSS 1460), sets seq=1000001 (first data byte), adds a
+        TCP header with PSH and ACK flags, and hands it to IP for transmission.
+
+        Sequence number tracking:
+        • Before: SND.NXT = 1000001, SND.UNA = 1000001
+        • After:  SND.NXT = 1000206 (1000001 + 205 bytes sent)
+        •         SND.UNA = 1000001 (waiting for server's ACK)
+
+        The PSH (Push) flag tells the receiver's TCP to deliver data to the
+        application immediately rather than waiting for more data to fill the
+        receive buffer. This is appropriate for request-response protocols
+        where latency matters more than throughput.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "request sent"
+              bytes_sent: 205
+          - layer: 4
+            state_fields:
+              seq_num: "1000206"
+              snd_una: "1000001"
+
+  - id: "evt_tcp_data_ack_request"
+    type: "frame_tx"
+    t_ns: 300050000
+    frame_id: "tcp_ack_request"
+    annotation:
+      text: "TCP ACK ← Server acknowledges HTTP request (ACK 1000206)"
+      detail: >
+        The server receives the 205-byte segment, validates the sequence number
+        (matches expected RCV.NXT = 1000001), copies the data to the socket receive
+        buffer, advances RCV.NXT to 1000206, and sends an ACK.
+
+        The ACK number 1000206 means: "I've received all bytes up to (but not
+        including) 1000206. Send me byte 1000206 next." This is cumulative
+        acknowledgment — a single ACK covers all data up to that point.
+
+        In Linux, the server may delay this ACK by up to 40ms (tcp_delack_min)
+        to piggyback it on a data response. Here the server ACKs quickly since
+        the application needs time to generate the response.
+      spec_refs:
+        - document: "RFC 9293"
+          section: "3.8.6.2"
+          title: "Acknowledgment Generation"
+          url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.8.6.2"
+    state_after:
+      - actor_id: "server"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "processing request"
+              bytes_received: 205
+          - layer: 4
+            state_fields:
+              ack_num: "1000206"
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            state_fields:
+              snd_una: "1000206"
+
+  - id: "evt_tcp_data_response"
+    type: "frame_tx"
+    t_ns: 300200000
+    frame_id: "tcp_http_response"
+    annotation:
+      text: "TCP Data ← Server sends HTTP 200 OK response (546 bytes)"
+      detail: >
+        The server application generates an HTTP 200 OK response with an HTML body
+        (434 bytes) plus headers (112 bytes) = 546 bytes total. Since 546 < MSS (1460),
+        it fits in a single TCP segment.
+
+        Sequence number tracking (server side):
+        • Before: SND.NXT = 2000001, SND.UNA = 2000001
+        • After:  SND.NXT = 2000547 (2000001 + 546 bytes sent)
+        •         SND.UNA = 2000001 (waiting for client's ACK)
+
+        If the response were larger than MSS (e.g., a 10KB page), TCP would
+        segment it into multiple 1460-byte segments. The receiver would ACK them
+        cumulatively, and the sender's congestion window (cwnd) would govern
+        how many segments can be in flight simultaneously.
+    state_after:
+      - actor_id: "server"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "response sent"
+              bytes_sent: 546
+          - layer: 4
+            state_fields:
+              seq_num: "2000547"
+              snd_una: "2000001"
+
+  - id: "evt_tcp_data_ack_response"
+    type: "frame_tx"
+    t_ns: 300250000
+    frame_id: "tcp_ack_response"
+    annotation:
+      text: "TCP ACK → Client acknowledges HTTP response (ACK 2000547)"
+      detail: >
+        The client receives the 546-byte response, validates the sequence number,
+        copies data to the receive buffer for the application to read, and sends
+        an ACK with ack=2000547.
+
+        The HTTP request/response exchange is now complete. Both sides have
+        successfully transferred data:
+        • Client → Server: 205 bytes (HTTP GET request)
+        • Server → Client: 546 bytes (HTTP 200 response)
+
+        Total bytes on the wire including headers: request segment 271 bytes,
+        response segment 612 bytes, plus ACKs and handshake overhead.
+        TCP's overhead for this small exchange: ~40% of total bytes were headers.
+        For bulk data transfers, this ratio improves dramatically since each
+        1460-byte data segment only carries 54 bytes of headers (3.7% overhead).
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "response received"
+              bytes_received: 546
+          - layer: 4
+            state_fields:
+              ack_num: "2000547"
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            state_fields:
+              snd_una: "2000547"
+
+  # ── Phase: TCP FIN Teardown ─────────────────────────────────────
+  - id: "evt_tcp_fin_client"
+    type: "frame_tx"
+    t_ns: 400000000
+    frame_id: "tcp_fin_client"
+    annotation:
+      text: "TCP FIN → Client initiates graceful close (close() system call)"
+      detail: >
+        The application calls close() on the socket. The kernel's TCP stack sends a
+        FIN segment, signaling "I have no more data to send." The client transitions
+        from ESTABLISHED to FIN_WAIT_1.
+
+        Important: FIN is a half-close — the client can still *receive* data from
+        the server. This allows the server to finish sending any remaining data
+        before closing its side. Applications can also use shutdown(SHUT_WR) for
+        an explicit half-close without fully closing the socket.
+
+        Like SYN, FIN consumes one sequence number (seq=1000206). This ensures
+        the FIN itself is reliably acknowledged — if the ACK is lost, the sender
+        will retransmit the FIN.
+      spec_refs:
+        - document: "RFC 9293"
+          section: "3.5.1"
+          title: "Half-Close"
+          url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5.1"
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "closing"
+          - layer: 4
+            state_fields:
+              tcp_state: "FIN_WAIT_1"
+              seq_num: "1000207"
+
+  - id: "evt_tcp_ack_fin_client"
+    type: "frame_tx"
+    t_ns: 400050000
+    frame_id: "tcp_ack_fin_client"
+    annotation:
+      text: "TCP ACK ← Server acknowledges client's FIN"
+      detail: >
+        The server receives the client's FIN and sends an ACK (ack = 1000207,
+        acknowledging the FIN which consumed one sequence number). The server
+        enters CLOSE_WAIT — it knows the client is done sending, but the
+        server can still send data if needed.
+
+        The client, upon receiving this ACK, transitions from FIN_WAIT_1 to
+        FIN_WAIT_2 — waiting for the server's FIN.
+
+        In practice, the server's application reads EOF from the socket
+        (recv() returns 0), signaling that the client has closed its end.
+        The application then finishes any cleanup and calls close().
+    state_after:
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "CLOSE_WAIT"
+              ack_num: "1000207"
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "FIN_WAIT_2"
+              snd_una: "1000207"
+
+  - id: "evt_tcp_fin_server"
+    type: "frame_tx"
+    t_ns: 400100000
+    frame_id: "tcp_fin_server"
+    annotation:
+      text: "TCP FIN ← Server closes its side"
+      detail: >
+        The server application calls close(). The kernel sends a FIN
+        (seq=2000547 — server's FIN also consumes one sequence number).
+        The server transitions from CLOSE_WAIT to LAST_ACK — waiting
+        for the client's final acknowledgment before releasing resources.
+
+        Both sides have now sent FIN — the connection is fully closing.
+    state_after:
+      - actor_id: "server"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "closed"
+          - layer: 4
+            state_fields:
+              tcp_state: "LAST_ACK"
+              seq_num: "2000548"
+
+  - id: "evt_tcp_ack_fin_server"
+    type: "frame_tx"
+    t_ns: 400150000
+    frame_id: "tcp_ack_fin_server"
+    annotation:
+      text: "TCP ACK → Client acknowledges server's FIN — connection fully closed"
+      detail: >
+        The client sends the final ACK (ack=2000548, acknowledging the server's FIN).
+        The server transitions to CLOSED and frees all connection resources.
+
+        The client transitions to TIME_WAIT — a critical state that lasts for
+        2 × MSL (Maximum Segment Lifetime, typically 60s in Linux, configurable
+        via tcp_fin_timeout). TIME_WAIT serves two purposes:
+
+        1. Ensures the final ACK reaches the server. If the server doesn't receive
+           this ACK, it will retransmit its FIN, and the client (still in TIME_WAIT)
+           can re-ACK it.
+
+        2. Prevents old duplicate segments from a previous connection from being
+           mistaken for new connection data. By waiting 2×MSL, all segments from
+           this connection have expired from the network.
+
+        After TIME_WAIT expires, the client transitions to CLOSED and the
+        ephemeral port (49152) becomes available for reuse.
+
+        Summary of TCP state transitions in this scenario:
+        • Client: CLOSED → SYN_SENT → ESTABLISHED → FIN_WAIT_1 → FIN_WAIT_2 → TIME_WAIT → CLOSED
+        • Server: LISTEN → SYN_RECEIVED → ESTABLISHED → CLOSE_WAIT → LAST_ACK → CLOSED
+      spec_refs:
+        - document: "RFC 9293"
+          section: "3.5.4"
+          title: "TIME-WAIT State"
+          url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5.4"
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "TIME_WAIT"
+          - layer: 5
+            state_fields:
+              socket_state: "SS_DISCONNECTING"
+          - layer: 4
+            state_fields:
+              tcp_state: "TIME_WAIT"
+              ack_num: "2000548"
+      - actor_id: "server"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "closed"
+              socket_fd: "closed"
+          - layer: 5
+            state_fields:
+              socket_state: "SS_UNCONNECTED"
+          - layer: 4
+            state_fields:
+              tcp_state: "CLOSED"
+
+  # ── Summary ─────────────────────────────────────────────────────
+  - id: "evt_summary"
+    type: "annotation"
+    t_ns: 500000000
+    annotation:
+      text: "⟳ Scenario complete — TCP connection lifecycle"
+      detail: >
+        This scenario demonstrated the complete TCP connection lifecycle:
+
+        1. LINK — 10GbE physical link establishment via Auto-Negotiation
+        2. ARP — Address resolution to learn the server's MAC address
+        3. 3-WAY HANDSHAKE — SYN → SYN-ACK → ACK with ISN synchronization,
+           MSS negotiation, window scale, SACK, and timestamp options
+        4. DATA TRANSFER — HTTP GET request (205 bytes) and 200 OK response (546 bytes)
+           with sequence number tracking and cumulative acknowledgments
+        5. 4-WAY FIN TEARDOWN — FIN → ACK → FIN → ACK with graceful half-close
+           and TIME_WAIT to prevent stale segment confusion
+
+        Key concepts illustrated:
+        • Sequence numbers track every byte (including SYN/FIN virtual bytes)
+        • Cumulative ACKs efficiently acknowledge contiguous data
+        • TCP options negotiate capabilities only during the handshake
+        • The state machine enforces ordered transitions on both sides
+        • TIME_WAIT protects against stale connections
+
+        TCP (RFC 9293, evolved from RFC 793 published in 1981) remains the
+        foundation of reliable Internet communication. Understanding this
+        handshake is essential for debugging connection failures, analyzing
+        performance (SYN retransmits indicate reachability problems, window
+        size limits indicate flow control bottlenecks), and appreciating why
+        alternative protocols like QUIC and RDMA were developed.
+
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
+glossary:
+  - term: "3-Way Handshake"
+    abbrev: "SYN/SYN-ACK/ACK"
+    definition: "TCP's connection establishment procedure: client sends SYN, server responds with SYN-ACK, client completes with ACK. Synchronizes sequence numbers and negotiates options."
+    spec_refs:
+      - document: "RFC 9293"
+        section: "3.5"
+        title: "Establishing a Connection"
+        url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5"
+
+  - term: "Initial Sequence Number"
+    abbrev: "ISN"
+    definition: "The starting sequence number chosen by each side of a TCP connection. Generated pseudo-randomly (SipHash in Linux) to prevent sequence prediction attacks. SYN consumes one sequence number."
+    spec_refs:
+      - document: "RFC 9293"
+        section: "3.4.1"
+        title: "Initial Sequence Number Selection"
+        url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.4.1"
+
+  - term: "Maximum Segment Size"
+    abbrev: "MSS"
+    definition: "The largest TCP payload (excluding headers) a host will accept. Negotiated during the handshake via TCP options. Typical value: 1460 bytes = 1500 (Ethernet MTU) − 20 (IP header) − 20 (TCP base header)."
+    spec_refs:
+      - document: "RFC 9293"
+        section: "3.7.1"
+        title: "Maximum Segment Size Option"
+        url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.7.1"
+
+  - term: "Window Scale"
+    abbrev: "WS"
+    definition: "TCP option that extends the 16-bit window size field beyond 65535 bytes. Scale factor is negotiated during the handshake. Factor 7 means effective window = advertised × 128."
+    spec_refs:
+      - document: "RFC 7323"
+        section: "2"
+        title: "Window Scale Option"
+        url: "https://datatracker.ietf.org/doc/html/rfc7323#section-2"
+
+  - term: "Selective Acknowledgment"
+    abbrev: "SACK"
+    definition: "TCP option allowing the receiver to report non-contiguous blocks of data received. Helps the sender retransmit only the missing segments rather than everything after the loss point."
+    spec_refs:
+      - document: "RFC 2018"
+        section: "2"
+        title: "SACK Option"
+        url: "https://datatracker.ietf.org/doc/html/rfc2018"
+
+  - term: "TIME_WAIT"
+    definition: "TCP state entered by the side that sends the first FIN after receiving the peer's FIN. Lasts 2×MSL (typically 60s in Linux). Ensures final ACK delivery and prevents stale segment reuse."
+    spec_refs:
+      - document: "RFC 9293"
+        section: "3.5.4"
+        title: "TIME-WAIT State"
+        url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5.4"
+
+  - term: "Cumulative Acknowledgment"
+    definition: "TCP's ACK mechanism where the acknowledgment number indicates the next expected byte. A single ACK covers all data up to that sequence number, even if multiple segments were received."
+
+  - term: "Congestion Window"
+    abbrev: "cwnd"
+    definition: "Sender-side limit on the amount of unacknowledged data in flight. Starts at ~10 segments (IW10) and grows via slow start / congestion avoidance algorithms. Independent of the receiver's advertised window."
+    spec_refs:
+      - document: "RFC 5681"
+        section: "3"
+        title: "Congestion Control Algorithms"
+        url: "https://datatracker.ietf.org/doc/html/rfc5681#section-3"
+
+  - term: "Push Flag"
+    abbrev: "PSH"
+    definition: "TCP flag that tells the receiver to deliver buffered data to the application immediately rather than waiting for more data. Commonly set on the last segment of a logical message."
+
+  - term: "FIN"
+    definition: "TCP flag indicating the sender has finished transmitting data. Initiates a graceful connection close. Like SYN, FIN consumes one sequence number to ensure reliable acknowledgment."

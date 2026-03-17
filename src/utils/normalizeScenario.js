@@ -255,6 +255,26 @@ function inferPhase(event, lastPhase) {
   if (/cufilewrite|gds.*write/i.test(text)
       || /gds_write|cufile_write/.test(id)) return 'GDS Write';
 
+  // PFC/ECN/DCQCN congestion control phases
+  if (/\bpfc\b.*pause|\bxoff\b|\bpfc\b.*resume|\bxon\b/i.test(text)
+      || /pfc_pause|pfc_resume|pfc_xo/.test(id)) return 'PFC';
+  if (/\bcnp\b|\bdcqcn\b.*re(?:duce|duction)|rate\s*cut|ecn.*ce\s*mark/i.test(text)
+      || /cnp|dcqcn_reduce|ecn_mark/.test(id)) return 'ECN/DCQCN';
+  if (/congestion\s*build|queue\s*fill|buffer\s*fill/i.test(text)
+      || /congestion_build/.test(id)) return 'Congestion';
+  if (/rate\s*recover|rate\s*increase|recovering/i.test(text)
+      || /rate_recovery/.test(id)) return 'Recovery';
+
+  // TCP phases
+  if (/\btcp\b.*\bsyn\b|\b3.?way\b.*handshake|handshake.*complete/i.test(text)
+      || /tcp_syn|tcp_ack_handshake/.test(id)) return 'TCP Handshake';
+  if (/\btcp\b.*\bdata\b|\btcp\b.*\bhttp\b|\btcp\b.*ack.*(?:request|response)/i.test(text)
+      || /tcp_data|tcp_http/.test(id)) return 'TCP Data';
+  if (/\btcp\b.*\bfin\b|\btcp\b.*close|\btcp\b.*teardown|time.?wait/i.test(text)
+      || /tcp_fin|tcp_ack_fin/.test(id)) return 'TCP Teardown';
+  if (/\btcp\b.*\brst\b|\btcp\b.*reset/i.test(text)
+      || /tcp_rst|tcp_reset/.test(id)) return 'TCP Reset';
+
   // Infrastructure
   if (/\barp\b/.test(text) || /arp/.test(id)) return 'ARP';
   if (/physical|link|auto.?neg|fec|signal/i.test(text)

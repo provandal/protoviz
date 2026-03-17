@@ -1,0 +1,1768 @@
+meta:
+  id: "pfc-ecn-dcqcn-congestion-control"
+  title: "Lossless Ethernet: PFC Pause → ECN Marking → DCQCN Rate Control"
+  protocol: "RoCEv2 Congestion Control"
+  protocol_family: "RDMA"
+  version: "1.0.0"
+  description: >
+    How RoCEv2 achieves lossless transport over Ethernet without dropping packets.
+    This scenario shows the three-layer congestion control system that makes RDMA
+    over Ethernet possible: PFC (Priority Flow Control) prevents buffer overflow
+    by pausing the upstream sender hop-by-hop; ECN (Explicit Congestion Notification)
+    marks packets at the switch to signal congestion end-to-end; and DCQCN (Data Center
+    QCN) closes the loop — the receiver generates a CNP (Congestion Notification Packet)
+    back to the sender, which reduces its injection rate. Together these mechanisms
+    form the "lossless fabric" that every RoCEv2 deployment depends on.
+
+  learning_objectives:
+    - "Understand why standard Ethernet (with tail-drop) is unsuitable for RDMA"
+    - "See how PFC PAUSE frames (IEEE 802.1Qbb) prevent buffer overflow by pausing specific traffic priorities"
+    - "Observe ECN marking at the switch — the IP header's ECN field changes from ECT(0) to CE"
+    - "Follow the DCQCN feedback loop: CE-marked packet → CNP generation → sender rate reduction"
+    - "Understand PFC XOFF/XON thresholds and why they must be tuned to absorb in-flight data"
+    - "See the DCQCN rate recovery mechanism — how the sender gradually returns to line rate"
+    - "Appreciate why PFC alone is insufficient (head-of-line blocking, pause storms) and why ECN/DCQCN is essential"
+    - "Understand the relationship between switch buffer sizing, PFC thresholds, and ECN marking thresholds"
+
+  difficulty: "intermediate"
+
+  authors:
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+    - name: "Generated via Linux kernel source analysis"
+      org: "proto-viz"
+      github: ""
+
+  created: "2026-03-17"
+  updated: "2026-03-17"
+
+  tags:
+    - "PFC"
+    - "ECN"
+    - "DCQCN"
+    - "RoCEv2"
+    - "lossless Ethernet"
+    - "congestion control"
+    - "802.1Qbb"
+    - "priority flow control"
+    - "100GbE"
+    - "education"
+
+  primary_specs:
+    - document: "IEEE 802.1Qbb"
+      section: "36"
+      title: "Priority-based Flow Control"
+      url: "https://standards.ieee.org/ieee/802.1Qbb/4788/"
+      alt_url: "https://community.mellanox.com/s/article/understanding-pfc"
+    - document: "RFC 3168"
+      section: "5"
+      title: "Explicit Congestion Notification (ECN)"
+      url: "https://datatracker.ietf.org/doc/html/rfc3168#section-5"
+      alt_url: ""
+    - document: "IBTA Annex A17"
+      section: "A17"
+      title: "RoCEv2 Congestion Management (DCQCN)"
+      url: "https://www.infinibandta.org/ibta-specification/"
+      alt_url: "https://community.mellanox.com/s/article/dcqcn-parameters"
+    - document: "RFC 8257"
+      section: "4"
+      title: "Data Center TCP (DCTCP) — ECN-based Congestion Control"
+      url: "https://datatracker.ietf.org/doc/html/rfc8257"
+      alt_url: ""
+
+  content_disclaimer: >
+    Protocol descriptions in this scenario are based on open-source implementations
+    (Linux kernel mlx5 driver, rdma-core) and public RFCs/standards. DCQCN parameter
+    values shown are typical defaults and may vary by NIC vendor and firmware version.
+    IEEE and IBTA specification references are citations for further reading.
+
+  source_references:
+    - repo: "torvalds/linux"
+      path: "drivers/net/ethernet/mellanox/mlx5/core/en/port_buffer.c"
+      description: "PFC buffer allocation and XOFF/XON threshold configuration"
+    - repo: "torvalds/linux"
+      path: "drivers/infiniband/hw/mlx5/qp.c"
+      description: "QP congestion control configuration (ECN enable, DCQCN parameters)"
+    - repo: "torvalds/linux"
+      path: "drivers/net/ethernet/mellanox/mlx5/core/en_dcbnl.c"
+      description: "DCB (Data Center Bridging) — PFC, ETS, DSCP-to-priority mapping"
+    - repo: "torvalds/linux"
+      path: "include/rdma/ib_verbs.h"
+      description: "IB verbs — ECN capability flags, congestion notification"
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "sender"
+      type: "host"
+      label: "RDMA Sender"
+      description: "RoCEv2 initiator performing RDMA WRITE operations at line rate"
+      hardware: "100GbE RNIC (e.g., ConnectX-6 Dx)"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "192.168.1.10"
+      gid: "fe80::0002:c903:0012:3456"
+      mac: "00:02:c9:12:34:56"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "Lossless 100GbE Switch"
+      description: "Data center switch with PFC and ECN/WRED enabled on priority 3 for RoCEv2 traffic"
+      hardware: "100GbE switch with deep buffers (e.g., 32MB shared)"
+      position: "center"
+
+    - id: "receiver"
+      type: "host"
+      label: "RDMA Receiver"
+      description: "RoCEv2 target receiving RDMA WRITE operations"
+      hardware: "100GbE RNIC (e.g., ConnectX-6 Dx)"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "192.168.1.20"
+      gid: "fe80::0002:c903:00ab:cdef"
+      mac: "00:02:c9:ab:cd:ef"
+      position: "right"
+
+  links:
+    - id: "link-sender-sw"
+      from: "sender"
+      to: "switch"
+      speed_gbps: 100
+      media: "fiber_sr"
+      fec: "RS(544,514)"
+      autoneg: true
+    - id: "link-sw-receiver"
+      from: "switch"
+      to: "receiver"
+      speed_gbps: 100
+      media: "fiber_sr"
+      fec: "RS(544,514)"
+      autoneg: true
+
+# ─────────────────────────────────────────────────────────────────
+# OSI LAYER DEFINITIONS
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  sender:
+    - layer: 7
+      name: "Application / Verbs"
+      components: ["libibverbs", "user application"]
+      state_schema:
+        app_state:
+          type: "string"
+          description: "Application-level state"
+          initial: "idle"
+        posted_wr:
+          type: "string"
+          description: "Last Work Request posted"
+          initial: "none"
+
+    - layer: 5
+      name: "IB Transport (RC QP)"
+      components: ["drivers/infiniband/hw/mlx5/qp.c"]
+      state_schema:
+        qp_state:
+          type: "string"
+          description: "Queue Pair state"
+          initial: "RESET"
+        qp_num:
+          type: "string"
+          initial: "null"
+        psn_send:
+          type: "integer"
+          description: "Current send PSN"
+          initial: 0
+        tx_rate_gbps:
+          type: "string"
+          description: "Current transmission rate (DCQCN-controlled)"
+          initial: "—"
+        dcqcn_alpha:
+          type: "string"
+          description: "DCQCN alpha — congestion severity estimate (0 = none, 1 = severe)"
+          initial: "0"
+        dcqcn_target_rate:
+          type: "string"
+          description: "DCQCN target rate (Gbps) — rate before last reduction"
+          initial: "—"
+        cnp_received:
+          type: "integer"
+          description: "Number of CNPs received"
+          initial: 0
+
+    - layer: 4
+      name: "UDP (RoCEv2)"
+      components: ["RNIC hardware offload"]
+      state_schema:
+        src_port:
+          type: "integer"
+          description: "UDP source port (entropy for ECMP)"
+          initial: 50000
+        dst_port:
+          type: "integer"
+          description: "RoCEv2 well-known port"
+          initial: 4791
+
+    - layer: 3
+      name: "IP / ECN"
+      components: ["kernel IP stack", "RNIC hardware"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "192.168.1.10"
+        dst_ip:
+          type: "string"
+          initial: "null"
+        ecn_codepoint:
+          type: "string"
+          description: "ECN codepoint set by sender: ECT(0) indicates ECN-capable transport"
+          initial: "Not-ECT"
+        dscp:
+          type: "integer"
+          description: "DSCP marking for QoS classification"
+          initial: 26
+
+    - layer: 2
+      name: "Ethernet / PFC"
+      components: ["mlx5 driver", "IEEE 802.1Q", "IEEE 802.1Qbb PFC"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "down"
+        pfc_enabled:
+          type: "boolean"
+          description: "PFC enabled on priority 3"
+          initial: false
+        pfc_paused:
+          type: "boolean"
+          description: "Currently paused by downstream PFC XOFF"
+          initial: false
+        vlan_priority:
+          type: "integer"
+          description: "802.1Q VLAN priority for RoCEv2"
+          initial: 3
+
+    - layer: 1
+      name: "Physical (100GbE)"
+      components: ["IEEE 802.3cd", "100GBASE-SR4", "RS(544,514) FEC"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "down"
+        speed:
+          type: "string"
+          initial: "unknown"
+
+  receiver:
+    - layer: 7
+      name: "Application / Verbs"
+      components: ["libibverbs", "user application"]
+      state_schema:
+        app_state:
+          type: "string"
+          initial: "idle"
+        bytes_received:
+          type: "integer"
+          description: "Total RDMA WRITE bytes received"
+          initial: 0
+
+    - layer: 5
+      name: "IB Transport (RC QP)"
+      components: ["drivers/infiniband/hw/mlx5/qp.c"]
+      state_schema:
+        qp_state:
+          type: "string"
+          initial: "RESET"
+        qp_num:
+          type: "string"
+          initial: "null"
+        psn_recv_expected:
+          type: "integer"
+          initial: 0
+        cnp_sent:
+          type: "integer"
+          description: "Number of CNPs generated and sent"
+          initial: 0
+
+    - layer: 4
+      name: "UDP (RoCEv2)"
+      components: ["RNIC hardware offload"]
+      state_schema:
+        dst_port:
+          type: "integer"
+          initial: 4791
+
+    - layer: 3
+      name: "IP / ECN"
+      components: ["kernel IP stack", "RNIC hardware"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "192.168.1.20"
+        ecn_received:
+          type: "string"
+          description: "Last ECN codepoint received"
+          initial: "—"
+
+    - layer: 2
+      name: "Ethernet / PFC"
+      components: ["mlx5 driver", "IEEE 802.1Qbb PFC"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "down"
+        pfc_enabled:
+          type: "boolean"
+          initial: false
+
+    - layer: 1
+      name: "Physical (100GbE)"
+      components: ["IEEE 802.3cd", "100GBASE-SR4"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "down"
+        speed:
+          type: "string"
+          initial: "unknown"
+
+  switch:
+    - layer: 3
+      name: "ECN / WRED Marking"
+      components: ["ASIC packet processing", "ECN/WRED engine"]
+      state_schema:
+        ecn_marking_enabled:
+          type: "boolean"
+          description: "ECN CE marking enabled for priority 3"
+          initial: true
+        ecn_mark_threshold_bytes:
+          type: "integer"
+          description: "Queue depth at which ECN CE marking begins (WRED minimum)"
+          initial: 150000
+        ecn_mark_probability:
+          type: "string"
+          description: "Current marking probability (0-100%)"
+          initial: "0%"
+        packets_marked_ce:
+          type: "integer"
+          description: "Total packets marked with CE"
+          initial: 0
+
+    - layer: 2
+      name: "Ethernet Switching / PFC"
+      components: ["802.1Q bridge", "802.1Qbb PFC", "MAC forwarding table"]
+      state_schema:
+        fwd_table_entries:
+          type: "integer"
+          initial: 0
+        port_sender_pfc_xoff:
+          type: "boolean"
+          description: "PFC XOFF asserted toward sender (priority 3)"
+          initial: false
+        egress_queue_bytes:
+          type: "integer"
+          description: "Bytes queued on receiver-facing egress port, priority 3"
+          initial: 0
+        pfc_xoff_threshold:
+          type: "integer"
+          description: "Queue depth that triggers PFC XOFF (bytes)"
+          initial: 300000
+        pfc_xon_threshold:
+          type: "integer"
+          description: "Queue depth that clears PFC XOFF (bytes)"
+          initial: 100000
+        pfc_frames_sent:
+          type: "integer"
+          description: "Total PFC PAUSE frames sent"
+          initial: 0
+
+    - layer: 1
+      name: "Physical (per-port)"
+      components: ["100GBASE-SR4", "RS(544,514) FEC"]
+      state_schema:
+        port_sender_phy:
+          type: "string"
+          initial: "down"
+        port_receiver_phy:
+          type: "string"
+          initial: "down"
+
+# ─────────────────────────────────────────────────────────────────
+# FRAMES
+# ─────────────────────────────────────────────────────────────────
+frames:
+  # ── Normal RDMA WRITE (ECN-capable) ─────────────────────────────
+  - id: "rdma_write_normal"
+    name: "RDMA WRITE (Normal — ECT(0))"
+    description: "Standard RDMA WRITE with ECN-Capable Transport codepoint set by sender"
+    from: "sender"
+    to: "receiver"
+    via: ["switch"]
+    timestamp_ns: 100000000
+    total_bytes: 1102
+    color: "#991b1b"
+    headers:
+      - name: "Ethernet II + 802.1Q"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 18
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:ab:cd:ef"
+            description: "Receiver's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:12:34:56"
+            description: "Sender's MAC"
+          - name: "802.1Q Tag"
+            abbrev: "vlan"
+            bits: 32
+            value: "VLAN 100, Priority 3"
+            description: "VLAN tag with priority 3 — the PFC-protected class for RoCEv2. The switch uses this priority to apply PFC and ECN policies."
+            spec_refs:
+              - document: "IEEE 802.1Q"
+                section: "9.2"
+                title: "VLAN Tag Format"
+                url: "https://standards.ieee.org/ieee/802.1Q/10323/"
+            fields:
+              - name: "Priority Code Point (PCP)"
+                abbrev: "vlan.priority"
+                bits: 3
+                value: 3
+                description: "Priority 3 — mapped to the lossless traffic class. PFC will only pause this priority, leaving best-effort traffic (priority 0) unaffected."
+              - name: "VLAN ID"
+                abbrev: "vlan.id"
+                bits: 12
+                value: 100
+                description: "VLAN 100 — the RoCEv2 network segment"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "DSCP"
+            abbrev: "ip.dsfield.dscp"
+            bits: 6
+            value: 26
+            value_hex: "0x1a"
+            description: "DSCP 26 (AF31) — the DSCP value mapped to priority 3 at the switch. This DSCP-to-priority mapping is configured via DCBx or manually."
+            spec_refs:
+              - document: "RFC 2597"
+                section: "6"
+                title: "Assured Forwarding PHB Group"
+                url: "https://datatracker.ietf.org/doc/html/rfc2597"
+          - name: "ECN"
+            abbrev: "ip.dsfield.ecn"
+            bits: 2
+            value: "10 (ECT(0))"
+            value_hex: "0x02"
+            description: "ECN-Capable Transport, codepoint 0. The sender sets this to indicate 'I understand ECN — you may mark this packet instead of dropping it.' The two ECN bits in the IP header are: 00 = Not-ECT (no ECN), 01 = ECT(1), 10 = ECT(0), 11 = CE (Congestion Experienced)."
+            spec_refs:
+              - document: "RFC 3168"
+                section: "5"
+                title: "ECN Field Definition"
+                url: "https://datatracker.ietf.org/doc/html/rfc3168#section-5"
+            kernel_ref:
+              file: "drivers/infiniband/hw/mlx5/qp.c"
+              function: "mlx5_ib_modify_qp"
+              notes: "ECN is enabled per-QP via modify_qp; RNIC hardware sets ECT(0) on all outgoing packets for ECN-enabled QPs"
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 1084
+            description: "IP header (20) + UDP (8) + BTH (12) + RETH (16) + payload (1024) + ICRC (4)"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 17
+            description: "UDP (protocol 17) — RoCEv2 encapsulates IB transport in UDP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.1.10"
+            description: "Sender's IP"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.1.20"
+            description: "Receiver's IP"
+
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 50000
+            description: "Entropy source for ECMP load balancing — hash of QP number and flow"
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+            description: "RoCEv2 well-known port (IANA assigned)"
+
+      - name: "BTH (Base Transport Header)"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x0a"
+            description: "RDMA WRITE Only (0x0a) — single-packet RDMA WRITE"
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.4.1"
+                title: "BTH OpCode Encodings"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "Pad Count"
+            abbrev: "bth.padcnt"
+            bits: 2
+            value: 0
+            description: "No padding needed (payload is 4-byte aligned)"
+          - name: "P_Key"
+            abbrev: "bth.pkey"
+            bits: 16
+            value: "0xFFFF"
+            description: "Default partition key"
+          - name: "Destination QP"
+            abbrev: "bth.dqp"
+            bits: 24
+            value: "0x000100"
+            description: "Receiver's QP number"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 1000
+            description: "Packet Sequence Number — used for reliability and ordering"
+
+      - name: "RETH (RDMA Extended Transport Header)"
+        abbrev: "reth"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - name: "Virtual Address"
+            abbrev: "reth.va"
+            bits: 64
+            value: "0x00007f8000400000"
+            description: "Destination virtual address in receiver's registered Memory Region"
+          - name: "R_Key"
+            abbrev: "reth.rkey"
+            bits: 32
+            value: "0x00001234"
+            description: "Remote Memory Region key authorizing this write"
+          - name: "DMA Length"
+            abbrev: "reth.dma_len"
+            bits: 32
+            value: 1024
+            description: "1 KB payload"
+
+  # ── RDMA ACK (normal) ──────────────────────────────────────────
+  - id: "rdma_ack_normal"
+    name: "RDMA ACK"
+    description: "Receiver acknowledges the RDMA WRITE"
+    from: "receiver"
+    to: "sender"
+    via: ["switch"]
+    timestamp_ns: 100050000
+    total_bytes: 62
+    color: "#475569"
+    headers:
+      - name: "Ethernet II + 802.1Q"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 18
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:12:34:56"
+            description: "Sender's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:ab:cd:ef"
+            description: "Receiver's MAC"
+          - name: "802.1Q Tag"
+            abbrev: "vlan"
+            bits: 32
+            value: "VLAN 100, Priority 3"
+            description: "Same PFC-protected priority class"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "ECN"
+            abbrev: "ip.dsfield.ecn"
+            bits: 2
+            value: "10 (ECT(0))"
+            description: "ACK is also ECN-capable"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.1.20"
+            description: "Receiver"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.1.10"
+            description: "Sender"
+
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+            description: "RoCEv2 port"
+
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x11"
+            description: "RC Acknowledge (0x11)"
+          - name: "Destination QP"
+            abbrev: "bth.dqp"
+            bits: 24
+            value: "0x000080"
+            description: "Sender's QP number"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 1000
+            description: "Acknowledges up to PSN 1000"
+
+      - name: "AETH (ACK Extended Transport Header)"
+        abbrev: "aeth"
+        layer: 5
+        total_bytes: 4
+        fields:
+          - name: "Syndrome"
+            abbrev: "aeth.syndrome"
+            bits: 8
+            value: "0x00"
+            description: "ACK (no error)"
+          - name: "MSN"
+            abbrev: "aeth.msn"
+            bits: 24
+            value: 1
+            description: "Message Sequence Number"
+
+  # ── RDMA WRITE (CE-marked by switch) ───────────────────────────
+  - id: "rdma_write_ce_marked"
+    name: "RDMA WRITE (CE-Marked by Switch)"
+    description: "Switch has modified ECN bits from ECT(0) to CE (Congestion Experienced)"
+    from: "sender"
+    to: "receiver"
+    via: ["switch"]
+    timestamp_ns: 200100000
+    total_bytes: 1102
+    color: "#dc2626"
+    headers:
+      - name: "Ethernet II + 802.1Q"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 18
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:ab:cd:ef"
+            description: "Receiver's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:12:34:56"
+            description: "Sender's MAC"
+          - name: "802.1Q Tag"
+            abbrev: "vlan"
+            bits: 32
+            value: "VLAN 100, Priority 3"
+            description: "Priority 3 — unchanged by switch"
+
+      - name: "IPv4 (Modified by Switch)"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "DSCP"
+            abbrev: "ip.dsfield.dscp"
+            bits: 6
+            value: 26
+            description: "DSCP unchanged — switch only modifies ECN bits"
+          - name: "ECN"
+            abbrev: "ip.dsfield.ecn"
+            bits: 2
+            value: "11 (CE)"
+            value_hex: "0x03"
+            description: "⚠ CONGESTION EXPERIENCED — The switch has changed this field from ECT(0) (0x02) to CE (0x03). This is the key ECN mechanism: instead of dropping the packet, the switch marks it. The packet still reaches the receiver intact, but now carries a congestion signal. The receiver's RNIC will detect this CE mark and generate a CNP back to the sender."
+            spec_refs:
+              - document: "RFC 3168"
+                section: "5.1"
+                title: "ECN-Capable Transport — CE Codepoint"
+                url: "https://datatracker.ietf.org/doc/html/rfc3168#section-5"
+              - document: "IBTA Annex A17"
+                section: "A17.3"
+                title: "ECN Marking for RoCEv2"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.1.10"
+            description: "Sender's IP (unchanged)"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.1.20"
+            description: "Receiver's IP"
+
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+            description: "RoCEv2 port — unchanged"
+
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x0a"
+            description: "RDMA WRITE Only — the RDMA operation proceeds normally despite congestion marking"
+          - name: "Destination QP"
+            abbrev: "bth.dqp"
+            bits: 24
+            value: "0x000100"
+            description: "Receiver's QP"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 1500
+            description: "PSN 1500 — traffic has been flowing; 500 packets since baseline"
+
+      - name: "RETH"
+        abbrev: "reth"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - name: "Virtual Address"
+            abbrev: "reth.va"
+            bits: 64
+            value: "0x00007f8000480000"
+            description: "Destination address (offset into MR)"
+          - name: "DMA Length"
+            abbrev: "reth.dma_len"
+            bits: 32
+            value: 1024
+            description: "1 KB payload — data arrives intact despite congestion"
+
+  # ── PFC PAUSE Frame ─────────────────────────────────────────────
+  - id: "pfc_pause"
+    name: "PFC PAUSE (Priority 3)"
+    description: "Switch sends PFC XOFF to sender — stop transmitting priority 3 traffic"
+    from: "switch"
+    to: "sender"
+    timestamp_ns: 200200000
+    total_bytes: 64
+    color: "#e67e22"
+    headers:
+      - name: "Ethernet II (MAC Control)"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "01:80:C2:00:00:01"
+            value_hex: "0x0180c2000001"
+            description: "Well-known multicast address reserved for PFC PAUSE frames. All PFC-capable devices must process frames sent to this address."
+            spec_refs:
+              - document: "IEEE 802.1Qbb"
+                section: "36.1.2"
+                title: "PFC Destination Address"
+                url: "https://standards.ieee.org/ieee/802.1Qbb/4788/"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:aa:bb:cc:dd:01"
+            description: "Switch port MAC address (port facing sender)"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x8808"
+            value_hex: "0x8808"
+            description: "MAC Control — indicates this is a control frame, not a data frame. The switch generates these in hardware with near-zero latency."
+            spec_refs:
+              - document: "IEEE 802.3"
+                section: "31.4.1"
+                title: "MAC Control frame format"
+                url: "https://standards.ieee.org/ieee/802.3/10422/"
+
+      - name: "PFC (Priority Flow Control)"
+        abbrev: "pfc"
+        layer: 2
+        total_bytes: 50
+        fields:
+          - name: "MAC Control Opcode"
+            abbrev: "pfc.opcode"
+            bits: 16
+            value: "0x0101"
+            value_hex: "0x0101"
+            description: "PFC opcode (0x0101) — distinct from legacy PAUSE (0x0001). PFC operates per-priority, allowing lossless traffic (priority 3) to be paused while best-effort traffic (priority 0) continues flowing."
+            spec_refs:
+              - document: "IEEE 802.1Qbb"
+                section: "36.1.1"
+                title: "PFC Frame Format"
+                url: "https://standards.ieee.org/ieee/802.1Qbb/4788/"
+          - name: "Priority Enable Vector"
+            abbrev: "pfc.enable"
+            bits: 8
+            value: "0x08"
+            value_hex: "0x08"
+            description: "Bit 3 = 1 → pause priority 3 only. Bits 0-2, 4-7 = 0 → all other priorities continue unaffected. This per-priority control is what distinguishes PFC from legacy IEEE 802.3x PAUSE, which was all-or-nothing."
+            spec_refs:
+              - document: "IEEE 802.1Qbb"
+                section: "36.1.2"
+                title: "Priority Enable Vector"
+                url: "https://standards.ieee.org/ieee/802.1Qbb/4788/"
+          - name: "Time[0] (Priority 0)"
+            abbrev: "pfc.time0"
+            bits: 16
+            value: 0
+            description: "Best-effort traffic — not paused"
+          - name: "Time[1] (Priority 1)"
+            abbrev: "pfc.time1"
+            bits: 16
+            value: 0
+            description: "Not paused"
+          - name: "Time[2] (Priority 2)"
+            abbrev: "pfc.time2"
+            bits: 16
+            value: 0
+            description: "Not paused"
+          - name: "Time[3] (Priority 3)"
+            abbrev: "pfc.time3"
+            bits: 16
+            value: 65535
+            value_hex: "0xFFFF"
+            description: "Maximum pause duration = 65535 quanta. Each quantum = 512 bit-times. At 100Gbps: 1 quantum = 512 / 100×10⁹ = 5.12ns. Maximum pause = 65535 × 5.12ns ≈ 335μs. The switch will send another PFC PAUSE before this expires if congestion persists, or the sender resumes when the timer expires."
+            spec_refs:
+              - document: "IEEE 802.1Qbb"
+                section: "36.1.3"
+                title: "Pause Quanta"
+                url: "https://standards.ieee.org/ieee/802.1Qbb/4788/"
+          - name: "Time[4] (Priority 4)"
+            abbrev: "pfc.time4"
+            bits: 16
+            value: 0
+            description: "Not paused"
+          - name: "Time[5] (Priority 5)"
+            abbrev: "pfc.time5"
+            bits: 16
+            value: 0
+            description: "Not paused"
+          - name: "Time[6] (Priority 6)"
+            abbrev: "pfc.time6"
+            bits: 16
+            value: 0
+            description: "Not paused"
+          - name: "Time[7] (Priority 7)"
+            abbrev: "pfc.time7"
+            bits: 16
+            value: 0
+            description: "Not paused"
+
+  # ── CNP (Congestion Notification Packet) ────────────────────────
+  - id: "cnp"
+    name: "CNP (Congestion Notification Packet)"
+    description: "Receiver's RNIC generates CNP after detecting CE-marked packet — signals sender to reduce rate"
+    from: "receiver"
+    to: "sender"
+    via: ["switch"]
+    timestamp_ns: 200150000
+    total_bytes: 78
+    color: "#7c3aed"
+    headers:
+      - name: "Ethernet II + 802.1Q"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 18
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:12:34:56"
+            description: "Sender's MAC — CNP goes back to the source of congestion"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:ab:cd:ef"
+            description: "Receiver's MAC"
+          - name: "802.1Q Tag"
+            abbrev: "vlan"
+            bits: 32
+            value: "VLAN 100, Priority 3"
+            description: "Same priority class — CNP itself is lossless"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "ECN"
+            abbrev: "ip.dsfield.ecn"
+            bits: 2
+            value: "10 (ECT(0))"
+            description: "CNP itself is ECN-capable but is a small control packet, unlikely to be CE-marked"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.1.20"
+            description: "Receiver's IP"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.1.10"
+            description: "Sender's IP"
+
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+            description: "RoCEv2 port"
+
+      - name: "BTH (CNP)"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x81"
+            value_hex: "0x81"
+            description: "CNP OpCode (0x81) — Congestion Notification Packet. This is a special IB transport opcode dedicated to congestion signaling. The receiver's RNIC generates this in hardware within microseconds of detecting a CE-marked packet."
+            spec_refs:
+              - document: "IBTA Annex A17"
+                section: "A17.4.1"
+                title: "CNP Format"
+                url: "https://www.infinibandta.org/ibta-specification/"
+            kernel_ref:
+              file: "drivers/infiniband/hw/mlx5/qp.c"
+              function: "handle_ecn_notification"
+              notes: "RNIC hardware generates CNP; firmware handles ECN → CNP conversion"
+          - name: "Destination QP"
+            abbrev: "bth.dqp"
+            bits: 24
+            value: "0x000080"
+            description: "Sender's QP number — directs the CNP to the specific QP that caused the congestion. The sender's RNIC applies DCQCN rate limiting per-QP."
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 0
+            description: "Reserved in CNP — not used for sequencing"
+
+      - name: "CNP Payload (Reserved)"
+        abbrev: "cnp"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - name: "Reserved"
+            abbrev: "cnp.reserved"
+            bits: 128
+            value: 0
+            description: "Reserved for future use — CNP carries no data payload. The mere arrival of the CNP is the signal."
+
+  # ── RDMA WRITE at Reduced Rate ──────────────────────────────────
+  - id: "rdma_write_reduced"
+    name: "RDMA WRITE (Reduced Rate — ECT(0))"
+    description: "RDMA WRITE sent at DCQCN-reduced rate after receiving CNP"
+    from: "sender"
+    to: "receiver"
+    via: ["switch"]
+    timestamp_ns: 300100000
+    total_bytes: 1102
+    color: "#059669"
+    headers:
+      - name: "Ethernet II + 802.1Q"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 18
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:ab:cd:ef"
+            description: "Receiver's MAC"
+          - name: "802.1Q Tag"
+            abbrev: "vlan"
+            bits: 32
+            value: "VLAN 100, Priority 3"
+            description: "Same priority — but packets arrive at a lower rate now"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "ECN"
+            abbrev: "ip.dsfield.ecn"
+            bits: 2
+            value: "10 (ECT(0))"
+            description: "Still ECN-capable — if congestion recurs, the cycle repeats"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.1.10"
+            description: "Sender"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.1.20"
+            description: "Receiver"
+
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x0a"
+            description: "RDMA WRITE Only — same operation, just slower"
+          - name: "Destination QP"
+            abbrev: "bth.dqp"
+            bits: 24
+            value: "0x000100"
+            description: "Receiver's QP"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 1501
+            description: "PSN continues from where we left off — no packets were lost"
+
+  # ── RDMA WRITE at Recovered Rate ────────────────────────────────
+  - id: "rdma_write_recovered"
+    name: "RDMA WRITE (Rate Recovered — ECT(0))"
+    description: "RDMA WRITE sent at recovered rate after DCQCN timer-based increase"
+    from: "sender"
+    to: "receiver"
+    via: ["switch"]
+    timestamp_ns: 400100000
+    total_bytes: 1102
+    color: "#991b1b"
+    headers:
+      - name: "Ethernet II + 802.1Q"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 18
+        fields:
+          - name: "802.1Q Tag"
+            abbrev: "vlan"
+            bits: 32
+            value: "VLAN 100, Priority 3"
+            description: "Priority 3 — lossless class"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "ECN"
+            abbrev: "ip.dsfield.ecn"
+            bits: 2
+            value: "10 (ECT(0))"
+            description: "ECN-capable — ready for the next congestion event if it occurs"
+
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x0a"
+            description: "RDMA WRITE Only — back to normal throughput"
+          - name: "Destination QP"
+            abbrev: "bth.dqp"
+            bits: 24
+            value: "0x000100"
+            description: "Receiver's QP"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 2000
+            description: "PSN 2000 — traffic has continued flowing at reduced then recovered rate"
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+  # ── Phase: Link Establishment ───────────────────────────────────
+  - id: "evt_phy_link"
+    type: "state_change"
+    t_ns: 0
+    annotation:
+      text: "Physical link up — 100GbE on both segments, PFC enabled"
+      detail: >
+        Both 100GbE links come up via Auto-Negotiation. The switch and both RNICs
+        are configured for Data Center Bridging (DCBx) with PFC enabled on
+        priority 3. This means the switch will send PFC PAUSE frames to an
+        upstream port when the egress queue for priority 3 exceeds the XOFF
+        threshold — preventing buffer overflow and packet loss.
+
+        Key configuration on each device:
+        • PFC enabled on priority 3 (RoCEv2 traffic class)
+        • DSCP 26 (AF31) → mapped to priority 3 via DSCP-to-priority table
+        • ECN marking enabled at the switch with WRED thresholds
+        • DCQCN congestion control enabled on both RNICs
+    state_after:
+      - actor_id: "sender"
+        layers:
+          - layer: 1
+            state_fields:
+              phy_state: "up"
+              speed: "100 Gbps"
+          - layer: 2
+            state_fields:
+              link_state: "up"
+              pfc_enabled: true
+          - layer: 3
+            state_fields:
+              ecn_codepoint: "ECT(0)"
+              dst_ip: "192.168.1.20"
+      - actor_id: "receiver"
+        layers:
+          - layer: 1
+            state_fields:
+              phy_state: "up"
+              speed: "100 Gbps"
+          - layer: 2
+            state_fields:
+              link_state: "up"
+              pfc_enabled: true
+      - actor_id: "switch"
+        layers:
+          - layer: 1
+            state_fields:
+              port_sender_phy: "up"
+              port_receiver_phy: "up"
+          - layer: 2
+            state_fields:
+              fwd_table_entries: 2
+
+  # ── Phase: Setup ────────────────────────────────────────────────
+  - id: "evt_qp_ready"
+    type: "state_change"
+    t_ns: 50000000
+    annotation:
+      text: "QPs established (RTS), DCQCN enabled — ready for RDMA traffic"
+      detail: >
+        Both QPs have completed the CM handshake (see the RoCEv2 RC scenario for
+        details) and are in RTS (Ready To Send) state. DCQCN is enabled per-QP
+        via modify_qp — the RNIC hardware will:
+        • Set ECT(0) on all outgoing packets (marking them ECN-capable)
+        • Monitor incoming packets for CE marking
+        • Generate CNPs when CE is detected
+        • Apply rate limiting when CNPs are received
+
+        DCQCN parameters (typical defaults):
+        • Initial rate: line rate (100 Gbps)
+        • Alpha (α): 0 initially — increases toward 1 with congestion
+        • Rate recovery timer: 55μs
+        • Alpha timer: 55μs
+        • Rate increase steps: 5 (hyper-increase) then additive increase
+    state_after:
+      - actor_id: "sender"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "RDMA WRITE active"
+              posted_wr: "RDMA WRITE"
+          - layer: 5
+            state_fields:
+              qp_state: "RTS"
+              qp_num: "0x000080"
+              psn_send: 1000
+              tx_rate_gbps: "100.0"
+              dcqcn_alpha: "0.0"
+              dcqcn_target_rate: "100.0"
+      - actor_id: "receiver"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "receiving"
+          - layer: 5
+            state_fields:
+              qp_state: "RTS"
+              qp_num: "0x000100"
+              psn_recv_expected: 1000
+
+  # ── Phase: Normal RDMA Traffic ──────────────────────────────────
+  - id: "evt_write_normal"
+    type: "frame_tx"
+    t_ns: 100000000
+    frame_id: "rdma_write_normal"
+    annotation:
+      text: "RDMA WRITE → Normal traffic at line rate (ECT(0) in IP header)"
+      detail: >
+        The sender posts RDMA WRITE operations at line rate. Each packet carries
+        ECT(0) in the IP header's ECN field, signaling to every switch in the path:
+        "I am ECN-capable — if you're congested, mark me instead of dropping me."
+
+        At 100 Gbps with 1KB payloads and ~1100-byte frames:
+        • Wire rate: ~11.4 million packets per second
+        • Inter-packet gap: ~87.6 ns
+
+        The switch forwards these packets normally. Its egress queue toward the
+        receiver is nearly empty — no congestion yet.
+    state_after:
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            state_fields:
+              egress_queue_bytes: 5000
+          - layer: 3
+            state_fields:
+              ecn_mark_probability: "0%"
+
+  - id: "evt_ack_normal"
+    type: "frame_tx"
+    t_ns: 100050000
+    frame_id: "rdma_ack_normal"
+    annotation:
+      text: "RDMA ACK ← Receiver acknowledges WRITE (no congestion signals)"
+      detail: >
+        The receiver's RNIC processes the RDMA WRITE, deposits data into the
+        Memory Region, and generates an ACK. The ECN field in the received packet
+        was ECT(0) (not CE), so no congestion notification is needed.
+
+        This is the steady-state happy path: data flows at line rate, ACKs flow
+        back, switch queues stay low.
+    state_after:
+      - actor_id: "receiver"
+        layers:
+          - layer: 7
+            state_fields:
+              bytes_received: 1024
+          - layer: 5
+            state_fields:
+              psn_recv_expected: 1001
+          - layer: 3
+            state_fields:
+              ecn_received: "ECT(0)"
+      - actor_id: "sender"
+        layers:
+          - layer: 5
+            state_fields:
+              psn_send: 1001
+
+  # ── Phase: Congestion Develops ──────────────────────────────────
+  - id: "evt_congestion_building"
+    type: "state_change"
+    t_ns: 200000000
+    annotation:
+      text: "⚠ Congestion building — switch egress queue filling up"
+      detail: >
+        Multiple senders are now transmitting toward the same receiver port
+        (incast pattern — common in distributed storage and AI training).
+        The switch's egress queue toward the receiver starts filling because
+        the aggregate ingress rate exceeds the egress port capacity.
+
+        Switch buffer thresholds (priority 3):
+        • ECN marking threshold: 150,000 bytes (WRED starts marking)
+        • PFC XOFF threshold:    300,000 bytes (stop upstream sender)
+        • PFC XON threshold:     100,000 bytes (resume upstream sender)
+
+        The queue has crossed the ECN marking threshold (150KB) but hasn't
+        reached the PFC XOFF threshold (300KB) yet. The switch begins
+        probabilistically marking packets with CE using WRED (Weighted
+        Random Early Detection).
+
+        This is the first line of defense: ECN marking begins BEFORE the
+        buffer is at risk of overflow. The goal is for DCQCN to reduce
+        sender rates before PFC needs to fire at all.
+    state_after:
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            state_fields:
+              egress_queue_bytes: 200000
+          - layer: 3
+            state_fields:
+              ecn_mark_probability: "33%"
+
+  - id: "evt_ecn_mark"
+    type: "frame_tx"
+    t_ns: 200100000
+    frame_id: "rdma_write_ce_marked"
+    annotation:
+      text: "⚠ ECN CE Mark — Switch marks RDMA WRITE packet with Congestion Experienced"
+      detail: >
+        The switch's WRED engine selects this packet for ECN marking. It modifies
+        the IP header's ECN field from ECT(0) (0x02) to CE (0x03) — a single bit
+        change that signals "this packet traversed a congested link."
+
+        Critical insight: THE PACKET IS NOT DROPPED. It continues to the receiver
+        with full data integrity. Only the 2-bit ECN field in the IP header is
+        modified. This is fundamentally different from traditional tail-drop
+        congestion, where the packet would be silently discarded.
+
+        The receiver's RNIC will detect the CE marking when the packet arrives
+        and trigger the DCQCN response (CNP generation).
+      spec_refs:
+        - document: "RFC 3168"
+          section: "5.1"
+          title: "ECN-Capable Transport — Marking Procedure"
+          url: "https://datatracker.ietf.org/doc/html/rfc3168#section-5"
+    state_after:
+      - actor_id: "switch"
+        layers:
+          - layer: 3
+            state_fields:
+              packets_marked_ce: 1
+
+  # ── Phase: PFC ──────────────────────────────────────────────────
+  - id: "evt_pfc_pause"
+    type: "frame_tx"
+    t_ns: 200200000
+    frame_id: "pfc_pause"
+    annotation:
+      text: "🛑 PFC PAUSE → Switch sends XOFF to sender on priority 3"
+      detail: >
+        The switch's egress queue has hit the PFC XOFF threshold (300,000 bytes).
+        The switch hardware generates a PFC PAUSE frame toward the sender with
+        near-zero latency (typically < 1μs from threshold crossing to frame TX).
+
+        The PFC PAUSE frame pauses ONLY priority 3 (RoCEv2 traffic). All other
+        traffic priorities continue flowing normally. This per-priority control
+        is the key advantage over legacy IEEE 802.3x PAUSE (which paused ALL traffic).
+
+        The pause duration is set to 65535 quanta (maximum). At 100Gbps,
+        each quantum = 512 bit-times = 5.12ns, so maximum pause ≈ 335μs.
+        The switch will re-send PFC PAUSE before the timer expires if the queue
+        hasn't drained sufficiently.
+
+        PFC XOFF threshold must be set to absorb all in-flight data between the
+        switch and the sender. At 100 Gbps with ~2μs round-trip (cable + processing):
+        in-flight bytes = 100×10⁹ × 2×10⁻⁶ / 8 = 25,000 bytes. The 300KB threshold
+        provides ample headroom.
+
+        ⚠ Important: PFC is hop-by-hop (Layer 2). In a multi-switch fabric, PFC
+        pauses can propagate upstream, potentially causing "pause storms" and
+        head-of-line blocking — which is why ECN/DCQCN is essential to reduce
+        the sender's rate before PFC becomes the primary congestion mechanism.
+      spec_refs:
+        - document: "IEEE 802.1Qbb"
+          section: "36"
+          title: "Priority-based Flow Control"
+          url: "https://standards.ieee.org/ieee/802.1Qbb/4788/"
+    state_after:
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            state_fields:
+              egress_queue_bytes: 300000
+              port_sender_pfc_xoff: true
+              pfc_frames_sent: 1
+      - actor_id: "sender"
+        layers:
+          - layer: 2
+            state_fields:
+              pfc_paused: true
+          - layer: 5
+            state_fields:
+              tx_rate_gbps: "0 (PFC paused)"
+
+  # ── Phase: ECN/DCQCN Response ───────────────────────────────────
+  - id: "evt_cnp"
+    type: "frame_tx"
+    t_ns: 200150000
+    frame_id: "cnp"
+    annotation:
+      text: "CNP ← Receiver generates Congestion Notification Packet after detecting CE mark"
+      detail: >
+        The receiver's RNIC detects that the RDMA WRITE packet (PSN 1500) arrived
+        with ECN = CE (0x03) instead of the expected ECT(0) (0x02). The RNIC
+        hardware immediately generates a CNP and sends it back to the sender.
+
+        The CNP uses BTH opcode 0x81 and is addressed to the sender's QP
+        (QPN 0x000080). It carries no data — the arrival of the CNP itself
+        is the signal. The sender's RNIC processes the CNP in hardware and
+        triggers the DCQCN rate reduction algorithm.
+
+        CNP rate limiting: the receiver will not generate more than one CNP per
+        congestion event per QP per time interval (typically 50μs) to avoid
+        flooding the network with control packets.
+      spec_refs:
+        - document: "IBTA Annex A17"
+          section: "A17.4"
+          title: "CNP Generation"
+          url: "https://www.infinibandta.org/ibta-specification/"
+    state_after:
+      - actor_id: "receiver"
+        layers:
+          - layer: 3
+            state_fields:
+              ecn_received: "CE ⚠"
+          - layer: 5
+            state_fields:
+              cnp_sent: 1
+
+  - id: "evt_dcqcn_reduce"
+    type: "state_change"
+    t_ns: 200300000
+    annotation:
+      text: "DCQCN rate cut — Sender reduces transmission rate by 50%"
+      detail: >
+        The sender's RNIC receives the CNP and executes the DCQCN rate reduction
+        algorithm. On the first CNP:
+
+        1. Alpha (α) update: α = (1 − g) × α_old + g × 1.0
+           With g = 1/256 (default): α ≈ 0.004 (small initial increase)
+
+        2. Rate cut: Current_Rate = Current_Rate × (1 − α/2)
+           ≈ 100.0 × (1 − 0.004/2) ≈ 99.8 Gbps
+
+        But DCQCN also applies a multiplicative decrease on the first CNP:
+           Target_Rate = Current_Rate
+           Current_Rate = Current_Rate / 2 = 50.0 Gbps
+
+        This aggressive initial cut is deliberate — it's better to undershoot
+        and recover than to remain congested. The rate will gradually recover
+        via the timer-based increase mechanism.
+
+        Note: The PFC pause is still in effect, so the sender is actually stopped.
+        When PFC resumes, the sender will transmit at the new DCQCN-limited rate
+        of 50 Gbps, not the original 100 Gbps. This is how PFC and DCQCN work
+        together — PFC provides immediate protection while DCQCN adjusts the
+        sustained rate.
+      spec_refs:
+        - document: "IBTA Annex A17"
+          section: "A17.5"
+          title: "DCQCN Rate Reduction Algorithm"
+          url: "https://www.infinibandta.org/ibta-specification/"
+    state_after:
+      - actor_id: "sender"
+        layers:
+          - layer: 5
+            state_fields:
+              tx_rate_gbps: "50.0 (DCQCN limited)"
+              dcqcn_alpha: "0.004"
+              dcqcn_target_rate: "100.0"
+              cnp_received: 1
+
+  - id: "evt_pfc_resume"
+    type: "state_change"
+    t_ns: 250000000
+    annotation:
+      text: "PFC XON — Switch queue drains below threshold, sender resumes"
+      detail: >
+        With the sender paused by PFC and the receiver continuing to drain the
+        switch's egress queue, the queue depth drops below the XON threshold
+        (100,000 bytes). The PFC pause timer either expires or the switch sends
+        a PFC frame with time=0 for priority 3 (explicit unpause).
+
+        The sender's NIC resumes transmission, but now at the DCQCN-reduced rate
+        of 50 Gbps instead of the original 100 Gbps. This is the key synergy:
+        • PFC prevented packet loss during the congestion spike (emergency brake)
+        • DCQCN ensures the sender doesn't immediately recreate the congestion
+          (intelligent speed control)
+
+        Without DCQCN, the sender would resume at full 100 Gbps, the queue would
+        fill again within microseconds, and PFC would fire again — creating a
+        "PFC storm" that wastes bandwidth and causes latency spikes.
+    state_after:
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            state_fields:
+              egress_queue_bytes: 80000
+              port_sender_pfc_xoff: false
+          - layer: 3
+            state_fields:
+              ecn_mark_probability: "0%"
+      - actor_id: "sender"
+        layers:
+          - layer: 2
+            state_fields:
+              pfc_paused: false
+
+  # ── Phase: Reduced Rate Traffic ─────────────────────────────────
+  - id: "evt_write_reduced"
+    type: "frame_tx"
+    t_ns: 300100000
+    frame_id: "rdma_write_reduced"
+    annotation:
+      text: "RDMA WRITE → Sender transmits at reduced rate (50 Gbps)"
+      detail: >
+        The sender resumes RDMA WRITE operations at 50 Gbps — half the original
+        rate. The RNIC hardware enforces this rate limit per-QP by inserting
+        inter-packet delays. At 50 Gbps with 1102-byte frames:
+        • Inter-packet gap: ~176 ns (vs ~88 ns at line rate)
+
+        The packets still carry ECT(0) — the sender is ready for another round
+        of ECN feedback if congestion recurs. But at this reduced rate, the
+        switch queue stabilizes well below the ECN marking threshold.
+
+        Note the PSN continues from 1501 — no packets were lost during the
+        entire congestion event. This is the "lossless" guarantee: PFC
+        prevented drops, and RDMA sequence numbers have no gaps.
+    state_after:
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            state_fields:
+              egress_queue_bytes: 30000
+      - actor_id: "sender"
+        layers:
+          - layer: 5
+            state_fields:
+              psn_send: 1502
+
+  # ── Phase: Rate Recovery ────────────────────────────────────────
+  - id: "evt_rate_recovery_1"
+    type: "state_change"
+    t_ns: 350000000
+    annotation:
+      text: "DCQCN recovery — Rate timer fires, rate increases toward target"
+      detail: >
+        DCQCN uses a timer-based rate recovery mechanism. Every rate_increase_timer
+        interval (default ~55μs), if no new CNPs have been received:
+
+        Phase 1 — Hyper-increase (first 5 timer firings):
+          Target_Rate = Target_Rate + R_AI (additive increment, e.g., 5 Gbps)
+          Current_Rate = (Current_Rate + Target_Rate) / 2
+
+        Phase 2 — Additive increase (after 5 firings):
+          Current_Rate = Current_Rate + R_HAI (hyper-additive increment)
+
+        After the first recovery step:
+          Target_Rate = 100.0 + 5.0 = 105.0 Gbps (capped at line rate = 100.0)
+          Current_Rate = (50.0 + 100.0) / 2 = 75.0 Gbps
+
+        Alpha also decays: α = (1 − g) × α_old ≈ 0.004 × 0.996 ≈ 0.004
+        As alpha decays toward 0, future rate cuts become less severe.
+
+        This AIMD-like (Additive Increase, Multiplicative Decrease) behavior
+        converges to a fair share of bandwidth across competing flows.
+      spec_refs:
+        - document: "IBTA Annex A17"
+          section: "A17.6"
+          title: "DCQCN Rate Recovery"
+          url: "https://www.infinibandta.org/ibta-specification/"
+    state_after:
+      - actor_id: "sender"
+        layers:
+          - layer: 5
+            state_fields:
+              tx_rate_gbps: "75.0 (recovering)"
+              dcqcn_alpha: "0.004"
+
+  - id: "evt_rate_recovery_2"
+    type: "state_change"
+    t_ns: 380000000
+    annotation:
+      text: "DCQCN recovery continues — Rate approaching line rate"
+      detail: >
+        Subsequent timer firings continue increasing the rate. After several
+        hyper-increase steps without new CNPs:
+
+        Current_Rate ≈ 93 Gbps → 97 Gbps → 99 Gbps → 100 Gbps (line rate cap)
+
+        Alpha continues decaying toward 0, making the sender less reactive to
+        future single CNPs. This prevents oscillation — the sender won't
+        overreact to brief, transient congestion.
+
+        The entire congestion episode — from first ECN mark to full rate
+        recovery — typically takes 200-500μs in a well-tuned data center
+        network. The key metric is "PFC pause duration": a well-tuned network
+        should see very few PFC pauses because DCQCN keeps queue depths
+        below the PFC threshold most of the time.
+    state_after:
+      - actor_id: "sender"
+        layers:
+          - layer: 5
+            state_fields:
+              tx_rate_gbps: "97.0 (recovering)"
+              dcqcn_alpha: "0.001"
+
+  - id: "evt_write_recovered"
+    type: "frame_tx"
+    t_ns: 400100000
+    frame_id: "rdma_write_recovered"
+    annotation:
+      text: "RDMA WRITE → Rate fully recovered, normal throughput resumed"
+      detail: >
+        The sender is back to (near) line rate. The switch queue is stable and
+        well below any threshold. The DCQCN congestion episode is complete.
+
+        Key observations:
+        • Zero packets lost throughout the entire congestion event
+        • PSN sequence is continuous (1000 → 1500 → 1501 → ... → 2000)
+        • PFC paused the sender for ~50μs (one pause event)
+        • DCQCN reduced the rate for ~200μs before full recovery
+        • Total throughput impact: minimal — brief dip, quick recovery
+
+        This is why every RoCEv2 deployment needs both PFC and ECN/DCQCN:
+        PFC is the safety net (prevents loss), and DCQCN is the intelligence
+        (adjusts behavior to avoid triggering PFC in the first place).
+    state_after:
+      - actor_id: "sender"
+        layers:
+          - layer: 5
+            state_fields:
+              tx_rate_gbps: "100.0"
+              dcqcn_alpha: "0.0"
+              dcqcn_target_rate: "100.0"
+              psn_send: 2001
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            state_fields:
+              egress_queue_bytes: 5000
+
+  # ── Summary ─────────────────────────────────────────────────────
+  - id: "evt_summary"
+    type: "annotation"
+    t_ns: 500000000
+    annotation:
+      text: "⟳ Scenario complete — PFC/ECN/DCQCN congestion control lifecycle"
+      detail: >
+        This scenario demonstrated the three-layer congestion control system
+        that makes RoCEv2 lossless:
+
+        LAYER 1 — PFC (IEEE 802.1Qbb): The emergency brake
+        • Hop-by-hop, Layer 2, per-priority PAUSE/RESUME
+        • Prevents buffer overflow at each switch hop
+        • Fires when queue exceeds XOFF threshold
+        • Limitation: can cause head-of-line blocking and pause storms in multi-hop fabrics
+
+        LAYER 2 — ECN (RFC 3168): The congestion signal
+        • End-to-end, Layer 3, single-bit mark in IP header
+        • Switch changes ECT(0) → CE when queue exceeds marking threshold
+        • Packet reaches receiver intact — no data loss
+        • Marking threshold is LOWER than PFC threshold (detects congestion earlier)
+
+        LAYER 3 — DCQCN (IBTA Annex A17): The intelligent response
+        • Receiver detects CE, generates CNP back to sender
+        • Sender cuts rate by ~50% on first CNP (multiplicative decrease)
+        • Timer-based recovery: hyper-increase then additive increase (AIMD)
+        • Converges to fair share among competing flows
+
+        The interaction is critical:
+        • ECN threshold < PFC threshold → DCQCN reduces rate before PFC fires
+        • If DCQCN is too slow → PFC prevents loss (safety net)
+        • Without DCQCN → PFC alone causes pause storms
+        • Without PFC → ECN alone can't prevent drops during microbursts
+
+        Tuning guidelines:
+        • ECN marking threshold: ~30-50% of port buffer allocation
+        • PFC XOFF threshold: ~80-90% of port buffer (allows headroom for in-flight data)
+        • PFC XON threshold: ~30% of port buffer
+        • DCQCN timers: 50-100μs (match network RTT)
+
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
+glossary:
+  - term: "Priority Flow Control"
+    abbrev: "PFC"
+    definition: "IEEE 802.1Qbb mechanism that pauses traffic on specific 802.1Q priorities (0-7) while allowing other priorities to continue. Prevents buffer overflow at each Ethernet hop. Uses MAC Control frames with destination 01:80:C2:00:00:01."
+    spec_refs:
+      - document: "IEEE 802.1Qbb"
+        section: "36"
+        title: "Priority-based Flow Control"
+        url: "https://standards.ieee.org/ieee/802.1Qbb/4788/"
+
+  - term: "Explicit Congestion Notification"
+    abbrev: "ECN"
+    definition: "RFC 3168 mechanism using 2 bits in the IP header to signal congestion without dropping packets. Codepoints: 00=Not-ECT, 01=ECT(1), 10=ECT(0), 11=CE (Congestion Experienced). Router/switch marks ECT→CE instead of dropping."
+    spec_refs:
+      - document: "RFC 3168"
+        section: "5"
+        title: "ECN Field"
+        url: "https://datatracker.ietf.org/doc/html/rfc3168#section-5"
+
+  - term: "Data Center Quantized Congestion Notification"
+    abbrev: "DCQCN"
+    definition: "RoCEv2 congestion control algorithm (IBTA Annex A17). Combines ECN feedback with AIMD-style rate adjustment. Receiver sends CNP on CE detection; sender cuts rate then recovers via timer. Based on research paper 'Congestion Control for Large-Scale RDMA Deployments' (SIGCOMM 2015)."
+    spec_refs:
+      - document: "IBTA Annex A17"
+        section: "A17"
+        title: "RoCEv2 Congestion Management"
+        url: "https://www.infinibandta.org/ibta-specification/"
+
+  - term: "Congestion Notification Packet"
+    abbrev: "CNP"
+    definition: "IB transport packet (BTH opcode 0x81) generated by the receiver's RNIC when a CE-marked packet is detected. Sent to the sender's QP to trigger DCQCN rate reduction. Carries no data payload — arrival alone is the signal."
+
+  - term: "XOFF Threshold"
+    definition: "Switch queue depth (in bytes) at which PFC PAUSE is sent to the upstream port. Must be large enough to absorb all in-flight data between the switch and upstream device (round-trip distance × line rate). Typical: 80-90% of per-port buffer allocation."
+
+  - term: "XON Threshold"
+    definition: "Switch queue depth (in bytes) at which PFC PAUSE is released (or timer expires). Typically 20-30% of per-port buffer allocation. The gap between XOFF and XON provides hysteresis to avoid rapid PAUSE/RESUME oscillation."
+
+  - term: "Weighted Random Early Detection"
+    abbrev: "WRED"
+    definition: "Switch queue management algorithm that probabilistically marks (or drops) packets as the queue grows. For ECN-capable traffic, WRED marks packets with CE instead of dropping them. Marking probability increases linearly between min and max thresholds."
+
+  - term: "Data Center Bridging"
+    abbrev: "DCBx"
+    definition: "Suite of IEEE standards for lossless Ethernet: PFC (802.1Qbb), ETS/Enhanced Transmission Selection (802.1Qaz for bandwidth allocation), and DCBx (802.1Qaz for automatic negotiation of PFC/ETS parameters between peers)."
+
+  - term: "Incast"
+    definition: "Traffic pattern where many sources simultaneously send to one destination, causing severe congestion at the last-hop switch. Common in distributed storage (many-to-one reads) and AI training (all-reduce). A primary driver for PFC/ECN/DCQCN deployment."
+
+  - term: "Head-of-Line Blocking"
+    abbrev: "HoL blocking"
+    definition: "When PFC pauses one priority, frames queued behind the paused frames on a shared ingress pipeline may also be delayed, even if they belong to different (unpaused) priorities. Modern switches mitigate this with virtual output queuing (VOQ) and per-priority buffering."
+
+  - term: "Pause Storm"
+    definition: "Cascading PFC pauses that propagate upstream through multiple switches. If switch A pauses switch B, and switch B's buffers fill because it can't drain, switch B pauses switch C, and so on. ECN/DCQCN prevents pause storms by reducing source rates before PFC propagation."
