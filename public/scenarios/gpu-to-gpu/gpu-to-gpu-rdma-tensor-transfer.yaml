@@ -1,0 +1,792 @@
+meta:
+  id: "gpu-to-gpu-rdma-tensor-transfer"
+  title: "GPU-to-GPU RDMA: Tensor Transfer across Nodes via RoCEv2"
+  protocol: "RoCEv2 + GPUDirect RDMA"
+  protocol_family: "RDMA"
+  version: "1.0.0"
+  description: >
+    End-to-end GPU-to-GPU tensor transfer between two nodes using GPUDirect
+    RDMA over RoCEv2. This is the foundational data path for distributed AI
+    training, inference serving, and GPU computing clusters. The scenario
+    traces the full lifecycle: CUDA memory allocation, nvidia-peermem GPU
+    BAR1 exposure, MR registration against GPU memory, CM QP bring-up, RDMA
+    WRITE pushing a tensor directly from GPU 0's HBM to GPU 1's HBM (zero
+    host DRAM bounce), and RDMA READ pulling it back. Contrasts the GPUDirect
+    path (1 copy) with the traditional path (4 copies).
+
+  learning_objectives:
+    - "Trace the full GPU-to-GPU RDMA data path: GPU HBM → PCIe → RNIC → Network → RNIC → PCIe → GPU HBM"
+    - "Understand why GPUDirect RDMA eliminates host DRAM bouncing and CPU involvement"
+    - "See how nvidia-peermem bridges the GPU memory subsystem with the RDMA subsystem"
+    - "Compare traditional path (GPU→CPU→RNIC→Network→RNIC→CPU→GPU, 4 copies) vs GPUDirect (1 copy)"
+    - "Follow PCIe peer-to-peer (P2P) DMA between RNIC and GPU via BAR1 aperture"
+    - "Understand when GPUDirect RDMA is used: NCCL collectives, inference serving, GPU computing"
+    - "See both RDMA WRITE (push model) and RDMA READ (pull model) for GPU memory"
+
+  difficulty: "advanced"
+
+  authors:
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+
+  created: "2026-03-17"
+  updated: "2026-03-17"
+
+  tags:
+    - "RDMA"
+    - "RoCEv2"
+    - "GPUDirect"
+    - "GPU"
+    - "CUDA"
+    - "nvidia-peermem"
+    - "tensor"
+    - "AI-infrastructure"
+    - "distributed training"
+    - "100GbE"
+    - "education"
+
+  primary_specs:
+    - document: "NVIDIA GPUDirect RDMA"
+      section: "1"
+      title: "GPUDirect RDMA Documentation"
+      url: "https://docs.nvidia.com/cuda/gpudirect-rdma/"
+    - document: "IBTA Vol1"
+      section: "9.7"
+      title: "Reliable Connection Service"
+      url: "https://www.infinibandta.org/ibta-specification/"
+
+  content_disclaimer: >
+    This scenario illustrates the GPUDirect RDMA data path for GPU-to-GPU
+    transfers. The flow is based on nvidia-peermem and RDMA verbs as
+    documented by NVIDIA and the Linux RDMA subsystem.
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "node_a"
+      type: "host"
+      label: "GPU Node A"
+      description: "Compute node with GPU + RNIC — source of tensor transfer"
+      hardware: "H100 GPU + ConnectX-7 100GbE RNIC"
+      os: "Linux 6.x + CUDA 12 + MOFED"
+      kernel_version: "6.8"
+      ip: "192.168.10.1"
+      mac: "00:02:c9:00:00:01"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "Lossless 100GbE Switch"
+      description: "Data center switch with PFC/ECN for RoCEv2 lossless transport"
+      hardware: "100GbE switch"
+      position: "center"
+
+    - id: "node_b"
+      type: "host"
+      label: "GPU Node B"
+      description: "Compute node with GPU + RNIC — destination of tensor transfer"
+      hardware: "H100 GPU + ConnectX-7 100GbE RNIC"
+      os: "Linux 6.x + CUDA 12 + MOFED"
+      kernel_version: "6.8"
+      ip: "192.168.10.2"
+      mac: "00:02:c9:00:00:02"
+      position: "right"
+
+  links:
+    - id: "link-a-sw"
+      from: "node_a"
+      to: "switch"
+      speed_gbps: 100
+      media: "fiber_sr"
+      fec: "RS(544,514)"
+    - id: "link-sw-b"
+      from: "switch"
+      to: "node_b"
+      speed_gbps: 100
+      media: "fiber_sr"
+      fec: "RS(544,514)"
+
+# ─────────────────────────────────────────────────────────────────
+# OSI LAYERS
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  node_a:
+    - layer: 7
+      name: "Application / CUDA"
+      components: ["CUDA runtime", "cuMemAlloc", "application"]
+      state_schema:
+        app_state:
+          type: "string"
+          initial: "initializing"
+        tensor_location:
+          type: "string"
+          initial: "—"
+        tensor_size:
+          type: "string"
+          initial: "—"
+
+    - layer: 6
+      name: "GPU Memory / nvidia-peermem"
+      components: ["nvidia-peermem", "GPU BAR1", "peer_memory_client"]
+      state_schema:
+        gpu_mem_state:
+          type: "string"
+          initial: "unallocated"
+        bar1_mapped:
+          type: "boolean"
+          initial: false
+        mr_registered:
+          type: "boolean"
+          initial: false
+
+    - layer: 5
+      name: "IB Transport (RC QP)"
+      components: ["libibverbs", "mlx5_ib"]
+      state_schema:
+        qp_state:
+          type: "string"
+          initial: "RESET"
+        mr_rkey:
+          type: "string"
+          initial: "—"
+
+    - layer: 4
+      name: "UDP (RoCEv2)"
+      components: ["RNIC hardware"]
+      state_schema:
+        dst_port:
+          type: "integer"
+          initial: 4791
+
+    - layer: 3
+      name: "IP / ECN"
+      components: ["kernel IP stack"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "192.168.10.1"
+        ecn_state:
+          type: "string"
+          initial: "ECT(0)"
+
+    - layer: 2
+      name: "Ethernet / PFC"
+      components: ["mlx5 driver", "802.1Qbb"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "down"
+
+    - layer: 1
+      name: "Physical (100GbE)"
+      components: ["100GBASE-SR4", "RS(544,514)"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "down"
+
+  node_b:
+    - layer: 7
+      name: "Application / CUDA"
+      components: ["CUDA runtime", "application"]
+      state_schema:
+        app_state:
+          type: "string"
+          initial: "initializing"
+        tensor_location:
+          type: "string"
+          initial: "—"
+
+    - layer: 6
+      name: "GPU Memory / nvidia-peermem"
+      components: ["nvidia-peermem", "GPU BAR1"]
+      state_schema:
+        gpu_mem_state:
+          type: "string"
+          initial: "unallocated"
+        bar1_mapped:
+          type: "boolean"
+          initial: false
+        mr_registered:
+          type: "boolean"
+          initial: false
+
+    - layer: 5
+      name: "IB Transport (RC QP)"
+      components: ["libibverbs", "mlx5_ib"]
+      state_schema:
+        qp_state:
+          type: "string"
+          initial: "RESET"
+        mr_rkey:
+          type: "string"
+          initial: "—"
+
+    - layer: 4
+      name: "UDP (RoCEv2)"
+      components: ["RNIC hardware"]
+      state_schema:
+        dst_port:
+          type: "integer"
+          initial: 4791
+
+    - layer: 3
+      name: "IP / ECN"
+      components: ["kernel IP stack"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "192.168.10.2"
+        ecn_state:
+          type: "string"
+          initial: "ECT(0)"
+
+    - layer: 2
+      name: "Ethernet / PFC"
+      components: ["mlx5 driver", "802.1Qbb"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "down"
+
+    - layer: 1
+      name: "Physical (100GbE)"
+      components: ["100GBASE-SR4", "RS(544,514)"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "down"
+
+  switch:
+    - layer: 2
+      name: "Ethernet Switching / PFC"
+      components: ["802.1Q bridge", "802.1Qbb PFC"]
+      state_schema:
+        fwd_table_entries:
+          type: "integer"
+          initial: 0
+    - layer: 1
+      name: "Physical"
+      components: ["100GBASE-SR4"]
+      state_schema:
+        port_a_phy:
+          type: "string"
+          initial: "down"
+        port_b_phy:
+          type: "string"
+          initial: "down"
+
+# ─────────────────────────────────────────────────────────────────
+# FRAMES
+# ─────────────────────────────────────────────────────────────────
+frames:
+  # ── RDMA WRITE: GPU A → GPU B (tensor push) ──────────────────
+  - id: "rdma_write_gpu_to_gpu"
+    name: "RDMA WRITE: 4MB Tensor from GPU A HBM → GPU B HBM"
+    description: "RNIC A reads tensor from GPU A via PCIe BAR1, transmits over RoCEv2, RNIC B writes to GPU B via PCIe BAR1"
+    from: "node_a"
+    to: "node_b"
+    via: ["switch"]
+    total_bytes: 4194358
+    color: "#991b1b"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:00:00:02"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:00:00:01"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "ECN"
+            abbrev: "ip.dsfield.ecn"
+            bits: 2
+            value: "10 (ECT(0))"
+            description: "ECN-capable transport — lossless fabric"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.10.1"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.10.2"
+
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x0a"
+            description: "RDMA WRITE Only — data flows from GPU A's HBM directly to GPU B's HBM. The DMA path: GPU A HBM → GPU A BAR1 (PCIe P2P) → RNIC A → Network → RNIC B → GPU B BAR1 (PCIe P2P) → GPU B HBM."
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.7.5"
+                title: "RDMA WRITE Operation"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "Destination QP"
+            abbrev: "bth.dqp"
+            bits: 24
+            value: "0x000100"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 0
+
+      - name: "RETH"
+        abbrev: "reth"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - name: "Virtual Address"
+            abbrev: "reth.va"
+            bits: 64
+            value: "0x00007f0100000000"
+            description: "GPU B's receive buffer VA in GPU HBM — mapped via BAR1 aperture and registered as MR through nvidia-peermem"
+          - name: "R_Key"
+            abbrev: "reth.rkey"
+            bits: 32
+            value: "0x0000ABCD"
+            description: "GPU B's memory region key"
+          - name: "DMA Length"
+            abbrev: "reth.dma_len"
+            bits: 32
+            value: 4194304
+            description: "4 MB tensor — typical activation or gradient chunk size"
+
+  # ── RDMA READ: GPU B → GPU A (tensor pull) ───────────────────
+  - id: "rdma_read_req_gpu"
+    name: "RDMA READ Request: Pull Tensor from GPU B HBM"
+    from: "node_a"
+    to: "node_b"
+    via: ["switch"]
+    total_bytes: 78
+    color: "#6b21a8"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x0c"
+            description: "RDMA READ Request — Node A requests 4MB from GPU B's memory"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 100
+
+      - name: "RETH"
+        abbrev: "reth"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - name: "Virtual Address"
+            abbrev: "reth.va"
+            bits: 64
+            value: "0x00007f0100000000"
+            description: "GPU B's tensor buffer — RNIC B will DMA from GPU B's HBM via BAR1"
+          - name: "R_Key"
+            abbrev: "reth.rkey"
+            bits: 32
+            value: "0x0000ABCD"
+          - name: "DMA Length"
+            abbrev: "reth.dma_len"
+            bits: 32
+            value: 4194304
+
+  - id: "rdma_read_resp_gpu"
+    name: "RDMA READ Response: 4MB Tensor Data from GPU B → GPU A"
+    from: "node_b"
+    to: "node_a"
+    via: ["switch"]
+    total_bytes: 4194358
+    color: "#6b21a8"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x10"
+            description: "RDMA READ Response — carries 4MB tensor data. RNIC B read from GPU B HBM via BAR1 P2P, transmits to RNIC A, which writes to GPU A HBM via BAR1 P2P."
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 100
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+  # ── Physical + Link ────────────────────────────────────────────
+  - id: "evt_phy_link"
+    type: "state_change"
+    t_ns: 0
+    annotation:
+      text: "Physical link up — 100GbE lossless fabric between GPU nodes"
+      detail: >
+        Both GPU nodes connect to the switch via 100GbE with PFC and ECN
+        enabled. The lossless fabric is essential — RDMA relies on the
+        network not dropping packets.
+
+        Typical GPU cluster topology: each node has 8 GPUs with NVLink
+        intra-node and 1-8 RNICs for inter-node RDMA. This scenario
+        shows a single GPU and RNIC per node for clarity.
+    state_after:
+      - actor_id: "node_a"
+        layers:
+          - layer: 1
+            state_fields:
+              phy_state: "up"
+          - layer: 2
+            state_fields:
+              link_state: "up"
+      - actor_id: "node_b"
+        layers:
+          - layer: 1
+            state_fields:
+              phy_state: "up"
+          - layer: 2
+            state_fields:
+              link_state: "up"
+      - actor_id: "switch"
+        layers:
+          - layer: 1
+            state_fields:
+              port_a_phy: "up"
+              port_b_phy: "up"
+
+  # ── GPU Memory Setup ───────────────────────────────────────────
+  - id: "gpu_mem_alloc"
+    type: "state_change"
+    t_ns: 10000000
+    annotation:
+      text: "CUDA memory allocated — 4MB tensor buffers in GPU HBM on both nodes"
+      detail: >
+        cuMemAlloc() allocates memory in GPU HBM (High Bandwidth Memory):
+        • Node A: 4MB tensor buffer at GPU VA 0x7f0000000000
+        • Node B: 4MB tensor buffer at GPU VA 0x7f0100000000
+
+        This memory is in the GPU's private address space — the CPU cannot
+        directly access it, and neither can the RNIC. GPUDirect RDMA solves
+        this by exposing the GPU memory to the RNIC via the PCIe BAR1 aperture.
+    state_after:
+      - actor_id: "node_a"
+        layers:
+          - layer: 7
+            state_fields:
+              tensor_location: "GPU A HBM: 0x7f0000000000"
+              tensor_size: "4 MB (float32[1048576])"
+          - layer: 6
+            state_fields:
+              gpu_mem_state: "allocated (4 MB)"
+      - actor_id: "node_b"
+        layers:
+          - layer: 7
+            state_fields:
+              tensor_location: "GPU B HBM: 0x7f0100000000"
+          - layer: 6
+            state_fields:
+              gpu_mem_state: "allocated (4 MB)"
+
+  - id: "gpu_bar1_expose"
+    type: "state_change"
+    t_ns: 15000000
+    annotation:
+      text: "GPU BAR1 mapping — GPU memory exposed to PCIe address space via nvidia-peermem"
+      detail: >
+        nvidia-peermem (kernel module) registers as a peer_memory_client with
+        the RDMA subsystem. When ibv_reg_mr() is called against a GPU virtual
+        address, nvidia-peermem intercepts:
+
+        1. Calls nvidia_p2p_get_pages() to pin the GPU memory
+        2. Gets the GPU physical addresses (in GPU's local DRAM)
+        3. Maps these through the GPU's PCIe BAR1 aperture
+        4. Returns PCIe bus addresses to the RNIC's DMA engine
+
+        Now the RNIC can DMA directly to/from GPU memory via PCIe
+        peer-to-peer, without going through host DRAM or the CPU.
+
+        Traditional path (without GPUDirect):
+          GPU → cudaMemcpy → host DRAM → ibv_post_send → RNIC → Net
+          Net → RNIC → host DRAM → cudaMemcpy → GPU
+          = 4 copies, 2 CPU interventions
+
+        GPUDirect RDMA path:
+          GPU HBM → BAR1 → RNIC → Net → RNIC → BAR1 → GPU HBM
+          = 1 DMA transfer per direction, 0 CPU data copies
+    state_after:
+      - actor_id: "node_a"
+        layers:
+          - layer: 6
+            state_fields:
+              bar1_mapped: true
+      - actor_id: "node_b"
+        layers:
+          - layer: 6
+            state_fields:
+              bar1_mapped: true
+
+  - id: "evt_mr_reg"
+    type: "state_change"
+    t_ns: 20000000
+    annotation:
+      text: "Memory Regions registered against GPU memory — RDMA keys exchanged"
+      detail: >
+        ibv_reg_mr() is called with the GPU virtual addresses. nvidia-peermem
+        intercepts and provides the BAR1-mapped physical addresses to the
+        RNIC's hardware page table.
+
+        After MR registration, both nodes exchange rkeys out-of-band
+        (typically via a TCP control channel or RDMA SEND). Each node
+        now has the remote node's {rkey, virtual_address, length} —
+        everything needed for RDMA READ/WRITE.
+
+        MR registration is expensive (microseconds to milliseconds) and
+        should be done once during initialization, not per-transfer.
+        NCCL pre-registers buffers during ncclCommInitRank().
+    state_after:
+      - actor_id: "node_a"
+        layers:
+          - layer: 6
+            state_fields:
+              mr_registered: true
+          - layer: 5
+            state_fields:
+              mr_rkey: "local: 0x1234, remote: 0xABCD"
+      - actor_id: "node_b"
+        layers:
+          - layer: 6
+            state_fields:
+              mr_registered: true
+          - layer: 5
+            state_fields:
+              mr_rkey: "local: 0xABCD, remote: 0x1234"
+
+  - id: "evt_qp_rts"
+    type: "state_change"
+    t_ns: 30000000
+    annotation:
+      text: "QPs connected (RTS) — RDMA channel ready for GPU-to-GPU transfers"
+      detail: >
+        Reliable Connected (RC) QPs are brought to RTS via CM REQ/REP/RTU.
+        With QPs in RTS and GPU memory registered as MRs, the GPU-to-GPU
+        data path is fully established.
+    state_after:
+      - actor_id: "node_a"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "ready"
+          - layer: 5
+            state_fields:
+              qp_state: "RTS"
+      - actor_id: "node_b"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "ready"
+          - layer: 5
+            state_fields:
+              qp_state: "RTS"
+
+  # ── RDMA WRITE: GPU A → GPU B ─────────────────────────────────
+  - id: "rdma_write_gpu_to_gpu"
+    type: "frame_tx"
+    t_ns: 100000000
+    frame_id: "rdma_write_gpu_to_gpu"
+    annotation:
+      text: "RDMA WRITE — 4MB tensor pushed from GPU A HBM → GPU B HBM (zero CPU copy)"
+      detail: >
+        Node A's application calls ibv_post_send() with an RDMA WRITE WQE
+        pointing to the local GPU buffer (source) and Node B's GPU buffer
+        (destination, via rkey + VA from RETH).
+
+        The data path step by step:
+        1. RNIC A's DMA engine reads 4MB from GPU A's HBM via PCIe BAR1
+           (peer-to-peer DMA — no host DRAM involvement)
+        2. RNIC A segments into MTU-sized packets (4K payload each)
+           and transmits over RoCEv2 (UDP/IP/Ethernet)
+        3. Packets traverse the lossless switch
+        4. RNIC B receives packets and DMA-writes each one directly
+           into GPU B's HBM via PCIe BAR1 (peer-to-peer)
+        5. After all packets, RNIC B sends an ACK
+
+        The CPUs on neither node touch the tensor data. Node A's CPU
+        only posts the WQE (64 bytes); Node B's CPU is not involved
+        at all (RDMA is one-sided).
+
+        At 100 Gbps, 4MB takes ~330 microseconds on the wire.
+        PCIe Gen5 x16 provides 64 GB/s — not the bottleneck.
+    state_after:
+      - actor_id: "node_a"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "WRITE posted"
+      - actor_id: "node_b"
+        layers:
+          - layer: 7
+            state_fields:
+              tensor_location: "GPU B HBM: 0x7f0100000000 (tensor from GPU A)"
+
+  # ── RDMA READ: GPU B → GPU A ──────────────────────────────────
+  - id: "rdma_read_req_gpu"
+    type: "frame_tx"
+    t_ns: 200000000
+    frame_id: "rdma_read_req_gpu"
+    annotation:
+      text: "RDMA READ Request — Node A requests 4MB tensor from GPU B's HBM"
+      detail: >
+        Node A's application calls ibv_post_send() with an RDMA READ WQE.
+        The RNIC sends a small READ Request (78 bytes) to Node B specifying
+        the remote GPU buffer address and rkey.
+
+        RDMA READ is a "pull" model — the requester (Node A) tells the
+        responder (Node B) which remote memory to read. Node B's RNIC
+        autonomously fetches the data from GPU B's HBM and sends it back.
+        Node B's CPU is never involved.
+    state_after:
+      - actor_id: "node_a"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "READ posted"
+
+  - id: "rdma_read_resp_gpu"
+    type: "frame_tx"
+    t_ns: 200500000
+    frame_id: "rdma_read_resp_gpu"
+    annotation:
+      text: "RDMA READ Response — 4MB tensor from GPU B HBM → GPU A HBM"
+      detail: >
+        Node B's RNIC autonomously:
+        1. Reads 4MB from GPU B's HBM via PCIe BAR1 (P2P DMA)
+        2. Transmits as RDMA READ Response packets to Node A
+        3. Node A's RNIC writes each packet into GPU A's HBM via BAR1
+
+        After completion, Node A's CQ (completion queue) signals the
+        application that the tensor data is available in GPU A's buffer.
+
+        RDMA READ vs WRITE tradeoffs:
+        • WRITE: initiator pushes data (lower latency, server doesn't
+          need to know when data arrives)
+        • READ: initiator pulls data (responder doesn't need to initiate,
+          but adds request/response latency)
+        • NCCL prefers WRITE for collective operations
+    state_after:
+      - actor_id: "node_a"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "tensor received in GPU A HBM"
+              tensor_location: "GPU A HBM: 0x7f0000000000 (tensor from GPU B)"
+
+  # ── Summary ────────────────────────────────────────────────────
+  - id: "evt_done"
+    type: "annotation"
+    t_ns: 300000000
+    annotation:
+      text: "Scenario complete — GPU-to-GPU RDMA tensor transfer"
+      detail: >
+        This scenario demonstrated end-to-end GPU-to-GPU RDMA:
+
+        SETUP:
+          cuMemAlloc → nvidia-peermem BAR1 mapping → ibv_reg_mr (GPU MR)
+          → CM QP bring-up → rkey exchange
+
+        RDMA WRITE (push — GPU A → GPU B):
+          GPU A HBM → PCIe BAR1 P2P → RNIC A → RoCEv2 → RNIC B
+          → PCIe BAR1 P2P → GPU B HBM
+          CPU involvement: 0 (only WQE posting)
+
+        RDMA READ (pull — GPU B → GPU A):
+          Request: RNIC A → RoCEv2 → RNIC B
+          Response: GPU B HBM → RNIC B → RoCEv2 → RNIC A → GPU A HBM
+          CPU involvement on Node B: 0
+
+        DATA PATH COMPARISON:
+        ┌─────────────────────────────┬────────┬──────────┐
+        │ Path                        │ Copies │ CPU Ops  │
+        ├─────────────────────────────┼────────┼──────────┤
+        │ Traditional (no GPUDirect)  │   4    │    2     │
+        │ GPU→CPU→RNIC→Net→RNIC→CPU→GPU                  │
+        ├─────────────────────────────┼────────┼──────────┤
+        │ GPUDirect RDMA              │   1    │    0     │
+        │ GPU→RNIC→Net→RNIC→GPU                          │
+        └─────────────────────────────┴────────┴──────────┘
+
+        Where GPU-to-GPU RDMA is used:
+        • NCCL AllReduce/AllGather in distributed AI training
+        • Inference serving: KV cache migration between GPUs
+        • GPU computing: MPI_Send/Recv with GPU buffers
+        • Checkpoint/restore of GPU state
+        • Multi-node GPU rendering
+
+        Key components enabling this:
+        • nvidia-peermem: bridges GPU memory and RDMA subsystems
+        • PCIe BAR1: GPU memory aperture accessible by RNIC
+        • Lossless fabric: PFC + ECN/DCQCN prevents packet drops
+        • RDMA verbs: zero-copy, kernel-bypass, CPU-bypass
+
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
+glossary:
+  - term: "GPUDirect RDMA"
+    abbrev: "GDR"
+    definition: "Technology allowing RDMA NICs to DMA directly to/from GPU memory via PCIe BAR1, bypassing host DRAM. Enabled by nvidia-peermem kernel module. Eliminates CPU data copies for GPU-to-GPU network transfers."
+    spec_refs:
+      - document: "NVIDIA GPUDirect RDMA"
+        section: "1"
+        title: "Overview"
+        url: "https://docs.nvidia.com/cuda/gpudirect-rdma/"
+
+  - term: "nvidia-peermem"
+    definition: "Linux kernel module that registers as a peer_memory_client with the RDMA subsystem. Intercepts ibv_reg_mr() calls for GPU virtual addresses, pins GPU pages via nvidia_p2p_get_pages(), and provides BAR1-mapped physical addresses to the RNIC."
+
+  - term: "BAR1"
+    definition: "PCIe Base Address Register 1 — the GPU's memory aperture visible on the PCIe bus. RNICs use BAR1 to DMA to/from GPU memory without going through host DRAM. BAR1 size limits how much GPU memory can be simultaneously mapped for RDMA."
+
+  - term: "PCIe Peer-to-Peer (P2P)"
+    definition: "Direct data transfer between two PCIe devices (e.g., RNIC and GPU) without going through host DRAM or the CPU. Requires PCIe topology support (ideally same PCIe switch or root complex)."
+
+  - term: "Tensor"
+    definition: "Multi-dimensional array of numerical data — the fundamental data structure in neural networks. Tensors are stored in GPU HBM and frequently need to be transferred between GPUs during distributed training."
