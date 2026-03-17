@@ -109,6 +109,16 @@
       "description": "GPUDirect Storage over RoCEv2 fabric: cuFileRead triggers NVMe-oF READ with RDMA WRITE landing data directly in GPU HBM; cuFileWrite triggers NVMe-oF WRITE with RDMA READ pulling data from GPU HBM. Zero host DRAM bounce.",
       "tags": ["GPUDirect Storage", "GDS", "NVMe-oF", "RDMA", "RoCEv2", "cuFile", "nvidia-fs", "GPU", "AI-infrastructure", "100GbE"],
       "path": "gpudirect-storage/gpudirect-storage-rdma-remote.yaml"
+    },
+    {
+      "slug": "nccl-allreduce-rocev2",
+      "title": "NCCL AllReduce: Ring Algorithm over RoCEv2 (4 GPUs)",
+      "protocol": "NCCL / RoCEv2",
+      "protocol_family": "RDMA",
+      "difficulty": "advanced",
+      "description": "NCCL Ring-AllReduce across 4 GPU nodes via RoCEv2: Reduce-Scatter phase (3 steps, accumulate partial gradient sums) then AllGather phase (3 steps, broadcast final result). All data movement via GPUDirect RDMA WRITE — GPU HBM to GPU HBM, zero CPU copies. The dominant communication pattern in data-parallel AI training.",
+      "tags": ["NCCL", "AllReduce", "collective communications", "AI training", "distributed training", "RoCEv2", "RDMA", "GPUDirect", "ring algorithm", "100GbE", "education"],
+      "path": "nccl/nccl-allreduce-rocev2.yaml"
     }
   ]
 }

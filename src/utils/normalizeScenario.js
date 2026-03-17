@@ -238,6 +238,18 @@ function inferPhase(event, lastPhase) {
   if (/library.*init|s3_rdma.*init|server.*init/i.test(text)
       || /lib_init|library_init/.test(id)) return 'Library Init';
 
+  // NCCL collective communication phases (before GPU/infrastructure checks)
+  if (/reduce.?scatter/i.test(text) || /rs_step/.test(id)) return 'Reduce-Scatter';
+  if (/allgather|all.?gather/i.test(text) || /ag_step/.test(id)) return 'AllGather';
+  if (/ncclallreduce|allreduce\(\)/i.test(text) || /allreduce_start/.test(id)) return 'Reduce-Scatter';
+
+  // Infrastructure (before GPU-specific — many scenarios mention GPUs generically)
+  if (/\barp\b/.test(text) || /arp/.test(id)) return 'ARP';
+  if (/physical|link|auto.?neg|fec|signal/i.test(text)
+      || /^evt_(phy|an_|link)/.test(id)) return 'Link';
+  if (/memory region|ibv_reg_mr|\bqp\b|modify_qp/i.test(text)
+      || /^evt_(mr|qp)/.test(id)) return 'Setup';
+
   // GPUDirect RDMA phases
   if (/\bgpu\b|cuda|peermem|bar1/i.test(text) || /gpu_/.test(id)) return 'GPU Memory Setup';
 
@@ -280,13 +292,6 @@ function inferPhase(event, lastPhase) {
       || /tcp_fin|tcp_ack_fin/.test(id)) return 'TCP Teardown';
   if (/\btcp\b.*\brst\b|\btcp\b.*reset/i.test(text)
       || /tcp_rst|tcp_reset/.test(id)) return 'TCP Reset';
-
-  // Infrastructure
-  if (/\barp\b/.test(text) || /arp/.test(id)) return 'ARP';
-  if (/physical|link|auto.?neg|fec|signal/i.test(text)
-      || /^evt_(phy|an_|link)/.test(id)) return 'Link';
-  if (/memory region|ibv_reg_mr|\bqp\b|modify_qp/i.test(text)
-      || /^evt_(mr|qp)/.test(id)) return 'Setup';
 
   // Fallback to previous phase
   return lastPhase || 'Other';

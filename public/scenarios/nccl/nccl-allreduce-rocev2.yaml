@@ -1,0 +1,1178 @@
+meta:
+  id: "nccl-allreduce-rocev2"
+  title: "NCCL AllReduce: Ring Algorithm over RoCEv2 (4 GPUs)"
+  protocol: "NCCL / RoCEv2"
+  protocol_family: "RDMA"
+  version: "1.0.0"
+  description: >
+    NCCL (NVIDIA Collective Communications Library) Ring-AllReduce across 4 GPU
+    nodes connected via RoCEv2. AllReduce is the dominant communication pattern in
+    distributed AI training — every gradient synchronization step in data-parallel
+    training is an AllReduce. This scenario shows the ring algorithm: each GPU sends
+    a chunk to its ring neighbor via RDMA WRITE, accumulates partial sums through
+    a Reduce-Scatter phase (N-1 steps), then broadcasts the final result through an
+    AllGather phase (N-1 steps). With 4 GPUs, the ring completes in 6 steps total.
+    All data movement uses GPUDirect RDMA — GPU memory to GPU memory without touching
+    host DRAM.
+
+  learning_objectives:
+    - "Understand why AllReduce is critical for distributed AI training (gradient synchronization)"
+    - "See how the ring algorithm decomposes AllReduce into Reduce-Scatter + AllGather"
+    - "Follow RDMA WRITE operations carrying gradient chunks between GPU ring neighbors"
+    - "Observe how each GPU accumulates partial sums during Reduce-Scatter"
+    - "Understand why ring AllReduce achieves optimal bandwidth utilization: 2(N-1)/N"
+    - "See GPUDirect RDMA in action — data moves GPU-to-GPU without host DRAM bounce"
+    - "Appreciate the difference between ring, tree, and other AllReduce algorithms"
+    - "Understand NCCL's role in frameworks like PyTorch DDP and DeepSpeed"
+
+  difficulty: "advanced"
+
+  authors:
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+    - name: "Generated via NCCL source analysis"
+      org: "proto-viz"
+      github: ""
+
+  created: "2026-03-17"
+  updated: "2026-03-17"
+
+  tags:
+    - "NCCL"
+    - "AllReduce"
+    - "collective communications"
+    - "AI training"
+    - "distributed training"
+    - "RoCEv2"
+    - "RDMA"
+    - "GPUDirect"
+    - "ring algorithm"
+    - "100GbE"
+    - "education"
+
+  primary_specs:
+    - document: "NCCL Documentation"
+      section: "1"
+      title: "NVIDIA Collective Communications Library"
+      url: "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/index.html"
+      alt_url: "https://github.com/NVIDIA/nccl"
+    - document: "Baidu AllReduce Paper"
+      section: "1"
+      title: "Bringing HPC Techniques to Deep Learning (Ring-AllReduce)"
+      url: "https://andrew.gibiansky.com/blog/machine-learning/baidu-allreduce/"
+      alt_url: ""
+    - document: "IBTA Vol1"
+      section: "9.7"
+      title: "Reliable Connection Service"
+      url: "https://www.infinibandta.org/ibta-specification/"
+      alt_url: ""
+
+  content_disclaimer: >
+    This scenario illustrates the ring AllReduce algorithm as implemented in
+    NCCL. Protocol descriptions are based on the open-source NCCL repository
+    and public documentation. Actual NCCL implementations may use different
+    algorithms (tree, collnet) depending on topology and message size.
+
+  source_references:
+    - repo: "NVIDIA/nccl"
+      path: "src/collectives/all_reduce.cc"
+      description: "NCCL AllReduce collective — algorithm selection and dispatch"
+    - repo: "NVIDIA/nccl"
+      path: "src/transport/net_ib.cc"
+      description: "NCCL IB/RoCE transport — RDMA connection setup, RDMA WRITE posting"
+    - repo: "NVIDIA/nccl"
+      path: "src/include/alloc.h"
+      description: "NCCL buffer allocation — GPU memory registration for RDMA"
+    - repo: "torvalds/linux"
+      path: "drivers/infiniband/core/verbs.c"
+      description: "IB verbs — ibv_post_send for RDMA WRITE operations"
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY — 4 GPU nodes in a ring via a switch
+# Note: This is a simplified view. In production, each node may have
+# 8 GPUs with NVLink intra-node, and only inter-node traffic uses RDMA.
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "gpu0"
+      type: "host"
+      label: "GPU Node 0 (Rank 0)"
+      description: "GPU node with RDMA NIC — holds gradient chunk and participates in ring"
+      hardware: "GPU + 100GbE RNIC (e.g., H100 + ConnectX-7)"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "192.168.10.1"
+      mac: "00:02:c9:00:00:01"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "Lossless 100GbE Switch"
+      description: "Data center switch with PFC/ECN for lossless RoCEv2 fabric"
+      hardware: "100GbE switch"
+      position: "center"
+
+    - id: "gpu1"
+      type: "host"
+      label: "GPU Node 1 (Rank 1)"
+      description: "GPU node — ring neighbor of GPU 0 (receives from 0, sends to 2)"
+      hardware: "GPU + 100GbE RNIC (e.g., H100 + ConnectX-7)"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "192.168.10.2"
+      mac: "00:02:c9:00:00:02"
+      position: "right"
+
+  links:
+    - id: "link-gpu0-sw"
+      from: "gpu0"
+      to: "switch"
+      speed_gbps: 100
+      media: "fiber_sr"
+      fec: "RS(544,514)"
+      autoneg: true
+    - id: "link-sw-gpu1"
+      from: "switch"
+      to: "gpu1"
+      speed_gbps: 100
+      media: "fiber_sr"
+      fec: "RS(544,514)"
+      autoneg: true
+
+# ─────────────────────────────────────────────────────────────────
+# OSI LAYER DEFINITIONS
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  gpu0:
+    - layer: 7
+      name: "NCCL / Application"
+      components: ["NCCL library", "PyTorch DDP", "CUDA kernels"]
+      state_schema:
+        nccl_state:
+          type: "string"
+          description: "Current NCCL collective operation state"
+          initial: "idle"
+        rank:
+          type: "integer"
+          description: "This node's rank in the communicator"
+          initial: 0
+        world_size:
+          type: "integer"
+          description: "Total number of ranks (GPUs)"
+          initial: 4
+        ring_step:
+          type: "string"
+          description: "Current ring step (phase/iteration)"
+          initial: "—"
+        chunk_status:
+          type: "string"
+          description: "Status of local gradient chunks"
+          initial: "local gradients computed"
+        allreduce_complete:
+          type: "boolean"
+          description: "AllReduce operation finished"
+          initial: false
+
+    - layer: 6
+      name: "NCCL Transport / Channel"
+      components: ["NCCL net_ib transport", "NCCL proxy thread"]
+      state_schema:
+        channel_id:
+          type: "integer"
+          description: "NCCL channel ID (parallelism unit)"
+          initial: 0
+        ring_prev:
+          type: "string"
+          description: "Previous rank in ring (sends to us)"
+          initial: "Rank 3"
+        ring_next:
+          type: "string"
+          description: "Next rank in ring (we send to)"
+          initial: "Rank 1"
+        send_buf:
+          type: "string"
+          description: "RDMA-registered GPU send buffer"
+          initial: "GPU HBM 0x7f00_0000"
+        recv_buf:
+          type: "string"
+          description: "RDMA-registered GPU receive buffer"
+          initial: "GPU HBM 0x7f01_0000"
+
+    - layer: 5
+      name: "IB Transport (RC QP)"
+      components: ["NCCL net_ib.cc", "libibverbs"]
+      state_schema:
+        qp_state:
+          type: "string"
+          initial: "RESET"
+        qp_to_next:
+          type: "string"
+          description: "QP connected to ring-next peer"
+          initial: "null"
+
+    - layer: 4
+      name: "UDP (RoCEv2)"
+      components: ["RNIC hardware"]
+      state_schema:
+        dst_port:
+          type: "integer"
+          initial: 4791
+
+    - layer: 3
+      name: "IP / ECN"
+      components: ["kernel IP stack"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "192.168.10.1"
+        ecn_state:
+          type: "string"
+          initial: "ECT(0)"
+
+    - layer: 2
+      name: "Ethernet / PFC"
+      components: ["mlx5 driver", "802.1Qbb"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "down"
+        pfc_enabled:
+          type: "boolean"
+          initial: false
+
+    - layer: 1
+      name: "Physical (100GbE)"
+      components: ["100GBASE-SR4", "RS(544,514)"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "down"
+        speed:
+          type: "string"
+          initial: "unknown"
+
+  gpu1:
+    - layer: 7
+      name: "NCCL / Application"
+      components: ["NCCL library", "PyTorch DDP", "CUDA kernels"]
+      state_schema:
+        nccl_state:
+          type: "string"
+          initial: "idle"
+        rank:
+          type: "integer"
+          initial: 1
+        world_size:
+          type: "integer"
+          initial: 4
+        ring_step:
+          type: "string"
+          initial: "—"
+        chunk_status:
+          type: "string"
+          initial: "local gradients computed"
+        allreduce_complete:
+          type: "boolean"
+          initial: false
+
+    - layer: 6
+      name: "NCCL Transport / Channel"
+      components: ["NCCL net_ib transport"]
+      state_schema:
+        channel_id:
+          type: "integer"
+          initial: 0
+        ring_prev:
+          type: "string"
+          initial: "Rank 0"
+        ring_next:
+          type: "string"
+          initial: "Rank 2"
+        send_buf:
+          type: "string"
+          initial: "GPU HBM 0x7f00_0000"
+        recv_buf:
+          type: "string"
+          initial: "GPU HBM 0x7f01_0000"
+
+    - layer: 5
+      name: "IB Transport (RC QP)"
+      components: ["NCCL net_ib.cc", "libibverbs"]
+      state_schema:
+        qp_state:
+          type: "string"
+          initial: "RESET"
+        qp_to_next:
+          type: "string"
+          initial: "null"
+
+    - layer: 4
+      name: "UDP (RoCEv2)"
+      components: ["RNIC hardware"]
+      state_schema:
+        dst_port:
+          type: "integer"
+          initial: 4791
+
+    - layer: 3
+      name: "IP / ECN"
+      components: ["kernel IP stack"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "192.168.10.2"
+        ecn_state:
+          type: "string"
+          initial: "ECT(0)"
+
+    - layer: 2
+      name: "Ethernet / PFC"
+      components: ["mlx5 driver", "802.1Qbb"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "down"
+        pfc_enabled:
+          type: "boolean"
+          initial: false
+
+    - layer: 1
+      name: "Physical (100GbE)"
+      components: ["100GBASE-SR4"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "down"
+        speed:
+          type: "string"
+          initial: "unknown"
+
+  switch:
+    - layer: 2
+      name: "Ethernet Switching / PFC"
+      components: ["802.1Q bridge", "802.1Qbb PFC", "ECN/WRED"]
+      state_schema:
+        fwd_table_entries:
+          type: "integer"
+          initial: 0
+        ecn_enabled:
+          type: "boolean"
+          initial: true
+    - layer: 1
+      name: "Physical (per-port)"
+      components: ["100GBASE-SR4"]
+      state_schema:
+        port_gpu0_phy:
+          type: "string"
+          initial: "down"
+        port_gpu1_phy:
+          type: "string"
+          initial: "down"
+
+# ─────────────────────────────────────────────────────────────────
+# FRAMES
+# ─────────────────────────────────────────────────────────────────
+frames:
+  # ── Reduce-Scatter: GPU 0 → GPU 1 (chunk 0) ────────────────────
+  - id: "rs_step1_gpu0_to_gpu1"
+    name: "Reduce-Scatter Step 1: Rank 0 → Rank 1 (Chunk 0)"
+    description: "GPU 0 sends gradient chunk 0 to GPU 1 via RDMA WRITE into GPU memory"
+    from: "gpu0"
+    to: "gpu1"
+    via: ["switch"]
+    timestamp_ns: 100000000
+    total_bytes: 262198
+    color: "#dc2626"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:00:00:02"
+            description: "GPU 1's RNIC MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:00:00:01"
+            description: "GPU 0's RNIC MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "ECN"
+            abbrev: "ip.dsfield.ecn"
+            bits: 2
+            value: "10 (ECT(0))"
+            description: "ECN-capable — lossless fabric handles congestion via PFC + DCQCN"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.10.1"
+            description: "GPU 0"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.10.2"
+            description: "GPU 1"
+
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 4791
+            description: "RoCEv2"
+
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x0a"
+            description: "RDMA WRITE Only (0x0a) — gradient data written directly into GPU 1's receive buffer via GPUDirect RDMA. No CPU involvement on either side."
+            spec_refs:
+              - document: "IBTA Vol1"
+                section: "9.7.5"
+                title: "RDMA WRITE Operation"
+                url: "https://www.infinibandta.org/ibta-specification/"
+          - name: "Destination QP"
+            abbrev: "bth.dqp"
+            bits: 24
+            value: "0x000100"
+            description: "GPU 1's QP (NCCL channel 0, ring direction)"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 0
+            description: "First packet of Reduce-Scatter"
+
+      - name: "RETH"
+        abbrev: "reth"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - name: "Virtual Address"
+            abbrev: "reth.va"
+            bits: 64
+            value: "0x00007f0100000000"
+            description: "GPU 1's receive buffer in GPU HBM — registered as an MR via GPUDirect RDMA (nvidia-peermem exposes GPU BAR1 to the RNIC)"
+          - name: "R_Key"
+            abbrev: "reth.rkey"
+            bits: 32
+            value: "0x00005678"
+            description: "GPU 1's memory region key for the receive buffer"
+          - name: "DMA Length"
+            abbrev: "reth.dma_len"
+            bits: 32
+            value: 262144
+            description: "256 KB — one chunk of the gradient tensor. With 4 GPUs and a 1MB gradient, each chunk = 1MB / 4 = 256KB."
+
+  # ── Reduce-Scatter: GPU 1 → GPU 0 (chunk 1 — reverse ring) ─────
+  - id: "rs_step1_gpu1_to_gpu0"
+    name: "Reduce-Scatter Step 1: Rank 1 → Rank 0 (via Rank 2,3)"
+    description: "Simultaneously, GPU 1 sends its chunk 1 to its ring-next (Rank 2). We show the reverse direction reaching GPU 0 from Rank 3."
+    from: "gpu1"
+    to: "gpu0"
+    via: ["switch"]
+    timestamp_ns: 100000000
+    total_bytes: 262198
+    color: "#dc2626"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:02:c9:00:00:01"
+            description: "GPU 0's RNIC MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:02:c9:00:00:02"
+            description: "GPU 1's RNIC MAC (representing ring traffic from Rank 3→0)"
+
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x0a"
+            description: "RDMA WRITE — all ring steps use RDMA WRITE"
+          - name: "Destination QP"
+            abbrev: "bth.dqp"
+            bits: 24
+            value: "0x000080"
+            description: "GPU 0's receive QP"
+
+      - name: "RETH"
+        abbrev: "reth"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - name: "Virtual Address"
+            abbrev: "reth.va"
+            bits: 64
+            value: "0x00007f0100040000"
+            description: "GPU 0's receive buffer (chunk 1 slot)"
+          - name: "DMA Length"
+            abbrev: "reth.dma_len"
+            bits: 32
+            value: 262144
+            description: "256 KB chunk"
+
+  # ── Reduce-Scatter Step 2 ───────────────────────────────────────
+  - id: "rs_step2_gpu0_to_gpu1"
+    name: "Reduce-Scatter Step 2: Rank 0 → Rank 1 (Partial Sum)"
+    description: "GPU 0 sends accumulated partial sum (chunk 3) to GPU 1"
+    from: "gpu0"
+    to: "gpu1"
+    via: ["switch"]
+    timestamp_ns: 200000000
+    total_bytes: 262198
+    color: "#dc2626"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x0a"
+            description: "RDMA WRITE — partial sum now contains gradients from 2 GPUs"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 1
+            description: "Second packet on this QP"
+      - name: "RETH"
+        abbrev: "reth"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - name: "DMA Length"
+            abbrev: "reth.dma_len"
+            bits: 32
+            value: 262144
+            description: "256 KB — this chunk now contains the sum of gradients from Rank 0 + Rank 3"
+
+  # ── Reduce-Scatter Step 3 (final) ───────────────────────────────
+  - id: "rs_step3_gpu0_to_gpu1"
+    name: "Reduce-Scatter Step 3: Rank 0 → Rank 1 (Final Partial Sum)"
+    description: "Last Reduce-Scatter step — GPU 1 will have the complete sum for its chunk"
+    from: "gpu0"
+    to: "gpu1"
+    via: ["switch"]
+    timestamp_ns: 300000000
+    total_bytes: 262198
+    color: "#dc2626"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x0a"
+            description: "RDMA WRITE — this chunk now has gradients summed from 3 GPUs"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 2
+      - name: "RETH"
+        abbrev: "reth"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - name: "DMA Length"
+            abbrev: "reth.dma_len"
+            bits: 32
+            value: 262144
+            description: "256 KB — after GPU 1 adds its own gradient, this chunk will have the complete sum from all 4 GPUs"
+
+  # ── AllGather Step 1 ────────────────────────────────────────────
+  - id: "ag_step1_gpu0_to_gpu1"
+    name: "AllGather Step 1: Rank 0 → Rank 1 (Fully Reduced Chunk)"
+    description: "GPU 0 sends its fully-reduced chunk to GPU 1 — broadcasting the final result"
+    from: "gpu0"
+    to: "gpu1"
+    via: ["switch"]
+    timestamp_ns: 400000000
+    total_bytes: 262198
+    color: "#059669"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x0a"
+            description: "RDMA WRITE — now distributing the fully-reduced result"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 3
+      - name: "RETH"
+        abbrev: "reth"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - name: "DMA Length"
+            abbrev: "reth.dma_len"
+            bits: 32
+            value: 262144
+            description: "256 KB — this is the FINAL reduced result (sum of all 4 GPUs' gradients for this chunk)"
+
+  # ── AllGather Steps 2-3 ─────────────────────────────────────────
+  - id: "ag_step2_gpu0_to_gpu1"
+    name: "AllGather Step 2: Rank 0 → Rank 1 (Next Chunk)"
+    from: "gpu0"
+    to: "gpu1"
+    via: ["switch"]
+    timestamp_ns: 500000000
+    total_bytes: 262198
+    color: "#059669"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x0a"
+            description: "RDMA WRITE"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 4
+      - name: "RETH"
+        abbrev: "reth"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - name: "DMA Length"
+            abbrev: "reth.dma_len"
+            bits: 32
+            value: 262144
+            description: "256 KB — another fully-reduced chunk"
+
+  - id: "ag_step3_gpu0_to_gpu1"
+    name: "AllGather Step 3: Rank 0 → Rank 1 (Final Chunk)"
+    from: "gpu0"
+    to: "gpu1"
+    via: ["switch"]
+    timestamp_ns: 600000000
+    total_bytes: 262198
+    color: "#059669"
+    headers:
+      - name: "BTH"
+        abbrev: "bth"
+        layer: 5
+        total_bytes: 12
+        fields:
+          - name: "OpCode"
+            abbrev: "bth.opcode"
+            bits: 8
+            value: "0x0a"
+            description: "RDMA WRITE — last chunk"
+          - name: "PSN"
+            abbrev: "bth.psn"
+            bits: 24
+            value: 5
+      - name: "RETH"
+        abbrev: "reth"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - name: "DMA Length"
+            abbrev: "reth.dma_len"
+            bits: 32
+            value: 262144
+            description: "256 KB — final chunk, AllGather complete"
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+  # ── Setup ───────────────────────────────────────────────────────
+  - id: "evt_phy_link"
+    type: "state_change"
+    t_ns: 0
+    annotation:
+      text: "Physical link up — 100GbE lossless fabric for all 4 GPU nodes"
+      detail: >
+        All 4 GPU nodes connect to the switch via 100GbE with PFC and ECN
+        enabled. In a real AI training cluster, the network topology might be
+        a fat-tree or rail-optimized design with multiple switch tiers.
+        This scenario simplifies to a single switch for clarity.
+
+        NCCL probes the topology (via nvidia-smi topo, NVML, and IB device
+        queries) to determine the optimal collective algorithm. For inter-node
+        RoCEv2 with 4 GPUs, it typically selects the Ring algorithm.
+    state_after:
+      - actor_id: "gpu0"
+        layers:
+          - layer: 1
+            state_fields:
+              phy_state: "up"
+              speed: "100 Gbps"
+          - layer: 2
+            state_fields:
+              link_state: "up"
+              pfc_enabled: true
+      - actor_id: "gpu1"
+        layers:
+          - layer: 1
+            state_fields:
+              phy_state: "up"
+              speed: "100 Gbps"
+          - layer: 2
+            state_fields:
+              link_state: "up"
+              pfc_enabled: true
+      - actor_id: "switch"
+        layers:
+          - layer: 1
+            state_fields:
+              port_gpu0_phy: "up"
+              port_gpu1_phy: "up"
+
+  - id: "evt_qp_ready"
+    type: "state_change"
+    t_ns: 50000000
+    annotation:
+      text: "NCCL init complete — ring topology established, QPs connected, GPU buffers registered"
+      detail: >
+        ncclCommInitRank() has completed. NCCL has:
+        1. Bootstrapped via TCP to exchange addresses (NCCL_COMM_ID)
+        2. Detected GPUDirect RDMA capability (nvidia-peermem loaded)
+        3. Created RDMA QPs between ring neighbors:
+           Ring: GPU 0 → GPU 1 → GPU 2 → GPU 3 → GPU 0
+        4. Registered GPU memory buffers as RDMA Memory Regions via
+           ibv_reg_mr() with nvidia-peermem providing GPU BAR1 mappings
+        5. Exchanged rkeys and buffer addresses out-of-band
+
+        Each GPU has send and receive buffers in GPU HBM (High Bandwidth Memory).
+        NCCL uses double-buffering and pipelining to overlap compute with
+        communication — while one chunk is being transferred, the GPU kernel
+        is reducing the previous chunk.
+
+        Ring topology for 4 GPUs:
+          GPU 0 → GPU 1 → GPU 2 → GPU 3 → GPU 0 (ring-next)
+          GPU 0 ← GPU 3 ← GPU 2 ← GPU 1 ← GPU 0 (ring-prev)
+    state_after:
+      - actor_id: "gpu0"
+        layers:
+          - layer: 7
+            state_fields:
+              nccl_state: "initialized"
+          - layer: 6
+            state_fields:
+              ring_prev: "Rank 3"
+              ring_next: "Rank 1"
+              send_buf: "GPU HBM 0x7f00_0000 (256KB × 4 chunks)"
+              recv_buf: "GPU HBM 0x7f01_0000 (256KB × 4 chunks)"
+          - layer: 5
+            state_fields:
+              qp_state: "RTS"
+              qp_to_next: "QP to Rank 1"
+          - layer: 3
+            state_fields:
+              ecn_state: "ECT(0)"
+      - actor_id: "gpu1"
+        layers:
+          - layer: 7
+            state_fields:
+              nccl_state: "initialized"
+          - layer: 6
+            state_fields:
+              ring_prev: "Rank 0"
+              ring_next: "Rank 2"
+              send_buf: "GPU HBM 0x7f00_0000"
+              recv_buf: "GPU HBM 0x7f01_0000"
+          - layer: 5
+            state_fields:
+              qp_state: "RTS"
+              qp_to_next: "QP to Rank 2"
+
+  # ── AllReduce begins ────────────────────────────────────────────
+  - id: "evt_allreduce_start"
+    type: "state_change"
+    t_ns: 80000000
+    annotation:
+      text: "ncclAllReduce() called — 1MB gradient tensor, 4 chunks × 256KB"
+      detail: >
+        The training loop calls ncclAllReduce(sendbuf, recvbuf, count, ncclFloat,
+        ncclSum, comm, stream). This triggers the ring AllReduce algorithm.
+
+        Input: Each GPU has a 1MB gradient tensor (262,144 float32 values)
+        from the backward pass. The goal: every GPU ends up with the SUM
+        of all 4 GPUs' gradients (for SGD/Adam optimizer update).
+
+        NCCL divides the tensor into N=4 chunks of 256KB each:
+          Chunk 0: bytes [0, 256KB)
+          Chunk 1: bytes [256KB, 512KB)
+          Chunk 2: bytes [512KB, 768KB)
+          Chunk 3: bytes [768KB, 1MB)
+
+        The ring algorithm has two phases:
+        Phase 1 — Reduce-Scatter (N-1 = 3 steps):
+          Each GPU sends one chunk to ring-next, receives one from ring-prev,
+          and accumulates (sums) the received chunk with its own. After 3 steps,
+          each GPU holds the FULLY REDUCED result for exactly one chunk.
+
+        Phase 2 — AllGather (N-1 = 3 steps):
+          Each GPU sends its fully-reduced chunk around the ring.
+          After 3 steps, every GPU has all 4 fully-reduced chunks.
+
+        Total data transferred per GPU: 2 × (N-1)/N × DataSize
+          = 2 × 3/4 × 1MB = 1.5 MB sent + 1.5 MB received
+        This is optimal — bandwidth scales linearly with N.
+    state_after:
+      - actor_id: "gpu0"
+        layers:
+          - layer: 7
+            state_fields:
+              nccl_state: "AllReduce: Reduce-Scatter"
+              ring_step: "starting"
+              chunk_status: "4 local chunks ready"
+      - actor_id: "gpu1"
+        layers:
+          - layer: 7
+            state_fields:
+              nccl_state: "AllReduce: Reduce-Scatter"
+              ring_step: "starting"
+              chunk_status: "4 local chunks ready"
+
+  # ── Reduce-Scatter Phase ────────────────────────────────────────
+  - id: "evt_rs_step1"
+    type: "frame_tx"
+    t_ns: 100000000
+    frame_id: "rs_step1_gpu0_to_gpu1"
+    annotation:
+      text: "Reduce-Scatter Step 1 — All GPUs send chunk[rank] to ring-next"
+      detail: >
+        All 4 GPUs simultaneously send one chunk to their ring-next neighbor:
+          GPU 0 sends chunk 0 → GPU 1   (via RDMA WRITE into GPU 1's HBM)
+          GPU 1 sends chunk 1 → GPU 2
+          GPU 2 sends chunk 2 → GPU 3
+          GPU 3 sends chunk 3 → GPU 0
+
+        We show GPU 0 → GPU 1 as the representative link. The RDMA WRITE
+        lands directly in GPU 1's HBM receive buffer via GPUDirect RDMA —
+        the RNIC DMA engine writes to GPU BAR1 memory mapped by nvidia-peermem.
+        Neither CPU is involved in the data transfer.
+
+        After receiving, GPU 1 launches a CUDA kernel to compute:
+          recv_buf[chunk 0] = recv_buf[chunk 0] + local[chunk 0]
+        This adds GPU 0's gradient to GPU 1's own gradient for chunk 0.
+    state_after:
+      - actor_id: "gpu0"
+        layers:
+          - layer: 7
+            state_fields:
+              ring_step: "RS step 1/3"
+              chunk_status: "sent chunk 0 → Rank 1"
+      - actor_id: "gpu1"
+        layers:
+          - layer: 7
+            state_fields:
+              ring_step: "RS step 1/3"
+              chunk_status: "received chunk 0, accumulating (sum of 2 GPUs)"
+
+  - id: "evt_rs_step1_reverse"
+    type: "frame_tx"
+    t_ns: 100000000
+    frame_id: "rs_step1_gpu1_to_gpu0"
+    annotation:
+      text: "Reduce-Scatter Step 1 (reverse) — GPU 0 receives chunk from Rank 3"
+      detail: >
+        Simultaneously, GPU 0 receives a chunk from Rank 3 (its ring-prev).
+        All transfers happen in parallel — the ring is bidirectional with
+        full-duplex links. Each GPU both sends and receives simultaneously.
+
+        GPU 0 accumulates: local[chunk 3] += received[chunk 3 from Rank 3]
+    state_after:
+      - actor_id: "gpu0"
+        layers:
+          - layer: 7
+            state_fields:
+              chunk_status: "sent chunk 0, received chunk from Rank 3"
+
+  - id: "evt_rs_step2"
+    type: "frame_tx"
+    t_ns: 200000000
+    frame_id: "rs_step2_gpu0_to_gpu1"
+    annotation:
+      text: "Reduce-Scatter Step 2 — Partial sums rotating around the ring"
+      detail: >
+        Each GPU sends its ACCUMULATED chunk (partial sum from step 1) to
+        its ring-next neighbor. The partial sums are rotating around the ring,
+        growing larger at each step.
+
+          GPU 0 sends accumulated chunk → GPU 1 (now contains sum of 2 GPUs)
+          GPU 1 sends accumulated chunk → GPU 2
+          GPU 2 sends accumulated chunk → GPU 3
+          GPU 3 sends accumulated chunk → GPU 0
+
+        After this step, each chunk contains the sum of 3 GPUs' gradients.
+
+        Note: the data size per transfer stays constant at 256KB regardless
+        of how many GPUs participate. This is why ring AllReduce scales well
+        — bandwidth per GPU = 2(N-1)/N × DataSize, approaching 2× DataSize
+        as N grows. Compare with naive AllReduce (all-to-one-to-all) which
+        creates a bottleneck at the root.
+    state_after:
+      - actor_id: "gpu0"
+        layers:
+          - layer: 7
+            state_fields:
+              ring_step: "RS step 2/3"
+      - actor_id: "gpu1"
+        layers:
+          - layer: 7
+            state_fields:
+              ring_step: "RS step 2/3"
+              chunk_status: "accumulating (sum of 3 GPUs)"
+
+  - id: "evt_rs_step3"
+    type: "frame_tx"
+    t_ns: 300000000
+    frame_id: "rs_step3_gpu0_to_gpu1"
+    annotation:
+      text: "Reduce-Scatter Step 3 (final) — Each GPU now has one fully-reduced chunk"
+      detail: >
+        Final Reduce-Scatter step. After GPU 1 receives and accumulates:
+          GPU 1's chunk = sum of GPU 0 + GPU 1 + GPU 2 + GPU 3 gradients
+
+        Each GPU now holds the COMPLETE sum for exactly one chunk:
+          GPU 0: fully reduced chunk 0
+          GPU 1: fully reduced chunk 1
+          GPU 2: fully reduced chunk 2
+          GPU 3: fully reduced chunk 3
+
+        Reduce-Scatter is complete. The reduction (summation) is done.
+        But each GPU only has 1/4 of the final result. AllGather distributes
+        the remaining chunks.
+    state_after:
+      - actor_id: "gpu0"
+        layers:
+          - layer: 7
+            state_fields:
+              nccl_state: "AllReduce: AllGather"
+              ring_step: "RS complete"
+              chunk_status: "holds fully-reduced chunk 0 (sum of all 4 GPUs)"
+      - actor_id: "gpu1"
+        layers:
+          - layer: 7
+            state_fields:
+              nccl_state: "AllReduce: AllGather"
+              ring_step: "RS complete"
+              chunk_status: "holds fully-reduced chunk 1 (sum of all 4 GPUs)"
+
+  # ── AllGather Phase ─────────────────────────────────────────────
+  - id: "evt_ag_step1"
+    type: "frame_tx"
+    t_ns: 400000000
+    frame_id: "ag_step1_gpu0_to_gpu1"
+    annotation:
+      text: "AllGather Step 1 — GPUs broadcast their fully-reduced chunks"
+      detail: >
+        Now each GPU sends its fully-reduced chunk around the ring:
+          GPU 0 sends fully-reduced chunk 0 → GPU 1
+          GPU 1 sends fully-reduced chunk 1 → GPU 2
+          GPU 2 sends fully-reduced chunk 2 → GPU 3
+          GPU 3 sends fully-reduced chunk 3 → GPU 0
+
+        Unlike Reduce-Scatter, AllGather does NOT accumulate — it simply
+        copies the received chunk into the correct position in the output
+        buffer. After step 1, each GPU has 2 of the 4 reduced chunks.
+
+        The RDMA WRITE targets the final output buffer position directly —
+        chunk 0 goes to offset 0, chunk 1 to offset 256KB, etc.
+    state_after:
+      - actor_id: "gpu0"
+        layers:
+          - layer: 7
+            state_fields:
+              ring_step: "AG step 1/3"
+              chunk_status: "has 2/4 fully-reduced chunks"
+      - actor_id: "gpu1"
+        layers:
+          - layer: 7
+            state_fields:
+              ring_step: "AG step 1/3"
+              chunk_status: "has 2/4 fully-reduced chunks"
+
+  - id: "evt_ag_step2"
+    type: "frame_tx"
+    t_ns: 500000000
+    frame_id: "ag_step2_gpu0_to_gpu1"
+    annotation:
+      text: "AllGather Step 2 — Each GPU now has 3 of 4 reduced chunks"
+      detail: >
+        Chunks continue rotating around the ring. After this step,
+        each GPU has received 3 of the 4 fully-reduced chunks plus
+        its own — only 1 chunk remaining.
+    state_after:
+      - actor_id: "gpu0"
+        layers:
+          - layer: 7
+            state_fields:
+              ring_step: "AG step 2/3"
+              chunk_status: "has 3/4 fully-reduced chunks"
+      - actor_id: "gpu1"
+        layers:
+          - layer: 7
+            state_fields:
+              ring_step: "AG step 2/3"
+              chunk_status: "has 3/4 fully-reduced chunks"
+
+  - id: "evt_ag_step3"
+    type: "frame_tx"
+    t_ns: 600000000
+    frame_id: "ag_step3_gpu0_to_gpu1"
+    annotation:
+      text: "AllGather Step 3 (final) — All GPUs have the complete reduced result"
+      detail: >
+        Final AllGather step. Every GPU now has all 4 fully-reduced chunks
+        assembled in its output buffer. The AllReduce is complete.
+
+        Result: Every GPU has an identical 1MB buffer containing the SUM
+        of all 4 GPUs' gradients. The optimizer (SGD, Adam, etc.) can now
+        update model weights identically on each GPU, keeping the model
+        copies in sync.
+    state_after:
+      - actor_id: "gpu0"
+        layers:
+          - layer: 7
+            state_fields:
+              nccl_state: "AllReduce complete"
+              ring_step: "AG complete"
+              chunk_status: "all 4 chunks fully reduced — result identical on all GPUs"
+              allreduce_complete: true
+      - actor_id: "gpu1"
+        layers:
+          - layer: 7
+            state_fields:
+              nccl_state: "AllReduce complete"
+              ring_step: "AG complete"
+              chunk_status: "all 4 chunks fully reduced — result identical on all GPUs"
+              allreduce_complete: true
+
+  # ── Summary ─────────────────────────────────────────────────────
+  - id: "evt_summary"
+    type: "annotation"
+    t_ns: 700000000
+    annotation:
+      text: "⟳ Scenario complete — NCCL Ring-AllReduce over RoCEv2"
+      detail: >
+        This scenario demonstrated NCCL's Ring-AllReduce across 4 GPU nodes:
+
+        Phase 1 — REDUCE-SCATTER (3 steps):
+          Each GPU sends one chunk per step to its ring-next neighbor.
+          The receiver accumulates (sums) the received data with its own.
+          After N-1=3 steps, each GPU holds the fully-reduced result for
+          exactly one chunk (1/N of the total tensor).
+
+        Phase 2 — ALLGATHER (3 steps):
+          Each GPU sends its fully-reduced chunk around the ring.
+          The receiver copies (no accumulation) into the output buffer.
+          After N-1=3 steps, every GPU has all N fully-reduced chunks.
+
+        Total: 2(N-1) = 6 steps for 4 GPUs.
+
+        Performance characteristics:
+        • Data per GPU per step: DataSize/N = 256KB
+        • Total data sent per GPU: 2 × (N-1)/N × DataSize = 1.5MB
+        • Bandwidth utilization: 2(N-1)/N = 75% of theoretical max
+          (approaches 100% as N → ∞)
+        • All transfers use RDMA WRITE via GPUDirect — zero CPU copies
+
+        Why Ring AllReduce for AI training:
+        • Data-parallel training: each GPU processes different mini-batches
+          but must synchronize gradients before the optimizer step
+        • AllReduce(Sum) is called after every backward pass — typically
+          thousands of times per epoch
+        • At scale (hundreds of GPUs), AllReduce latency directly impacts
+          training throughput: even 1ms extra per step × 100,000 steps = 100s
+
+        Alternative algorithms NCCL may choose:
+        • Tree AllReduce — better for small messages (lower latency)
+        • CollNet (SHARP) — in-network reduction (switch does the sum)
+        • NVLink + RDMA hybrid — NVLink intra-node, RDMA inter-node
+
+        The lossless RoCEv2 fabric (PFC + ECN/DCQCN) is critical: dropped
+        packets would cause RDMA timeouts, falling back to retransmission
+        and destroying AllReduce performance.
+
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
+glossary:
+  - term: "AllReduce"
+    definition: "Collective operation where all participants contribute data (e.g., gradients), a reduction function (e.g., sum) is applied, and the result is distributed to all participants. The most critical operation in data-parallel AI training."
+
+  - term: "Ring Algorithm"
+    definition: "AllReduce decomposition where GPUs form a logical ring. Data chunks rotate around the ring in two phases (Reduce-Scatter + AllGather), each taking N-1 steps. Achieves optimal bandwidth: 2(N-1)/N × DataSize per GPU."
+
+  - term: "Reduce-Scatter"
+    definition: "First phase of ring AllReduce. After N-1 steps, each GPU holds the fully-reduced result for 1/N of the data. Each step involves sending a chunk to ring-next and accumulating a chunk from ring-prev."
+
+  - term: "AllGather"
+    definition: "Second phase of ring AllReduce. Distributes the fully-reduced chunks from Reduce-Scatter so that every GPU ends up with the complete result. N-1 steps, copy-only (no accumulation)."
+
+  - term: "NCCL"
+    abbrev: "NCCL"
+    definition: "NVIDIA Collective Communications Library — provides optimized implementations of AllReduce, AllGather, ReduceScatter, Broadcast, and other collectives for multi-GPU communication. Used by PyTorch, TensorFlow, and other frameworks."
+    spec_refs:
+      - document: "NCCL Documentation"
+        section: "1"
+        title: "Overview"
+        url: "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/index.html"
+
+  - term: "Data-Parallel Training"
+    definition: "Distributed training strategy where each GPU holds a complete copy of the model but processes different mini-batches. Gradients are synchronized via AllReduce after the backward pass so all GPUs update weights identically."
+
+  - term: "Communicator"
+    abbrev: "ncclComm"
+    definition: "NCCL context that encapsulates a group of GPUs participating in collective operations. Created by ncclCommInitRank() which bootstraps connections and determines topology."
+
+  - term: "Channel"
+    definition: "NCCL's unit of parallelism within a collective. Multiple channels (each with its own ring/tree) can operate simultaneously to saturate bandwidth. Each channel uses a separate RDMA QP."
+
+  - term: "GPUDirect RDMA"
+    abbrev: "GDR"
+    definition: "Technology allowing RDMA NICs to DMA directly to/from GPU memory via PCIe BAR1, bypassing host DRAM. Enabled by nvidia-peermem kernel module. Essential for NCCL inter-node performance."

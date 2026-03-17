@@ -65,5 +65,8 @@ export const PHASE_COLORS = {
   'ECN/DCQCN': '#7c3aed',
   'Congestion': '#dc2626',
   'Recovery': '#059669',
+  // NCCL collective communication phases
+  'Reduce-Scatter': '#dc2626',
+  'AllGather': '#059669',
   'Other': '#475569',
 };
