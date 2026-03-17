@@ -28,19 +28,56 @@ ProtoViz is an open-source, browser-based platform that turns protocol exchanges
 - **tshark JSON Import** — Full protocol dissection via Wireshark's 3000+ dissectors without GPL entanglement
 - **Annotations** — Add personal notes to any step, export/import as JSON
 - **Pop-out Detail Panel** — Detach the bottom pane to a separate window for multi-monitor setups
+- **Mobile-Responsive UI** — Tab-based navigation on small screens, touch-friendly controls, adaptive layout
 - **Keyboard Navigation** — Arrow keys, Space (play/pause), Home/End, 1-4 (tab switch)
 - **Deep Links** — Shareable URLs pointing to a specific scenario and step
 - **Scenario Gallery** — Browse, filter, and search available scenarios
 - **MCP Server** — Protocol knowledge tools for AI agents via Model Context Protocol
 
-### Current Scenarios
+### Scenarios (16)
+
+The library spans 5 protocol families across 3 difficulty levels (2 beginner, 3 intermediate, 11 advanced).
+
+#### Networking Fundamentals
+
+| Scenario | Protocol | Difficulty |
+|----------|----------|------------|
+| TCP: 3-Way Handshake → Data Transfer → FIN Teardown | TCP | Beginner |
+| ARP & NDP: IPv4 Address Resolution and IPv6 Neighbor Discovery | ARP / NDP | Beginner |
+| TLS 1.3: Full Handshake → Encrypted Application Data → Alert Close | TLS 1.3 | Intermediate |
+
+#### Lossless Ethernet & Congestion Control
+
+| Scenario | Protocol | Difficulty |
+|----------|----------|------------|
+| PFC Pause → ECN Marking → DCQCN Rate Control | RoCEv2 Congestion Control | Intermediate |
+
+#### RDMA
 
 | Scenario | Protocol | Difficulty |
 |----------|----------|------------|
 | RoCEv2 RC: Link Training → QP Connection → RDMA WRITE → RDMA READ | RoCEv2 | Advanced |
-| FC Fabric: FLOGI → Name Server → PLOGI → PRLI → SCSI I/O | Fibre Channel | Advanced |
+| SMB Direct: Negotiate → RDMA Channel → File Read & Write over RoCEv2 | SMB Direct (SMB 3.x over RDMA) | Advanced |
+| S3/RDMA: Object PUT and GET over RoCEv2 | S3/RDMA | Advanced |
 
-More scenarios planned: NVMe-oF/TCP, NVMe-oF/RDMA, iWARP, TCP deep dive, native InfiniBand, PFC/ECN/DCQCN.
+#### Storage Protocols
+
+| Scenario | Protocol | Difficulty |
+|----------|----------|------------|
+| iSCSI: Login → Discovery → SCSI INQUIRY → WRITE(10) → READ(10) | iSCSI | Intermediate |
+| FC Fabric: FLOGI → Name Server → PLOGI → PRLI → SCSI I/O | Fibre Channel | Advanced |
+| NVMe-oF/RDMA: Discovery → Fabrics Connect → NVMe Write & Read over RoCEv2 | NVMe-oF/RDMA | Advanced |
+| NVMe/TCP: mDNS → CDC Discovery → DIM → Subsystem Connect → I/O | NVMe-oF/TCP | Advanced |
+
+#### GPU & AI Infrastructure
+
+| Scenario | Protocol | Difficulty |
+|----------|----------|------------|
+| GPUDirect RDMA: RoCEv2 WRITE Direct to GPU Memory | RoCEv2 + GPUDirect | Advanced |
+| GPUDirect Storage: NVMe Read Direct to GPU Memory (Local PCIe) | NVMe + GPUDirect Storage | Advanced |
+| GPUDirect Storage: Remote NVMe-oF Read/Write to GPU Memory over RoCEv2 | NVMe-oF/RDMA + GPUDirect Storage | Advanced |
+| GPU-to-GPU RDMA: Tensor Transfer across Nodes via RoCEv2 | RoCEv2 + GPUDirect RDMA | Advanced |
+| NCCL AllReduce: Ring Algorithm over RoCEv2 (4 GPUs) | NCCL / RoCEv2 | Advanced |
 
 ---
 
@@ -174,8 +211,21 @@ protoviz/
 │   └── styles/
 ├── public/
 │   ├── scenarios/           # YAML scenario files + index.json manifest
-│   │   ├── roce/            # RoCEv2 scenario
-│   │   └── fc/              # Fibre Channel scenario
+│   │   ├── tcp/             # TCP 3-way handshake
+│   │   ├── arp-ndp/         # ARP & NDP address resolution
+│   │   ├── tls/             # TLS 1.3 handshake
+│   │   ├── pfc-ecn-dcqcn/   # PFC/ECN/DCQCN congestion control
+│   │   ├── roce/            # RoCEv2 RC connection + RDMA ops
+│   │   ├── smb-direct/      # SMB Direct over RoCEv2
+│   │   ├── s3-rdma/         # S3/RDMA object storage
+│   │   ├── iscsi/           # iSCSI login and I/O
+│   │   ├── fc/              # Fibre Channel fabric login + SCSI
+│   │   ├── nvme-rdma/       # NVMe-oF/RDMA discovery + I/O
+│   │   ├── nvme-tcp/        # NVMe-oF/TCP with CDC discovery
+│   │   ├── gpudirect/       # GPUDirect RDMA write to GPU
+│   │   ├── gpudirect-storage/ # GPUDirect Storage (local + remote)
+│   │   ├── gpu-to-gpu/      # GPU-to-GPU tensor transfer
+│   │   └── nccl/            # NCCL AllReduce ring algorithm
 │   └── rules/               # Declarative compliance rules (JSON)
 ├── mcp/                     # MCP server for AI agents
 ├── tools/                   # Python PCAP converter
@@ -198,7 +248,7 @@ Scenarios are YAML files conforming to `scenario.schema.json`. Key sections:
 
 Each field can carry `spec_refs` (IBTA, RFC, IEEE, T11/INCITS), `kernel_ref` (Linux kernel source), and `description`.
 
-See `public/scenarios/roce/` and `public/scenarios/fc/` for complete examples.
+See any scenario directory under `public/scenarios/` for complete examples.
 
 ---
 
