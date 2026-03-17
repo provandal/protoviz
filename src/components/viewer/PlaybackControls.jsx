@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import useViewerStore from '../../store/viewerStore';
 import { PHASE_COLORS } from '../../utils/constants';
 
@@ -6,6 +7,21 @@ export default function PlaybackControls({ total, phaseColor }) {
   const playing = useViewerStore(s => s.playing);
   const goToStep = useViewerStore(s => s.goToStep);
   const togglePlay = useViewerStore(s => s.togglePlay);
+  const scenario = useViewerStore(s => s.scenario);
+
+  // Only show phases that exist in the current scenario's timeline
+  const scenarioPhases = useMemo(() => {
+    if (!scenario?.timeline) return [];
+    const seen = new Set();
+    const ordered = [];
+    for (const ev of scenario.timeline) {
+      if (ev.phase && !seen.has(ev.phase)) {
+        seen.add(ev.phase);
+        ordered.push(ev.phase);
+      }
+    }
+    return ordered;
+  }, [scenario]);
 
   return (
     <div className="pvz-playback" style={{ padding: '8px 12px', background: '#0a0f1a', borderTop: '1px solid #1e293b', flexShrink: 0 }}>
@@ -30,10 +46,10 @@ export default function PlaybackControls({ total, phaseColor }) {
           ))}
         </div>
         {/* Phase legend: hidden on mobile via CSS */}
-        <div className="pvz-phase-legend" style={{ display: 'flex', gap: 6 }}>
-          {Object.entries(PHASE_COLORS).map(([p, c]) => (
+        <div className="pvz-phase-legend" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {scenarioPhases.map(p => (
             <span key={p} style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-              <span style={{ width: 6, height: 6, borderRadius: '50%', background: c, display: 'inline-block' }} />
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: PHASE_COLORS[p] || '#475569', display: 'inline-block' }} />
               <span style={{ color: '#475569', fontSize: 9 }}>{p}</span>
             </span>
           ))}

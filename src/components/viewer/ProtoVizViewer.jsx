@@ -19,16 +19,18 @@ import BottomPane from '../layout/BottomPane';
 const DEFAULT_SCENARIO = 'roce-v2-rc-connection-rdma-write-read';
 
 /* ── Mobile top-panel tabs ─────────────────────────────────────── */
-const MOBILE_TABS = [
-  { id: 'sequence', label: 'Sequence' },
-  { id: 'initiator', label: 'Initiator' },
-  { id: 'target', label: 'Target' },
-];
+function getMobileTabs(leftLabel, rightLabel) {
+  return [
+    { id: 'sequence', label: 'Sequence' },
+    { id: 'left', label: leftLabel || 'Initiator' },
+    { id: 'right', label: rightLabel || 'Target' },
+  ];
+}
 
-function MobileTopTabs({ active, onChange }) {
+function MobileTopTabs({ tabs, active, onChange }) {
   return (
     <div className="pvz-mobile-top-tabs">
-      {MOBILE_TABS.map(tab => (
+      {tabs.map(tab => (
         <button
           key={tab.id}
           className={`pvz-mobile-top-tab${active === tab.id ? ' pvz-mobile-top-tab--active' : ''}`}
@@ -100,16 +102,22 @@ export default function ProtoVizViewer() {
 
   const total = scenario.timeline.length;
   const ev = scenario.timeline[step];
-  const initLayers = buildStateAtStep(scenario, 'initiator', step);
-  const targLayers = buildStateAtStep(scenario, 'target', step);
-  const swLayers = buildStateAtStep(scenario, 'switch', step);
+
+  // Derive left/right/switch actors from topology positions (not hardcoded IDs)
+  const leftActor = scenario.actors.find(a => a.pos === 'left') || scenario.actors[0];
+  const rightActor = scenario.actors.find(a => a.pos === 'right') || scenario.actors[scenario.actors.length - 1];
+  const switchActor = scenario.actors.find(a => a.pos === 'center' || a.type === 'switch');
+  const leftId = leftActor.id;
+  const rightId = rightActor.id;
+  const switchId = switchActor?.id || 'switch';
+
+  const initLayers = buildStateAtStep(scenario, leftId, step);
+  const targLayers = buildStateAtStep(scenario, rightId, step);
+  const swLayers = buildStateAtStep(scenario, switchId, step);
   const phaseColor = PHASE_COLORS[ev.phase] || '#475569';
 
-  // Dynamic labels from scenario actors
-  const initActor = scenario.actors.find(a => a.id === 'initiator');
-  const targActor = scenario.actors.find(a => a.id === 'target');
-  const initLabel = initActor?.label || 'Initiator';
-  const targLabel = targActor?.label || 'Target';
+  const initLabel = leftActor?.label || 'Initiator';
+  const targLabel = rightActor?.label || 'Target';
 
   // OSI width based on breakpoint
   const osiWidth = isTablet ? 170 : 220;
@@ -118,24 +126,24 @@ export default function ProtoVizViewer() {
   if (isMobile) {
     const topContent = (
       <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
-        <MobileTopTabs active={mobileTopTab} onChange={setMobileTopTab} />
+        <MobileTopTabs tabs={getMobileTabs(initLabel, targLabel)} active={mobileTopTab} onChange={setMobileTopTab} />
 
         {/* Sequence tab */}
         <div style={{ flex: 1, display: mobileTopTab === 'sequence' ? 'flex' : 'none', flexDirection: 'column', overflow: 'hidden' }}>
           <ActorHeaders actors={scenario.actors} />
           <div className="pvz-seq-scroll-wrapper">
-            <SequenceDiagram timeline={scenario.timeline} currentStep={step} onStepSelect={goToStep} />
+            <SequenceDiagram timeline={scenario.timeline} currentStep={step} onStepSelect={goToStep} leftActorId={leftId} rightActorId={rightId} />
           </div>
         </div>
 
-        {/* Initiator OSI tab */}
-        <div style={{ flex: 1, display: mobileTopTab === 'initiator' ? 'flex' : 'none', flexDirection: 'column', overflow: 'hidden' }}>
-          <OsiStack actorId="initiator" label={initLabel} layers={initLayers} stepEvent={ev} />
+        {/* Left actor OSI tab */}
+        <div style={{ flex: 1, display: mobileTopTab === 'left' ? 'flex' : 'none', flexDirection: 'column', overflow: 'hidden' }}>
+          <OsiStack actorId={leftId} label={initLabel} layers={initLayers} stepEvent={ev} />
         </div>
 
-        {/* Target OSI tab */}
-        <div style={{ flex: 1, display: mobileTopTab === 'target' ? 'flex' : 'none', flexDirection: 'column', overflow: 'hidden' }}>
-          <OsiStack actorId="target" label={targLabel} layers={targLayers} stepEvent={ev} />
+        {/* Right actor OSI tab */}
+        <div style={{ flex: 1, display: mobileTopTab === 'right' ? 'flex' : 'none', flexDirection: 'column', overflow: 'hidden' }}>
+          <OsiStack actorId={rightId} label={targLabel} layers={targLayers} stepEvent={ev} />
         </div>
 
         {/* Playback controls: always visible on mobile */}
@@ -197,21 +205,21 @@ export default function ProtoVizViewer() {
     <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
       {/* Left OSI Stack */}
       <div className="pvz-osi-col" style={{ width: osiWidth }}>
-        <OsiStack actorId="initiator" label={initLabel} layers={initLayers} stepEvent={ev} />
+        <OsiStack actorId={leftId} label={initLabel} layers={initLayers} stepEvent={ev} />
       </div>
 
       {/* Center: Sequence + Controls */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <ActorHeaders actors={scenario.actors} />
         <div className="pvz-seq-scroll-wrapper">
-          <SequenceDiagram timeline={scenario.timeline} currentStep={step} onStepSelect={goToStep} />
+          <SequenceDiagram timeline={scenario.timeline} currentStep={step} onStepSelect={goToStep} leftActorId={leftId} rightActorId={rightId} />
         </div>
         <PlaybackControls total={total} phaseColor={phaseColor} />
       </div>
 
       {/* Right OSI Stack */}
       <div className="pvz-osi-col pvz-osi-col--right" style={{ width: osiWidth }}>
-        <OsiStack actorId="target" label={targLabel} layers={targLayers} stepEvent={ev} />
+        <OsiStack actorId={rightId} label={targLabel} layers={targLayers} stepEvent={ev} />
       </div>
     </div>
   );

@@ -4,19 +4,19 @@ import useViewerStore from '../../store/viewerStore';
 
 /**
  * Determine the visual span of a state_change event based on which actors it affects.
- * Returns: 'left' (initiator + switch only), 'right' (switch + target only),
+ * Returns: 'left' (left actor + switch only), 'right' (switch + right actor only),
  *          'full' (both endpoints or all three), 'center' (switch only)
  */
-function getStateChangeSpan(ev) {
+function getStateChangeSpan(ev, leftId, rightId) {
   if (!ev.state) return 'full';
   const actors = Object.keys(ev.state);
-  const hasInit = actors.includes('initiator');
-  const hasTarget = actors.includes('target');
-  const hasSwitch = actors.includes('switch');
+  const hasLeft = actors.includes(leftId);
+  const hasRight = actors.includes(rightId);
+  const hasOther = actors.some(a => a !== leftId && a !== rightId);
 
-  if (hasInit && !hasTarget) return 'left';
-  if (hasTarget && !hasInit) return 'right';
-  if (hasSwitch && !hasInit && !hasTarget) return 'center';
+  if (hasLeft && !hasRight) return 'left';
+  if (hasRight && !hasLeft) return 'right';
+  if (hasOther && !hasLeft && !hasRight) return 'center';
   return 'full';
 }
 
@@ -24,14 +24,16 @@ function getStateChangeSpan(ev) {
  * Determine the visual span of a frame_tx event based on from/to.
  * Frames to/from the switch stop at the center column.
  */
-function getFrameSpan(ev) {
+function getFrameSpan(ev, leftId, rightId) {
   const { from, to } = ev;
-  if ((from === 'initiator' && to === 'switch') || (from === 'switch' && to === 'initiator')) return 'left';
-  if ((from === 'target' && to === 'switch') || (from === 'switch' && to === 'target')) return 'right';
+  const isLeftEnd = id => id === leftId;
+  const isRightEnd = id => id === rightId;
+  if ((isLeftEnd(from) && !isRightEnd(to)) || (!isRightEnd(from) && isLeftEnd(to))) return 'left';
+  if ((isRightEnd(from) && !isLeftEnd(to)) || (!isLeftEnd(from) && isRightEnd(to))) return 'right';
   return 'full';
 }
 
-export default function SequenceDiagram({ timeline, currentStep, onStepSelect }) {
+export default function SequenceDiagram({ timeline, currentStep, onStepSelect, leftActorId = 'initiator', rightActorId = 'target' }) {
   const phases = [...new Set(timeline.map(e => e.phase))];
   const phaseGroups = phases.map(p => ({ phase: p, events: timeline.filter(e => e.phase === p) }));
   const currentRef = useRef(null);
@@ -82,9 +84,9 @@ export default function SequenceDiagram({ timeline, currentStep, onStepSelect })
             const hasNote = !!annotations[idx];
             const color = ev.color || '#475569';
             const isFrame = ev.type === 'frame_tx';
-            const span = isFrame ? getFrameSpan(ev) : getStateChangeSpan(ev);
+            const span = isFrame ? getFrameSpan(ev, leftActorId, rightActorId) : getStateChangeSpan(ev, leftActorId, rightActorId);
             // Direction: who is sending?
-            const goesRight = isFrame && (ev.from === 'initiator' || (ev.from === 'switch' && ev.to === 'target'));
+            const goesRight = isFrame && (ev.from === leftActorId || (ev.from !== rightActorId && ev.to === rightActorId));
             const dir = isFrame ? (goesRight ? 'right' : 'left') : null;
             // Sender/receiver labels
             const senderLabel = actorLabels[ev.from] || ev.from?.toUpperCase();
