@@ -12,6 +12,7 @@
 import yaml from 'js-yaml';
 import { PHASE_COLORS } from '../utils/constants';
 import { PAYLOAD_FIELD_KEYS } from '../utils/sensitiveDataDetector';
+import { groupFlows, filterFlows, filterPacketsByFlows } from './flowGrouper.js';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -25,16 +26,39 @@ import { PAYLOAD_FIELD_KEYS } from '../utils/sensitiveDataDetector';
  * @param {string}  [options.title]           - custom title (auto-generated if omitted)
  * @param {boolean} [options.scrub=true]      - replace real IPs/MACs with sanitized values
  * @param {boolean} [options.includePayloads=false] - keep payload hex/ascii fields
- * @returns {{ scenario: Object, warnings: string[] }}
+ * @param {Object}  [options.flowFilter]      - flow filter spec (see flowGrouper.filterFlows)
+ * @returns {{ scenario: Object, warnings: string[], flowInfo?: Object }}
  */
 export function generateScenario(packets, options = {}) {
   const {
     title: customTitle,
     scrub = true,
     includePayloads = false,
+    flowFilter,
   } = options;
 
   const warnings = [];
+  let flowInfo = undefined;
+
+  // 0. Apply flow filtering if a flowFilter spec is provided
+  if (flowFilter && Object.keys(flowFilter).length > 0) {
+    const { flows, dnsNameMap, packetFlowMap } = groupFlows(packets);
+    const matchedFlows = filterFlows(flows, flowFilter);
+
+    if (matchedFlows.length === 0) {
+      warnings.push('Flow filter matched 0 flows — using all packets');
+    } else {
+      const selectedIds = new Set(matchedFlows.map(f => f.id));
+      packets = filterPacketsByFlows(packets, selectedIds, packetFlowMap);
+      warnings.push(`Flow filter selected ${matchedFlows.length} flow(s), ${packets.length} packet(s)`);
+    }
+
+    flowInfo = {
+      totalFlows: flows.length,
+      matchedFlows: matchedFlows.length,
+      dnsNames: Object.fromEntries(dnsNameMap),
+    };
+  }
 
   // 1. Detect sensitive data
   const sensitiveCount = countSensitivePackets(packets);
@@ -98,7 +122,9 @@ export function generateScenario(packets, options = {}) {
     timeline,
   };
 
-  return { scenario, warnings };
+  const result = { scenario, warnings };
+  if (flowInfo) result.flowInfo = flowInfo;
+  return result;
 }
 
 /**

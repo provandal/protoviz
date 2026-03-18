@@ -8,6 +8,7 @@ import yaml from 'js-yaml';
 import { convertToScenarioYaml, parseCapture } from './lib/pcapToScenario.js';
 import { analyzePackets } from './lib/ruleEngine.js';
 import { dissectPacketDetailed } from './lib/packetDissector.js';
+import { groupFlows, filterFlows } from './lib/flowGrouper.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCENARIOS_DIR = join(__dirname, '..', 'public', 'scenarios');
@@ -349,6 +350,16 @@ function fuzzyMatch(a, b) {
   return minLen > 0 && matchCount >= Math.ceil(minLen * 0.5);
 }
 
+// --- Shared Schemas ---
+
+const flowFilterSchema = z.object({
+  sni: z.string().optional().describe('Filter by TLS SNI hostname (substring, case-insensitive)'),
+  dst_host: z.string().optional().describe('Filter by destination/server IP (exact or substring)'),
+  dst_port: z.number().optional().describe('Filter by destination/server port (exact match)'),
+  server_name: z.string().optional().describe('Filter by server name — matches SNI or DNS-resolved name (substring, case-insensitive)'),
+  protocol: z.string().optional().describe('Filter by protocol (substring, case-insensitive, e.g. "TCP", "UDP", "RoCE")'),
+}).optional().describe('Filter to select specific network flows. All provided fields are ANDed together.');
+
 // --- MCP Server ---
 
 const server = new McpServer({
@@ -604,17 +615,18 @@ server.tool(
 // Tool: generate_scenario
 server.tool(
   'generate_scenario',
-  'Generate a ProtoViz scenario from packet capture data. Accepts base64-encoded PCAP/pcapng or tshark JSON string. Returns a YAML scenario that can be loaded by the ProtoViz viewer.',
+  'Generate a ProtoViz scenario from packet capture data. Accepts base64-encoded PCAP/pcapng or tshark JSON string. Returns a YAML scenario that can be loaded by the ProtoViz viewer. Use the optional filter parameter to select specific network flows (e.g., only HTTPS traffic to a particular server).',
   {
     input_format: z.enum(['pcap_base64', 'tshark_json']).describe('Format of the input data'),
     data: z.string().describe('Base64-encoded PCAP file or tshark JSON string'),
     title: z.string().optional().describe('Custom title for the scenario'),
     scrub: z.boolean().optional().default(true).describe('Anonymize IPs, MACs, and strip payload data'),
     max_packets: z.number().optional().default(500).describe('Maximum packets to process'),
+    filter: flowFilterSchema,
   },
-  async ({ input_format, data, title, scrub, max_packets }) => {
+  async ({ input_format, data, title, scrub, max_packets, filter }) => {
     try {
-      const yamlStr = convertToScenarioYaml({ input_format, data, title, scrub, max_packets });
+      const yamlStr = convertToScenarioYaml({ input_format, data, title, scrub, max_packets, filter });
       return {
         content: [{
           type: 'text',
@@ -643,16 +655,17 @@ server.tool(
 // Tool: analyze_capture
 server.tool(
   'analyze_capture',
-  'Analyze a packet capture for protocol violations, anomalies, and compliance issues. Returns structured findings with severity, packet references, and spec citations.',
+  'Analyze a packet capture for protocol violations, anomalies, and compliance issues. Returns structured findings with severity, packet references, and spec citations. Use the optional filter parameter to focus analysis on specific network flows.',
   {
     input_format: z.enum(['pcap_base64', 'tshark_json']).describe('Format of the input data'),
     data: z.string().describe('Base64-encoded PCAP file or tshark JSON string'),
     max_packets: z.number().optional().default(500).describe('Maximum packets to process'),
+    filter: flowFilterSchema,
   },
-  async ({ input_format, data, max_packets }) => {
+  async ({ input_format, data, max_packets, filter }) => {
     try {
-      // 1. Parse packets (reuse pcapToScenario parsing)
-      const parsed = parseCapture({ input_format, data, max_packets });
+      // 1. Parse packets (reuse pcapToScenario parsing, with optional flow filtering)
+      const parsed = parseCapture({ input_format, data, max_packets, filter });
 
       // 2. Run full analysis pipeline (rule engine + built-in checks)
       const result = analyzePackets(parsed.packets);
@@ -670,6 +683,69 @@ server.tool(
           type: 'text',
           text: JSON.stringify({
             error: `Analysis failed: ${err.message}`,
+            suggestion: input_format === 'pcap_base64'
+              ? 'Ensure the data is a valid base64-encoded PCAP or pcapng file. Only Ethernet link type is supported.'
+              : 'Ensure the data is valid tshark JSON output (tshark -T json). It should be a JSON array of packet objects.',
+          }, null, 2),
+        }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Tool: list_flows
+server.tool(
+  'list_flows',
+  'List detected network flows/conversations in a packet capture. Returns flow summaries with server names (from TLS SNI and DNS), protocols, packet counts, and byte totals. Use this before generate_scenario to understand what is in a capture and select relevant flows for filtering.',
+  {
+    input_format: z.enum(['pcap_base64', 'tshark_json']).describe('Format of the input data'),
+    data: z.string().describe('Base64-encoded PCAP file or tshark JSON string'),
+    max_packets: z.number().optional().default(500).describe('Maximum packets to process'),
+  },
+  async ({ input_format, data, max_packets }) => {
+    try {
+      const parsed = parseCapture({ input_format, data, max_packets });
+      const { flows, dnsNameMap } = groupFlows(parsed.packets);
+
+      // Convert dnsNameMap to a plain object for JSON serialization
+      const dnsEntries = {};
+      for (const [ip, name] of dnsNameMap) {
+        dnsEntries[ip] = name;
+      }
+
+      const result = {
+        flow_count: flows.length,
+        packet_count: parsed.packets.length,
+        dns_mappings: dnsEntries,
+        flows: flows.map(f => ({
+          id: f.id,
+          protocol: f.protocol,
+          server_name: f.serverName,
+          server_ip: f.serverIp,
+          server_port: f.serverPort,
+          client_ip: f.clientIp,
+          client_port: f.clientPort,
+          packet_count: f.packetCount,
+          bytes: f.bytes,
+          duration_ms: f.durationMs,
+          has_tls: f.hasTLS,
+          has_dns: f.hasDNS,
+        })),
+      };
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        }],
+      };
+    } catch (err) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            error: `Flow listing failed: ${err.message}`,
             suggestion: input_format === 'pcap_base64'
               ? 'Ensure the data is a valid base64-encoded PCAP or pcapng file. Only Ethernet link type is supported.'
               : 'Ensure the data is valid tshark JSON output (tshark -T json). It should be a JSON array of packet objects.',

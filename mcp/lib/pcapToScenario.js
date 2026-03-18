@@ -6,6 +6,7 @@
  */
 
 import yaml from 'js-yaml';
+import { groupFlows, filterFlows, filterPacketsByFlows } from './flowGrouper.js';
 
 // ─── Constants ──────────────────────────────────────────────────
 
@@ -783,7 +784,7 @@ function generateScenario(dissectedPackets, options = {}) {
  * @param {number} [opts.max_packets=500]
  * @returns {{ packets: object[] }} Dissected packets with layers, summary, index, timestamp
  */
-export function parseCapture({ input_format, data, max_packets = 500 }) {
+export function parseCapture({ input_format, data, max_packets = 500, filter }) {
   let parsed;
 
   if (input_format === 'pcap_base64') {
@@ -809,6 +810,17 @@ export function parseCapture({ input_format, data, max_packets = 500 }) {
 
   if (!parsed.packets || parsed.packets.length === 0) {
     throw new Error('No packets could be parsed from the input data.');
+  }
+
+  // Apply flow-aware filtering if a filter is provided
+  if (filter && Object.keys(filter).length > 0) {
+    const { flows, packetFlowMap } = groupFlows(parsed.packets);
+    const matching = filterFlows(flows, filter);
+    if (matching.length > 0) {
+      const matchIds = new Set(matching.map(f => f.id));
+      parsed.packets = filterPacketsByFlows(parsed.packets, matchIds, packetFlowMap);
+    }
+    // If no flows match, keep all packets (don't silently return empty)
   }
 
   return parsed;
@@ -825,33 +837,9 @@ export function parseCapture({ input_format, data, max_packets = 500 }) {
  * @param {number} [opts.max_packets=500]
  * @returns {string} YAML scenario
  */
-export function convertToScenarioYaml({ input_format, data, title, scrub = true, max_packets = 500 }) {
-  let parsed;
-
-  if (input_format === 'pcap_base64') {
-    const buf = Buffer.from(data, 'base64');
-    const arrayBuffer = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-    parsed = parsePcap(arrayBuffer, max_packets);
-
-    // Dissect binary packets
-    parsed.packets = parsed.packets.map(pkt => {
-      const { layers, summary } = dissectPacket(pkt);
-      return { ...pkt, layers, summary };
-    });
-  } else if (input_format === 'tshark_json') {
-    parsed = parseTsharkJson(data);
-
-    // tshark packets are already "dissected" by convertTsharkPacket
-    if (max_packets && parsed.packets.length > max_packets) {
-      parsed.packets = parsed.packets.slice(0, max_packets);
-    }
-  } else {
-    throw new Error(`Unsupported input_format: "${input_format}". Use "pcap_base64" or "tshark_json".`);
-  }
-
-  if (!parsed.packets || parsed.packets.length === 0) {
-    throw new Error('No packets could be parsed from the input data.');
-  }
+export function convertToScenarioYaml({ input_format, data, title, scrub = true, max_packets = 500, filter }) {
+  // Use parseCapture which handles both formats and flow filtering
+  const parsed = parseCapture({ input_format, data, max_packets, filter });
 
   const scenario = generateScenario(parsed.packets, { title, scrub });
   return yaml.dump(scenario, { lineWidth: 120, noRefs: true, quotingType: '"', forceQuotes: false });

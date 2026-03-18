@@ -9,7 +9,9 @@ import { filterConversation, packetsToScenario } from '../../pcap/pcapToScenario
 import { generateScenario, scenarioToYaml, suggestTitle } from '../../pcap/scenarioGenerator';
 import { normalizeScenario } from '../../utils/normalizeScenario';
 import useViewerStore from '../../store/viewerStore';
+import { groupFlows, filterPacketsByFlows } from '../../pcap/flowGrouper';
 import FindingsPanel from './FindingsPanel';
+import FlowPicker from './FlowPicker';
 import PacketList from './PacketList';
 import TraceChatPanel from './TraceChatPanel';
 
@@ -64,6 +66,9 @@ export default function TroubleshooterPage() {
   const [genScrub, setGenScrub] = useState(true);
   const [genIncludePayloads, setGenIncludePayloads] = useState(false);
   const [genResult, setGenResult] = useState(null); // { scenario, warnings }
+  const [flowResult, setFlowResult] = useState(null);     // from groupFlows()
+  const [showFlowPicker, setShowFlowPicker] = useState(false);
+  const [selectedFlowIds, setSelectedFlowIds] = useState(null); // string[] | null
   const fileRef = useRef(null);
 
   const loadAndEvaluateRules = useCallback(async (dissected) => {
@@ -107,6 +112,28 @@ export default function TroubleshooterPage() {
       setPackets(dissected);
       setSelectedPacketIndex(null);
 
+      // Flow grouping — detect conversations in the capture
+      try {
+        const flowRes = groupFlows(dissected);
+        setFlowResult(flowRes);
+        if (flowRes.flows.length > 1) {
+          setShowFlowPicker(true);
+          setSelectedFlowIds(null);
+        } else if (flowRes.flows.length === 1) {
+          // Single flow: auto-select it
+          setShowFlowPicker(false);
+          setSelectedFlowIds([flowRes.flows[0].id]);
+        } else {
+          setShowFlowPicker(false);
+          setSelectedFlowIds(null);
+        }
+      } catch (_flowErr) {
+        // flowGrouper may not be available yet; proceed without flow filtering
+        setFlowResult(null);
+        setShowFlowPicker(false);
+        setSelectedFlowIds(null);
+      }
+
       const results = await loadAndEvaluateRules(dissected);
 
       // Add sensitive data findings from payload dissection
@@ -142,6 +169,9 @@ export default function TroubleshooterPage() {
     setInputFormat('');
     setSelectedPacketIndex(null);
     setShowChat(false);
+    setFlowResult(null);
+    setShowFlowPicker(false);
+    setSelectedFlowIds(null);
     if (fileRef.current) fileRef.current.value = '';
   }, []);
 
@@ -160,24 +190,35 @@ export default function TroubleshooterPage() {
     navigate(`/${slug}`);
   }, [packets, navigate]);
 
+  // Compute effective packets (filtered by selected flows if applicable)
+  const getEffectivePackets = useCallback(() => {
+    if (!packets) return null;
+    if (selectedFlowIds && flowResult?.packetFlowMap) {
+      return filterPacketsByFlows(packets, selectedFlowIds, flowResult.packetFlowMap);
+    }
+    return packets;
+  }, [packets, selectedFlowIds, flowResult]);
+
   const openGenModal = useCallback(() => {
-    if (!packets) return;
-    setGenTitle(suggestTitle(packets));
+    const effectivePackets = getEffectivePackets();
+    if (!effectivePackets) return;
+    setGenTitle(suggestTitle(effectivePackets));
     setGenScrub(true);
     setGenIncludePayloads(false);
     setGenResult(null);
     setShowGenModal(true);
-  }, [packets]);
+  }, [getEffectivePackets]);
 
   const handleGenerate = useCallback(() => {
-    if (!packets) return;
-    const result = generateScenario(packets, {
+    const effectivePackets = getEffectivePackets();
+    if (!effectivePackets) return;
+    const result = generateScenario(effectivePackets, {
       title: genTitle,
       scrub: genScrub,
       includePayloads: genIncludePayloads,
     });
     setGenResult(result);
-  }, [packets, genTitle, genScrub, genIncludePayloads]);
+  }, [getEffectivePackets, genTitle, genScrub, genIncludePayloads]);
 
   const handlePreview = useCallback(() => {
     if (!genResult) return;
@@ -210,6 +251,15 @@ export default function TroubleshooterPage() {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   }, [genResult]);
+
+  const handleFlowConfirm = useCallback((flowIds) => {
+    setSelectedFlowIds(flowIds);
+    setShowFlowPicker(false);
+  }, []);
+
+  const handleFlowCancel = useCallback(() => {
+    setShowFlowPicker(false);
+  }, []);
 
   return (
     <div style={{
@@ -330,6 +380,20 @@ export default function TroubleshooterPage() {
               </span>
             )}
             <div style={{ flex: 1 }} />
+            {flowResult && flowResult.flows.length > 1 && (
+              <button
+                onClick={() => setShowFlowPicker(true)}
+                style={{
+                  background: selectedFlowIds ? '#0c1929' : 'none',
+                  border: '1px solid #334155',
+                  color: selectedFlowIds ? '#93c5fd' : '#64748b',
+                  padding: '3px 10px', borderRadius: 4, cursor: 'pointer', fontSize: 10,
+                  fontWeight: selectedFlowIds ? 600 : 400,
+                }}
+              >
+                Filter Flows{selectedFlowIds ? ` (${selectedFlowIds.length})` : ''}
+              </button>
+            )}
             <button
               onClick={() => setShowChat(c => !c)}
               style={{
@@ -374,32 +438,45 @@ export default function TroubleshooterPage() {
             </div>
           )}
 
-          {/* Top: packet list + findings | Bottom: chat */}
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            {/* Packet list + findings row */}
-            <div style={{ flex: showChat ? '1 1 55%' : '1 1 100%', display: 'flex', overflow: 'hidden', minHeight: 0 }}>
-              <div style={{ flex: 1, overflowY: 'auto', borderRight: '1px solid #1e293b' }}>
-                <PacketList
-                  packets={packets}
-                  findings={findings}
-                  selectedIndex={selectedPacketIndex}
-                  onPacketSelect={setSelectedPacketIndex}
-                  onConversationView={handleConversationView}
-                />
-              </div>
-              {findings && findings.length > 0 && (
-                <div style={{ width: 360, overflowY: 'auto', flexShrink: 0 }}>
-                  <FindingsPanel findings={findings} onFindingClick={handleFindingClick} />
-                </div>
-              )}
+          {/* Flow picker overlay (shown instead of packet list) */}
+          {showFlowPicker && flowResult ? (
+            <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+              <FlowPicker
+                flows={flowResult.flows}
+                onConfirm={handleFlowConfirm}
+                onCancel={handleFlowCancel}
+              />
             </div>
-            {/* Chat pane below */}
-            {showChat && (
-              <div style={{ flex: '1 1 45%', borderTop: '1px solid #1e293b', minHeight: 0, overflow: 'hidden' }}>
-                <TraceChatPanel packets={packets} findings={findings} selectedPacketIndex={selectedPacketIndex} />
+          ) : (
+            <>
+              {/* Top: packet list + findings | Bottom: chat */}
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                {/* Packet list + findings row */}
+                <div style={{ flex: showChat ? '1 1 55%' : '1 1 100%', display: 'flex', overflow: 'hidden', minHeight: 0 }}>
+                  <div style={{ flex: 1, overflowY: 'auto', borderRight: '1px solid #1e293b' }}>
+                    <PacketList
+                      packets={packets}
+                      findings={findings}
+                      selectedIndex={selectedPacketIndex}
+                      onPacketSelect={setSelectedPacketIndex}
+                      onConversationView={handleConversationView}
+                    />
+                  </div>
+                  {findings && findings.length > 0 && (
+                    <div style={{ width: 360, overflowY: 'auto', flexShrink: 0 }}>
+                      <FindingsPanel findings={findings} onFindingClick={handleFindingClick} />
+                    </div>
+                  )}
+                </div>
+                {/* Chat pane below */}
+                {showChat && (
+                  <div style={{ flex: '1 1 45%', borderTop: '1px solid #1e293b', minHeight: 0, overflow: 'hidden' }}>
+                    <TraceChatPanel packets={packets} findings={findings} selectedPacketIndex={selectedPacketIndex} />
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+            </>
+          )}
         </div>
       )}
 

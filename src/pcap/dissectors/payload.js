@@ -278,6 +278,12 @@ function dissectTLS(payload, fullLen) {
   if (contentType === 22 && payload.length >= 6) {
     const hsType = payload[5];
     fields.handshake_type = TLS_HANDSHAKE_TYPES[hsType] || `Type(${hsType})`;
+
+    // Try extracting SNI from ClientHello if enough payload is captured
+    if (hsType === 1) {
+      const sni = extractSniFromPayload(payload, 5);
+      if (sni) fields.sni = sni;
+    }
   }
 
   const detail = contentType === 22 && fields.handshake_type
@@ -288,6 +294,98 @@ function dissectTLS(payload, fullLen) {
     layer: { layer: 6, name: detail, fields },
     summary: detail,
   };
+}
+
+/**
+ * Extract SNI from a TLS ClientHello starting at a handshake-type offset.
+ * Works on truncated payload (best-effort).
+ */
+function extractSniFromPayload(data, hsTypeOffset) {
+  return parseSniFromHandshake(data, hsTypeOffset, data.length);
+}
+
+/**
+ * Extract SNI from raw packet bytes given the TCP payload offset.
+ * Uses full raw bytes so the SNI isn't lost to MAX_PAYLOAD truncation.
+ *
+ * @param {Uint8Array} data - Full raw packet bytes
+ * @param {number} tcpPayloadOffset - Byte offset where TCP payload starts
+ * @returns {string|null} - SNI hostname or null
+ */
+export function extractSniFromRaw(data, tcpPayloadOffset) {
+  const off = tcpPayloadOffset;
+  // Need at least a TLS record header (5 bytes) + handshake type (1 byte)
+  if (data.length < off + 6) return null;
+
+  // Verify TLS Handshake record
+  const contentType = data[off];
+  if (contentType !== 22) return null; // Not Handshake
+  if (data[off + 1] !== 3) return null; // Not TLS/SSL
+
+  const hsType = data[off + 5];
+  if (hsType !== 1) return null; // Not ClientHello
+
+  return parseSniFromHandshake(data, off + 5, data.length);
+}
+
+/**
+ * Parse SNI from a TLS handshake message starting at hsTypeOffset.
+ * hsTypeOffset points to the handshake type byte (should be 0x01 for ClientHello).
+ */
+function parseSniFromHandshake(data, hsTypeOffset, limit) {
+  // Handshake: type(1) + length(3) + client_version(2) + random(32) = 38 bytes minimum
+  let pos = hsTypeOffset + 1; // skip type byte
+  if (pos + 3 > limit) return null;
+
+  // Skip handshake length (3 bytes)
+  pos += 3;
+
+  // Skip client version (2 bytes) + random (32 bytes)
+  pos += 34;
+  if (pos + 1 > limit) return null;
+
+  // Session ID (variable)
+  const sessionIdLen = data[pos];
+  pos += 1 + sessionIdLen;
+  if (pos + 2 > limit) return null;
+
+  // Cipher suites (variable)
+  const cipherLen = (data[pos] << 8) | data[pos + 1];
+  pos += 2 + cipherLen;
+  if (pos + 1 > limit) return null;
+
+  // Compression methods (variable)
+  const compLen = data[pos];
+  pos += 1 + compLen;
+  if (pos + 2 > limit) return null;
+
+  // Extensions total length
+  const extTotalLen = (data[pos] << 8) | data[pos + 1];
+  pos += 2;
+  const extEnd = Math.min(pos + extTotalLen, limit);
+
+  // Walk extensions looking for SNI (type 0x0000)
+  while (pos + 4 <= extEnd) {
+    const extType = (data[pos] << 8) | data[pos + 1];
+    const extLen = (data[pos + 2] << 8) | data[pos + 3];
+    pos += 4;
+
+    if (extType === 0x0000 && extLen >= 5 && pos + extLen <= extEnd) {
+      // SNI extension: server_name_list_length(2) + name_type(1) + name_length(2) + name
+      const nameType = data[pos + 2];
+      if (nameType === 0) { // host_name
+        const nameLen = (data[pos + 3] << 8) | data[pos + 4];
+        if (pos + 5 + nameLen <= extEnd && nameLen > 0) {
+          return String.fromCharCode(...data.slice(pos + 5, pos + 5 + nameLen));
+        }
+      }
+      return null;
+    }
+
+    pos += extLen;
+  }
+
+  return null;
 }
 
 function dissectHTTP(payload, fullLen) {
@@ -340,9 +438,32 @@ function dissectDNS(payload, fullLen) {
   };
 
   // Try to extract query name (starts at byte 12)
+  let pos = 12;
   if (payload.length > 12) {
-    const name = decodeDnsName(payload, 12);
+    const { name, nextOffset } = decodeDnsNameFull(payload, 12);
     if (name) fields.query_name = name;
+    pos = nextOffset;
+  }
+
+  // Parse answer section for A and AAAA records
+  if (isResponse && anCount > 0) {
+    // Skip remaining question records (we already parsed the first name above)
+    // Skip QTYPE (2) + QCLASS (2) for each question
+    for (let q = 0; q < qdCount; q++) {
+      if (q === 0 && fields.query_name) {
+        // Already advanced past the first question name
+        pos += 4; // QTYPE + QCLASS
+      } else {
+        const { nextOffset } = decodeDnsNameFull(payload, pos);
+        pos = nextOffset + 4; // skip QTYPE + QCLASS
+      }
+      if (pos >= payload.length) break;
+    }
+
+    const answerIps = parseDnsAnswers(payload, pos, anCount);
+    if (answerIps.length > 0) {
+      fields.answer_ips = answerIps;
+    }
   }
 
   return {
@@ -351,20 +472,87 @@ function dissectDNS(payload, fullLen) {
   };
 }
 
-function decodeDnsName(data, offset) {
+/**
+ * Parse DNS answer RRs, extracting IPs from A (type 1) and AAAA (type 28) records.
+ */
+function parseDnsAnswers(data, startOffset, count) {
+  const ips = [];
+  let pos = startOffset;
+  let safety = 0;
+
+  for (let i = 0; i < count && pos < data.length && safety++ < 64; i++) {
+    // Skip NAME (may be a compression pointer or label sequence)
+    const { nextOffset } = decodeDnsNameFull(data, pos);
+    pos = nextOffset;
+
+    // Need TYPE(2) + CLASS(2) + TTL(4) + RDLENGTH(2) = 10 bytes
+    if (pos + 10 > data.length) break;
+
+    const rrType = (data[pos] << 8) | data[pos + 1];
+    // const rrClass = (data[pos + 2] << 8) | data[pos + 3];
+    // const ttl = readUint32(data, pos + 4);
+    const rdLength = (data[pos + 8] << 8) | data[pos + 9];
+    pos += 10;
+
+    if (pos + rdLength > data.length) break;
+
+    if (rrType === 1 && rdLength === 4) {
+      // A record: 4-byte IPv4
+      ips.push(`${data[pos]}.${data[pos + 1]}.${data[pos + 2]}.${data[pos + 3]}`);
+    } else if (rrType === 28 && rdLength === 16) {
+      // AAAA record: 16-byte IPv6
+      const parts = [];
+      for (let j = 0; j < 16; j += 2) {
+        parts.push(((data[pos + j] << 8) | data[pos + j + 1]).toString(16));
+      }
+      ips.push(parts.join(':'));
+    }
+
+    pos += rdLength;
+  }
+
+  return ips;
+}
+
+/**
+ * Decode a DNS name with full compression pointer support.
+ * Returns { name, nextOffset } where nextOffset points past the name field
+ * in the original position (not following pointers).
+ */
+function decodeDnsNameFull(data, offset) {
   const parts = [];
   let pos = offset;
+  let jumped = false;
+  let jumpedFrom = 0;
   let safety = 0;
-  while (pos < data.length && safety++ < 30) {
+
+  while (pos < data.length && safety++ < 64) {
     const len = data[pos];
-    if (len === 0) break;
-    if ((len & 0xc0) === 0xc0) break; // compression pointer — stop
+    if (len === 0) {
+      if (!jumped) jumpedFrom = pos + 1;
+      else if (jumpedFrom === 0) jumpedFrom = offset + 2;
+      break;
+    }
+
+    if ((len & 0xc0) === 0xc0) {
+      // Compression pointer
+      if (pos + 1 >= data.length) break;
+      if (!jumped) jumpedFrom = pos + 2;
+      jumped = true;
+      const ptr = ((len & 0x3f) << 8) | data[pos + 1];
+      if (ptr >= data.length || ptr >= pos) break; // avoid forward/infinite loops
+      pos = ptr;
+      continue;
+    }
+
     pos++;
     if (pos + len > data.length) break;
     parts.push(String.fromCharCode(...data.slice(pos, pos + len)));
     pos += len;
   }
-  return parts.join('.') || null;
+
+  const nextOffset = jumped ? jumpedFrom : pos + 1;
+  return { name: parts.join('.') || null, nextOffset: Math.min(nextOffset, data.length) };
 }
 
 // ── SCSI / NVMe opcode tables ──
