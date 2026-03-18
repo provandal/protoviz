@@ -5,6 +5,7 @@ import { readFileSync, readdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import yaml from 'js-yaml';
+import { convertToScenarioYaml } from './lib/pcapToScenario.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCENARIOS_DIR = join(__dirname, '..', 'public', 'scenarios');
@@ -229,6 +230,38 @@ server.tool(
       return { content: [{ type: 'text', text: `No events matching "${operation}" found in scenario "${slug}"` }] };
     }
     return { content: [{ type: 'text', text: JSON.stringify(events, null, 2) }] };
+  }
+);
+
+// Tool: generate_scenario
+server.tool(
+  'generate_scenario',
+  'Generate a ProtoViz scenario from packet capture data. Accepts base64-encoded PCAP/pcapng or tshark JSON string. Returns a YAML scenario that can be loaded by the ProtoViz viewer.',
+  {
+    input_format: z.enum(['pcap_base64', 'tshark_json']).describe('Format of the input data'),
+    data: z.string().describe('Base64-encoded PCAP file or tshark JSON string'),
+    title: z.string().optional().describe('Custom title for the scenario'),
+    scrub: z.boolean().optional().default(true).describe('Anonymize IPs, MACs, and strip payload data'),
+    max_packets: z.number().optional().default(500).describe('Maximum packets to process'),
+  },
+  async ({ input_format, data, title, scrub, max_packets }) => {
+    try {
+      const yamlStr = convertToScenarioYaml({ input_format, data, title, scrub, max_packets });
+      return {
+        content: [{
+          type: 'text',
+          text: yamlStr,
+        }],
+      };
+    } catch (err) {
+      return {
+        content: [{
+          type: 'text',
+          text: `Error generating scenario: ${err.message}`,
+        }],
+        isError: true,
+      };
+    }
   }
 );
 
