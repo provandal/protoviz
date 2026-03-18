@@ -6,6 +6,8 @@ import { parseTsharkJson } from '../../pcap/tsharkReader';
 import { dissectPacket } from '../../pcap/dissect';
 import { evaluateRules } from '../../pcap/ruleEngine';
 import { filterConversation, packetsToScenario } from '../../pcap/pcapToScenario';
+import { generateScenario, scenarioToYaml, suggestTitle } from '../../pcap/scenarioGenerator';
+import { normalizeScenario } from '../../utils/normalizeScenario';
 import useViewerStore from '../../store/viewerStore';
 import FindingsPanel from './FindingsPanel';
 import PacketList from './PacketList';
@@ -57,6 +59,11 @@ export default function TroubleshooterPage() {
   const [inputFormat, setInputFormat] = useState('');
   const [selectedPacketIndex, setSelectedPacketIndex] = useState(null);
   const [showChat, setShowChat] = useState(false);
+  const [showGenModal, setShowGenModal] = useState(false);
+  const [genTitle, setGenTitle] = useState('');
+  const [genScrub, setGenScrub] = useState(true);
+  const [genIncludePayloads, setGenIncludePayloads] = useState(false);
+  const [genResult, setGenResult] = useState(null); // { scenario, warnings }
   const fileRef = useRef(null);
 
   const loadAndEvaluateRules = useCallback(async (dissected) => {
@@ -152,6 +159,57 @@ export default function TroubleshooterPage() {
     useViewerStore.setState({ scenario, currentSlug: slug, step: 0, playing: false, error: null, loading: false });
     navigate(`/${slug}`);
   }, [packets, navigate]);
+
+  const openGenModal = useCallback(() => {
+    if (!packets) return;
+    setGenTitle(suggestTitle(packets));
+    setGenScrub(true);
+    setGenIncludePayloads(false);
+    setGenResult(null);
+    setShowGenModal(true);
+  }, [packets]);
+
+  const handleGenerate = useCallback(() => {
+    if (!packets) return;
+    const result = generateScenario(packets, {
+      title: genTitle,
+      scrub: genScrub,
+      includePayloads: genIncludePayloads,
+    });
+    setGenResult(result);
+  }, [packets, genTitle, genScrub, genIncludePayloads]);
+
+  const handlePreview = useCallback(() => {
+    if (!genResult) return;
+    try {
+      const normalized = normalizeScenario(genResult.scenario);
+      const slug = '_pcap_generated';
+      useViewerStore.setState({ scenario: normalized, currentSlug: slug, step: 0, playing: false, error: null, loading: false });
+      setShowGenModal(false);
+      navigate(`/${slug}`);
+    } catch (err) {
+      setGenResult(prev => ({
+        ...prev,
+        warnings: [...(prev?.warnings || []), `Preview error: ${err.message}`],
+      }));
+    }
+  }, [genResult, navigate]);
+
+  const handleDownloadYaml = useCallback(() => {
+    if (!genResult) return;
+    const yamlStr = scenarioToYaml(genResult.scenario);
+    const blob = new Blob([yamlStr], { type: 'text/yaml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const safeName = (genResult.scenario.meta?.title || 'scenario')
+      .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+$/, '');
+    a.download = `${safeName}.yaml`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [genResult]);
 
   return (
     <div style={{
@@ -283,6 +341,15 @@ export default function TroubleshooterPage() {
               Chat
             </button>
             <button
+              onClick={openGenModal}
+              style={{
+                background: 'none', border: '1px solid #334155', color: '#64748b',
+                padding: '3px 10px', borderRadius: 4, cursor: 'pointer', fontSize: 10,
+              }}
+            >
+              Generate Scenario
+            </button>
+            <button
               onClick={reset}
               style={{
                 background: 'none', border: '1px solid #334155', color: '#64748b',
@@ -331,6 +398,163 @@ export default function TroubleshooterPage() {
               <div style={{ flex: '1 1 45%', borderTop: '1px solid #1e293b', minHeight: 0, overflow: 'hidden' }}>
                 <TraceChatPanel packets={packets} findings={findings} selectedPacketIndex={selectedPacketIndex} />
               </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Generate Scenario Modal */}
+      {showGenModal && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+          }}
+          onClick={(e) => { if (e.target === e.currentTarget) setShowGenModal(false); }}
+        >
+          <div style={{
+            background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8,
+            padding: 24, width: 460, maxHeight: '80vh', overflowY: 'auto',
+            boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+          }}>
+            <div style={{ color: '#e2e8f0', fontSize: 14, fontWeight: 700, marginBottom: 16 }}>
+              Generate Scenario
+            </div>
+
+            {!genResult ? (
+              <>
+                {/* Title */}
+                <div style={{ marginBottom: 12 }}>
+                  <label style={{ display: 'block', color: '#94a3b8', fontSize: 10, fontWeight: 600, marginBottom: 4 }}>
+                    Title
+                  </label>
+                  <input
+                    type="text"
+                    value={genTitle}
+                    onChange={(e) => setGenTitle(e.target.value)}
+                    style={{
+                      width: '100%', background: '#020817', border: '1px solid #334155',
+                      color: '#e2e8f0', borderRadius: 4, padding: '6px 8px', fontSize: 12,
+                      outline: 'none', boxSizing: 'border-box',
+                    }}
+                  />
+                </div>
+
+                {/* Scrub toggle */}
+                <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    id="gen-scrub"
+                    checked={genScrub}
+                    onChange={(e) => setGenScrub(e.target.checked)}
+                    style={{ accentColor: '#3b82f6' }}
+                  />
+                  <label htmlFor="gen-scrub" style={{ color: '#94a3b8', fontSize: 11, cursor: 'pointer' }}>
+                    Scrub sensitive data (replace real IPs and MACs)
+                  </label>
+                </div>
+
+                {/* Include payloads toggle */}
+                <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    id="gen-payloads"
+                    checked={genIncludePayloads}
+                    onChange={(e) => setGenIncludePayloads(e.target.checked)}
+                    style={{ accentColor: '#3b82f6' }}
+                  />
+                  <label htmlFor="gen-payloads" style={{ color: '#94a3b8', fontSize: 11, cursor: 'pointer' }}>
+                    Include payload bytes
+                  </label>
+                </div>
+
+                {/* Buttons */}
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button
+                    onClick={() => setShowGenModal(false)}
+                    style={{
+                      background: 'none', border: '1px solid #334155', color: '#64748b',
+                      padding: '6px 16px', borderRadius: 4, cursor: 'pointer', fontSize: 11,
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleGenerate}
+                    style={{
+                      background: 'linear-gradient(135deg, #1e40af, #7c3aed)',
+                      border: 'none', color: '#fff',
+                      padding: '6px 16px', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600,
+                    }}
+                  >
+                    Generate
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                {/* Warnings */}
+                {genResult.warnings.length > 0 && (
+                  <div style={{
+                    marginBottom: 12, padding: '8px 12px',
+                    background: '#1c1917', border: '1px solid #78350f', borderRadius: 4,
+                  }}>
+                    {genResult.warnings.map((w, i) => (
+                      <div key={i} style={{ color: '#fde68a', fontSize: 10, lineHeight: 1.6 }}>
+                        {w}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Success info */}
+                <div style={{
+                  marginBottom: 16, padding: '10px 12px',
+                  background: '#052e16', border: '1px solid #166534', borderRadius: 4,
+                }}>
+                  <div style={{ color: '#4ade80', fontSize: 11, fontWeight: 600 }}>
+                    Scenario generated successfully
+                  </div>
+                  <div style={{ color: '#86efac', fontSize: 10, marginTop: 4 }}>
+                    {genResult.scenario.meta.title}
+                  </div>
+                  <div style={{ color: '#4ade80', fontSize: 10, marginTop: 2 }}>
+                    {genResult.scenario.frames?.length || 0} frames, {genResult.scenario.timeline?.length || 0} timeline events, {genResult.scenario.topology?.actors?.length || 0} actors
+                  </div>
+                </div>
+
+                {/* Action buttons */}
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button
+                    onClick={() => { setGenResult(null); }}
+                    style={{
+                      background: 'none', border: '1px solid #334155', color: '#64748b',
+                      padding: '6px 16px', borderRadius: 4, cursor: 'pointer', fontSize: 11,
+                    }}
+                  >
+                    Back
+                  </button>
+                  <button
+                    onClick={handleDownloadYaml}
+                    style={{
+                      background: 'none', border: '1px solid #334155', color: '#93c5fd',
+                      padding: '6px 16px', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600,
+                    }}
+                  >
+                    Download YAML
+                  </button>
+                  <button
+                    onClick={handlePreview}
+                    style={{
+                      background: 'linear-gradient(135deg, #1e40af, #7c3aed)',
+                      border: 'none', color: '#fff',
+                      padding: '6px 16px', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600,
+                    }}
+                  >
+                    Preview
+                  </button>
+                </div>
+              </>
             )}
           </div>
         </div>
