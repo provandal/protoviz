@@ -1,12 +1,14 @@
 import useViewerStore from '../../store/viewerStore';
 import EventDetail from '../viewer/EventDetail';
 import PacketInspector from '../viewer/PacketInspector';
+import CommunityNotesPanel from '../viewer/CommunityNotesPanel';
 import ChatPanel from '../chat/ChatPanel';
 import AboutPanel from '../about/AboutPanel';
 
 const TABS = [
   { id: 'explain', label: 'Explain' },
   { id: 'inspect', label: 'Inspect Packet' },
+  { id: 'community', label: 'Community' },
   { id: 'chat', label: 'Chat' },
   { id: 'about', label: 'About' },
 ];
@@ -15,6 +17,7 @@ const TABS = [
 const MOBILE_LABELS = {
   explain: 'Explain',
   inspect: 'Inspect',
+  community: 'Community',
   chat: 'Chat',
   about: 'About',
 };
@@ -86,6 +89,7 @@ export default function BottomPane({ event, phaseColor, onPopout }) {
       <div style={{ flex: 1, overflowY: 'auto' }}>
         {activeTab === 'explain' && <EventDetail event={event} phaseColor={phaseColor} />}
         {activeTab === 'inspect' && <PacketInspector event={event} />}
+        {activeTab === 'community' && <CommunityNotesPanel />}
         {activeTab === 'chat' && <ChatPanel />}
         {activeTab === 'about' && <AboutPanel />}
       </div>

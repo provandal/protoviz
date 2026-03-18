@@ -1,6 +1,7 @@
 import { useRef, useEffect, useMemo } from 'react';
 import { PHASE_COLORS } from '../../utils/constants';
 import useViewerStore from '../../store/viewerStore';
+import useCommunityNotes from '../../hooks/useCommunityNotes';
 
 /**
  * Determine the visual span of a state_change event based on which actors it affects.
@@ -73,6 +74,9 @@ export default function SequenceDiagram({ timeline, currentStep, onStepSelect, l
     } catch { return {}; }
   }, [slug, currentStep]);
 
+  // Community notes indicators
+  const { stepsWithNotes: communitySteps } = useCommunityNotes(slug);
+
   useEffect(() => {
     currentRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, [currentStep]);
@@ -92,6 +96,7 @@ export default function SequenceDiagram({ timeline, currentStep, onStepSelect, l
             const isCurrent = idx === currentStep;
             const isPast = idx < currentStep;
             const hasNote = !!annotations[idx];
+            const hasCommunityNote = communitySteps.has(idx);
             const color = ev.color || '#475569';
             const isFrame = ev.type === 'frame_tx';
             const span = isFrame ? getFrameSpan(ev, leftActorId, rightActorId) : getStateChangeSpan(ev, leftActorId, rightActorId);
@@ -116,10 +121,13 @@ export default function SequenceDiagram({ timeline, currentStep, onStepSelect, l
                 onMouseEnter={e => !isCurrent && (e.currentTarget.style.background = '#0f172a')}
                 onMouseLeave={e => !isCurrent && (e.currentTarget.style.background = isPast ? '#0a0f1a' : 'transparent')}
               >
-                {/* Note indicator */}
-                <div style={{ width: 12, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                {/* Note indicators */}
+                <div style={{ width: 16, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2 }}>
                   {hasNote && (
-                    <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#f59e0b', flexShrink: 0 }} title="Has note" />
+                    <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#f59e0b', flexShrink: 0 }} title="Has personal note" />
+                  )}
+                  {hasCommunityNote && (
+                    <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#3b82f6', flexShrink: 0 }} title="Has community note" />
                   )}
                 </div>
                 {/* Left actor column */}
