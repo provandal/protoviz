@@ -69,6 +69,11 @@ export const PHASE_COLORS = {
   // NCCL collective communication phases
   'Reduce-Scatter': '#dc2626',
   'AllGather': '#059669',
+  // DNS phases
+  'DNS': '#b45309',
+  // HTTP/2 phases
+  'HTTP/2': '#7c3aed',
+  'HTTP/2 Data': '#059669',
   // TLS phases
   'TLS Handshake': '#1e40af',
   'TLS Data': '#0369a1',

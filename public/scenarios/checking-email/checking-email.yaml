@@ -1,0 +1,2255 @@
+meta:
+  id: "checking-email"
+  title: "Checking Your Email: What Really Happens When You Click Inbox"
+  protocol: "Multi-protocol (DNS, TCP, TLS 1.3, HTTP/2)"
+  protocol_family: "TCP/IP"
+  version: "1.0.0"
+  description: >
+    You click your Gmail bookmark. Before a single email appears, your laptop
+    fires off ~20 protocol exchanges in under 500 milliseconds: a DNS lookup to
+    find Gmail's IP address, a TCP 3-way handshake to open a connection, a TLS 1.3
+    handshake to encrypt everything, and HTTP/2 multiplexed requests to fetch the
+    inbox HTML, JavaScript bundle, and API data — all at the same time over one
+    connection. This scenario reveals the hidden complexity behind a mundane action,
+    covering 7+ protocols: Ethernet, IP, UDP, DNS, TCP, TLS 1.3, and HTTP/2.
+
+  learning_objectives:
+    - "See that DNS resolution happens before any connection — the internet's phone book lookup"
+    - "Understand TCP's 3-way handshake (SYN → SYN-ACK → ACK) as the foundation for reliable connections"
+    - "Observe TLS 1.3's 1-RTT handshake — your browser and Gmail exchange cryptographic keys in one round trip"
+    - "Discover that the SNI extension in TLS reveals which site you visit, even though everything else is encrypted"
+    - "Learn that ALPN in the TLS handshake negotiates HTTP/2 before the handshake even finishes"
+    - "See HTTP/2 multiplexing in action — HTML, JavaScript, and API data all fetched simultaneously over one connection"
+    - "Appreciate that a simple 'check email' involves 7+ layered protocols working together in under 500ms"
+
+  difficulty: "beginner"
+
+  authors:
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+
+  created: "2026-03-18"
+  updated: "2026-03-18"
+
+  tags:
+    - "DNS"
+    - "TCP"
+    - "TLS 1.3"
+    - "HTTP/2"
+    - "HTTPS"
+    - "multi-protocol"
+    - "beginner"
+    - "everyday internet"
+    - "education"
+
+  primary_specs:
+    - document: "RFC 1035"
+      section: "4"
+      title: "Domain Names — Implementation and Specification"
+      url: "https://datatracker.ietf.org/doc/html/rfc1035#section-4"
+      alt_url: ""
+    - document: "RFC 9293"
+      section: "3.5"
+      title: "TCP Connection State Diagram"
+      url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5"
+      alt_url: ""
+    - document: "RFC 8446"
+      section: "1"
+      title: "The Transport Layer Security (TLS) Protocol Version 1.3"
+      url: "https://www.rfc-editor.org/rfc/rfc8446"
+      alt_url: ""
+    - document: "RFC 9113"
+      section: "1"
+      title: "HTTP/2"
+      url: "https://www.rfc-editor.org/rfc/rfc9113"
+      alt_url: ""
+
+  content_disclaimer: >
+    This scenario illustrates the protocols involved in loading a webmail inbox.
+    IP addresses, DNS responses, and HTTP payloads are illustrative. Cryptographic
+    values are representative, not from a real capture. Gmail is used as a familiar
+    example; any HTTPS webmail service involves the same protocol stack.
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "laptop"
+      type: "host"
+      label: "Your Laptop"
+      description: "Your laptop running a web browser — the starting point for checking email"
+      hardware: "Laptop with Wi-Fi / Ethernet"
+      os: "Windows / macOS / Linux"
+      ip: "10.0.1.10"
+      mac: "a4:83:e7:2b:c1:00"
+      position: "left"
+
+    - id: "router"
+      type: "switch"
+      label: "Home Router"
+      description: "Home router / default gateway — forwards packets between your LAN and the internet"
+      hardware: "Consumer Wi-Fi router"
+      position: "center"
+
+    - id: "dns"
+      type: "host"
+      label: "DNS Resolver"
+      description: "Your ISP's recursive DNS resolver (or 8.8.8.8, 1.1.1.1, etc.)"
+      hardware: "DNS server"
+      ip: "10.0.1.1"
+      mac: "d4:6a:35:11:22:01"
+      position: "right"
+
+    - id: "gmail"
+      type: "host"
+      label: "Gmail Server"
+      description: "Google's frontend server handling your Gmail HTTPS connection"
+      hardware: "Google frontend server"
+      os: "Linux"
+      ip: "142.250.80.5"
+      mac: "00:00:00:00:00:00"
+      position: "right"
+
+  links:
+    - id: "link-laptop-router"
+      from: "laptop"
+      to: "router"
+      speed_gbps: 1
+      media: "copper"
+    - id: "link-router-dns"
+      from: "router"
+      to: "dns"
+      speed_gbps: 1
+      media: "copper"
+    - id: "link-router-gmail"
+      from: "router"
+      to: "gmail"
+      speed_gbps: 1
+      media: "copper"
+
+# ─────────────────────────────────────────────────────────────────
+# OSI LAYERS
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  laptop:
+    - layer: 7
+      name: "Application (Browser)"
+      components: ["Chrome / Firefox / Safari", "HTTP/2 engine"]
+      state_schema:
+        app_state:
+          type: "string"
+          description: "What the browser is doing right now"
+          initial: "idle"
+        url:
+          type: "string"
+          description: "URL being loaded"
+          initial: "—"
+
+    - layer: 6
+      name: "TLS 1.3"
+      components: ["BoringSSL / NSS / Schannel"]
+      state_schema:
+        tls_state:
+          type: "string"
+          description: "TLS handshake state"
+          initial: "—"
+        cipher_suite:
+          type: "string"
+          initial: "—"
+
+    - layer: 4
+      name: "TCP / UDP"
+      components: ["OS TCP/UDP stack"]
+      state_schema:
+        tcp_state:
+          type: "string"
+          description: "TCP connection state"
+          initial: "CLOSED"
+        src_port:
+          type: "integer"
+          initial: 0
+        dst_port:
+          type: "integer"
+          initial: 0
+
+    - layer: 3
+      name: "IP"
+      components: ["IPv4"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "10.0.1.10"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+
+  router:
+    - layer: 3
+      name: "IP Routing / NAT"
+      components: ["NAT gateway", "DHCP server"]
+      state_schema:
+        nat_state:
+          type: "string"
+          initial: "forwarding"
+    - layer: 2
+      name: "Ethernet Switching"
+      components: ["L2 bridge"]
+      state_schema:
+        fwd_table_entries:
+          type: "integer"
+          initial: 0
+    - layer: 1
+      name: "Physical"
+      components: ["Wi-Fi / Ethernet PHY"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "up"
+
+  dns:
+    - layer: 7
+      name: "DNS Resolver"
+      components: ["Recursive resolver (Unbound / BIND / dnsmasq)"]
+      state_schema:
+        query_state:
+          type: "string"
+          initial: "idle"
+        cache_hit:
+          type: "boolean"
+          initial: false
+
+    - layer: 4
+      name: "UDP"
+      components: ["UDP port 53"]
+      state_schema:
+        port:
+          type: "integer"
+          initial: 53
+
+    - layer: 3
+      name: "IP"
+      components: ["IPv4"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "10.0.1.1"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+
+  gmail:
+    - layer: 7
+      name: "Application (Gmail)"
+      components: ["Google Frontend (GFE)", "Gmail backend"]
+      state_schema:
+        app_state:
+          type: "string"
+          initial: "listening"
+        request_count:
+          type: "integer"
+          initial: 0
+
+    - layer: 6
+      name: "TLS 1.3"
+      components: ["BoringSSL"]
+      state_schema:
+        tls_state:
+          type: "string"
+          initial: "—"
+        cipher_suite:
+          type: "string"
+          initial: "—"
+
+    - layer: 4
+      name: "TCP"
+      components: ["Linux TCP stack"]
+      state_schema:
+        tcp_state:
+          type: "string"
+          initial: "LISTEN"
+        src_port:
+          type: "integer"
+          initial: 443
+
+    - layer: 3
+      name: "IP"
+      components: ["IPv4"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "142.250.80.5"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+
+# ─────────────────────────────────────────────────────────────────
+# FRAMES
+# ─────────────────────────────────────────────────────────────────
+frames:
+  # ── Phase 1: DNS Resolution ────────────────────────────────────
+  - id: "dns_query"
+    name: "DNS Query — Who is mail.google.com?"
+    description: "Browser asks the DNS resolver to look up mail.google.com's IP address"
+    from: "laptop"
+    to: "dns"
+    via: ["router"]
+    total_bytes: 82
+    color: "#b45309"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "d4:6a:35:11:22:01"
+            description: "Router's MAC — your laptop sends to the default gateway, not directly to the DNS server"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "a4:83:e7:2b:c1:00"
+            description: "Your laptop's MAC address"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Your laptop's IP address"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.1"
+            description: "DNS resolver IP — often your router or a public resolver like 8.8.8.8"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: "17 (UDP)"
+            description: "DNS typically uses UDP for queries under 512 bytes"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time to Live — decremented by each router, prevents infinite loops"
+
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 52481
+            description: "Random ephemeral port chosen by the OS"
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 53
+            description: "DNS always listens on port 53 — one of the most well-known port numbers"
+            spec_refs:
+              - document: "RFC 1035"
+                section: "4.2"
+                title: "Transport"
+                url: "https://datatracker.ietf.org/doc/html/rfc1035#section-4.2"
+          - name: "Length"
+            abbrev: "udp.length"
+            bits: 16
+            value: 48
+            description: "UDP header (8 bytes) + DNS payload (40 bytes)"
+
+      - name: "DNS Query"
+        abbrev: "dns"
+        layer: 7
+        total_bytes: 40
+        fields:
+          - name: "Transaction ID"
+            abbrev: "dns.id"
+            bits: 16
+            value: "0xA1B2"
+            description: "Random ID to match this query with its response — DNS over UDP is stateless, so this is the only way to correlate them"
+            spec_refs:
+              - document: "RFC 1035"
+                section: "4.1.1"
+                title: "Header Section Format"
+                url: "https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.1"
+          - name: "Flags"
+            abbrev: "dns.flags"
+            bits: 16
+            value: "0x0100"
+            description: "QR=0 (Query), Opcode=0 (Standard Query), RD=1 (Recursion Desired — asks the resolver to do the heavy lifting)"
+          - name: "Questions"
+            abbrev: "dns.count.queries"
+            bits: 16
+            value: 1
+            description: "One question: 'What is the IP address of mail.google.com?'"
+          - name: "Query Name"
+            abbrev: "dns.qry.name"
+            bits: 152
+            value: "mail.google.com"
+            description: "The domain name we are looking up — encoded as a sequence of labels (4.mail, 6.google, 3.com, 0)"
+          - name: "Query Type"
+            abbrev: "dns.qry.type"
+            bits: 16
+            value: "A (1)"
+            description: "Type A = IPv4 address record. Type AAAA (28) would be for IPv6."
+            spec_refs:
+              - document: "RFC 1035"
+                section: "3.2.2"
+                title: "TYPE values"
+                url: "https://datatracker.ietf.org/doc/html/rfc1035#section-3.2.2"
+          - name: "Query Class"
+            abbrev: "dns.qry.class"
+            bits: 16
+            value: "IN (1)"
+            description: "Internet class — the only class anyone uses in practice"
+
+  - id: "dns_response"
+    name: "DNS Response — 142.250.80.5"
+    description: "DNS resolver returns Gmail's IP address with the CNAME chain"
+    from: "dns"
+    to: "laptop"
+    via: ["router"]
+    total_bytes: 142
+    color: "#b45309"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "a4:83:e7:2b:c1:00"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "d4:6a:35:11:22:01"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.1"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.10"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: "17 (UDP)"
+
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 53
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 52481
+
+      - name: "DNS Response"
+        abbrev: "dns"
+        layer: 7
+        total_bytes: 100
+        fields:
+          - name: "Transaction ID"
+            abbrev: "dns.id"
+            bits: 16
+            value: "0xA1B2"
+            description: "Matches the query — this is how your laptop knows which question this answer belongs to"
+          - name: "Flags"
+            abbrev: "dns.flags"
+            bits: 16
+            value: "0x8180"
+            description: "QR=1 (Response), AA=0 (not authoritative — this is a cached/recursive answer), RD=1, RA=1 (Recursion Available)"
+          - name: "Answer Count"
+            abbrev: "dns.count.answers"
+            bits: 16
+            value: 3
+            description: "Three answer records: a CNAME chain plus the final A record"
+          - name: "Answer 1 — CNAME"
+            abbrev: "dns.resp.name"
+            bits: 0
+            value: "mail.google.com → googlemail.l.google.com"
+            description: "CNAME (Canonical Name) record — mail.google.com is actually an alias. Google uses CNAME chains for load balancing and geographic routing."
+            spec_refs:
+              - document: "RFC 1035"
+                section: "3.3.1"
+                title: "CNAME RDATA Format"
+                url: "https://datatracker.ietf.org/doc/html/rfc1035#section-3.3.1"
+          - name: "Answer 2 — A Record"
+            abbrev: "dns.a"
+            bits: 32
+            value: "142.250.80.5"
+            description: "The actual IPv4 address of Gmail's frontend server. This IP may differ depending on your location — Google has servers worldwide."
+          - name: "TTL"
+            abbrev: "dns.resp.ttl"
+            bits: 32
+            value: 300
+            description: "Time to live: 300 seconds (5 minutes). Your laptop can cache this answer and skip DNS for the next 5 minutes. Short TTLs let Google shift traffic quickly."
+
+  # ── Phase 2: TCP 3-Way Handshake ──────────────────────────────
+  - id: "tcp_syn"
+    name: "TCP SYN → Gmail port 443"
+    description: "Your laptop initiates a TCP connection to Gmail's HTTPS port"
+    from: "laptop"
+    to: "gmail"
+    via: ["router"]
+    total_bytes: 74
+    color: "#0f766e"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "d4:6a:35:11:22:01"
+            description: "Router's MAC — even though the final destination is Gmail, on your LAN the frame goes to your router first"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "a4:83:e7:2b:c1:00"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Your laptop's private IP — your router will NAT this to your public IP before it hits the internet"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "142.250.80.5"
+            description: "Gmail's IP — we just learned this from DNS 50 milliseconds ago"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: "6 (TCP)"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 40
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 54321
+            description: "Random ephemeral port assigned by the OS — one port per connection"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 443
+            description: "HTTPS port — this is where TLS-encrypted web traffic goes"
+            spec_refs:
+              - document: "RFC 9293"
+                section: "3.5"
+                title: "Establishing a Connection"
+                url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 12
+            value: "0x002 [SYN]"
+            description: "SYN (Synchronize) — 'Hello, I'd like to connect!' This is step 1 of the 3-way handshake."
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 0
+            description: "Initial Sequence Number (relative). In reality this is a random 32-bit number to prevent spoofing."
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Maximum bytes the sender can accept without acknowledgment"
+          - name: "Options — MSS"
+            abbrev: "tcp.options.mss_val"
+            bits: 32
+            value: 1460
+            description: "Maximum Segment Size: 1460 bytes = 1500 (Ethernet MTU) minus 20 (IP header) minus 20 (TCP header). This tells Gmail the largest chunk of data your laptop can handle per packet."
+          - name: "Options — Window Scale"
+            abbrev: "tcp.options.wscale_val"
+            bits: 24
+            value: 7
+            description: "Window scale factor 7 means the real window = advertised × 128. This allows windows up to 8 MB — essential for high-bandwidth connections."
+          - name: "Options — SACK Permitted"
+            abbrev: "tcp.options.sack_perm"
+            bits: 16
+            value: true
+            description: "Selective Acknowledgment — lets the receiver report gaps so only missing data is retransmitted"
+
+  - id: "tcp_syn_ack"
+    name: "TCP SYN-ACK ← Gmail responds"
+    description: "Gmail acknowledges the SYN and sends its own SYN"
+    from: "gmail"
+    to: "laptop"
+    via: ["router"]
+    total_bytes: 74
+    color: "#0f766e"
+    headers:
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "142.250.80.5"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.10"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 40
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 443
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 54321
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 12
+            value: "0x012 [SYN, ACK]"
+            description: "SYN + ACK — 'Got your SYN, here's mine!' Step 2 of the 3-way handshake. Gmail acknowledges your request AND proposes its own sequence number."
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 0
+            description: "Gmail's Initial Sequence Number (relative)"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 1
+            description: "Acknowledges your SYN — 'I received your seq 0, send me seq 1 next.' The +1 proves Gmail received your SYN."
+          - name: "Options — MSS"
+            abbrev: "tcp.options.mss_val"
+            bits: 32
+            value: 1460
+          - name: "Options — Window Scale"
+            abbrev: "tcp.options.wscale_val"
+            bits: 24
+            value: 8
+            description: "Google uses scale factor 8 — window can go up to 16 MB"
+
+  - id: "tcp_ack_handshake"
+    name: "TCP ACK → Handshake complete"
+    description: "Your laptop completes the 3-way handshake"
+    from: "laptop"
+    to: "gmail"
+    via: ["router"]
+    total_bytes: 54
+    color: "#0f766e"
+    headers:
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 20
+        fields:
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 12
+            value: "0x010 [ACK]"
+            description: "Final ACK — 'Got your SYN-ACK, we're connected!' Step 3. The TCP connection is now ESTABLISHED."
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 1
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 1
+            description: "Acknowledges Gmail's SYN. Both sides are now synchronized and ready for data."
+
+  # ── Phase 3: TLS 1.3 Handshake ────────────────────────────────
+  - id: "tls_client_hello"
+    name: "TLS ClientHello — let's encrypt this"
+    description: "Your browser proposes TLS 1.3 with cryptographic parameters and its key share"
+    from: "laptop"
+    to: "gmail"
+    via: ["router"]
+    total_bytes: 571
+    color: "#1e40af"
+    headers:
+      - name: "TLS Record"
+        abbrev: "tls.record"
+        layer: 5
+        total_bytes: 5
+        fields:
+          - name: "Content Type"
+            abbrev: "tls.record.content_type"
+            bits: 8
+            value: "22 (Handshake)"
+            description: "Handshake message — setting up encryption"
+            spec_refs:
+              - document: "RFC 8446"
+                section: "5.1"
+                title: "Record Layer"
+                url: "https://www.rfc-editor.org/rfc/rfc8446#section-5.1"
+          - name: "Legacy Version"
+            abbrev: "tls.record.version"
+            bits: 16
+            value: "0x0301 (TLS 1.0)"
+            description: "Looks like TLS 1.0 on purpose — this fools old middleboxes that would break if they saw a version number they didn't recognize. The real version is negotiated inside."
+
+      - name: "Handshake: ClientHello"
+        abbrev: "tls.handshake"
+        layer: 6
+        total_bytes: 512
+        fields:
+          - name: "Handshake Type"
+            abbrev: "tls.handshake.type"
+            bits: 8
+            value: "1 (ClientHello)"
+            spec_refs:
+              - document: "RFC 8446"
+                section: "4.1.2"
+                title: "Client Hello"
+                url: "https://www.rfc-editor.org/rfc/rfc8446#section-4.1.2"
+          - name: "Legacy Version"
+            abbrev: "tls.handshake.version"
+            bits: 16
+            value: "0x0303 (TLS 1.2)"
+            description: "Frozen at TLS 1.2 — the actual version is in the supported_versions extension below"
+          - name: "Random"
+            abbrev: "tls.handshake.random"
+            bits: 256
+            value: "7e3f1a9b...32 bytes"
+            description: "32 bytes of randomness used in key derivation — ensures every handshake produces unique keys"
+          - name: "Cipher Suites"
+            abbrev: "tls.handshake.ciphersuites"
+            bits: 48
+            value: "TLS_AES_256_GCM_SHA384, TLS_AES_128_GCM_SHA256, TLS_CHACHA20_POLY1305_SHA256"
+            description: "Your browser offers three strong cipher suites. All are AEAD (Authenticated Encryption with Associated Data) — TLS 1.3 removed every weak cipher from earlier versions. No more RC4, no more CBC mode."
+            spec_refs:
+              - document: "RFC 8446"
+                section: "B.4"
+                title: "Cipher Suites"
+                url: "https://www.rfc-editor.org/rfc/rfc8446#appendix-B.4"
+          - name: "Extension: supported_versions"
+            abbrev: "tls.extension.supported_versions"
+            bits: 32
+            value: "[0x0304 (TLS 1.3)]"
+            description: "THIS is how TLS 1.3 is actually negotiated — not the version field above. It's a clever hack to avoid breaking old equipment."
+            spec_refs:
+              - document: "RFC 8446"
+                section: "4.2.1"
+                title: "Supported Versions"
+                url: "https://www.rfc-editor.org/rfc/rfc8446#section-4.2.1"
+          - name: "Extension: key_share (x25519)"
+            abbrev: "tls.extension.key_share"
+            bits: 264
+            value: "x25519: 0xE6DB68...32 bytes (your browser's public key)"
+            description: "This is the magic of TLS 1.3: your browser sends its Diffie-Hellman public key in the FIRST message. Gmail can compute the shared secret immediately, which is why TLS 1.3 only needs 1 round trip. In TLS 1.2, this took 2 round trips."
+            spec_refs:
+              - document: "RFC 8446"
+                section: "4.2.8"
+                title: "Key Share"
+                url: "https://www.rfc-editor.org/rfc/rfc8446#section-4.2.8"
+          - name: "Extension: server_name (SNI)"
+            abbrev: "tls.extension.server_name"
+            bits: 136
+            value: "mail.google.com"
+            description: "Server Name Indication — tells Gmail which hostname you want. This is how one server can host multiple sites. Fun fact: SNI is sent in CLEARTEXT, so anyone watching your network traffic can see you're visiting Gmail, even though everything else is encrypted."
+          - name: "Extension: ALPN"
+            abbrev: "tls.extension.alpn"
+            bits: 24
+            value: "[h2, http/1.1]"
+            description: "Application-Layer Protocol Negotiation — your browser says 'I prefer HTTP/2, but I can do HTTP/1.1.' This is negotiated INSIDE the TLS handshake so the right protocol is ready the instant encryption starts."
+            spec_refs:
+              - document: "RFC 7301"
+                section: "3"
+                title: "Application-Layer Protocol Negotiation Extension"
+                url: "https://www.rfc-editor.org/rfc/rfc7301#section-3"
+          - name: "Extension: signature_algorithms"
+            abbrev: "tls.extension.sig_algs"
+            bits: 48
+            value: "[ecdsa_secp256r1_sha256, rsa_pss_rsae_sha256, ed25519]"
+            description: "Acceptable algorithms for signing the server's certificate"
+
+  - id: "tls_server_hello_flight"
+    name: "TLS ServerHello + Encrypted Flight"
+    description: "Gmail responds with its key share, then sends its certificate and Finished — all encrypted"
+    from: "gmail"
+    to: "laptop"
+    via: ["router"]
+    total_bytes: 3400
+    color: "#1e40af"
+    headers:
+      - name: "Handshake: ServerHello"
+        abbrev: "tls.handshake"
+        layer: 6
+        total_bytes: 96
+        fields:
+          - name: "Handshake Type"
+            abbrev: "tls.handshake.type"
+            bits: 8
+            value: "2 (ServerHello)"
+            spec_refs:
+              - document: "RFC 8446"
+                section: "4.1.3"
+                title: "Server Hello"
+                url: "https://www.rfc-editor.org/rfc/rfc8446#section-4.1.3"
+          - name: "Random"
+            abbrev: "tls.handshake.random"
+            bits: 256
+            value: "5f6e7d8c...32 bytes"
+          - name: "Cipher Suite"
+            abbrev: "tls.handshake.ciphersuite"
+            bits: 16
+            value: "0x1302 (TLS_AES_256_GCM_SHA384)"
+            description: "Gmail picks AES-256-GCM — 256-bit encryption keys, military-grade. Your emails will be safe."
+          - name: "Extension: supported_versions"
+            abbrev: "tls.extension.supported_versions"
+            bits: 16
+            value: "0x0304 (TLS 1.3)"
+            description: "Confirmed: TLS 1.3 is in effect"
+          - name: "Extension: key_share (x25519)"
+            abbrev: "tls.extension.key_share"
+            bits: 264
+            value: "x25519: 0x3B41...32 bytes (Gmail's public key)"
+            description: "Gmail's x25519 public key. Now both sides can compute the shared secret: x25519(my_private, their_public). This is elliptic curve Diffie-Hellman math — and it just happened in about 50 microseconds."
+            spec_refs:
+              - document: "RFC 7748"
+                section: "5"
+                title: "The X25519 Function"
+                url: "https://www.rfc-editor.org/rfc/rfc7748#section-5"
+
+      - name: "EncryptedExtensions (decrypted view)"
+        abbrev: "tls.handshake.encrypted_extensions"
+        layer: 6
+        total_bytes: 20
+        fields:
+          - name: "Handshake Type"
+            abbrev: "tls.handshake.type"
+            bits: 8
+            value: "8 (EncryptedExtensions)"
+            description: "Everything from here on is ENCRYPTED — a passive observer sees only opaque bytes"
+            spec_refs:
+              - document: "RFC 8446"
+                section: "4.3.1"
+                title: "Encrypted Extensions"
+                url: "https://www.rfc-editor.org/rfc/rfc8446#section-4.3.1"
+          - name: "ALPN"
+            abbrev: "tls.extension.alpn"
+            bits: 24
+            value: "h2"
+            description: "Gmail agrees to HTTP/2 — this means multiplexed streams, header compression, and server push. The protocol upgrade was negotiated before the handshake even finished."
+
+      - name: "Certificate (decrypted view)"
+        abbrev: "tls.handshake.certificate"
+        layer: 6
+        total_bytes: 2500
+        fields:
+          - name: "Handshake Type"
+            abbrev: "tls.handshake.type"
+            bits: 8
+            value: "11 (Certificate)"
+            spec_refs:
+              - document: "RFC 8446"
+                section: "4.4.2"
+                title: "Certificate"
+                url: "https://www.rfc-editor.org/rfc/rfc8446#section-4.4.2"
+          - name: "Certificate Chain"
+            abbrev: "tls.handshake.certificate_chain"
+            bits: 0
+            value: "mail.google.com (leaf) → GTS CA 1C3 (intermediate) → GTS Root R1 (root)"
+            description: "Gmail's certificate chain. Your browser checks: (1) Is the leaf certificate for mail.google.com? (2) Did the intermediate CA sign it? (3) Is the root CA trusted? All of this is encrypted in TLS 1.3 — in TLS 1.2, anyone snooping could see the certificate."
+
+      - name: "CertificateVerify (decrypted view)"
+        abbrev: "tls.handshake.certificate_verify"
+        layer: 6
+        total_bytes: 100
+        fields:
+          - name: "Handshake Type"
+            abbrev: "tls.handshake.type"
+            bits: 8
+            value: "15 (CertificateVerify)"
+            description: "Gmail proves it actually owns the private key for that certificate by signing the handshake transcript"
+            spec_refs:
+              - document: "RFC 8446"
+                section: "4.4.3"
+                title: "Certificate Verify"
+                url: "https://www.rfc-editor.org/rfc/rfc8446#section-4.4.3"
+          - name: "Signature Algorithm"
+            abbrev: "tls.handshake.sig_algorithm"
+            bits: 16
+            value: "ecdsa_secp256r1_sha256 (0x0403)"
+            description: "ECDSA signature — much shorter than RSA, and faster to verify"
+          - name: "Signature"
+            abbrev: "tls.handshake.sig"
+            bits: 512
+            value: "0x3045...64 bytes"
+            description: "Digital signature proving Gmail has the private key. If anyone tampered with any handshake message, this signature would not verify."
+
+      - name: "Server Finished (decrypted view)"
+        abbrev: "tls.handshake.finished"
+        layer: 6
+        total_bytes: 52
+        fields:
+          - name: "Handshake Type"
+            abbrev: "tls.handshake.type"
+            bits: 8
+            value: "20 (Finished)"
+            spec_refs:
+              - document: "RFC 8446"
+                section: "4.4.4"
+                title: "Finished"
+                url: "https://www.rfc-editor.org/rfc/rfc8446#section-4.4.4"
+          - name: "Verify Data"
+            abbrev: "tls.handshake.verify_data"
+            bits: 384
+            value: "HMAC-SHA384(finished_key, Hash(handshake_context))"
+            description: "An HMAC proving that neither side's view of the handshake was tampered with. If this checks out, the handshake is legitimate."
+
+  - id: "tls_client_finished"
+    name: "Client Finished — TLS 1.3 handshake complete"
+    description: "Your browser confirms the handshake — encryption is active"
+    from: "laptop"
+    to: "gmail"
+    via: ["router"]
+    total_bytes: 80
+    color: "#1e40af"
+    headers:
+      - name: "TLS Record (encrypted)"
+        abbrev: "tls.record"
+        layer: 5
+        total_bytes: 5
+        fields:
+          - name: "Content Type"
+            abbrev: "tls.record.content_type"
+            bits: 8
+            value: "23 (Application Data)"
+            description: "Looks like Application Data on the wire — the real type (Handshake) is hidden inside the encrypted payload"
+
+      - name: "Client Finished (decrypted view)"
+        abbrev: "tls.handshake.finished"
+        layer: 6
+        total_bytes: 52
+        fields:
+          - name: "Handshake Type"
+            abbrev: "tls.handshake.type"
+            bits: 8
+            value: "20 (Finished)"
+          - name: "Verify Data"
+            abbrev: "tls.handshake.verify_data"
+            bits: 384
+            value: "HMAC-SHA384(client_finished_key, Hash(full_handshake))"
+            description: "Your browser's HMAC over the entire handshake. After Gmail verifies this, both sides derive application traffic keys and are ready to exchange encrypted data."
+
+  # ── Phase 4: HTTP/2 Connection Setup ───────────────────────────
+  - id: "h2_settings"
+    name: "HTTP/2 SETTINGS exchange"
+    description: "Both sides negotiate HTTP/2 connection parameters"
+    from: "laptop"
+    to: "gmail"
+    via: ["router"]
+    total_bytes: 150
+    color: "#7c3aed"
+    headers:
+      - name: "TLS Record (encrypted)"
+        abbrev: "tls.record"
+        layer: 5
+        total_bytes: 5
+        fields:
+          - name: "Content Type"
+            abbrev: "tls.record.content_type"
+            bits: 8
+            value: "23 (Application Data)"
+            description: "All HTTP/2 data is inside the encrypted TLS tunnel"
+
+      - name: "HTTP/2 Connection Preface + SETTINGS"
+        abbrev: "h2"
+        layer: 7
+        total_bytes: 69
+        fields:
+          - name: "Connection Preface"
+            abbrev: "h2.connection_preface"
+            bits: 192
+            value: "PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n"
+            description: "The HTTP/2 magic string — 24 bytes that every HTTP/2 connection starts with. If an HTTP/1.1 server gets this, it will fail gracefully instead of misinterpreting HTTP/2 frames."
+            spec_refs:
+              - document: "RFC 9113"
+                section: "3.4"
+                title: "HTTP/2 Connection Preface"
+                url: "https://www.rfc-editor.org/rfc/rfc9113#section-3.4"
+          - name: "Frame Type"
+            abbrev: "h2.type"
+            bits: 8
+            value: "0x04 (SETTINGS)"
+            description: "SETTINGS frame — configures the HTTP/2 connection"
+            spec_refs:
+              - document: "RFC 9113"
+                section: "6.5"
+                title: "SETTINGS"
+                url: "https://www.rfc-editor.org/rfc/rfc9113#section-6.5"
+          - name: "SETTINGS_MAX_CONCURRENT_STREAMS"
+            abbrev: "h2.settings.max_concurrent_streams"
+            bits: 32
+            value: 100
+            description: "Your browser can have up to 100 requests in flight at once on this single connection. With HTTP/1.1, you would need 100 separate TCP connections!"
+          - name: "SETTINGS_INITIAL_WINDOW_SIZE"
+            abbrev: "h2.settings.initial_window_size"
+            bits: 32
+            value: 1048576
+            description: "1 MB flow control window per stream — how much data can be sent before waiting for a WINDOW_UPDATE"
+          - name: "SETTINGS_HEADER_TABLE_SIZE"
+            abbrev: "h2.settings.header_table_size"
+            bits: 32
+            value: 65536
+            description: "64KB HPACK header compression table — HTTP/2 compresses repeated headers (like Cookie, User-Agent) dramatically"
+
+  - id: "h2_get_inbox"
+    name: "HTTP/2 GET /mail/u/0/#inbox"
+    description: "Your browser requests the inbox page — the first real data request"
+    from: "laptop"
+    to: "gmail"
+    via: ["router"]
+    total_bytes: 350
+    color: "#7c3aed"
+    headers:
+      - name: "TLS Record (encrypted)"
+        abbrev: "tls.record"
+        layer: 5
+        total_bytes: 5
+        fields:
+          - name: "Content Type"
+            abbrev: "tls.record.content_type"
+            bits: 8
+            value: "23 (Application Data)"
+
+      - name: "HTTP/2 HEADERS Frame (Stream 1)"
+        abbrev: "h2.headers"
+        layer: 7
+        total_bytes: 290
+        fields:
+          - name: "Frame Type"
+            abbrev: "h2.type"
+            bits: 8
+            value: "0x01 (HEADERS)"
+            description: "HEADERS frame starts a new HTTP/2 stream — this is your inbox request"
+            spec_refs:
+              - document: "RFC 9113"
+                section: "6.2"
+                title: "HEADERS"
+                url: "https://www.rfc-editor.org/rfc/rfc9113#section-6.2"
+          - name: "Stream ID"
+            abbrev: "h2.stream_id"
+            bits: 31
+            value: 1
+            description: "Stream 1 — the first request on this connection. HTTP/2 uses odd stream IDs for client-initiated requests."
+          - name: ":method"
+            abbrev: "h2.headers.method"
+            bits: 0
+            value: "GET"
+            description: "HPACK-compressed pseudo-header — just 1 byte on the wire thanks to static table indexing"
+          - name: ":scheme"
+            abbrev: "h2.headers.scheme"
+            bits: 0
+            value: "https"
+          - name: ":authority"
+            abbrev: "h2.headers.authority"
+            bits: 0
+            value: "mail.google.com"
+            description: "The hostname — like HTTP/1.1's Host header"
+          - name: ":path"
+            abbrev: "h2.headers.path"
+            bits: 0
+            value: "/mail/u/0/#inbox"
+            description: "Your inbox URL"
+          - name: "cookie"
+            abbrev: "h2.headers.cookie"
+            bits: 0
+            value: "[session cookies — ~800 bytes compressed to ~200 with HPACK]"
+            description: "Your Gmail session cookies prove you're logged in. HPACK compresses them since cookies are sent with every request."
+          - name: "user-agent"
+            abbrev: "h2.headers.user_agent"
+            bits: 0
+            value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0"
+          - name: "accept-encoding"
+            abbrev: "h2.headers.accept_encoding"
+            bits: 0
+            value: "gzip, deflate, br, zstd"
+            description: "Your browser supports Brotli (br) and Zstandard (zstd) compression — Gmail will compress responses to save bandwidth"
+
+  # ── Phase 5: Inbox Load ────────────────────────────────────────
+  - id: "h2_response_inbox_html"
+    name: "HTTP/2 200 OK — Inbox HTML shell"
+    description: "Gmail sends the initial HTML for the inbox page"
+    from: "gmail"
+    to: "laptop"
+    via: ["router"]
+    total_bytes: 15400
+    color: "#7c3aed"
+    headers:
+      - name: "TLS Record (encrypted)"
+        abbrev: "tls.record"
+        layer: 5
+        total_bytes: 5
+        fields:
+          - name: "Content Type"
+            abbrev: "tls.record.content_type"
+            bits: 8
+            value: "23 (Application Data)"
+
+      - name: "HTTP/2 HEADERS Frame (Stream 1)"
+        abbrev: "h2.headers"
+        layer: 7
+        total_bytes: 60
+        fields:
+          - name: "Frame Type"
+            abbrev: "h2.type"
+            bits: 8
+            value: "0x01 (HEADERS)"
+          - name: "Stream ID"
+            abbrev: "h2.stream_id"
+            bits: 31
+            value: 1
+          - name: ":status"
+            abbrev: "h2.headers.status"
+            bits: 0
+            value: "200"
+            description: "200 OK — Gmail found your inbox and is sending it"
+          - name: "content-type"
+            abbrev: "h2.headers.content_type"
+            bits: 0
+            value: "text/html; charset=utf-8"
+          - name: "content-encoding"
+            abbrev: "h2.headers.content_encoding"
+            bits: 0
+            value: "br"
+            description: "Brotli-compressed — the ~60KB HTML is squeezed down to ~15KB for transit"
+
+      - name: "HTTP/2 DATA Frames (Stream 1)"
+        abbrev: "h2.data"
+        layer: 7
+        total_bytes: 15300
+        fields:
+          - name: "Frame Type"
+            abbrev: "h2.type"
+            bits: 8
+            value: "0x00 (DATA)"
+            description: "DATA frames carry the actual HTML response body"
+            spec_refs:
+              - document: "RFC 9113"
+                section: "6.1"
+                title: "DATA"
+                url: "https://www.rfc-editor.org/rfc/rfc9113#section-6.1"
+          - name: "Stream ID"
+            abbrev: "h2.stream_id"
+            bits: 31
+            value: 1
+          - name: "Payload"
+            abbrev: "h2.data.payload"
+            bits: 0
+            value: "[~15KB Brotli-compressed HTML — inbox page shell with empty message list]"
+            description: "This is just the HTML skeleton — the actual email list comes from an API call. Modern web apps work like this: send a shell first, then fill it with data."
+          - name: "END_STREAM"
+            abbrev: "h2.flags.end_stream"
+            bits: 1
+            value: true
+            description: "End of this stream's response body. The HTML shell is complete."
+
+  - id: "h2_get_js"
+    name: "HTTP/2 GET /static/js/main.js"
+    description: "Browser requests the JavaScript bundle that powers Gmail's UI"
+    from: "laptop"
+    to: "gmail"
+    via: ["router"]
+    total_bytes: 180
+    color: "#7c3aed"
+    headers:
+      - name: "HTTP/2 HEADERS Frame (Stream 3)"
+        abbrev: "h2.headers"
+        layer: 7
+        total_bytes: 125
+        fields:
+          - name: "Frame Type"
+            abbrev: "h2.type"
+            bits: 8
+            value: "0x01 (HEADERS)"
+          - name: "Stream ID"
+            abbrev: "h2.stream_id"
+            bits: 31
+            value: 3
+            description: "Stream 3 — second client-initiated request. Remember, odd numbers are from the client. This request is sent IN PARALLEL with stream 1's response still arriving."
+          - name: ":method"
+            abbrev: "h2.headers.method"
+            bits: 0
+            value: "GET"
+          - name: ":path"
+            abbrev: "h2.headers.path"
+            bits: 0
+            value: "/static/js/main.js"
+            description: "Gmail's JavaScript bundle — the code that makes the inbox interactive"
+          - name: ":authority"
+            abbrev: "h2.headers.authority"
+            bits: 0
+            value: "mail.google.com"
+
+  - id: "h2_get_inbox_api"
+    name: "HTTP/2 GET /mail/u/0/api/inbox (XHR)"
+    description: "Browser requests the actual inbox data via API"
+    from: "laptop"
+    to: "gmail"
+    via: ["router"]
+    total_bytes: 220
+    color: "#7c3aed"
+    headers:
+      - name: "HTTP/2 HEADERS Frame (Stream 5)"
+        abbrev: "h2.headers"
+        layer: 7
+        total_bytes: 165
+        fields:
+          - name: "Frame Type"
+            abbrev: "h2.type"
+            bits: 8
+            value: "0x01 (HEADERS)"
+          - name: "Stream ID"
+            abbrev: "h2.stream_id"
+            bits: 31
+            value: 5
+            description: "Stream 5 — third request, also in parallel. Three requests on ONE TCP connection, all at the same time. HTTP/1.1 would need three separate connections."
+          - name: ":method"
+            abbrev: "h2.headers.method"
+            bits: 0
+            value: "GET"
+          - name: ":path"
+            abbrev: "h2.headers.path"
+            bits: 0
+            value: "/mail/u/0/api/inbox"
+            description: "The inbox API endpoint — returns a JSON object with your email subjects, senders, dates, and previews"
+          - name: ":authority"
+            abbrev: "h2.headers.authority"
+            bits: 0
+            value: "mail.google.com"
+          - name: "x-requested-with"
+            abbrev: "h2.headers.x_requested_with"
+            bits: 0
+            value: "XMLHttpRequest"
+            description: "XHR header — this is an AJAX request, triggered by JavaScript after the HTML shell loads"
+
+  - id: "h2_data_multiplexed"
+    name: "HTTP/2 DATA — JS + inbox JSON multiplexed"
+    description: "Gmail sends the JavaScript bundle and inbox data at the same time over one connection"
+    from: "gmail"
+    to: "laptop"
+    via: ["router"]
+    total_bytes: 205000
+    color: "#7c3aed"
+    headers:
+      - name: "HTTP/2 DATA Frames (Stream 3 — JavaScript)"
+        abbrev: "h2.data"
+        layer: 7
+        total_bytes: 200000
+        fields:
+          - name: "Frame Type"
+            abbrev: "h2.type"
+            bits: 8
+            value: "0x00 (DATA)"
+          - name: "Stream ID"
+            abbrev: "h2.stream_id"
+            bits: 31
+            value: 3
+          - name: "Payload"
+            abbrev: "h2.data.payload"
+            bits: 0
+            value: "[~200KB Brotli-compressed JavaScript — Gmail's full UI code]"
+            description: "The JavaScript bundle is the biggest download. After Brotli decompression, it expands to ~1.5MB of code that powers Gmail's entire interface."
+          - name: "Multiplexing Note"
+            abbrev: "h2.multiplexing"
+            bits: 0
+            value: "Interleaved with Stream 5 DATA frames"
+            description: "HTTP/2 MULTIPLEXING: the server interleaves DATA frames from streams 3 and 5 on the same TCP connection. A chunk of JavaScript, then a chunk of inbox JSON, then more JavaScript. This is why HTTP/2 is fast — no head-of-line blocking between requests."
+            spec_refs:
+              - document: "RFC 9113"
+                section: "5"
+                title: "Streams and Multiplexing"
+                url: "https://www.rfc-editor.org/rfc/rfc9113#section-5"
+
+      - name: "HTTP/2 DATA Frames (Stream 5 — Inbox JSON)"
+        abbrev: "h2.data"
+        layer: 7
+        total_bytes: 5000
+        fields:
+          - name: "Frame Type"
+            abbrev: "h2.type"
+            bits: 8
+            value: "0x00 (DATA)"
+          - name: "Stream ID"
+            abbrev: "h2.stream_id"
+            bits: 31
+            value: 5
+          - name: "Payload"
+            abbrev: "h2.data.payload"
+            bits: 0
+            value: "[~5KB gzipped JSON — inbox thread list: subjects, senders, timestamps, snippets]"
+            description: "Your inbox data as JSON. Contains the first 50 email threads with subjects, senders, timestamps, and preview snippets. Much smaller than the JavaScript bundle."
+          - name: "END_STREAM"
+            abbrev: "h2.flags.end_stream"
+            bits: 1
+            value: true
+            description: "The inbox API response is complete. Your browser can now render the email list."
+
+  - id: "h2_inbox_rendered"
+    name: "Inbox rendered"
+    description: "Your browser has all the pieces — inbox is visible on screen"
+    from: "laptop"
+    to: "laptop"
+    via: []
+    total_bytes: 0
+    color: "#059669"
+    headers: []
+
+  # ── Phase 6: Real-time Push ────────────────────────────────────
+  - id: "h2_server_push_notification"
+    name: "HTTP/2 Server Push — real-time notification channel"
+    description: "Gmail sets up a persistent connection for real-time email notifications"
+    from: "gmail"
+    to: "laptop"
+    via: ["router"]
+    total_bytes: 120
+    color: "#059669"
+    headers:
+      - name: "HTTP/2 HEADERS Frame (Server Push / Long-poll)"
+        abbrev: "h2.headers"
+        layer: 7
+        total_bytes: 65
+        fields:
+          - name: "Frame Type"
+            abbrev: "h2.type"
+            bits: 8
+            value: "0x01 (HEADERS)"
+          - name: "Stream ID"
+            abbrev: "h2.stream_id"
+            bits: 31
+            value: 7
+            description: "Stream 7 — used for real-time push notifications. This stream stays open, waiting for new emails."
+          - name: ":status"
+            abbrev: "h2.headers.status"
+            bits: 0
+            value: "200"
+          - name: "content-type"
+            abbrev: "h2.headers.content_type"
+            bits: 0
+            value: "text/event-stream"
+            description: "Server-Sent Events (SSE) — Gmail pushes updates over a long-lived HTTP/2 stream. When a new email arrives, a small JSON push comes through this stream, and Gmail updates your inbox in real time without you refreshing the page."
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+  # ── Phase 1: DNS Resolution ────────────────────────────────────
+  - id: "dns_query"
+    type: "frame_tx"
+    t_ns: 0
+    frame_id: "dns_query"
+    annotation:
+      text: "DNS Query — 'Who is mail.google.com?'"
+      detail: >
+        You clicked the Gmail bookmark. Before your browser can contact Gmail,
+        it needs to know Gmail's IP address. It sends a DNS query to your
+        configured resolver — essentially asking the internet's phone book
+        for directions. This tiny UDP packet (82 bytes) is the very first thing
+        that happens. No DNS, no email. Most people have no idea this step exists.
+    state_after:
+      - actor_id: "laptop"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "DNS lookup"
+              url: "https://mail.google.com/mail/u/0/#inbox"
+          - layer: 4
+            state_fields:
+              tcp_state: "—"
+              src_port: 52481
+              dst_port: 53
+      - actor_id: "dns"
+        layers:
+          - layer: 7
+            state_fields:
+              query_state: "resolving mail.google.com"
+
+  - id: "dns_response"
+    type: "frame_tx"
+    t_ns: 25000000
+    frame_id: "dns_response"
+    annotation:
+      text: "DNS Response — 'It's 142.250.80.5' (with CNAME chain)"
+      detail: >
+        The resolver responds in about 25 milliseconds with Gmail's IP address.
+        Notice the CNAME chain: mail.google.com is actually an alias for
+        googlemail.l.google.com. Google uses CNAME records for load balancing
+        and geographic routing — the IP you get might differ from someone in
+        another country. The answer has a TTL of 300 seconds (5 minutes), so
+        your laptop caches it and won't ask again for a while.
+
+        Fun fact: this single DNS lookup traversed UDP, IP, and Ethernet —
+        three protocols just to learn one IP address.
+    state_after:
+      - actor_id: "laptop"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "DNS resolved — connecting"
+          - layer: 3
+            state_fields:
+              src_ip: "10.0.1.10"
+      - actor_id: "dns"
+        layers:
+          - layer: 7
+            state_fields:
+              query_state: "responded"
+              cache_hit: true
+
+  # ── Phase 2: TCP 3-Way Handshake ──────────────────────────────
+  - id: "tcp_syn"
+    type: "frame_tx"
+    t_ns: 26000000
+    frame_id: "tcp_syn"
+    annotation:
+      text: "TCP SYN → Gmail port 443"
+      detail: >
+        Now that your laptop knows Gmail's IP (142.250.80.5), it starts building
+        a connection. TCP's 3-way handshake is like a formal introduction:
+
+        Step 1: Your laptop sends SYN — "Hey Gmail, I'd like to talk."
+
+        This tiny packet carries no data, just a greeting and some proposals:
+        MSS (how big chunks of data can be), window scale (how much can be in
+        flight), and SACK support (for efficient retransmission). Your laptop
+        picks a random port (54321) on its side and targets port 443 (HTTPS)
+        on Gmail's side.
+    state_after:
+      - actor_id: "laptop"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "SYN_SENT"
+              src_port: 54321
+              dst_port: 443
+
+  - id: "tcp_syn_ack"
+    type: "frame_tx"
+    t_ns: 56000000
+    frame_id: "tcp_syn_ack"
+    annotation:
+      text: "TCP SYN-ACK ← Gmail responds"
+      detail: >
+        Step 2: Gmail says "Got it, I'm here too!"
+
+        The SYN-ACK does double duty: it acknowledges your SYN (ack=1, meaning
+        "I received your byte 0, send me byte 1 next") AND sends Gmail's own
+        SYN with its parameters. Notice the round-trip took about 30ms —
+        that's the speed of light traveling through fiber across the internet
+        to Google's nearest datacenter and back. You can't negotiate faster
+        than physics allows.
+    state_after:
+      - actor_id: "gmail"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "SYN_RECEIVED"
+
+  - id: "tcp_ack_handshake"
+    type: "frame_tx"
+    t_ns: 57000000
+    frame_id: "tcp_ack_handshake"
+    annotation:
+      text: "TCP ACK → Connection established"
+      detail: >
+        Step 3: "We're connected!"
+
+        Your laptop sends the final ACK and both sides enter ESTABLISHED state.
+        The 3-way handshake is complete — one full round trip (about 30ms).
+        This is the price of reliable communication: three packets before a
+        single byte of real data flows. Protocols like QUIC (used in HTTP/3)
+        try to combine this with the encryption handshake to save time.
+
+        Total time so far: ~57ms. You have noticed nothing. Your browser
+        hasn't even drawn a loading spinner yet.
+    state_after:
+      - actor_id: "laptop"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "ESTABLISHED"
+      - actor_id: "gmail"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "ESTABLISHED"
+
+  # ── Phase 3: TLS 1.3 Handshake ────────────────────────────────
+  - id: "tls_client_hello"
+    type: "frame_tx"
+    t_ns: 58000000
+    frame_id: "tls_client_hello"
+    annotation:
+      text: "TLS ClientHello — proposing TLS 1.3 + x25519 key exchange"
+      detail: >
+        Now the encryption begins. Your browser sends a ClientHello with:
+
+        - Supported cipher suites (AES-256-GCM, AES-128-GCM, ChaCha20)
+        - An x25519 public key (the magic ingredient of TLS 1.3)
+        - SNI: "mail.google.com" (tells Gmail which certificate to use)
+        - ALPN: "h2" (tells Gmail you want HTTP/2)
+
+        The key innovation: your browser sends its Diffie-Hellman public key
+        in the VERY FIRST message. In TLS 1.2, this took an extra round trip.
+        That single optimization shaved 30ms off every HTTPS connection on
+        the internet.
+
+        Privacy note: the SNI extension (mail.google.com) is sent in cleartext.
+        Anyone monitoring your network can see you're connecting to Gmail, even
+        though everything else will be encrypted. Encrypted Client Hello (ECH)
+        is a draft standard aiming to fix this.
+    state_after:
+      - actor_id: "laptop"
+        layers:
+          - layer: 6
+            state_fields:
+              tls_state: "WAIT_SH"
+
+  - id: "tls_server_hello_flight"
+    type: "frame_tx"
+    t_ns: 88000000
+    frame_id: "tls_server_hello_flight"
+    annotation:
+      text: "TLS ServerHello + encrypted flight — certificates, keys, everything"
+      detail: >
+        Gmail sends back a big response containing:
+
+        1. ServerHello — picks AES-256-GCM and sends its x25519 public key.
+           At this moment, both sides compute the shared secret using elliptic
+           curve math: x25519(my_private, their_public). This happens in about
+           50 microseconds.
+
+        2. EncryptedExtensions — confirms HTTP/2 (ALPN: h2). Everything from
+           here is encrypted with keys derived from the shared secret.
+
+        3. Certificate — Gmail's certificate chain (mail.google.com → GTS CA
+           → Google Trust Services root). In TLS 1.3, this is encrypted — an
+           eavesdropper cannot see which certificate was sent.
+
+        4. CertificateVerify — a digital signature proving Gmail actually owns
+           that certificate's private key.
+
+        5. Finished — an HMAC proving the handshake was not tampered with.
+
+        All of this in one flight. Your browser and Gmail just performed
+        military-grade cryptography in less than 30 milliseconds.
+    state_after:
+      - actor_id: "laptop"
+        layers:
+          - layer: 6
+            state_fields:
+              tls_state: "VERIFYING"
+              cipher_suite: "TLS_AES_256_GCM_SHA384"
+      - actor_id: "gmail"
+        layers:
+          - layer: 6
+            state_fields:
+              tls_state: "WAIT_FINISHED"
+              cipher_suite: "TLS_AES_256_GCM_SHA384"
+
+  - id: "tls_client_finished"
+    type: "frame_tx"
+    t_ns: 89000000
+    frame_id: "tls_client_finished"
+    annotation:
+      text: "Client Finished — TLS 1.3 handshake complete in 1-RTT"
+      detail: >
+        Your browser verifies Gmail's certificate chain, checks the
+        CertificateVerify signature, confirms the Finished HMAC, then sends
+        its own Finished message. The TLS 1.3 handshake is complete.
+
+        Both sides now derive application traffic keys:
+          client_key = HKDF-Expand(master_secret, "c ap traffic", hash)
+          server_key = HKDF-Expand(master_secret, "s ap traffic", hash)
+
+        From this point on, EVERYTHING is encrypted with AES-256-GCM — your
+        emails, your cookies, your search queries, the images in your emails.
+        All invisible to anyone on the network.
+
+        Time for the entire TLS handshake: about 31ms (one round trip).
+        TLS 1.2 would have needed about 62ms (two round trips). That 31ms
+        savings, multiplied across billions of connections per day, is why
+        TLS 1.3 was such a big deal.
+    state_after:
+      - actor_id: "laptop"
+        layers:
+          - layer: 6
+            state_fields:
+              tls_state: "CONNECTED"
+      - actor_id: "gmail"
+        layers:
+          - layer: 6
+            state_fields:
+              tls_state: "CONNECTED"
+
+  # ── Phase 4: HTTP/2 Connection Setup ───────────────────────────
+  - id: "h2_settings"
+    type: "frame_tx"
+    t_ns: 90000000
+    frame_id: "h2_settings"
+    annotation:
+      text: "HTTP/2 SETTINGS — negotiating multiplexed connection"
+      detail: >
+        With TLS active and HTTP/2 negotiated (via ALPN during the handshake),
+        your browser sends the HTTP/2 connection preface: a 24-byte magic
+        string followed by a SETTINGS frame.
+
+        Key settings:
+        - Max concurrent streams: 100 (up to 100 requests at once!)
+        - Initial window size: 1MB per stream
+        - Header table size: 64KB for HPACK compression
+
+        HTTP/2 is a binary protocol — unlike HTTP/1.1's plain text, HTTP/2
+        frames are compact binary structures. HPACK header compression means
+        repeated headers like cookies and user-agents are encoded as small
+        table references instead of being sent in full every time.
+    state_after:
+      - actor_id: "laptop"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "HTTP/2 connected"
+
+  - id: "h2_get_inbox"
+    type: "frame_tx"
+    t_ns: 91000000
+    frame_id: "h2_get_inbox"
+    annotation:
+      text: "HTTP/2 GET /mail/u/0/#inbox (stream 1)"
+      detail: >
+        Finally — the actual inbox request! Your browser sends an HTTP/2
+        HEADERS frame on stream 1 with:
+
+        :method: GET
+        :authority: mail.google.com
+        :path: /mail/u/0/#inbox
+
+        Plus your session cookies (proving you are logged in), your
+        user-agent, and accepted compression formats. Thanks to HPACK,
+        these ~800 bytes of headers compress to about ~200 bytes.
+
+        We're now about 91ms into this journey. You clicked a bookmark
+        91 milliseconds ago and the actual page request is just now leaving
+        your laptop.
+    state_after:
+      - actor_id: "laptop"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "requesting inbox"
+      - actor_id: "gmail"
+        layers:
+          - layer: 7
+            state_fields:
+              request_count: 1
+
+  # ── Phase 5: Inbox Load ────────────────────────────────────────
+  - id: "h2_response_inbox_html"
+    type: "frame_tx"
+    t_ns: 121000000
+    frame_id: "h2_response_inbox_html"
+    annotation:
+      text: "HTTP/2 200 OK — inbox HTML shell (stream 1, ~15KB compressed)"
+      detail: >
+        Gmail responds with the inbox page HTML — but it's just the shell.
+        The actual email list comes from a separate API call. This is how
+        modern web apps work: send a lightweight HTML skeleton first, then
+        fill it with data via JavaScript.
+
+        The HTML is Brotli-compressed (br), squishing ~60KB down to ~15KB.
+        Brotli was invented by Google specifically for web compression and
+        achieves 20-26% better compression than gzip.
+
+        Your browser starts parsing this HTML immediately, even before the
+        full response arrives — a technique called progressive rendering.
+    state_after:
+      - actor_id: "gmail"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "serving"
+              request_count: 1
+
+  - id: "h2_get_js"
+    type: "frame_tx"
+    t_ns: 125000000
+    frame_id: "h2_get_js"
+    annotation:
+      text: "HTTP/2 GET /static/js/main.js (stream 3)"
+      detail: >
+        While the HTML is still arriving on stream 1, your browser sees a
+        <script> tag and immediately fires off a request for Gmail's
+        JavaScript bundle on stream 3.
+
+        This is HTTP/2 multiplexing in action: streams 1 and 3 share the
+        same TCP connection. With HTTP/1.1, your browser would have needed
+        a second TCP connection (another 3-way handshake + TLS handshake)
+        just for this JavaScript file. That would have cost another ~90ms.
+    state_after:
+      - actor_id: "gmail"
+        layers:
+          - layer: 7
+            state_fields:
+              request_count: 2
+
+  - id: "h2_get_inbox_api"
+    type: "frame_tx"
+    t_ns: 130000000
+    frame_id: "h2_get_inbox_api"
+    annotation:
+      text: "HTTP/2 GET /mail/u/0/api/inbox (stream 5, XHR)"
+      detail: >
+        The HTML shell includes JavaScript that immediately requests the
+        inbox data from Gmail's API on stream 5.
+
+        Three concurrent requests on one connection:
+          Stream 1: HTML (complete)
+          Stream 3: JavaScript (downloading)
+          Stream 5: Inbox API data (starting)
+
+        With HTTP/1.1, this would need three TCP connections, each with its
+        own handshake overhead. HTTP/2 does it all on one. This is the
+        single biggest reason modern websites feel faster than 2010-era sites.
+    state_after:
+      - actor_id: "gmail"
+        layers:
+          - layer: 7
+            state_fields:
+              request_count: 3
+
+  - id: "h2_data_multiplexed"
+    type: "frame_tx"
+    t_ns: 165000000
+    frame_id: "h2_data_multiplexed"
+    annotation:
+      text: "HTTP/2 DATA — JS bundle (~200KB) and inbox JSON (~5KB) multiplexed"
+      detail: >
+        Gmail sends back both the JavaScript bundle (stream 3) and the inbox
+        JSON (stream 5) at the same time, interleaving DATA frames from both
+        streams on a single TCP connection.
+
+        HTTP/2 multiplexing means:
+        - A 16KB chunk of JavaScript on stream 3
+        - Then a 5KB chunk of inbox JSON on stream 5
+        - Then more JavaScript on stream 3
+        - And so on...
+
+        The browser processes each stream independently. The inbox JSON
+        (~5KB) finishes quickly, letting your browser render email subjects
+        and senders while the larger JavaScript bundle (~200KB) is still
+        downloading.
+
+        With HTTP/1.1, the smaller inbox JSON would have been stuck behind
+        the larger JavaScript file (head-of-line blocking). HTTP/2 eliminates
+        this entirely.
+    state_after:
+      - actor_id: "laptop"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "rendering inbox"
+
+  - id: "h2_inbox_rendered"
+    type: "annotation"
+    t_ns: 400000000
+    annotation:
+      text: "Inbox rendered — you can see your emails"
+      detail: >
+        About 400 milliseconds after you clicked that bookmark, your inbox
+        appears on screen. In that blink of an eye, your laptop:
+
+        1. Looked up Gmail's IP via DNS (UDP, port 53)
+        2. Opened a TCP connection (3-way handshake)
+        3. Negotiated TLS 1.3 encryption (x25519 key exchange, AES-256-GCM)
+        4. Set up an HTTP/2 multiplexed connection
+        5. Requested the inbox HTML, JavaScript, and API data
+        6. Received and decompressed all three, interleaved on one connection
+        7. Parsed HTML, executed JavaScript, rendered your emails
+
+        Protocols used: Ethernet, IP, UDP, DNS, TCP, TLS 1.3, HTTP/2
+        That's 7+ protocols, ~20 network exchanges, ~400ms.
+
+        You had no idea.
+
+  # ── Phase 6: Real-time Push ────────────────────────────────────
+  - id: "h2_push_channel"
+    type: "frame_tx"
+    t_ns: 450000000
+    frame_id: "h2_server_push_notification"
+    annotation:
+      text: "Real-time notification channel opened (Server-Sent Events)"
+      detail: >
+        Gmail isn't done. After your inbox loads, it opens a long-lived
+        HTTP/2 stream for real-time notifications using Server-Sent Events
+        (SSE).
+
+        When someone sends you an email, Google's backend pushes a small
+        JSON notification through this stream, and Gmail updates your inbox
+        instantly — no polling, no page refresh. The HTTP/2 connection stays
+        open, quietly waiting.
+
+        This is the modern web: what looks like a simple "check email" is
+        actually a sophisticated, multi-protocol, real-time communication
+        system. And it all started with a DNS query.
+    state_after:
+      - actor_id: "laptop"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "inbox loaded — real-time updates active"
+
+  # ── Summary ────────────────────────────────────────────────────
+  - id: "evt_summary"
+    type: "annotation"
+    t_ns: 500000000
+    annotation:
+      text: "Scenario complete — Checking Your Email"
+      detail: >
+        What really happens when you click your Gmail bookmark:
+
+        DNS RESOLUTION (1 round trip, ~25ms):
+          Your laptop asks "Where is mail.google.com?"
+          The resolver says "142.250.80.5"
+
+        TCP HANDSHAKE (1 round trip, ~30ms):
+          SYN → SYN-ACK → ACK
+          Reliable connection established to port 443
+
+        TLS 1.3 HANDSHAKE (1 round trip, ~30ms):
+          ClientHello (x25519 public key, SNI, ALPN)
+          ServerHello + Certificate + Finished (encrypted)
+          Client Finished
+          Encryption active: AES-256-GCM
+
+        HTTP/2 MULTIPLEXED LOADING (~300ms):
+          Connection preface + SETTINGS
+          GET /mail/u/0/#inbox → 200 OK (HTML shell, 15KB)
+          GET /static/js/main.js → 200 OK (JS bundle, 200KB)
+          GET /mail/u/0/api/inbox → 200 OK (inbox JSON, 5KB)
+          All three responses interleaved on one connection
+
+        REAL-TIME PUSH:
+          Server-Sent Events stream for live email notifications
+
+        Total: ~400ms, 7+ protocols, ~20 packet exchanges.
+        The next time someone says "I'm just checking my email,"
+        you'll know what's really happening on the wire.
+
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
+glossary:
+  - term: "DNS"
+    abbrev: "DNS"
+    definition: "Domain Name System — translates human-readable names like mail.google.com into IP addresses like 142.250.80.5. Uses UDP port 53 for standard queries. Often called 'the phone book of the internet.'"
+    spec_refs:
+      - document: "RFC 1035"
+        section: "1"
+        title: "Domain Names — Implementation and Specification"
+        url: "https://datatracker.ietf.org/doc/html/rfc1035"
+
+  - term: "CNAME"
+    abbrev: "CNAME"
+    definition: "Canonical Name record — a DNS alias. mail.google.com is a CNAME for googlemail.l.google.com. Allows one domain to point to another for load balancing and flexibility."
+    spec_refs:
+      - document: "RFC 1035"
+        section: "3.3.1"
+        title: "CNAME RDATA Format"
+        url: "https://datatracker.ietf.org/doc/html/rfc1035#section-3.3.1"
+
+  - term: "TCP 3-Way Handshake"
+    definition: "The SYN → SYN-ACK → ACK exchange that establishes a TCP connection. Synchronizes sequence numbers and negotiates parameters (MSS, window scale, SACK). Costs one round trip of latency."
+    spec_refs:
+      - document: "RFC 9293"
+        section: "3.5"
+        title: "Establishing a Connection"
+        url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5"
+
+  - term: "TLS 1.3"
+    definition: "RFC 8446 (August 2018). Reduced the TLS handshake from 2 round trips to 1 by having the client send its key share in the first message. Removed all non-AEAD ciphers, mandated forward secrecy, and encrypted the server certificate."
+    spec_refs:
+      - document: "RFC 8446"
+        section: "1"
+        title: "Introduction"
+        url: "https://www.rfc-editor.org/rfc/rfc8446"
+
+  - term: "x25519"
+    definition: "Elliptic curve Diffie-Hellman function on Curve25519. Generates 32-byte public/private key pairs for key agreement. Fast, constant-time, and the most popular key exchange in TLS 1.3."
+    spec_refs:
+      - document: "RFC 7748"
+        section: "5"
+        title: "The X25519 Function"
+        url: "https://www.rfc-editor.org/rfc/rfc7748#section-5"
+
+  - term: "SNI"
+    abbrev: "SNI"
+    definition: "Server Name Indication — TLS extension telling the server which hostname the client wants. Required for virtual hosting (multiple sites on one IP). Sent in cleartext in TLS 1.3. Encrypted Client Hello (ECH) aims to fix this privacy gap."
+
+  - term: "ALPN"
+    abbrev: "ALPN"
+    definition: "Application-Layer Protocol Negotiation — TLS extension that negotiates the application protocol (HTTP/2, HTTP/1.1) during the TLS handshake, so the right protocol is ready the instant encryption starts."
+    spec_refs:
+      - document: "RFC 7301"
+        section: "3"
+        title: "Application-Layer Protocol Negotiation"
+        url: "https://www.rfc-editor.org/rfc/rfc7301#section-3"
+
+  - term: "HTTP/2"
+    definition: "Binary, multiplexed HTTP protocol (RFC 9113). Multiple requests and responses share a single TCP connection via streams, eliminating head-of-line blocking between requests. Uses HPACK for header compression."
+    spec_refs:
+      - document: "RFC 9113"
+        section: "1"
+        title: "HTTP/2"
+        url: "https://www.rfc-editor.org/rfc/rfc9113"
+
+  - term: "HPACK"
+    definition: "HTTP/2's header compression algorithm. Maintains a dynamic table of previously sent headers and encodes repeated headers as small index references. Compresses typical header blocks by 85-90%."
+    spec_refs:
+      - document: "RFC 7541"
+        section: "1"
+        title: "HPACK: Header Compression for HTTP/2"
+        url: "https://www.rfc-editor.org/rfc/rfc7541"
+
+  - term: "Multiplexing"
+    definition: "HTTP/2's ability to send and receive multiple request/response pairs concurrently on a single TCP connection. Each request gets a unique stream ID. DATA frames from different streams are interleaved, avoiding head-of-line blocking."
+
+  - term: "Brotli"
+    definition: "A compression algorithm (RFC 7932) developed by Google for web content. Achieves 20-26% better compression than gzip. Widely supported by modern browsers. The 'br' content-encoding value."
+
+  - term: "AES-256-GCM"
+    definition: "256-bit AES in Galois/Counter Mode — authenticated encryption providing both confidentiality and integrity. Produces a 128-bit authentication tag. Hardware-accelerated on modern CPUs via AES-NI."
+
+  - term: "Server-Sent Events"
+    abbrev: "SSE"
+    definition: "A simple, standards-based protocol for server-to-client push over HTTP. The server sends text/event-stream content on a long-lived connection. Used by Gmail for real-time inbox notifications."
+
+# ─────────────────────────────────────────────────────────────────
+# WALKTHROUGHS
+# ─────────────────────────────────────────────────────────────────
+walkthroughs:
+  - id: "default"
+    title: "What Really Happens When You Check Your Email"
+    description: "A guided tour through every protocol exchange that happens when you click your Gmail bookmark — from DNS to inbox render"
+    steps:
+      - step: 0
+        narration: >
+          You just clicked your Gmail bookmark. Seems simple, right? Behind
+          the scenes, your laptop is about to perform one of the most
+          incredible feats of modern engineering — about 20 protocol exchanges,
+          involving 7+ different protocols, in less than half a second.
+
+          It starts here: your browser doesn't know Gmail's IP address, so it
+          sends a DNS query. Think of DNS as the internet's phone book. Your
+          laptop asks "Where is mail.google.com?" using a tiny 82-byte UDP
+          packet sent to port 53. This is always the first step for any
+          website you visit, and most people have no idea it happens.
+        highlight_fields: ["dns.qry.name", "dns.qry.type", "udp.dstport"]
+
+      - step: 1
+        narration: >
+          The DNS resolver comes back with an answer: "mail.google.com is at
+          142.250.80.5." But look closely — there is a CNAME chain.
+          mail.google.com is actually an alias for googlemail.l.google.com.
+          Google uses this trick for load balancing and geographic routing.
+          If you were in Tokyo, you might get a completely different IP
+          address pointing to a server closer to you.
+
+          The TTL (Time to Live) is 300 seconds, so your laptop caches this
+          answer for 5 minutes. If you check your email again in 2 minutes,
+          it skips the DNS lookup entirely. That is 25 milliseconds saved.
+
+          Total time elapsed: ~25 milliseconds. We have an IP address. Now
+          we need to establish a connection.
+        highlight_fields: ["dns.a", "dns.resp.ttl", "dns.resp.name"]
+
+      - step: 2
+        narration: >
+          Your laptop sends a TCP SYN packet to Gmail at 142.250.80.5, port
+          443 (HTTPS). This is step 1 of the famous 3-way handshake.
+
+          Look at the destination MAC address — it is your router's MAC, not
+          Gmail's. That is because on your local network, frames go to the
+          router first. The router then forwards the packet across the
+          internet to Google's datacenter. Ethernet is strictly local; IP
+          handles the long-distance routing.
+
+          The SYN carries important proposals: MSS of 1460 bytes (maximum
+          chunk size per packet), window scale factor 7 (for large transfer
+          windows), and SACK permitted (for efficient loss recovery).
+        highlight_fields: ["tcp.flags", "tcp.dstport", "eth.dst", "tcp.options.mss_val"]
+
+      - step: 3
+        narration: >
+          Gmail responds with SYN-ACK — "Got your SYN, here is mine!" This
+          packet traveled from Google's datacenter to your laptop and back,
+          taking about 30 milliseconds. That round-trip time is mostly the
+          speed of light through fiber optic cables — physics, not software,
+          is the bottleneck.
+
+          The ACK number (1) proves Gmail received your SYN. Gmail also sends
+          its own window scale factor (8, even larger than yours) — Google's
+          servers are built for high-bandwidth connections.
+        highlight_fields: ["tcp.flags", "tcp.ack", "tcp.options.wscale_val"]
+
+      - step: 4
+        narration: >
+          Your laptop sends the final ACK. The TCP connection is now
+          ESTABLISHED on both sides. Three packets, one round trip, about 30
+          milliseconds. No data has been exchanged yet — this was just the
+          introduction.
+
+          Quick math: DNS took 25ms, TCP handshake took 31ms. We are now
+          57 milliseconds into this process and have not loaded a single byte
+          of your email. The next step: encryption.
+        highlight_fields: ["tcp.flags", "tcp.ack"]
+
+      - step: 5
+        narration: >
+          Now the encryption kicks in. Your browser sends a TLS ClientHello —
+          one of the most important messages in modern internet security.
+
+          The ClientHello contains your browser's x25519 public key. This is
+          the key innovation of TLS 1.3: by sending the key share in the very
+          first message, the server can compute a shared secret immediately.
+          TLS 1.2 needed an extra round trip for this.
+
+          Also in this message: SNI (Server Name Indication) saying
+          "mail.google.com." Here is a fun fact that surprises most people:
+          SNI is sent in CLEARTEXT. Anyone watching your network can see you
+          are connecting to Gmail, even though everything else is encrypted.
+
+          And ALPN says "I prefer HTTP/2" — negotiating the application
+          protocol inside the TLS handshake so it is ready the instant
+          encryption starts.
+        highlight_fields: ["tls.extension.key_share", "tls.extension.server_name", "tls.extension.alpn", "tls.handshake.ciphersuites"]
+
+      - step: 6
+        narration: >
+          Gmail responds with a massive flight containing ServerHello plus
+          four encrypted messages all in one shot.
+
+          First, the ServerHello gives Gmail's x25519 public key. At this
+          moment, both sides perform elliptic curve math to compute a shared
+          secret — in about 50 microseconds. Then everything after ServerHello
+          is encrypted.
+
+          Inside the encrypted payload: EncryptedExtensions (confirming
+          HTTP/2), the certificate chain (mail.google.com signed by Google
+          Trust Services), CertificateVerify (proving Gmail owns the private
+          key), and Finished (an HMAC over the entire handshake).
+
+          In TLS 1.2, the certificate was sent in cleartext. In TLS 1.3, a
+          network observer sees only opaque encrypted bytes. This is a big
+          privacy improvement.
+        highlight_fields: ["tls.extension.key_share", "tls.handshake.ciphersuite", "tls.extension.alpn", "tls.handshake.certificate_chain"]
+
+      - step: 7
+        narration: >
+          Your browser verifies Gmail's certificate chain, checks the
+          signature, confirms the Finished HMAC, and sends its own Finished
+          message. The TLS 1.3 handshake is complete.
+
+          Both sides now have application traffic keys derived through
+          HKDF (a key derivation function). From this point on, every single
+          byte is encrypted with AES-256-GCM.
+
+          The entire TLS handshake: one round trip, about 31 milliseconds.
+          TLS 1.2 would have taken two round trips (~62ms). That 31ms
+          savings, multiplied by billions of HTTPS connections per day, is
+          why TLS 1.3 was such a big deal for the internet.
+
+          Total elapsed: ~89ms. DNS + TCP + TLS done. Now for the actual email.
+        highlight_fields: ["tls.handshake.verify_data"]
+
+      - step: 8
+        narration: >
+          With encryption active and HTTP/2 negotiated, your browser sends
+          the HTTP/2 connection preface (a 24-byte magic string) and a
+          SETTINGS frame.
+
+          Key settings: 100 concurrent streams (meaning up to 100 requests
+          at once on one connection), 1MB flow control window per stream,
+          and HPACK header compression. HTTP/2 is a binary protocol — much
+          more compact than HTTP/1.1's plain text. And HPACK compression
+          means repeated headers (like cookies) are sent as small table
+          indices instead of full text.
+        highlight_fields: ["h2.connection_preface", "h2.settings.max_concurrent_streams"]
+
+      - step: 9
+        narration: >
+          Here it is — the actual inbox request! Your browser sends:
+            GET /mail/u/0/#inbox
+          on HTTP/2 stream 1, along with your session cookies (proving you
+          are logged in), your user-agent, and accepted compression formats.
+
+          We are now 91 milliseconds into this journey. It took 91ms of DNS,
+          TCP, TLS, and HTTP/2 setup before the first real request left your
+          laptop. And you still have not noticed any delay.
+        highlight_fields: ["h2.headers.method", "h2.headers.path", "h2.stream_id"]
+
+      - step: 10
+        narration: >
+          Gmail responds with the inbox HTML — but it is just the shell. The
+          skeleton of the page with empty containers where emails will go.
+          This is about 60KB of HTML compressed down to 15KB using Brotli
+          (Google's compression algorithm, 20-26% better than gzip).
+
+          Your browser starts parsing this HTML immediately, even before the
+          full response arrives. This technique (progressive rendering) is
+          why pages seem to appear gradually rather than all at once.
+        highlight_fields: ["h2.headers.status", "h2.headers.content_encoding", "h2.data.payload"]
+
+      - step: 11
+        narration: >
+          While the HTML is still arriving, your browser sees a <script> tag
+          and fires off a second request on stream 3: the JavaScript bundle.
+
+          This is HTTP/2 multiplexing. Stream 1 (HTML) and stream 3
+          (JavaScript) share the SAME TCP connection. With HTTP/1.1, your
+          browser would have opened a second TCP connection, adding another
+          ~90ms of handshake overhead.
+        highlight_fields: ["h2.stream_id", "h2.headers.path"]
+
+      - step: 12
+        narration: >
+          A third request launches on stream 5: an XHR call to Gmail's inbox
+          API. Three concurrent requests on one TCP connection.
+
+          Think about what HTTP/1.1 would have needed:
+          - Connection 1: HTML (TCP + TLS handshake = ~90ms overhead)
+          - Connection 2: JavaScript (another ~90ms overhead)
+          - Connection 3: API data (another ~90ms overhead)
+
+          HTTP/2 does all three with zero additional overhead. The
+          multiplexing alone saves about 180ms of handshake time.
+        highlight_fields: ["h2.stream_id", "h2.headers.path", "h2.headers.x_requested_with"]
+
+      - step: 13
+        narration: >
+          Gmail sends back the JavaScript bundle (~200KB compressed) and
+          inbox JSON (~5KB) simultaneously, interleaving DATA frames from
+          both streams. A chunk of JavaScript, then a chunk of inbox JSON,
+          then more JavaScript...
+
+          The inbox JSON finishes first (it is 40x smaller), so your browser
+          can start rendering email subjects and senders while the JavaScript
+          bundle is still downloading. With HTTP/1.1, the small JSON response
+          would have been blocked behind the large JavaScript file. HTTP/2's
+          multiplexing eliminates this head-of-line blocking.
+        highlight_fields: ["h2.stream_id", "h2.multiplexing", "h2.data.payload"]
+
+      - step: 14
+        narration: >
+          About 400 milliseconds after you clicked that bookmark, your inbox
+          appears on screen. In less than half a second, your laptop performed
+          DNS resolution, TCP connection setup, TLS 1.3 encryption,
+          HTTP/2 multiplexed loading, Brotli decompression, HTML parsing,
+          JavaScript execution, and UI rendering.
+
+          Seven protocols. Twenty exchanges. Four hundred milliseconds.
+          And you thought you were "just checking your email."
+        highlight_fields: []
+
+      - step: 15
+        narration: >
+          But Gmail is not done. It opens a persistent Server-Sent Events
+          (SSE) stream over HTTP/2 for real-time push notifications. When
+          someone sends you a new email, a tiny JSON notification arrives
+          through this stream, and your inbox updates instantly — no polling,
+          no page refresh.
+
+          The HTTP/2 connection stays open in the background, quietly
+          waiting. This is the modern web at its best: a sophisticated,
+          multi-layered, real-time communication system that feels like
+          "just checking email."
+        highlight_fields: ["h2.headers.content_type", "h2.stream_id"]
+
+      - step: 16
+        narration: >
+          Let's recap what we just witnessed:
+
+          1. DNS (25ms) — Looked up mail.google.com's IP address via UDP
+          2. TCP (31ms) — 3-way handshake to Gmail port 443
+          3. TLS 1.3 (31ms) — x25519 key exchange, AES-256-GCM encryption
+          4. HTTP/2 Setup (1ms) — Connection preface and SETTINGS
+          5. Inbox Load (~300ms) — HTML, JavaScript, and API data multiplexed
+          6. Real-time Push — SSE stream for live notifications
+
+          Protocols involved: Ethernet, IP, UDP, DNS, TCP, TLS 1.3, HTTP/2
+          Total time: ~400ms for 7+ protocols and ~20 packet exchanges
+
+          Every website you visit goes through this same stack. Every search,
+          every video, every social media scroll. Understanding these
+          protocols is understanding the backbone of the modern internet.
+        highlight_fields: []

@@ -151,6 +151,16 @@
       "path": "gpu-to-gpu/gpu-to-gpu-rdma-tensor-transfer.yaml"
     },
     {
+      "slug": "checking-email",
+      "title": "Checking Your Email: What Really Happens When You Click Inbox",
+      "protocol": "Multi-protocol (DNS, TCP, TLS 1.3, HTTP/2)",
+      "protocol_family": "TCP/IP",
+      "difficulty": "beginner",
+      "description": "You click your Gmail bookmark. Before a single email appears, ~20 protocol exchanges happen in under 500ms: DNS lookup, TCP 3-way handshake, TLS 1.3 encryption, and HTTP/2 multiplexed loading of HTML, JavaScript, and inbox data — all over one connection. Seven protocols, one click.",
+      "tags": ["DNS", "TCP", "TLS 1.3", "HTTP/2", "HTTPS", "multi-protocol", "beginner", "everyday internet", "education"],
+      "path": "checking-email/checking-email.yaml"
+    },
+    {
       "slug": "nccl-allreduce-rocev2",
       "title": "NCCL AllReduce: Ring Algorithm over RoCEv2 (4 GPUs)",
       "protocol": "NCCL / RoCEv2",

@@ -299,6 +299,22 @@ function inferPhase(event, lastPhase) {
   if (/\biscsi\b.*r2t|ready.?to.?transfer|data.?out/i.test(text)
       || /write_r2t|write_data/.test(id)) return 'SCSI Write';
 
+  // DNS phases (before TLS/TCP — DNS queries precede connections)
+  if (/\bdns\b.*query|\bdns\b.*request|who is.*\?/i.test(text)
+      || /dns_query/.test(id)) return 'DNS';
+  if (/\bdns\b.*response|\bdns\b.*answer|\bdns\b.*resolv/i.test(text)
+      || /dns_response/.test(id)) return 'DNS';
+
+  // HTTP/2 phases (before TLS — HTTP/2 events run inside TLS)
+  if (/\bhttp\/2\b.*settings|\bh2\b.*settings|connection preface/i.test(text)
+      || /h2_settings/.test(id)) return 'HTTP/2';
+  if (/\bhttp\/2\b.*get|\bhttp\/2\b.*post|\bhttp\/2\b.*header|\bh2\b.*get/i.test(text)
+      || /h2_get_/.test(id)) return 'HTTP/2';
+  if (/\bhttp\/2\b.*200|\bhttp\/2\b.*data|\bhttp\/2\b.*multiplexed|inbox.*html|inbox.*render/i.test(text)
+      || /h2_response_|h2_data_/.test(id)) return 'HTTP/2 Data';
+  if (/\bhttp\/2\b.*push|server.sent.event|real.?time.*notif|notification.*channel/i.test(text)
+      || /h2_push_|h2_server_push/.test(id)) return 'HTTP/2 Data';
+
   // TLS phases (before TCP — TLS events run over TCP)
   if (/clienthello|serverhello|client hello|server hello|certificateverify|encryptedextensions/i.test(text)
       || /tls_client_hello|tls_server_hello|tls_server_encrypted|tls_client_finished/.test(id)) return 'TLS Handshake';
