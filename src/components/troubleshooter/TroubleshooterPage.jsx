@@ -95,7 +95,7 @@ export default function TroubleshooterPage() {
       const format = detectFormat(new Uint8Array(buffer));
 
       if (format === 'pcap' || format === 'pcapng') {
-        const { packets: rawPackets } = parsePcap(buffer);
+        const { packets: rawPackets } = parsePcap(buffer, 50000);
         dissected = rawPackets.map(pkt => ({
           ...pkt,
           ...dissectPacket(pkt),
