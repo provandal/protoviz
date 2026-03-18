@@ -122,7 +122,7 @@ function sortFlows(flows, sortKey, sortDir) {
 }
 
 export default function FlowPicker({ flows, onConfirm, onCancel }) {
-  const [selected, setSelected] = useState(() => new Set(flows.map(f => f.id)));
+  const [selected, setSelected] = useState(() => new Set());
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState('packetCount');
   const [sortDir, setSortDir] = useState('desc');
@@ -168,11 +168,8 @@ export default function FlowPicker({ flows, onConfirm, onCancel }) {
   }, []);
 
   const handleSelectMatching = useCallback(() => {
-    setSelected(prev => {
-      const next = new Set(prev);
-      for (const f of filteredFlows) next.add(f.id);
-      return next;
-    });
+    // When filtering, "Select Matching" means "ONLY these" — deselect everything else
+    setSelected(new Set(filteredFlows.map(f => f.id)));
   }, [filteredFlows]);
 
   const handleConfirm = useCallback(() => {
@@ -284,7 +281,7 @@ export default function FlowPicker({ flows, onConfirm, onCancel }) {
                 whiteSpace: 'nowrap',
               }}
             >
-              Select Matching
+              Select Only Matching
             </button>
           )}
           <button
