@@ -305,6 +305,36 @@
           "spec_refs": { "type": "array", "items": { "$ref": "#/definitions/spec_reference" } }
         }
       }
+    },
+
+    "walkthroughs": {
+      "type": "array",
+      "description": "Guided walkthrough paths through the scenario, each with narrated steps",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "steps"],
+        "properties": {
+          "id": { "type": "string", "description": "Unique walkthrough identifier" },
+          "title": { "type": "string", "description": "Display title for the walkthrough" },
+          "description": { "type": "string", "description": "Brief description of what this walkthrough covers" },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["step", "narration"],
+              "properties": {
+                "step": { "type": "integer", "minimum": 0, "description": "Timeline step index this narration corresponds to" },
+                "narration": { "type": "string", "description": "Narration text explaining what's happening at this step" },
+                "highlight_fields": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Field abbrevs to highlight in the packet inspector (e.g. 'tcp.flags', 'tcp.seq')"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

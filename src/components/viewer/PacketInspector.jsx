@@ -1,6 +1,8 @@
 import HeaderBlock from './HeaderBlock';
+import useViewerStore from '../../store/viewerStore';
 
 export default function PacketInspector({ event }) {
+  const highlightFields = useViewerStore(s => s.highlightFields);
   if (!event?.frame) {
     return (
       <div style={{
@@ -30,7 +32,7 @@ export default function PacketInspector({ event }) {
 
       {/* Header blocks */}
       <div style={{ overflowY: 'auto', flex: 1, padding: 8 }}>
-        {event.frame.headers.map((h, i) => <HeaderBlock key={i} hdr={h} />)}
+        {event.frame.headers.map((h, i) => <HeaderBlock key={i} hdr={h} highlightFields={highlightFields} />)}
       </div>
     </div>
   );

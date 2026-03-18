@@ -15,6 +15,7 @@ import PlaybackControls from './PlaybackControls';
 import SwitchFooter from './SwitchFooter';
 import SplitLayout from '../layout/SplitLayout';
 import BottomPane from '../layout/BottomPane';
+import WalkthroughOverlay from './WalkthroughOverlay';
 
 const DEFAULT_SCENARIO = 'roce-v2-rc-connection-rdma-write-read';
 
@@ -125,7 +126,7 @@ export default function ProtoVizViewer() {
   /* ── MOBILE layout (<768px) ──────────────────────────────────── */
   if (isMobile) {
     const topContent = (
-      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', position: 'relative' }}>
         <MobileTopTabs tabs={getMobileTabs(initLabel, targLabel)} active={mobileTopTab} onChange={setMobileTopTab} />
 
         {/* Sequence tab */}
@@ -148,6 +149,9 @@ export default function ProtoVizViewer() {
 
         {/* Playback controls: always visible on mobile */}
         <PlaybackControls total={total} phaseColor={phaseColor} />
+
+        {/* Walkthrough overlay */}
+        <WalkthroughOverlay />
       </div>
     );
 
@@ -202,7 +206,7 @@ export default function ProtoVizViewer() {
 
   /* ── DESKTOP & TABLET layout (>=768px) ───────────────────────── */
   const topContent = (
-    <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+    <div style={{ display: 'flex', flex: 1, overflow: 'hidden', position: 'relative' }}>
       {/* Left OSI Stack */}
       <div className="pvz-osi-col" style={{ width: osiWidth }}>
         <OsiStack actorId={leftId} label={initLabel} layers={initLayers} stepEvent={ev} />
@@ -221,6 +225,9 @@ export default function ProtoVizViewer() {
       <div className="pvz-osi-col pvz-osi-col--right" style={{ width: osiWidth }}>
         <OsiStack actorId={rightId} label={targLabel} layers={targLayers} stepEvent={ev} />
       </div>
+
+      {/* Walkthrough overlay */}
+      <WalkthroughOverlay />
     </div>
   );
 

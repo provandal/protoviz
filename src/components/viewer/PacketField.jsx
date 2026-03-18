@@ -1,23 +1,26 @@
 import { useState } from 'react';
 
-export default function PacketField({ field, depth = 0 }) {
+export default function PacketField({ field, depth = 0, highlightFields = [] }) {
   const [expanded, setExpanded] = useState(false);
   const [showSpec, setShowSpec] = useState(false);
   const hasSpec = field.spec && field.spec.length > 0;
   const hasKernel = !!field.kernel;
+  const isHighlighted = highlightFields.length > 0 && field.abbrev && highlightFields.includes(field.abbrev);
 
   return (
     <div style={{ marginLeft: depth * 12, borderLeft: depth > 0 ? '2px solid #334155' : 'none', paddingLeft: depth > 0 ? 8 : 0 }}>
       <div
         onClick={() => setExpanded(e => !e)}
+        className={isHighlighted ? 'pvz-field-highlight' : ''}
         style={{
           display: 'grid', gridTemplateColumns: '22px 160px 1fr 120px', alignItems: 'start', padding: '5px 8px', cursor: 'pointer',
-          background: expanded ? '#1e293b' : 'transparent',
+          background: isHighlighted ? '#1e3a5f' : expanded ? '#1e293b' : 'transparent',
           borderRadius: 4, userSelect: 'none',
-          transition: 'background 0.15s',
+          transition: 'background 0.15s, box-shadow 0.15s',
+          boxShadow: isHighlighted ? 'inset 0 0 0 1px #3b82f6, 0 0 8px #3b82f640' : 'none',
         }}
-        onMouseEnter={e => e.currentTarget.style.background = '#1e293b'}
-        onMouseLeave={e => e.currentTarget.style.background = expanded ? '#1e293b' : 'transparent'}
+        onMouseEnter={e => e.currentTarget.style.background = isHighlighted ? '#1e3a5f' : '#1e293b'}
+        onMouseLeave={e => e.currentTarget.style.background = isHighlighted ? '#1e3a5f' : expanded ? '#1e293b' : 'transparent'}
       >
         <span style={{ color: '#64748b', fontFamily: "'JetBrains Mono',monospace", fontSize: 10, marginTop: 1 }}>{field.bits}b</span>
         <span style={{ color: '#94a3b8', fontFamily: "'JetBrains Mono',monospace", fontSize: 10, marginTop: 1 }}>{field.abbrev}</span>

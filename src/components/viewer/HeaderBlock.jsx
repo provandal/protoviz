@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { L_COLOR } from '../../utils/constants';
 import PacketField from './PacketField';
 
-export default function HeaderBlock({ hdr }) {
+export default function HeaderBlock({ hdr, highlightFields = [] }) {
   const [open, setOpen] = useState(true);
   const layerColor = L_COLOR[hdr.layer] || '#475569';
 
@@ -23,7 +23,7 @@ export default function HeaderBlock({ hdr }) {
               <span key={h} style={{ color: '#475569', fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{h}</span>
             ))}
           </div>
-          {hdr.fields.map((f, i) => <PacketField key={i} field={f} />)}
+          {hdr.fields.map((f, i) => <PacketField key={i} field={f} highlightFields={highlightFields} />)}
         </div>
       )}
     </div>

@@ -2564,3 +2564,162 @@ glossary:
 
   - term: "FIN"
     definition: "TCP flag indicating the sender has finished transmitting data. Initiates a graceful connection close. Like SYN, FIN consumes one sequence number to ensure reliable acknowledgment."
+
+# ─────────────────────────────────────────────────────────────────
+# WALKTHROUGHS
+# ─────────────────────────────────────────────────────────────────
+walkthroughs:
+  - id: "default"
+    title: "TCP Connection Lifecycle"
+    description: "Walk through a complete TCP connection from link-up through handshake, data transfer, and graceful teardown"
+    steps:
+      - step: 0
+        narration: >
+          Before any data can be exchanged, the physical network must be ready.
+          Both 10 Gigabit Ethernet links (client-to-switch and switch-to-server)
+          complete Auto-Negotiation and come up. This is the foundation layer --
+          without a working physical link, nothing else can happen. Think of it
+          like picking up a telephone and hearing a dial tone.
+        highlight_fields: []
+
+      - step: 1
+        narration: >
+          The client wants to talk to the server at IP address 10.0.1.20, but
+          Ethernet frames need a MAC address to reach their destination. Since the
+          client doesn't know the server's MAC yet, it broadcasts an ARP (Address
+          Resolution Protocol) request to every device on the network: "Who has
+          10.0.1.20? Tell me your MAC address." Notice the broadcast destination
+          MAC (ff:ff:ff:ff:ff:ff) and the ARP opcode of 1 (Request).
+        highlight_fields: ["eth.dst", "arp.opcode", "arp.dst.proto_ipv4"]
+
+      - step: 2
+        narration: >
+          The server recognizes its own IP in the ARP request and replies: "That's
+          me! My MAC address is 00:11:22:33:44:02." This is a unicast reply sent
+          directly back to the client. Both sides update their ARP caches so they
+          won't need to ask again (at least for a while). Now the client can
+          construct complete Ethernet frames addressed to the server.
+        highlight_fields: ["arp.opcode", "arp.src.hw_mac"]
+
+      - step: 3
+        narration: >
+          Now the real TCP action begins. The client application calls connect(),
+          and the kernel sends a SYN (synchronize) segment -- the first step of
+          TCP's famous 3-way handshake. The client picks a random Initial Sequence
+          Number (ISN = 1000000) and proposes connection parameters via TCP options:
+          MSS of 1460 bytes (the maximum payload per segment), Window Scale factor 7
+          (allowing a huge receive window), and SACK support. The client enters
+          SYN_SENT state and waits for a reply.
+        highlight_fields: ["tcp.flags", "tcp.seq", "tcp.options.mss_val", "tcp.options.wscale_val"]
+
+      - step: 4
+        narration: >
+          The server was listening on port 80. It receives the SYN and responds
+          with a SYN-ACK -- simultaneously acknowledging the client's SYN and
+          sending its own. Notice two critical numbers: the server's own ISN
+          (seq = 2000000) and the acknowledgment number (ack = 1000001, which is
+          the client's ISN + 1). The "+1" proves the server received the client's
+          SYN. The SYN flag itself consumes one sequence number even though it
+          carries no data -- this ensures the handshake is reliably acknowledged.
+        highlight_fields: ["tcp.flags", "tcp.seq", "tcp.ack"]
+
+      - step: 5
+        narration: >
+          The client completes the handshake by sending the final ACK (ack = 2000001,
+          acknowledging the server's SYN). Both sides are now in the ESTABLISHED state
+          -- the connection is open and data can flow in either direction. The 3-way
+          handshake has synchronized sequence numbers, negotiated MSS, and agreed on
+          window scaling. This entire exchange took about 100 microseconds on this LAN.
+          For comparison, the same handshake across the Internet might take 50-200
+          milliseconds -- that's why protocols like QUIC try to reduce handshake rounds.
+        highlight_fields: ["tcp.flags", "tcp.ack"]
+
+      - step: 6
+        narration: >
+          With the connection established, the client sends an HTTP GET request (205 bytes)
+          as TCP payload. Notice the sequence number: seq = 1000001, which is the first data
+          byte after the SYN. The PSH (Push) flag tells the server's TCP stack to deliver
+          this data to the application immediately rather than buffering. After sending,
+          the client's next sequence number advances to 1000206 (1000001 + 205 bytes).
+          TCP tracks every byte with sequence numbers -- this is how it guarantees
+          reliable, in-order delivery.
+        highlight_fields: ["tcp.seq", "tcp.flags", "tcp.window_size"]
+
+      - step: 7
+        narration: >
+          The server acknowledges the client's 205-byte request with ACK number 1000206,
+          meaning "I've received everything up to byte 1000206 -- send me that byte next."
+          This is cumulative acknowledgment: a single ACK covers all data received so far.
+          The client, upon receiving this ACK, knows the data was delivered successfully
+          and can release it from the retransmit buffer.
+        highlight_fields: ["tcp.ack", "tcp.flags"]
+
+      - step: 8
+        narration: >
+          The server sends back an HTTP 200 OK response (546 bytes). The sequence number
+          is seq = 2000001 -- the server's first data byte. Since 546 bytes is less than
+          the MSS of 1460, it fits in a single segment. If this were a larger response
+          (say, a 10KB web page), TCP would split it into multiple 1460-byte segments
+          and the congestion window would govern how many could be in flight at once.
+        highlight_fields: ["tcp.seq", "tcp.flags", "tcp.window_size"]
+
+      - step: 9
+        narration: >
+          The client acknowledges the server's response with ACK 2000547 (2000001 + 546).
+          The HTTP request/response exchange is now complete. Looking at the big picture:
+          the client sent 205 bytes and the server sent 546 bytes, but the total bytes on
+          the wire were much more due to headers and the handshake overhead. For small
+          exchanges like this, TCP's overhead is significant (~40%). For bulk transfers,
+          each 1460-byte segment only has 54 bytes of headers (3.7% overhead).
+        highlight_fields: ["tcp.ack"]
+
+      - step: 10
+        narration: >
+          The client is done and calls close(). The kernel sends a FIN (finish) segment,
+          signaling "I have no more data to send." The client transitions from ESTABLISHED
+          to FIN_WAIT_1. Important: FIN is a half-close -- the client can still receive
+          data from the server. Like SYN, FIN consumes one sequence number (seq = 1000206)
+          to ensure it is reliably acknowledged. If the ACK is lost, the FIN will be
+          retransmitted.
+        highlight_fields: ["tcp.flags", "tcp.seq"]
+
+      - step: 11
+        narration: >
+          The server acknowledges the client's FIN with ACK 1000207 (the FIN consumed
+          one sequence number). The server enters CLOSE_WAIT -- it knows the client is
+          done sending, but the server could still send more data if needed. The client,
+          receiving this ACK, moves to FIN_WAIT_2 -- it's waiting for the server to close
+          its side too.
+        highlight_fields: ["tcp.ack", "tcp.flags"]
+
+      - step: 12
+        narration: >
+          The server application also calls close(). The kernel sends its own FIN
+          (seq = 2000547). The server transitions from CLOSE_WAIT to LAST_ACK --
+          waiting for the client's final acknowledgment. Both sides have now sent FIN,
+          so the connection is fully closing.
+        highlight_fields: ["tcp.flags", "tcp.seq"]
+
+      - step: 13
+        narration: >
+          The client sends the final ACK (ack = 2000548), completing the graceful teardown.
+          The server transitions to CLOSED and frees all resources. The client enters
+          TIME_WAIT, a special state that lasts 60 seconds (2 x Maximum Segment Lifetime).
+          TIME_WAIT serves two purposes: (1) it ensures this final ACK reaches the server
+          (if lost, the server will retransmit its FIN), and (2) it prevents stale segments
+          from an old connection from being confused with a new one using the same ports.
+        highlight_fields: ["tcp.ack", "tcp.flags"]
+
+      - step: 14
+        narration: >
+          That's the complete TCP connection lifecycle! Let's recap what we saw:
+          (1) Physical link-up and ARP resolution to learn MAC addresses.
+          (2) The 3-way handshake (SYN, SYN-ACK, ACK) that synchronizes sequence
+          numbers and negotiates options.
+          (3) Data transfer with sequence number tracking and cumulative ACKs.
+          (4) Graceful 4-way teardown (FIN, ACK, FIN, ACK) with TIME_WAIT.
+          TCP has been the backbone of reliable Internet communication since 1981
+          (RFC 793, now RFC 9293). Understanding these mechanics is essential for
+          debugging connection issues and appreciating why newer protocols like
+          QUIC and RDMA were developed.
+        highlight_fields: []

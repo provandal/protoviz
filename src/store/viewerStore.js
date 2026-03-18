@@ -15,6 +15,12 @@ const useViewerStore = create((set, get) => ({
   chatApiKey: localStorage.getItem('protoviz_api_key') || '',
   chatModel: localStorage.getItem('protoviz_model') || 'claude-sonnet-4-6',
 
+  // Walkthrough state
+  walkthroughActive: false,
+  walkthroughId: null,
+  walkthroughStepIndex: 0,
+  highlightFields: [],
+
   setScenario: (scenario) => set({
     scenario,
     step: 0,
@@ -58,6 +64,60 @@ const useViewerStore = create((set, get) => ({
   setChatModel: (m) => {
     localStorage.setItem('protoviz_model', m);
     set({ chatModel: m });
+  },
+
+  // Walkthrough actions
+  startWalkthrough: (walkthroughId) => {
+    const { scenario } = get();
+    if (!scenario) return;
+    const wt = scenario.walkthroughs?.find(w => w.id === walkthroughId);
+    if (!wt || wt.steps.length === 0) return;
+    const firstStep = wt.steps[0];
+    set({
+      walkthroughActive: true,
+      walkthroughId,
+      walkthroughStepIndex: 0,
+      highlightFields: firstStep.highlight_fields || [],
+      playing: false,
+      step: Math.max(0, Math.min(firstStep.step, scenario.timeline.length - 1)),
+    });
+  },
+
+  exitWalkthrough: () => set({
+    walkthroughActive: false,
+    walkthroughId: null,
+    walkthroughStepIndex: 0,
+    highlightFields: [],
+  }),
+
+  nextWalkthroughStep: () => {
+    const { scenario, walkthroughId, walkthroughStepIndex } = get();
+    if (!scenario) return;
+    const wt = scenario.walkthroughs?.find(w => w.id === walkthroughId);
+    if (!wt) return;
+    const nextIdx = walkthroughStepIndex + 1;
+    if (nextIdx >= wt.steps.length) return;
+    const wtStep = wt.steps[nextIdx];
+    set({
+      walkthroughStepIndex: nextIdx,
+      highlightFields: wtStep.highlight_fields || [],
+      step: Math.max(0, Math.min(wtStep.step, scenario.timeline.length - 1)),
+    });
+  },
+
+  prevWalkthroughStep: () => {
+    const { scenario, walkthroughId, walkthroughStepIndex } = get();
+    if (!scenario) return;
+    const wt = scenario.walkthroughs?.find(w => w.id === walkthroughId);
+    if (!wt) return;
+    const prevIdx = walkthroughStepIndex - 1;
+    if (prevIdx < 0) return;
+    const wtStep = wt.steps[prevIdx];
+    set({
+      walkthroughStepIndex: prevIdx,
+      highlightFields: wtStep.highlight_fields || [],
+      step: Math.max(0, Math.min(wtStep.step, scenario.timeline.length - 1)),
+    });
   },
 }));
 

@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import useViewerStore from '../../store/viewerStore';
 import { PHASE_COLORS } from '../../utils/constants';
+import WalkthroughLauncher from './WalkthroughLauncher';
 
 export default function PlaybackControls({ total, phaseColor }) {
   const step = useViewerStore(s => s.step);
@@ -31,7 +32,7 @@ export default function PlaybackControls({ total, phaseColor }) {
         style={{ width: '100%', accentColor: phaseColor, marginBottom: 8 }}
       />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ display: 'flex', gap: 4 }}>
+        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
           {[
             { label: '\u23EE', fn: () => goToStep(0) },
             { label: '\u25C0', fn: () => goToStep(step - 1) },
@@ -44,6 +45,7 @@ export default function PlaybackControls({ total, phaseColor }) {
               width: 28, height: 28, borderRadius: 4, cursor: 'pointer', fontSize: 12,
             }}>{b.label}</button>
           ))}
+          <WalkthroughLauncher />
         </div>
         {/* Phase legend: hidden on mobile via CSS */}
         <div className="pvz-phase-legend" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>

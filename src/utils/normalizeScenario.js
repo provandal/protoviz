@@ -41,7 +41,9 @@ export function normalizeScenario(raw) {
     tags: raw.meta.tags || [],
   };
 
-  return { meta, actors, osi_layers: osiLayers, timeline };
+  const walkthroughs = raw.walkthroughs || [];
+
+  return { meta, actors, osi_layers: osiLayers, timeline, walkthroughs };
 }
 
 function normalizeActors(rawActors) {
