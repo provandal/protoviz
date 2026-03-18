@@ -1,5 +1,5 @@
 /* global __APP_VERSION__ */
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { parsePcap } from '../../pcap/pcapReader';
 import { parseTsharkJson } from '../../pcap/tsharkReader';
@@ -81,6 +81,25 @@ export default function TroubleshooterPage() {
     return [];
   }, []);
 
+  // Compute findings for a given set of packets
+  const computeFindings = useCallback(async (pkts) => {
+    const results = await loadAndEvaluateRules(pkts);
+    const sensitiveFindings = [];
+    for (const pkt of pkts) {
+      for (const layer of pkt.layers) {
+        if (layer._sensitive) {
+          sensitiveFindings.push({
+            severity: 'warning',
+            packetIndex: pkt.index,
+            rule: 'sensitive_data',
+            description: `Payload may contain sensitive data: ${layer._sensitive.map(m => m.name).join(', ')}`,
+          });
+        }
+      }
+    }
+    return [...results, ...sensitiveFindings].sort((a, b) => a.packetIndex - b.packetIndex);
+  }, [loadAndEvaluateRules]);
+
   const handleFile = useCallback(async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -88,6 +107,7 @@ export default function TroubleshooterPage() {
     setLoading(true);
     setError(null);
     setFileName(file.name);
+    setFindings(null);
 
     try {
       let dissected;
@@ -119,39 +139,23 @@ export default function TroubleshooterPage() {
         if (flowRes.flows.length > 1) {
           setShowFlowPicker(true);
           setSelectedFlowIds(null);
+          // Don't compute findings yet — wait for flow selection
         } else if (flowRes.flows.length === 1) {
-          // Single flow: auto-select it
           setShowFlowPicker(false);
           setSelectedFlowIds([flowRes.flows[0].id]);
+          const filtered = filterPacketsByFlows(dissected, [flowRes.flows[0].id], flowRes.packetFlowMap);
+          setFindings(await computeFindings(filtered));
         } else {
           setShowFlowPicker(false);
           setSelectedFlowIds(null);
+          setFindings(await computeFindings(dissected));
         }
       } catch (_flowErr) {
-        // flowGrouper may not be available yet; proceed without flow filtering
         setFlowResult(null);
         setShowFlowPicker(false);
         setSelectedFlowIds(null);
+        setFindings(await computeFindings(dissected));
       }
-
-      const results = await loadAndEvaluateRules(dissected);
-
-      // Add sensitive data findings from payload dissection
-      const sensitiveFindings = [];
-      for (const pkt of dissected) {
-        for (const layer of pkt.layers) {
-          if (layer._sensitive) {
-            sensitiveFindings.push({
-              severity: 'warning',
-              packetIndex: pkt.index,
-              rule: 'sensitive_data',
-              description: `Payload may contain sensitive data: ${layer._sensitive.map(m => m.name).join(', ')}`,
-            });
-          }
-        }
-      }
-
-      setFindings([...results, ...sensitiveFindings].sort((a, b) => a.packetIndex - b.packetIndex));
     } catch (err) {
       setError(err.message);
       setPackets(null);
@@ -159,7 +163,7 @@ export default function TroubleshooterPage() {
     } finally {
       setLoading(false);
     }
-  }, [loadAndEvaluateRules]);
+  }, [loadAndEvaluateRules, computeFindings]);
 
   const reset = useCallback(() => {
     setPackets(null);
@@ -190,14 +194,18 @@ export default function TroubleshooterPage() {
     navigate(`/${slug}`);
   }, [packets, navigate]);
 
-  // Compute effective packets (filtered by selected flows if applicable)
-  const getEffectivePackets = useCallback(() => {
-    if (!packets) return null;
+  // Packets filtered by selected flows — used for display and scenario generation
+  const displayPackets = useMemo(() => {
+    if (!packets) return [];
     if (selectedFlowIds && flowResult?.packetFlowMap) {
       return filterPacketsByFlows(packets, selectedFlowIds, flowResult.packetFlowMap);
     }
     return packets;
   }, [packets, selectedFlowIds, flowResult]);
+
+  const getEffectivePackets = useCallback(() => {
+    return displayPackets.length > 0 ? displayPackets : null;
+  }, [displayPackets]);
 
   const openGenModal = useCallback(() => {
     const effectivePackets = getEffectivePackets();
@@ -252,10 +260,15 @@ export default function TroubleshooterPage() {
     URL.revokeObjectURL(url);
   }, [genResult]);
 
-  const handleFlowConfirm = useCallback((flowIds) => {
+  const handleFlowConfirm = useCallback(async (flowIds) => {
     setSelectedFlowIds(flowIds);
     setShowFlowPicker(false);
-  }, []);
+    // Recompute findings for selected flows only
+    if (packets && flowResult?.packetFlowMap) {
+      const filtered = filterPacketsByFlows(packets, flowIds, flowResult.packetFlowMap);
+      setFindings(await computeFindings(filtered));
+    }
+  }, [packets, flowResult, computeFindings]);
 
   const handleFlowCancel = useCallback(() => {
     setShowFlowPicker(false);
@@ -360,7 +373,7 @@ export default function TroubleshooterPage() {
             display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0,
           }}>
             <span style={{ color: '#94a3b8', fontSize: 11 }}>
-              {fileName} — {packets.length} packets
+              {fileName} — {displayPackets.length} packets{selectedFlowIds && packets.length !== displayPackets.length ? ` (of ${packets.length} total)` : ''}
             </span>
             {inputFormat && (
               <span style={{
@@ -455,7 +468,7 @@ export default function TroubleshooterPage() {
                 <div style={{ flex: showChat ? '1 1 55%' : '1 1 100%', display: 'flex', overflow: 'hidden', minHeight: 0 }}>
                   <div style={{ flex: 1, overflowY: 'auto', borderRight: '1px solid #1e293b' }}>
                     <PacketList
-                      packets={packets}
+                      packets={displayPackets}
                       findings={findings}
                       selectedIndex={selectedPacketIndex}
                       onPacketSelect={setSelectedPacketIndex}
@@ -471,7 +484,7 @@ export default function TroubleshooterPage() {
                 {/* Chat pane below */}
                 {showChat && (
                   <div style={{ flex: '1 1 45%', borderTop: '1px solid #1e293b', minHeight: 0, overflow: 'hidden' }}>
-                    <TraceChatPanel packets={packets} findings={findings} selectedPacketIndex={selectedPacketIndex} />
+                    <TraceChatPanel packets={displayPackets} findings={findings} selectedPacketIndex={selectedPacketIndex} />
                   </div>
                 )}
               </div>
