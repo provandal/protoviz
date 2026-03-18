@@ -774,6 +774,47 @@ function generateScenario(dissectedPackets, options = {}) {
 // ─── Public API ─────────────────────────────────────────────────
 
 /**
+ * Parse capture data into dissected packets without generating scenario YAML.
+ * Used by the analyze_capture tool.
+ *
+ * @param {object} opts
+ * @param {'pcap_base64'|'tshark_json'} opts.input_format
+ * @param {string} opts.data - base64-encoded PCAP or tshark JSON string
+ * @param {number} [opts.max_packets=500]
+ * @returns {{ packets: object[] }} Dissected packets with layers, summary, index, timestamp
+ */
+export function parseCapture({ input_format, data, max_packets = 500 }) {
+  let parsed;
+
+  if (input_format === 'pcap_base64') {
+    const buf = Buffer.from(data, 'base64');
+    const arrayBuffer = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    parsed = parsePcap(arrayBuffer, max_packets);
+
+    // Dissect binary packets
+    parsed.packets = parsed.packets.map(pkt => {
+      const { layers, summary } = dissectPacket(pkt);
+      return { ...pkt, layers, summary };
+    });
+  } else if (input_format === 'tshark_json') {
+    parsed = parseTsharkJson(data);
+
+    // tshark packets are already "dissected" by convertTsharkPacket
+    if (max_packets && parsed.packets.length > max_packets) {
+      parsed.packets = parsed.packets.slice(0, max_packets);
+    }
+  } else {
+    throw new Error(`Unsupported input_format: "${input_format}". Use "pcap_base64" or "tshark_json".`);
+  }
+
+  if (!parsed.packets || parsed.packets.length === 0) {
+    throw new Error('No packets could be parsed from the input data.');
+  }
+
+  return parsed;
+}
+
+/**
  * Convert packet capture data to a ProtoViz scenario YAML string.
  *
  * @param {object} opts
