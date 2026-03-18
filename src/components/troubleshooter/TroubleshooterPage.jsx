@@ -101,7 +101,23 @@ export default function TroubleshooterPage() {
       setSelectedPacketIndex(null);
 
       const results = await loadAndEvaluateRules(dissected);
-      setFindings(results);
+
+      // Add sensitive data findings from payload dissection
+      const sensitiveFindings = [];
+      for (const pkt of dissected) {
+        for (const layer of pkt.layers) {
+          if (layer._sensitive) {
+            sensitiveFindings.push({
+              severity: 'warning',
+              packetIndex: pkt.index,
+              rule: 'sensitive_data',
+              description: `Payload may contain sensitive data: ${layer._sensitive.map(m => m.name).join(', ')}`,
+            });
+          }
+        }
+      }
+
+      setFindings([...results, ...sensitiveFindings].sort((a, b) => a.packetIndex - b.packetIndex));
     } catch (err) {
       setError(err.message);
       setPackets(null);
@@ -276,6 +292,20 @@ export default function TroubleshooterPage() {
               New File
             </button>
           </div>
+
+          {/* Sensitive data warning banner */}
+          {findings && findings.some(f => f.rule === 'sensitive_data') && (
+            <div style={{
+              padding: '6px 16px', background: '#78350f', borderBottom: '1px solid #92400e',
+              display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
+              fontSize: 11, color: '#fde68a',
+            }}>
+              <span style={{ fontWeight: 700 }}>Sensitive data detected</span>
+              <span style={{ color: '#fbbf24' }}>
+                — Payload bytes containing potential credentials or PII were found. Raw payload content is automatically excluded from AI chat context.
+              </span>
+            </div>
+          )}
 
           {/* Top: packet list + findings | Bottom: chat */}
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>

@@ -133,8 +133,17 @@ export default function PacketList({ packets, findings, selectedIndex, onPacketS
                   <div key={li} style={{ marginBottom: 8 }}>
                     <div style={{
                       color: '#60a5fa', fontSize: 10, fontWeight: 700, marginBottom: 4,
+                      display: 'flex', alignItems: 'center', gap: 6,
                     }}>
                       L{layer.layer} — {layer.name}
+                      {layer._sensitive && (
+                        <span style={{
+                          background: '#78350f', color: '#fbbf24', fontSize: 9,
+                          padding: '1px 5px', borderRadius: 3, fontWeight: 600,
+                        }} title={layer._sensitive.map(m => m.name).join(', ')}>
+                          Sensitive data detected
+                        </span>
+                      )}
                     </div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 12px' }}>
                       {Object.entries(layer.fields).map(([k, v]) => (

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { PAYLOAD_FIELD_KEYS } from '../../utils/sensitiveDataDetector';
 
 const MODELS = [
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
@@ -59,13 +60,23 @@ function buildTraceSummary(packets, findings, selectedPacketIndex) {
     }
   }
 
-  // Selected packet detail
+  // Selected packet detail — strip raw payload bytes before sending to API
   if (selectedPacketIndex != null && packets[selectedPacketIndex]) {
     const pkt = packets[selectedPacketIndex];
     lines.push(`\nUser is looking at packet #${selectedPacketIndex + 1}:`);
     lines.push(`  Summary: ${pkt.summary}`);
     for (const layer of pkt.layers) {
-      lines.push(`  L${layer.layer} ${layer.name}: ${JSON.stringify(layer.fields)}`);
+      // Remove hex_dump, ascii, and other raw payload fields from API context
+      const sanitizedFields = {};
+      for (const [k, v] of Object.entries(layer.fields)) {
+        if (!PAYLOAD_FIELD_KEYS.has(k)) {
+          sanitizedFields[k] = v;
+        }
+      }
+      lines.push(`  L${layer.layer} ${layer.name}: ${JSON.stringify(sanitizedFields)}`);
+      if (layer._sensitive) {
+        lines.push(`  ⚠ Sensitive data detected: ${layer._sensitive.map(m => m.name).join(', ')}`);
+      }
     }
   }
 

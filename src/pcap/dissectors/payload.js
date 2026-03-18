@@ -6,6 +6,8 @@
  * or magic bytes in the payload.
  */
 
+import { detectSensitiveData } from '../../utils/sensitiveDataDetector';
+
 const MAX_PAYLOAD = 64;
 
 // Well-known TCP port → ULP mapping
@@ -116,6 +118,9 @@ export function dissectPayload(data, payloadOffset, srcPort, dstPort, transport)
   const portMap = transport === 'tcp' ? TCP_ULP_PORTS : UDP_ULP_PORTS;
   const ulpName = portMap[dstPort] || portMap[srcPort];
 
+  // Scan for sensitive data patterns in payload bytes
+  const sensitive = detectSensitiveData(payload);
+
   const layer = {
     layer: 5,
     name: ulpName || 'Payload',
@@ -126,6 +131,10 @@ export function dissectPayload(data, payloadOffset, srcPort, dstPort, transport)
       ascii: formatAscii(payload),
     },
   };
+
+  if (sensitive.detected) {
+    layer._sensitive = sensitive.matches;
+  }
 
   const summary = ulpName ? ulpName : '';
   return { layer, summary };
