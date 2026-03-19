@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="assets/protoviz_repo_logo.svg" alt="ProtoViz" width="680">
+  <img src="public/banner.png" alt="ProtoViz — from raw bytes to protocol understanding" width="100%">
+</p>
+
+<p align="center">
+  <img src="assets/protoviz_repo_logo.svg" alt="ProtoViz" width="480">
 </p>
 
 <p align="center">
