@@ -1,8 +1,11 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import useViewerStore from '../../store/viewerStore';
 import useAnnotations from '../../hooks/useAnnotations';
+import { startAlign } from '../../utils/rtl';
 
 export default function EventDetail({ event, phaseColor }) {
+  const { t } = useTranslation();
   const setActiveBottomTab = useViewerStore(s => s.setActiveBottomTab);
   const step = useViewerStore(s => s.step);
   const slug = useViewerStore(s => s.currentSlug);
@@ -83,7 +86,7 @@ export default function EventDetail({ event, phaseColor }) {
       {event.state && (
         <div style={{ marginBottom: 16 }}>
           <div style={{ color: '#475569', fontSize: 10, fontWeight: 700, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-            State Changes
+            {t('eventDetail.stateChanges')}
           </div>
           {Object.entries(event.state).map(([actorId, layers]) => (
             <div key={actorId} style={{ marginBottom: 4 }}>
@@ -110,13 +113,13 @@ export default function EventDetail({ event, phaseColor }) {
             background: '#1e293b', border: '1px solid #334155',
             color: '#94a3b8', padding: '6px 14px', borderRadius: 5,
             cursor: 'pointer', fontSize: 11, fontWeight: 600,
-            alignSelf: 'flex-start', marginBottom: 16,
+            alignSelf: 'flex-start', marginBottom: 16, direction: 'ltr',
             transition: 'color 0.15s, border-color 0.15s',
           }}
           onMouseEnter={e => { e.currentTarget.style.color = '#e2e8f0'; e.currentTarget.style.borderColor = '#3b82f6'; }}
           onMouseLeave={e => { e.currentTarget.style.color = '#94a3b8'; e.currentTarget.style.borderColor = '#334155'; }}
         >
-          View packet →
+          {t('eventDetail.viewPacket')}
         </button>
       )}
 
@@ -127,7 +130,7 @@ export default function EventDetail({ event, phaseColor }) {
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
           <div style={{ color: '#475569', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-            Your Notes
+            {t('eventDetail.yourNotes')}
           </div>
           <div style={{ display: 'flex', gap: 4 }}>
             {count > 0 && (
@@ -135,14 +138,14 @@ export default function EventDetail({ event, phaseColor }) {
                 onClick={handleExport}
                 style={{ background: 'none', border: '1px solid #1e293b', color: '#475569', padding: '1px 6px', borderRadius: 3, cursor: 'pointer', fontSize: 9 }}
               >
-                Export ({count})
+                {t('eventDetail.export', { count })}
               </button>
             )}
             <button
               onClick={handleImport}
               style={{ background: 'none', border: '1px solid #1e293b', color: '#475569', padding: '1px 6px', borderRadius: 3, cursor: 'pointer', fontSize: 9 }}
             >
-              Import
+              {t('eventDetail.import')}
             </button>
           </div>
         </div>
@@ -153,7 +156,7 @@ export default function EventDetail({ event, phaseColor }) {
               value={draft}
               onChange={e => setDraft(e.target.value)}
               autoFocus
-              placeholder="Add your notes for this step..."
+              placeholder={t('eventDetail.notePlaceholder')}
               rows={3}
               style={{
                 background: '#1e293b', border: '1px solid #334155', color: '#e2e8f0',
@@ -167,13 +170,13 @@ export default function EventDetail({ event, phaseColor }) {
                 onClick={saveEdit}
                 style={{ background: '#1e40af', border: 'none', color: '#fff', padding: '4px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 10, fontWeight: 600 }}
               >
-                Save
+                {t('eventDetail.save')}
               </button>
               <button
                 onClick={() => setEditing(false)}
                 style={{ background: 'none', border: '1px solid #334155', color: '#64748b', padding: '4px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 10 }}
               >
-                Cancel
+                {t('eventDetail.cancel')}
               </button>
             </div>
           </div>
@@ -195,10 +198,10 @@ export default function EventDetail({ event, phaseColor }) {
             style={{
               background: 'none', border: '1px dashed #1e293b', color: '#334155',
               padding: '8px 10px', borderRadius: 4, cursor: 'pointer',
-              fontSize: 11, width: '100%', textAlign: 'left',
+              fontSize: 11, width: '100%', textAlign: startAlign(),
             }}
           >
-            + Add note for this step
+            {t('eventDetail.addNote')}
           </button>
         )}
       </div>

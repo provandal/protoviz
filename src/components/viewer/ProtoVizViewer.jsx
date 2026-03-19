@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import useViewerStore from '../../store/viewerStore';
 import useScenario from '../../hooks/useScenario';
 import useMediaQuery from '../../hooks/useMediaQuery';
@@ -19,12 +20,12 @@ import WalkthroughOverlay from './WalkthroughOverlay';
 
 const DEFAULT_SCENARIO = 'roce-v2-rc-connection-rdma-write-read';
 
-/* ── Mobile top-panel tabs ─────────────────────────────────────── */
-function getMobileTabs(leftLabel, rightLabel) {
+/* -- Mobile top-panel tabs -- */
+function getMobileTabs(t, leftLabel, rightLabel) {
   return [
-    { id: 'sequence', label: 'Sequence' },
-    { id: 'left', label: leftLabel || 'Initiator' },
-    { id: 'right', label: rightLabel || 'Target' },
+    { id: 'sequence', label: t('viewer.sequence') },
+    { id: 'left', label: leftLabel || t('viewer.initiator') },
+    { id: 'right', label: rightLabel || t('viewer.target') },
   ];
 }
 
@@ -45,6 +46,7 @@ function MobileTopTabs({ tabs, active, onChange }) {
 }
 
 export default function ProtoVizViewer() {
+  const { t } = useTranslation();
   const { scenarioSlug, stepNum } = useParams();
   const navigate = useNavigate();
   const slug = scenarioSlug || DEFAULT_SCENARIO;
@@ -91,11 +93,11 @@ export default function ProtoVizViewer() {
       <div className="pvz-loading">
         {error ? (
           <div style={{ textAlign: 'center' }}>
-            <div style={{ color: '#ef4444', fontSize: 14, marginBottom: 8 }}>Failed to load scenario</div>
+            <div style={{ color: '#ef4444', fontSize: 14, marginBottom: 8 }}>{t('viewer.failedToLoad')}</div>
             <div style={{ color: '#475569', fontSize: 12 }}>{error}</div>
           </div>
         ) : (
-          'Loading scenario...'
+          t('viewer.loadingScenario')
         )}
       </div>
     );
@@ -117,17 +119,17 @@ export default function ProtoVizViewer() {
   const swLayers = buildStateAtStep(scenario, switchId, step);
   const phaseColor = PHASE_COLORS[ev.phase] || '#475569';
 
-  const initLabel = leftActor?.label || 'Initiator';
-  const targLabel = rightActor?.label || 'Target';
+  const initLabel = leftActor?.label || t('viewer.initiator');
+  const targLabel = rightActor?.label || t('viewer.target');
 
   // OSI width based on breakpoint
   const osiWidth = isTablet ? 170 : 220;
 
-  /* ── MOBILE layout (<768px) ──────────────────────────────────── */
+  /* -- MOBILE layout (<768px) -- */
   if (isMobile) {
     const topContent = (
       <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', position: 'relative' }}>
-        <MobileTopTabs tabs={getMobileTabs(initLabel, targLabel)} active={mobileTopTab} onChange={setMobileTopTab} />
+        <MobileTopTabs tabs={getMobileTabs(t, initLabel, targLabel)} active={mobileTopTab} onChange={setMobileTopTab} />
 
         {/* Sequence tab */}
         <div style={{ flex: 1, display: mobileTopTab === 'sequence' ? 'flex' : 'none', flexDirection: 'column', overflow: 'hidden' }}>
@@ -165,7 +167,7 @@ export default function ProtoVizViewer() {
           border: '1px dashed #1e293b', borderRadius: 4, margin: 4,
         }}
       >
-        Detail panel is in a separate window
+        {t('viewer.detailPanelSeparateMobile')}
       </div>
     ) : (
       <BottomPane event={ev} phaseColor={phaseColor} onPopout={handlePopout} />
@@ -188,7 +190,7 @@ export default function ProtoVizViewer() {
             <span style={{ background: `${phaseColor}22`, color: phaseColor, fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 4, border: `1px solid ${phaseColor}44` }}>
               {ev.phase}
             </span>
-            <span style={{ color: '#475569', fontSize: 9 }}>{step + 1}/{total}</span>
+            <span style={{ color: '#475569', fontSize: 9 }}>{t('viewer.stepCompact', { current: step + 1, total })}</span>
           </div>
         </div>
 
@@ -204,7 +206,7 @@ export default function ProtoVizViewer() {
     );
   }
 
-  /* ── DESKTOP & TABLET layout (>=768px) ───────────────────────── */
+  /* -- DESKTOP & TABLET layout (>=768px) -- */
   const topContent = (
     <div style={{ display: 'flex', flex: 1, overflow: 'hidden', position: 'relative' }}>
       {/* Left OSI Stack */}
@@ -241,7 +243,7 @@ export default function ProtoVizViewer() {
         border: '1px dashed #1e293b', borderRadius: 4, margin: 4,
       }}
     >
-      Detail panel is in a separate window — click to focus
+      {t('viewer.detailPanelSeparate')}
     </div>
   ) : (
     <BottomPane event={ev} phaseColor={phaseColor} onPopout={handlePopout} />
@@ -265,7 +267,7 @@ export default function ProtoVizViewer() {
           <span style={{ background: `${phaseColor}22`, color: phaseColor, fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4, border: `1px solid ${phaseColor}44` }}>
             {ev.phase}
           </span>
-          <span style={{ color: '#475569', fontSize: 10 }}>Step {step + 1}/{total}</span>
+          <span style={{ color: '#475569', fontSize: 10 }}>{t('viewer.step', { current: step + 1, total })}</span>
         </div>
       </div>
 

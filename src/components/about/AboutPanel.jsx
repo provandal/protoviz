@@ -1,6 +1,8 @@
 /* global __APP_VERSION__ */
+import { useTranslation } from 'react-i18next';
 
 export default function AboutPanel() {
+  const { t } = useTranslation();
   return (
     <div style={{
       display: 'flex', flexDirection: 'column', alignItems: 'center',
@@ -22,8 +24,7 @@ export default function AboutPanel() {
       </div>
 
       <div style={{ color: '#94a3b8', fontSize: 12, textAlign: 'center', lineHeight: 1.8, maxWidth: 420 }}>
-        Interactive protocol education platform for network engineers,
-        students, and anyone curious about what happens on the wire.
+        {t('about.tagline')}
       </div>
 
       {/* Authors */}
@@ -32,7 +33,7 @@ export default function AboutPanel() {
         border: '1px solid #1e293b', maxWidth: 420, width: '100%',
       }}>
         <div style={{ color: '#475569', fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 12 }}>
-          Created By
+          {t('about.createdBy')}
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div>
@@ -45,7 +46,7 @@ export default function AboutPanel() {
               Erik Smith
             </a>
             <div style={{ color: '#64748b', fontSize: 11 }}>
-              Distinguished Engineer - Dell Technologies
+              {t('about.authorTitle')}
             </div>
           </div>
           <div style={{ borderTop: '1px solid #1e293b', paddingTop: 10 }}>
@@ -53,7 +54,7 @@ export default function AboutPanel() {
               Claude.AI &amp; Claude Code
             </div>
             <div style={{ color: '#64748b', fontSize: 11 }}>
-              AI Contributors &middot; by Anthropic
+              {t('about.aiContributors')} &middot; {t('about.byAnthropic')}
             </div>
           </div>
         </div>
@@ -76,15 +77,13 @@ export default function AboutPanel() {
           GitHub
         </a>
         <span style={{ color: '#1e293b', fontSize: 11, padding: '4px 0' }}>
-          MIT License
+          {t('about.mitLicense')}
         </span>
       </div>
 
       {/* Disclaimer */}
       <div style={{ color: '#334155', fontSize: 9, textAlign: 'center', lineHeight: 1.6, maxWidth: 420 }}>
-        Protocol descriptions are based on open-source implementations (Linux kernel, rdma-core)
-        and public RFCs. Specification references are citations for further reading — no proprietary
-        text has been reproduced.
+        {t('about.disclaimer')}
       </div>
     </div>
   );

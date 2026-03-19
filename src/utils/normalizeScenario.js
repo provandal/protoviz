@@ -39,17 +39,25 @@ export function normalizeScenario(raw) {
       : raw.meta.description,
     difficulty: raw.meta.difficulty,
     tags: raw.meta.tags || [],
+    learning_objectives: raw.meta.learning_objectives || [],
   };
 
   const walkthroughs = raw.walkthroughs || [];
+  const glossary = (raw.glossary || []).map(g => ({
+    term: g.term,
+    abbrev: g.abbrev || null,
+    definition: g.definition,
+    spec_refs: g.spec_refs || [],
+  }));
 
-  return { meta, actors, osi_layers: osiLayers, timeline, walkthroughs };
+  return { meta, actors, osi_layers: osiLayers, timeline, walkthroughs, glossary };
 }
 
 function normalizeActors(rawActors) {
   return rawActors.map(a => ({
     id: a.id,
     label: a.label,
+    description: a.description || '',
     type: a.type,
     ip: a.ip,
     mac: a.mac,
@@ -108,6 +116,7 @@ function normalizeTimelineEvent(ev, idx, phase, frameMap, endpointIds) {
       normalized.via = frame.via || [];
       normalized.color = frame.color || normalized.color;
       normalized.frame = {
+        id: frame.id,
         name: frame.name,
         bytes: frame.total_bytes,
         headers: (frame.headers || []).map(normalizeHeader),

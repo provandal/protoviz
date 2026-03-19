@@ -1,0 +1,164 @@
+{
+  "_comment": "Spanish (es) translation overlay for TCP 3-Way Handshake scenario. Proof-of-concept covering meta, actors, first timeline events, walkthrough steps, glossary, and frames.",
+  "meta": {
+    "title": "TCP: Negociacion en 3 pasos \u2192 Transferencia de datos \u2192 Cierre con FIN",
+    "description": "Ciclo de vida completo de una conexion TCP sobre 10GbE: establecimiento del enlace fisico, resolucion ARP, la clasica negociacion en 3 pasos (SYN \u2192 SYN-ACK \u2192 ACK) con mecanismos de numeros de secuencia y confirmacion, un intercambio sencillo de solicitud/respuesta HTTP que muestra la segmentacion y la ventana deslizante, y el cierre ordenado en 4 pasos con FIN. Cada campo de la cabecera TCP esta anotado con referencias a RFC y enlaces cruzados al codigo fuente del kernel de Linux. Este es el escenario base \u2014 practicamente todos los demas protocolos en ProtoViz se ejecutan sobre TCP o se contrastan con el.",
+    "learning_objectives": [
+      "Comprender como la negociacion en 3 pasos de TCP establece numeros de secuencia sincronizados entre dos hosts",
+      "Seguir el intercambio SYN \u2192 SYN-ACK \u2192 ACK y observar la seleccion del Numero de Secuencia Inicial (ISN)",
+      "Ver como los numeros de secuencia y de confirmacion de TCP rastrean cada byte de datos",
+      "Observar la negociacion del tamano de ventana TCP y como el receptor anuncia el espacio de buffer disponible",
+      "Comprender la negociacion del MSS (Tamano Maximo de Segmento) mediante las opciones TCP durante la negociacion",
+      "Seguir los segmentos de datos TCP que transportan una solicitud y respuesta HTTP con sus ACK correspondientes",
+      "Ver el cierre ordenado en 4 pasos con FIN (FIN \u2192 ACK \u2192 FIN \u2192 ACK) y comprender TIME_WAIT",
+      "Observar las transiciones de la maquina de estados TCP en cliente y servidor: CLOSED \u2192 SYN_SENT \u2192 ESTABLISHED \u2192 FIN_WAIT \u2192 TIME_WAIT"
+    ]
+  },
+  "actors": {
+    "client": {
+      "label": "Cliente",
+      "description": "Cliente TCP \u2014 inicia la conexion con connect()"
+    },
+    "switch": {
+      "label": "Switch 10GbE",
+      "description": "Switch Ethernet de capa 2 que reenv\u00eda tramas entre el cliente y el servidor"
+    },
+    "server": {
+      "label": "Servidor",
+      "description": "Servidor TCP \u2014 acepta conexiones con accept() y sirve respuestas HTTP"
+    }
+  },
+  "timeline": {
+    "0": {
+      "text": "Enlace fisico activo \u2014 Auto-Negociacion 10GbE completa en ambos segmentos",
+      "detail": "Ambos enlaces 10GbE (cliente\u2194switch y switch\u2194servidor) completan la Auto-Negociacion IEEE 802.3 y logran sincronizacion de enlace. El switch aprende las direcciones MAC a medida que llegan las tramas \u2014 no se necesita configuracion para el reenvio basico de capa 2. A diferencia de los despliegues empresariales RoCEv2, este escenario TCP simple usa Ethernet estandar sin PFC ni ECN \u2014 el control de congestion propio de TCP se encarga de la recuperacion ante perdidas."
+    },
+    "1": {
+      "text": "Solicitud ARP \u2014 El cliente pregunta '\u00bfQuien tiene 10.0.1.20?'",
+      "detail": "Antes de que el cliente pueda enviar cualquier paquete IP al servidor, necesita la direccion MAC del servidor. El kernel revisa su cache ARP (tabla de vecinos) y no encuentra ninguna entrada para 10.0.1.20. Difunde una solicitud ARP a todos los hosts del segmento L2. El switch inunda esta trama por todos los puertos excepto el puerto de origen. En Linux, esto lo gestiona el subsistema de vecinos (net/core/neighbour.c \u2192 arp_solicit)."
+    },
+    "2": {
+      "text": "Respuesta ARP \u2014 El servidor responde '10.0.1.20 esta en 00:11:22:33:44:02'",
+      "detail": "El servidor reconoce su propia IP en la solicitud ARP y envia una respuesta ARP unicast con su direccion MAC. Ambos lados actualizan sus caches ARP. El cliente ya puede construir tramas Ethernet completas dirigidas al servidor. Las entradas ARP se almacenan en cache con un tiempo de expiracion (valor predeterminado en Linux: gc_stale_time = 60s)."
+    },
+    "3": {
+      "text": "TCP SYN \u2192 El cliente inicia la negociacion en 3 pasos (llamada al sistema connect())",
+      "detail": "La aplicacion llama a connect(). El kernel asigna un socket, selecciona un puerto efimero de origen (49152), genera un Numero de Secuencia Inicial (ISN = 1000000) criptograficamente aleatorio mediante SipHash, y envia un segmento SYN.\nEl SYN lleva parametros criticos de negociacion como opciones TCP: \u2022 MSS = 1460 (carga util maxima por segmento = MTU Ethernet 1500 \u2212 20 IP \u2212 20 TCP) \u2022 Escala de Ventana = 7 (ventana efectiva = anunciada \u00d7 2^7 = ~8MB) \u2022 SACK Permitido (habilita confirmacion selectiva para recuperacion ante perdidas) \u2022 Marcas de tiempo (permite medicion precisa de RTT y proteccion PAWS)\nEl cliente entra en estado SYN_SENT e inicia un temporizador de retransmision. Si no llega un SYN-ACK, Linux reintenta con retroceso exponencial (1s, 2s, 4s... controlado por tcp_syn_retries, predeterminado 6)."
+    },
+    "4": {
+      "text": "TCP SYN-ACK \u2190 El servidor confirma el SYN y envia su propio SYN",
+      "detail": "El servidor estaba en estado LISTEN (la aplicacion llamo a listen() previamente). Al recibir el SYN del cliente, el kernel: 1. Asigna un nuevo socket (solicitud de conexion) en la cola de backlog SYN 2. Genera su propio ISN (2000000) de forma independiente via SipHash 3. Envia un SYN-ACK: ACK = ISN_cliente + 1 = 1000001 (confirmando el SYN) y su propio SYN con seq = 2000000\nEl numero de ACK (1000001) significa: \"He recibido todo hasta el byte 1000001. Enviame ese byte a continuacion.\" El SYN consume un numero de secuencia aunque no lleva datos \u2014 asi es como TCP asegura que la negociacion se confirme de forma fiable.\nLinux moderno usa SYN cookies (net.ipv4.tcp_syncookies) para protegerse contra ataques de inundacion SYN \u2014 el propio ISN codifica los parametros de conexion, evitando la asignacion de estado hasta que llegue el ACK final."
+    },
+    "5": {
+      "text": "TCP ACK \u2192 Negociacion completa \u2014 ambos lados ahora en estado ESTABLISHED",
+      "detail": "El cliente recibe el SYN-ACK, valida el numero de ACK (debe ser ISN + 1), y envia el ACK final con ack = ISN_servidor + 1 = 2000001. Ambos lados transicionan a ESTABLISHED.\nEn este punto, la negociacion en 3 pasos ha logrado: 1. Ambos lados acordaron los numeros de secuencia iniciales (ISN) 2. Ambos lados conocen el MSS del otro (1460 bytes) 3. Ambos lados negociaron la Escala de Ventana (factor 7 \u2192 ventana efectiva ~8MB) 4. Ambos lados acordaron SACK y Marcas de tiempo\nLa llamada accept() del servidor ahora retorna con un nuevo socket fd conectado. Los datos pueden fluir en ambas direcciones. La primera muestra de RTT se mide desde la marca de tiempo del SYN hasta la llegada del SYN-ACK (~50\u03bcs en este escenario de LAN).\nInformacion clave: TCP requiere esta negociacion de 1-RTT antes de que puedan fluir datos. Por eso se desarrollaron protocolos como QUIC (que combina la negociacion TLS y de transporte) \u2014 para reducir la latencia en el establecimiento de conexion."
+    },
+    "6": {
+      "text": "Datos TCP \u2192 El cliente envia solicitud HTTP GET (205 bytes)",
+      "detail": "La aplicacion llama a send() con una solicitud HTTP GET. La pila TCP del kernel segmenta los datos (en este caso caben en un solo segmento ya que 205 bytes < MSS 1460), establece seq=1000001 (primer byte de datos), agrega una cabecera TCP con los flags PSH y ACK, y lo entrega a IP para su transmision.\nSeguimiento de numeros de secuencia: \u2022 Antes: SND.NXT = 1000001, SND.UNA = 1000001 \u2022 Despues: SND.NXT = 1000206 (1000001 + 205 bytes enviados) \u2022 SND.UNA = 1000001 (esperando el ACK del servidor)\nEl flag PSH (Push) indica al TCP receptor que entregue los datos a la aplicacion inmediatamente en lugar de esperar a que lleguen mas datos para llenar el buffer de recepcion. Esto es apropiado para protocolos de solicitud-respuesta donde la latencia importa mas que el rendimiento."
+    },
+    "7": {
+      "text": "TCP ACK \u2190 El servidor confirma la solicitud HTTP (ACK 1000206)",
+      "detail": "El servidor recibe el segmento de 205 bytes, valida el numero de secuencia (coincide con el RCV.NXT esperado = 1000001), copia los datos al buffer de recepcion del socket, avanza RCV.NXT a 1000206, y envia un ACK.\nEl numero de ACK 1000206 significa: \"He recibido todos los bytes hasta (pero sin incluir) 1000206. Enviame el byte 1000206 a continuacion.\" Esta es una confirmacion acumulativa \u2014 un solo ACK cubre todos los datos hasta ese punto.\nEn Linux, el servidor puede retrasar este ACK hasta 40ms (tcp_delack_min) para enviarlo junto con una respuesta de datos. Aqui el servidor confirma rapidamente ya que la aplicacion necesita tiempo para generar la respuesta."
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "Ciclo de vida de una conexion TCP",
+      "description": "Recorrido completo de una conexion TCP desde la activacion del enlace, pasando por la negociacion, la transferencia de datos y el cierre ordenado",
+      "steps": {
+        "0": "Antes de poder intercambiar datos, la red fisica debe estar lista. Ambos enlaces de 10 Gigabit Ethernet (cliente-a-switch y switch-a-servidor) completan la Auto-Negociacion y se activan. Esta es la capa base \u2014 sin un enlace fisico funcional, nada mas puede suceder. Es como levantar un telefono y escuchar el tono de marcado.",
+        "1": "El cliente quiere comunicarse con el servidor en la direccion IP 10.0.1.20, pero las tramas Ethernet necesitan una direccion MAC para llegar a su destino. Como el cliente aun no conoce la MAC del servidor, difunde una solicitud ARP (Protocolo de Resolucion de Direcciones) a todos los dispositivos de la red: \"\u00bfQuien tiene 10.0.1.20? Dime tu direccion MAC.\" Observe la MAC de destino de difusion (ff:ff:ff:ff:ff:ff) y el codigo de operacion ARP de 1 (Solicitud).",
+        "2": "El servidor reconoce su propia IP en la solicitud ARP y responde: \"\u00a1Soy yo! Mi direccion MAC es 00:11:22:33:44:02.\" Esta es una respuesta unicast enviada directamente al cliente. Ambos lados actualizan sus caches ARP para no tener que preguntar de nuevo (al menos por un tiempo). Ahora el cliente puede construir tramas Ethernet completas dirigidas al servidor.",
+        "3": "Ahora comienza la accion real de TCP. La aplicacion del cliente llama a connect(), y el kernel envia un segmento SYN (sincronizar) \u2014 el primer paso de la famosa negociacion en 3 pasos de TCP. El cliente elige un Numero de Secuencia Inicial aleatorio (ISN = 1000000) y propone parametros de conexion mediante opciones TCP: MSS de 1460 bytes (la carga util maxima por segmento), factor de Escala de Ventana 7 (permitiendo una enorme ventana de recepcion), y soporte para SACK. El cliente entra en estado SYN_SENT y espera una respuesta.",
+        "4": "El servidor estaba escuchando en el puerto 80. Recibe el SYN y responde con un SYN-ACK \u2014 simultaneamente confirmando el SYN del cliente y enviando el suyo propio. Observe dos numeros criticos: el ISN propio del servidor (seq = 2000000) y el numero de confirmacion (ack = 1000001, que es el ISN del cliente + 1). El \"+1\" demuestra que el servidor recibio el SYN del cliente. El flag SYN consume un numero de secuencia aunque no lleva datos \u2014 esto asegura que la negociacion se confirme de forma fiable.",
+        "5": "El cliente completa la negociacion enviando el ACK final (ack = 2000001, confirmando el SYN del servidor). Ambos lados estan ahora en estado ESTABLISHED \u2014 la conexion esta abierta y los datos pueden fluir en ambas direcciones. La negociacion en 3 pasos ha sincronizado los numeros de secuencia, negociado el MSS y acordado la escala de ventana. Todo este intercambio tomo aproximadamente 100 microsegundos en esta LAN. Para comparar, la misma negociacion a traves de Internet podria tomar 50-200 milisegundos \u2014 por eso protocolos como QUIC intentan reducir las rondas de negociacion.",
+        "6": "Con la conexion establecida, el cliente envia una solicitud HTTP GET (205 bytes) como carga util TCP. Observe el numero de secuencia: seq = 1000001, que es el primer byte de datos despues del SYN. El flag PSH (Push) indica a la pila TCP del servidor que entregue estos datos a la aplicacion inmediatamente en lugar de almacenarlos en buffer. Despues de enviar, el siguiente numero de secuencia del cliente avanza a 1000206 (1000001 + 205 bytes). TCP rastrea cada byte con numeros de secuencia \u2014 asi es como garantiza la entrega fiable y en orden.",
+        "7": "El servidor confirma la solicitud de 205 bytes del cliente con el numero de ACK 1000206, que significa \"He recibido todo hasta el byte 1000206 \u2014 enviame ese byte a continuacion.\" Esta es una confirmacion acumulativa: un solo ACK cubre todos los datos recibidos hasta el momento. El cliente, al recibir este ACK, sabe que los datos fueron entregados exitosamente y puede liberarlos del buffer de retransmision."
+      }
+    }
+  },
+  "glossary": {
+    "3-Way Handshake": {
+      "term": "Negociacion en 3 pasos",
+      "definition": "Procedimiento de establecimiento de conexion TCP: el cliente envia SYN, el servidor responde con SYN-ACK, y el cliente completa con ACK. Sincroniza los numeros de secuencia y negocia opciones."
+    },
+    "Initial Sequence Number": {
+      "term": "Numero de Secuencia Inicial",
+      "definition": "El numero de secuencia inicial elegido por cada lado de una conexion TCP. Generado pseudo-aleatoriamente (SipHash en Linux) para prevenir ataques de prediccion de secuencia. El SYN consume un numero de secuencia."
+    },
+    "Maximum Segment Size": {
+      "term": "Tamano Maximo de Segmento",
+      "definition": "La mayor carga util TCP (excluyendo cabeceras) que un host aceptara. Se negocia durante la negociacion mediante opciones TCP. Valor tipico: 1460 bytes = 1500 (MTU Ethernet) \u2212 20 (cabecera IP) \u2212 20 (cabecera base TCP)."
+    },
+    "Window Scale": {
+      "term": "Escala de Ventana",
+      "definition": "Opcion TCP que extiende el campo de tamano de ventana de 16 bits mas alla de 65535 bytes. El factor de escala se negocia durante la negociacion. Factor 7 significa ventana efectiva = anunciada \u00d7 128."
+    },
+    "Selective Acknowledgment": {
+      "term": "Confirmacion Selectiva",
+      "definition": "Opcion TCP que permite al receptor reportar bloques no contiguos de datos recibidos. Ayuda al emisor a retransmitir solo los segmentos faltantes en lugar de todo lo posterior al punto de perdida."
+    },
+    "TIME_WAIT": {
+      "term": "TIME_WAIT",
+      "definition": "Estado TCP en el que entra el lado que envia el primer FIN despues de recibir el FIN del par. Dura 2\u00d7MSL (tipicamente 60s en Linux). Asegura la entrega del ACK final y previene la reutilizacion de segmentos obsoletos."
+    },
+    "Cumulative Acknowledgment": {
+      "term": "Confirmacion Acumulativa",
+      "definition": "Mecanismo de ACK de TCP donde el numero de confirmacion indica el siguiente byte esperado. Un solo ACK cubre todos los datos hasta ese numero de secuencia, incluso si se recibieron multiples segmentos."
+    },
+    "Congestion Window": {
+      "term": "Ventana de Congestion",
+      "definition": "Limite del lado emisor sobre la cantidad de datos no confirmados en vuelo. Comienza en ~10 segmentos (IW10) y crece mediante los algoritmos de inicio lento / prevencion de congestion. Independiente de la ventana anunciada por el receptor."
+    },
+    "Push Flag": {
+      "term": "Flag Push",
+      "definition": "Flag TCP que indica al receptor que entregue los datos almacenados en buffer a la aplicacion inmediatamente en lugar de esperar mas datos. Comunmente activado en el ultimo segmento de un mensaje logico."
+    },
+    "FIN": {
+      "term": "FIN",
+      "definition": "Flag TCP que indica que el emisor ha terminado de transmitir datos. Inicia un cierre ordenado de la conexion. Al igual que SYN, FIN consume un numero de secuencia para asegurar una confirmacion fiable."
+    }
+  },
+  "frames": {
+    "arp_request": {
+      "name": "Solicitud ARP"
+    },
+    "arp_reply": {
+      "name": "Respuesta ARP"
+    },
+    "tcp_syn": {
+      "name": "TCP SYN"
+    },
+    "tcp_syn_ack": {
+      "name": "TCP SYN-ACK"
+    },
+    "tcp_ack_handshake": {
+      "name": "TCP ACK (Negociacion completa)"
+    },
+    "tcp_http_request": {
+      "name": "Datos TCP: Solicitud HTTP GET"
+    },
+    "tcp_ack_request": {
+      "name": "TCP ACK (El servidor confirma la solicitud)"
+    },
+    "tcp_http_response": {
+      "name": "Datos TCP: Respuesta HTTP 200"
+    },
+    "tcp_ack_response": {
+      "name": "TCP ACK (El cliente confirma la respuesta)"
+    },
+    "tcp_fin_client": {
+      "name": "TCP FIN (El cliente inicia el cierre)"
+    },
+    "tcp_ack_fin_client": {
+      "name": "TCP ACK (El servidor confirma el FIN del cliente)"
+    },
+    "tcp_fin_server": {
+      "name": "TCP FIN (El servidor cierra su lado)"
+    },
+    "tcp_ack_fin_server": {
+      "name": "TCP ACK (El cliente confirma el FIN del servidor)"
+    }
+  }
+}

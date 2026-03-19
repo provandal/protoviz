@@ -1,10 +1,12 @@
 /* global __APP_VERSION__ */
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import ScenarioCard from './ScenarioCard';
 import FilterBar from './FilterBar';
 
 export default function Gallery() {
+  const { t } = useTranslation();
   const [scenarios, setScenarios] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState({ protocol: '', difficulty: '', search: '' });
@@ -54,8 +56,7 @@ export default function Gallery() {
           </span>
         </div>
         <div style={{ color: '#94a3b8', fontSize: 14, maxWidth: 500, margin: '0 auto', marginBottom: 16 }}>
-          Interactive protocol visualizations for network engineers, students,
-          and anyone curious about what happens on the wire.
+          {t('gallery.tagline')}
         </div>
         <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
           <button
@@ -66,7 +67,7 @@ export default function Gallery() {
               fontSize: 12, fontWeight: 600,
             }}
           >
-            Create Scenario
+            {t('gallery.createScenario')}
           </button>
           <button
             onClick={() => navigate('/troubleshooter')}
@@ -79,7 +80,7 @@ export default function Gallery() {
             onMouseEnter={e => { e.currentTarget.style.borderColor = '#3b82f6'; e.currentTarget.style.color = '#e2e8f0'; }}
             onMouseLeave={e => { e.currentTarget.style.borderColor = '#334155'; e.currentTarget.style.color = '#94a3b8'; }}
           >
-            PCAP Troubleshooter
+            {t('gallery.pcapTroubleshooter')}
           </button>
         </div>
       </div>
@@ -97,11 +98,11 @@ export default function Gallery() {
         <div style={{ padding: '24px', maxWidth: 1000, margin: '0 auto' }}>
           {loading ? (
             <div style={{ textAlign: 'center', color: '#475569', padding: 40 }}>
-              Loading scenarios...
+              {t('gallery.loading')}
             </div>
           ) : filtered.length === 0 ? (
             <div style={{ textAlign: 'center', color: '#475569', padding: 40 }}>
-              No scenarios match your filters
+              {t('gallery.noMatch')}
             </div>
           ) : (
             <div style={{
@@ -128,13 +129,10 @@ export default function Gallery() {
       }}>
         <div style={{ maxWidth: 600, margin: '0 auto', textAlign: 'center' }}>
           <div style={{ color: '#475569', fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 16 }}>
-            About
+            {t('gallery.aboutTitle')}
           </div>
           <div style={{ color: '#94a3b8', fontSize: 12, lineHeight: 1.7, marginBottom: 24 }}>
-            ProtoViz is an open-source platform for creating, sharing, and interactively
-            exploring protocol exchange scenarios. Each scenario is a YAML file describing
-            a complete protocol interaction — with every frame field annotated with spec
-            references and Linux kernel source cross-links.
+            {t('gallery.aboutDescription')}
           </div>
 
           <div style={{
@@ -151,7 +149,7 @@ export default function Gallery() {
                 Erik Smith
               </a>
               <div style={{ color: '#64748b', fontSize: 10 }}>
-                Distinguished Engineer - Dell Technologies
+                {t('gallery.authorTitle')}
               </div>
             </div>
             <div>
@@ -159,7 +157,7 @@ export default function Gallery() {
                 Claude.AI &amp; Claude Code
               </div>
               <div style={{ color: '#64748b', fontSize: 10 }}>
-                AI Contributors &middot; by Anthropic
+                {t('gallery.aiContributors')} &middot; {t('gallery.byAnthropic')}
               </div>
             </div>
           </div>
@@ -177,7 +175,7 @@ export default function Gallery() {
               GitHub
             </a>
             <span style={{ color: '#64748b', fontSize: 11, padding: '4px 0' }}>
-              MIT License
+              {t('gallery.mitLicense')}
             </span>
             <span style={{ color: '#64748b', fontSize: 11, padding: '4px 0' }}>
               v{__APP_VERSION__}
@@ -185,9 +183,7 @@ export default function Gallery() {
           </div>
 
           <div style={{ color: '#64748b', fontSize: 9, textAlign: 'center', lineHeight: 1.6, maxWidth: 500, marginTop: 16 }}>
-            Protocol descriptions are based on open-source implementations (Linux kernel, rdma-core)
-            and public RFCs. Specification references are citations for further reading — no proprietary
-            text has been reproduced.
+            {t('gallery.disclaimer')}
           </div>
         </div>
       </div>

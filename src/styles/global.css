@@ -73,9 +73,19 @@ body {
   flex-shrink: 0;
 }
 
+[dir="rtl"] .pvz-osi-col {
+  border-right: none;
+  border-left: 1px solid #1e293b;
+}
+
 .pvz-osi-col--right {
   border-right: none;
   border-left: 1px solid #1e293b;
+}
+
+[dir="rtl"] .pvz-osi-col--right {
+  border-left: none;
+  border-right: 1px solid #1e293b;
 }
 
 /* Sequence diagram scroll wrapper */
@@ -225,4 +235,75 @@ body {
   .pvz-root > div > div[style*="row-resize"] {
     min-height: 12px;
   }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   RTL-aware utilities
+   ═══════════════════════════════════════════════════════════════ */
+[dir="rtl"] .pvz-text-start { text-align: right; }
+[dir="rtl"] .pvz-border-start { border-left: none; border-right: 1px solid #1e293b; }
+[dir="rtl"] .pvz-flex-row { flex-direction: row-reverse; }
+
+/* Sequence diagram: flip phase group left-border to right in RTL */
+[dir="rtl"] .pvz-phase-header {
+  border-left: none;
+  border-right: 3px solid var(--phase-color, #94a3b8);
+}
+
+/* Sequence diagram: flip row highlight border */
+[dir="rtl"] .pvz-seq-row {
+  border-right: 3px solid var(--row-border-color, transparent);
+  border-left: none;
+}
+
+[dir="ltr"] .pvz-seq-row {
+  border-left: 3px solid var(--row-border-color, transparent);
+  border-right: none;
+}
+
+/* FlowPicker: flip the selected row left border to right in RTL */
+[dir="rtl"] .pvz-flow-row {
+  border-left: none;
+  border-right: 3px solid var(--flow-border-color, transparent);
+}
+
+[dir="ltr"] .pvz-flow-row {
+  border-left: 3px solid var(--flow-border-color, transparent);
+  border-right: none;
+}
+
+/* Sequence diagram arrow container: mirror in RTL */
+[dir="rtl"] .pvz-seq-arrows {
+  transform: scaleX(-1);
+}
+
+/* But keep text inside arrows readable (un-mirror) */
+[dir="rtl"] .pvz-seq-arrows .pvz-seq-label {
+  transform: scaleX(-1);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   CJK & multilingual font stacks
+   ═══════════════════════════════════════════════════════════════ */
+:root[lang="zh-CN"] body,
+:root[lang="zh"] body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+}
+
+:root[lang="ja"] body {
+  font-family: 'IBM Plex Sans', 'Noto Sans JP', 'Hiragino Sans', 'Yu Gothic', system-ui, sans-serif;
+}
+
+:root[lang="ko"] body {
+  font-family: 'IBM Plex Sans', 'Noto Sans KR', 'Malgun Gothic', system-ui, sans-serif;
+}
+
+:root[lang="hi"] body {
+  font-family: 'IBM Plex Sans', 'Noto Sans Devanagari', system-ui, sans-serif;
+}
+
+:root[lang="he"] body,
+:root[lang="ar"] body,
+:root[lang="ar-LB"] body {
+  font-family: 'IBM Plex Sans', 'Noto Sans Hebrew', 'Noto Sans Arabic', system-ui, sans-serif;
 }

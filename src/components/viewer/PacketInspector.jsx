@@ -1,7 +1,9 @@
+import { useTranslation } from 'react-i18next';
 import HeaderBlock from './HeaderBlock';
 import useViewerStore from '../../store/viewerStore';
 
 export default function PacketInspector({ event }) {
+  const { t } = useTranslation();
   const highlightFields = useViewerStore(s => s.highlightFields);
   if (!event?.frame) {
     return (
@@ -10,7 +12,7 @@ export default function PacketInspector({ event }) {
         height: '100%', color: '#334155', fontSize: 12,
         fontStyle: 'italic',
       }}>
-        No packet data for this step
+        {t('inspector.noPacketData')}
       </div>
     );
   }
@@ -22,12 +24,12 @@ export default function PacketInspector({ event }) {
         padding: '6px 12px', background: '#0f172a', borderBottom: '1px solid #1e293b',
         display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
       }}>
-        <span style={{ color: '#3b82f6', fontSize: 11, fontWeight: 800 }}>PACKET INSPECTOR</span>
+        <span style={{ color: '#3b82f6', fontSize: 11, fontWeight: 800 }}>{t('inspector.title')}</span>
         <span style={{ color: '#475569', fontSize: 11 }}>—</span>
         <span style={{ color: '#e2e8f0', fontSize: 11 }}>{event.frame.name}</span>
-        <span style={{ background: '#1e293b', color: '#94a3b8', fontSize: 9, padding: '1px 6px', borderRadius: 3 }}>{event.frame.bytes} bytes total</span>
+        <span style={{ background: '#1e293b', color: '#94a3b8', fontSize: 9, padding: '1px 6px', borderRadius: 3 }}>{t('viewer.bytesTotal', { count: event.frame.bytes })}</span>
         <div style={{ flex: 1 }} />
-        <span style={{ color: '#475569', fontSize: 9 }}>Click any field to expand</span>
+        <span style={{ color: '#475569', fontSize: 9 }}>{t('inspector.clickToExpand')}</span>
       </div>
 
       {/* Header blocks */}

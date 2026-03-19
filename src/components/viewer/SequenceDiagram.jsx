@@ -1,7 +1,9 @@
 import { useRef, useEffect, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { PHASE_COLORS } from '../../utils/constants';
 import useViewerStore from '../../store/viewerStore';
 import useCommunityNotes from '../../hooks/useCommunityNotes';
+import { isRtl } from '../../utils/rtl';
 
 /**
  * Determine the visual span of a state_change event based on which actors it affects.
@@ -35,6 +37,7 @@ function getFrameSpan(ev, leftId, rightId) {
 }
 
 export default function SequenceDiagram({ timeline, currentStep, onStepSelect, leftActorId = 'initiator', rightActorId = 'target' }) {
+  const { t } = useTranslation();
   // Build phase groups as consecutive runs to preserve chronological order.
   // If the same phase reappears later, it gets its own group in the correct position.
   const phaseGroups = [];
@@ -85,12 +88,16 @@ export default function SequenceDiagram({ timeline, currentStep, onStepSelect, l
     <div style={{ overflowY: 'auto', height: '100%' }}>
       {phaseGroups.map(({ phase, events }) => (
         <div key={phase} style={{ marginBottom: 8 }}>
-          <div style={{
-            padding: '3px 10px', background: `${PHASE_COLORS[phase]}22`,
-            borderLeft: `3px solid ${PHASE_COLORS[phase]}`,
-            color: PHASE_COLORS[phase] || '#94a3b8', fontSize: 10, fontWeight: 700, letterSpacing: '0.08em',
-            textTransform: 'uppercase',
-          }}>{phase}</div>
+          <div
+            className="pvz-phase-header"
+            style={{
+              padding: '3px 10px', background: `${PHASE_COLORS[phase]}22`,
+              borderLeft: `3px solid ${PHASE_COLORS[phase]}`,
+              '--phase-color': PHASE_COLORS[phase],
+              color: PHASE_COLORS[phase] || '#94a3b8', fontSize: 10, fontWeight: 700, letterSpacing: '0.08em',
+              textTransform: 'uppercase',
+            }}
+          >{phase}</div>
           {events.map(ev => {
             const idx = timeline.indexOf(ev);
             const isCurrent = idx === currentStep;
@@ -112,10 +119,11 @@ export default function SequenceDiagram({ timeline, currentStep, onStepSelect, l
                 key={ev.id}
                 ref={isCurrent ? currentRef : undefined}
                 onClick={() => onStepSelect(idx)}
+                className="pvz-seq-row"
                 style={{
                   display: 'flex', alignItems: 'center', gap: 0, padding: '5px 8px', cursor: 'pointer',
                   background: isCurrent ? `${color}18` : isPast ? '#0a0f1a' : 'transparent',
-                  borderLeft: isCurrent ? `3px solid ${color}` : '3px solid transparent',
+                  '--row-border-color': isCurrent ? color : 'transparent',
                   transition: 'all 0.2s',
                 }}
                 onMouseEnter={e => !isCurrent && (e.currentTarget.style.background = '#0f172a')}
@@ -124,37 +132,40 @@ export default function SequenceDiagram({ timeline, currentStep, onStepSelect, l
                 {/* Note indicators */}
                 <div style={{ width: 16, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2 }}>
                   {hasNote && (
-                    <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#f59e0b', flexShrink: 0 }} title="Has personal note" />
+                    <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#f59e0b', flexShrink: 0 }} title={t('community.hasPersonalNote')} />
                   )}
                   {hasCommunityNote && (
-                    <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#3b82f6', flexShrink: 0 }} title="Has community note" />
+                    <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#3b82f6', flexShrink: 0 }} title={t('community.hasCommunityNote')} />
                   )}
                 </div>
-                {/* Left actor column */}
-                <div style={{ width: 70, display: 'flex', justifyContent: 'flex-end', paddingRight: 6 }}>
-                  {isFrame && goesRight && (
-                    <span style={{ color: isPast ? color + '99' : color, fontSize: 9, fontWeight: 700 }}>{senderLabel}</span>
-                  )}
-                  {isFrame && !goesRight && (
-                    <span style={{ color: isPast ? color + '99' : color, fontSize: 9, fontWeight: 700 }}>◀</span>
-                  )}
-                </div>
-                {/* Arrow / label */}
-                <div style={{ flex: 1, textAlign: 'center', position: 'relative' }}>
-                  {isFrame ? (
-                    <FrameRow ev={ev} dir={dir} span={span} color={color} isCurrent={isCurrent} isPast={isPast} receiverLabel={receiverLabel} />
-                  ) : (
-                    <StateChangeRow ev={ev} span={span} isCurrent={isCurrent} isPast={isPast} />
-                  )}
-                </div>
-                {/* Right actor column */}
-                <div style={{ width: 70, paddingLeft: 6 }}>
-                  {isFrame && goesRight && (
-                    <span style={{ color: isPast ? color + '99' : color, fontSize: 9, fontWeight: 700 }}>{receiverLabel}</span>
-                  )}
-                  {isFrame && !goesRight && (
-                    <span style={{ color: isPast ? color + '99' : color, fontSize: 9, fontWeight: 700 }}>{senderLabel}</span>
-                  )}
+                {/* Arrow area: scaleX(-1) in RTL so arrows mirror, with text un-mirrored */}
+                <div className="pvz-seq-arrows" style={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0 }}>
+                  {/* Left actor column */}
+                  <div style={{ width: 70, display: 'flex', justifyContent: 'flex-end', paddingRight: 6 }}>
+                    {isFrame && goesRight && (
+                      <span className="pvz-seq-label" style={{ color: isPast ? color + '99' : color, fontSize: 9, fontWeight: 700 }}>{senderLabel}</span>
+                    )}
+                    {isFrame && !goesRight && (
+                      <span className="pvz-seq-label" style={{ color: isPast ? color + '99' : color, fontSize: 9, fontWeight: 700 }}>{'\u25C0'}</span>
+                    )}
+                  </div>
+                  {/* Arrow / label */}
+                  <div style={{ flex: 1, textAlign: 'center', position: 'relative' }}>
+                    {isFrame ? (
+                      <FrameRow ev={ev} dir={dir} span={span} color={color} isCurrent={isCurrent} isPast={isPast} receiverLabel={receiverLabel} />
+                    ) : (
+                      <StateChangeRow ev={ev} span={span} isCurrent={isCurrent} isPast={isPast} />
+                    )}
+                  </div>
+                  {/* Right actor column */}
+                  <div style={{ width: 70, paddingLeft: 6 }}>
+                    {isFrame && goesRight && (
+                      <span className="pvz-seq-label" style={{ color: isPast ? color + '99' : color, fontSize: 9, fontWeight: 700 }}>{receiverLabel}</span>
+                    )}
+                    {isFrame && !goesRight && (
+                      <span className="pvz-seq-label" style={{ color: isPast ? color + '99' : color, fontSize: 9, fontWeight: 700 }}>{senderLabel}</span>
+                    )}
+                  </div>
                 </div>
               </div>
             );
@@ -167,7 +178,7 @@ export default function SequenceDiagram({ timeline, currentStep, onStepSelect, l
 
 /**
  * Renders a frame_tx event with arrow span based on from/to actors.
- * 'left' = initiator↔switch, 'right' = switch↔target, 'full' = end-to-end
+ * 'left' = initiator<->switch, 'right' = switch<->target, 'full' = end-to-end
  */
 function FrameRow({ ev, dir, span, color, isCurrent, isPast, receiverLabel }) {
   const alignment = span === 'left' ? 'flex-start' : span === 'right' ? 'flex-end' : 'stretch';
@@ -185,11 +196,11 @@ function FrameRow({ ev, dir, span, color, isCurrent, isPast, receiverLabel }) {
         [dir === 'right' ? 'right' : 'left']: 0,
         top: 2,
         fontSize: 10, color: isPast ? color + '88' : color,
-      }}>{dir === 'right' ? '▶' : '◀'}</div>
-      <div style={{ color: isPast ? '#334155' : isCurrent ? '#f1f5f9' : '#94a3b8', fontSize: 10, fontWeight: isCurrent ? 700 : 400, transition: 'color 0.2s' }}>
+      }}>{dir === 'right' ? '\u25B6' : '\u25C0'}</div>
+      <div className="pvz-seq-label" style={{ color: isPast ? '#334155' : isCurrent ? '#f1f5f9' : '#94a3b8', fontSize: 10, fontWeight: isCurrent ? 700 : 400, transition: 'color 0.2s' }}>
         {ev.label}
       </div>
-      {ev.frame && <div style={{ color: '#475569', fontSize: 9 }}>{ev.frame.bytes} bytes</div>}
+      {ev.frame && <div className="pvz-seq-label" style={{ color: '#475569', fontSize: 9 }}>{ev.frame.bytes} bytes</div>}
     </div>
   );
 
@@ -220,14 +231,14 @@ function StateChangeRow({ ev, span, isCurrent, isPast }) {
           margin: '8px 0',
           transition: 'all 0.3s',
         }} />
-        <div style={{
+        <div className="pvz-seq-label" style={{
           color: textColor, fontSize: 10,
           fontWeight: isCurrent ? 700 : 400,
           padding: '0 4px',
           transition: 'color 0.2s',
           textAlign: 'center',
         }}>
-          ⟳ {ev.label}
+          {'\u27F3'} {ev.label}
         </div>
       </div>
     </div>

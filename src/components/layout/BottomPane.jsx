@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import useViewerStore from '../../store/viewerStore';
 import EventDetail from '../viewer/EventDetail';
 import PacketInspector from '../viewer/PacketInspector';
@@ -5,24 +6,27 @@ import CommunityNotesPanel from '../viewer/CommunityNotesPanel';
 import ChatPanel from '../chat/ChatPanel';
 import AboutPanel from '../about/AboutPanel';
 
-const TABS = [
-  { id: 'explain', label: 'Explain' },
-  { id: 'inspect', label: 'Inspect Packet' },
-  { id: 'community', label: 'Community' },
-  { id: 'chat', label: 'Chat' },
-  { id: 'about', label: 'About' },
-];
+const TAB_IDS = ['explain', 'inspect', 'community', 'chat', 'about'];
 
 /* Short labels for mobile */
-const MOBILE_LABELS = {
-  explain: 'Explain',
-  inspect: 'Inspect',
-  community: 'Community',
-  chat: 'Chat',
-  about: 'About',
+const MOBILE_LABEL_KEYS = {
+  explain: 'tabs.explain',
+  inspect: 'tabs.inspectShort',
+  community: 'tabs.community',
+  chat: 'tabs.chat',
+  about: 'tabs.about',
+};
+
+const FULL_LABEL_KEYS = {
+  explain: 'tabs.explain',
+  inspect: 'tabs.inspectPacket',
+  community: 'tabs.community',
+  chat: 'tabs.chat',
+  about: 'tabs.about',
 };
 
 export default function BottomPane({ event, phaseColor, onPopout }) {
+  const { t } = useTranslation();
   const activeTab = useViewerStore(s => s.activeBottomTab);
   const setActiveTab = useViewerStore(s => s.setActiveBottomTab);
 
@@ -33,14 +37,14 @@ export default function BottomPane({ event, phaseColor, onPopout }) {
         display: 'flex', alignItems: 'center',
         background: '#0f172a', flexShrink: 0,
       }}>
-        {TABS.map(tab => {
-          const isActive = activeTab === tab.id;
-          const isDisabled = tab.id === 'inspect' && !event?.frame;
-          const hasFrame = tab.id === 'inspect' && event?.frame && !isActive;
+        {TAB_IDS.map(id => {
+          const isActive = activeTab === id;
+          const isDisabled = id === 'inspect' && !event?.frame;
+          const hasFrame = id === 'inspect' && event?.frame && !isActive;
           return (
             <button
-              key={tab.id}
-              onClick={() => !isDisabled && setActiveTab(tab.id)}
+              key={id}
+              onClick={() => !isDisabled && setActiveTab(id)}
               disabled={isDisabled}
               className="pvz-bottom-tab"
               style={{
@@ -57,8 +61,8 @@ export default function BottomPane({ event, phaseColor, onPopout }) {
               }}
             >
               {/* Full label for desktop, short for mobile */}
-              <span className="pvz-bottom-tab-label--full">{tab.label}</span>
-              <span className="pvz-bottom-tab-label--short">{MOBILE_LABELS[tab.id]}</span>
+              <span className="pvz-bottom-tab-label--full">{t(FULL_LABEL_KEYS[id])}</span>
+              <span className="pvz-bottom-tab-label--short">{t(MOBILE_LABEL_KEYS[id])}</span>
               {hasFrame && (
                 <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#3b82f6' }} />
               )}
@@ -70,10 +74,10 @@ export default function BottomPane({ event, phaseColor, onPopout }) {
           <button
             className="pvz-popout-btn"
             onClick={onPopout}
-            title="Pop out to separate window"
+            title={t('viewer.popoutTitle')}
             style={{
               background: 'none', border: '1px solid #334155', color: '#64748b',
-              padding: '3px 8px', marginRight: 8, borderRadius: 3,
+              padding: '3px 8px', marginInlineEnd: 8, borderRadius: 3,
               cursor: 'pointer', fontSize: 13, lineHeight: 1,
               transition: 'color 0.15s',
             }}

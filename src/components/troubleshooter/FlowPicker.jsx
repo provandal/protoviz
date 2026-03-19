@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 
 /**
  * Format byte count to human-readable KB/MB/GB.
@@ -122,6 +123,7 @@ function sortFlows(flows, sortKey, sortDir) {
 }
 
 export default function FlowPicker({ flows, onConfirm, onCancel }) {
+  const { t } = useTranslation();
   const [selected, setSelected] = useState(() => new Set());
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState('packetCount');
@@ -218,7 +220,7 @@ export default function FlowPicker({ flows, onConfirm, onCancel }) {
               fontWeight: 700,
               fontFamily: "'IBM Plex Sans',system-ui,sans-serif",
             }}>
-              Select Network Flows
+              {t('flowPicker.title')}
             </span>
             <span style={{
               background: '#0c1929',
@@ -228,7 +230,7 @@ export default function FlowPicker({ flows, onConfirm, onCancel }) {
               padding: '2px 6px',
               borderRadius: 3,
             }}>
-              {flows.length} flow{flows.length !== 1 ? 's' : ''}
+              {t('flowPicker.flowCount', { count: flows.length })}
             </span>
             <span style={{
               background: '#0c1929',
@@ -238,7 +240,7 @@ export default function FlowPicker({ flows, onConfirm, onCancel }) {
               padding: '2px 6px',
               borderRadius: 3,
             }}>
-              {totalPackets} packet{totalPackets !== 1 ? 's' : ''}
+              {t('flowPicker.packetCount', { count: totalPackets })}
             </span>
           </div>
         </div>
@@ -253,7 +255,7 @@ export default function FlowPicker({ flows, onConfirm, onCancel }) {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Filter by name, IP, or protocol..."
+            placeholder={t('flowPicker.searchPlaceholder')}
             style={{
               flex: 1,
               background: '#020817',
@@ -281,7 +283,7 @@ export default function FlowPicker({ flows, onConfirm, onCancel }) {
                 whiteSpace: 'nowrap',
               }}
             >
-              Select Only Matching
+              {t('flowPicker.selectOnlyMatching')}
             </button>
           )}
           <button
@@ -297,7 +299,7 @@ export default function FlowPicker({ flows, onConfirm, onCancel }) {
               whiteSpace: 'nowrap',
             }}
           >
-            Select All
+            {t('flowPicker.selectAll')}
           </button>
           <button
             onClick={handleDeselectAll}
@@ -312,7 +314,7 @@ export default function FlowPicker({ flows, onConfirm, onCancel }) {
               whiteSpace: 'nowrap',
             }}
           >
-            Deselect All
+            {t('flowPicker.deselectAll')}
           </button>
         </div>
       </div>
@@ -336,37 +338,37 @@ export default function FlowPicker({ flows, onConfirm, onCancel }) {
           onClick={() => handleHeaderClick('name')}
           style={{ flex: 2, cursor: 'pointer', minWidth: 0 }}
         >
-          Server Name{sortIndicator('name')}
+          {t('flowPicker.colServerName')}{sortIndicator('name')}
         </span>
         <span
           onClick={() => handleHeaderClick('protocol')}
           style={{ width: 70, cursor: 'pointer' }}
         >
-          Protocol{sortIndicator('protocol')}
+          {t('flowPicker.colProtocol')}{sortIndicator('protocol')}
         </span>
         <span
           onClick={() => handleHeaderClick('serverAddr')}
           style={{ width: 160, cursor: 'pointer', fontFamily: "'JetBrains Mono',monospace" }}
         >
-          Server IP:Port{sortIndicator('serverAddr')}
+          {t('flowPicker.colServerAddr')}{sortIndicator('serverAddr')}
         </span>
         <span
           onClick={() => handleHeaderClick('packetCount')}
-          style={{ width: 70, textAlign: 'right', cursor: 'pointer' }}
+          style={{ width: 70, textAlign: 'end', cursor: 'pointer' }}
         >
-          Packets{sortIndicator('packetCount')}
+          {t('flowPicker.colPackets')}{sortIndicator('packetCount')}
         </span>
         <span
           onClick={() => handleHeaderClick('duration')}
-          style={{ width: 80, textAlign: 'right', cursor: 'pointer' }}
+          style={{ width: 80, textAlign: 'end', cursor: 'pointer' }}
         >
-          Duration{sortIndicator('duration')}
+          {t('flowPicker.colDuration')}{sortIndicator('duration')}
         </span>
         <span
           onClick={() => handleHeaderClick('bytes')}
-          style={{ width: 80, textAlign: 'right', cursor: 'pointer' }}
+          style={{ width: 80, textAlign: 'end', cursor: 'pointer' }}
         >
-          Bytes{sortIndicator('bytes')}
+          {t('flowPicker.colBytes')}{sortIndicator('bytes')}
         </span>
       </div>
 
@@ -379,17 +381,18 @@ export default function FlowPicker({ flows, onConfirm, onCancel }) {
             color: '#475569',
             fontSize: 11,
           }}>
-            No flows match the current filter.
+            {t('flowPicker.noMatchingFlows')}
           </div>
         ) : (
           filteredFlows.map((flow, i) => {
             const isChecked = selected.has(flow.id);
-            const displayName = flow.serverName || flow.serverIp || 'Unknown';
+            const displayName = flow.serverName || flow.serverIp || t('flowPicker.unknown');
 
             return (
               <div
                 key={flow.id}
                 onClick={() => handleToggle(flow.id)}
+                className="pvz-flow-row"
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -398,7 +401,7 @@ export default function FlowPicker({ flows, onConfirm, onCancel }) {
                   background: i % 2 === 0 ? '#020817' : '#0a0f1a',
                   fontSize: 11,
                   transition: 'background 0.1s',
-                  borderLeft: isChecked ? '3px solid #3b82f6' : '3px solid transparent',
+                  '--flow-border-color': isChecked ? '#3b82f6' : 'transparent',
                 }}
                 onMouseEnter={e => e.currentTarget.style.background = '#1e293b'}
                 onMouseLeave={e => e.currentTarget.style.background = i % 2 === 0 ? '#020817' : '#0a0f1a'}
@@ -450,7 +453,7 @@ export default function FlowPicker({ flows, onConfirm, onCancel }) {
                 </span>
                 <span style={{
                   width: 70,
-                  textAlign: 'right',
+                  textAlign: 'end',
                   flexShrink: 0,
                   color: '#94a3b8',
                   fontFamily: "'JetBrains Mono',monospace",
@@ -460,7 +463,7 @@ export default function FlowPicker({ flows, onConfirm, onCancel }) {
                 </span>
                 <span style={{
                   width: 80,
-                  textAlign: 'right',
+                  textAlign: 'end',
                   flexShrink: 0,
                   color: '#64748b',
                   fontFamily: "'JetBrains Mono',monospace",
@@ -470,7 +473,7 @@ export default function FlowPicker({ flows, onConfirm, onCancel }) {
                 </span>
                 <span style={{
                   width: 80,
-                  textAlign: 'right',
+                  textAlign: 'end',
                   flexShrink: 0,
                   color: '#64748b',
                   fontFamily: "'JetBrains Mono',monospace",
@@ -500,10 +503,10 @@ export default function FlowPicker({ flows, onConfirm, onCancel }) {
           fontFamily: "'IBM Plex Sans',system-ui,sans-serif",
         }}>
           <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{selected.size}</span>
-          {' '}flow{selected.size !== 1 ? 's' : ''} selected
+          {' '}{t('flowPicker.flowsSelected', { count: selected.size })}
           {' '}
           <span style={{ color: '#64748b' }}>
-            ({selectedPacketCount} packet{selectedPacketCount !== 1 ? 's' : ''})
+            {t('flowPicker.packetsSelected', { count: selectedPacketCount })}
           </span>
         </span>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -520,7 +523,7 @@ export default function FlowPicker({ flows, onConfirm, onCancel }) {
               fontFamily: "'IBM Plex Sans',system-ui,sans-serif",
             }}
           >
-            Cancel
+            {t('flowPicker.cancel')}
           </button>
           <button
             onClick={handleConfirm}
@@ -539,7 +542,7 @@ export default function FlowPicker({ flows, onConfirm, onCancel }) {
               fontFamily: "'IBM Plex Sans',system-ui,sans-serif",
             }}
           >
-            Analyze Selected
+            {t('flowPicker.analyzeSelected')}
           </button>
         </div>
       </div>

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import useViewerStore from '../../store/viewerStore';
 
 const MODELS = [
@@ -47,6 +48,7 @@ ${ev.detail ? `Detail: ${ev.detail}` : ''}`;
 }
 
 export default function ChatPanel() {
+  const { t } = useTranslation();
   const scenario = useViewerStore(s => s.scenario);
   const step = useViewerStore(s => s.step);
   const messages = useViewerStore(s => s.chatMessages);
@@ -185,7 +187,7 @@ export default function ChatPanel() {
         flexShrink: 0,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ color: '#60a5fa', fontSize: 11, fontWeight: 800 }}>CHAT</span>
+          <span style={{ color: '#60a5fa', fontSize: 11, fontWeight: 800 }}>{t('chat.title')}</span>
           <select
             value={model}
             onChange={e => setChatModel(e.target.value)}
@@ -204,13 +206,13 @@ export default function ChatPanel() {
             onClick={() => setShowSettings(s => !s)}
             style={{ background: 'none', border: '1px solid #334155', color: '#64748b', padding: '2px 6px', borderRadius: 3, cursor: 'pointer', fontSize: 10 }}
           >
-            {apiKey ? '🔑' : '⚠️ Key'}
+            {apiKey ? '\uD83D\uDD11' : t('chat.key')}
           </button>
           <button
             onClick={() => { setChatMessages([]); setError(null); }}
             style={{ background: 'none', border: '1px solid #334155', color: '#64748b', padding: '2px 6px', borderRadius: 3, cursor: 'pointer', fontSize: 10 }}
           >
-            Clear
+            {t('chat.clear')}
           </button>
         </div>
       </div>
@@ -219,12 +221,12 @@ export default function ChatPanel() {
       {(showSettings || needsApiKey) && (
         <div style={{ padding: 12, background: '#0f172a', borderBottom: '1px solid #1e293b', flexShrink: 0 }}>
           <div style={{ color: '#94a3b8', fontSize: 10, marginBottom: 6 }}>
-            Anthropic API Key {apiKey ? '(set)' : '(required)'}
+            {t('chat.apiKeyLabel')} {apiKey ? t('chat.apiKeySet') : t('chat.apiKeyRequired')}
           </div>
           <div style={{ display: 'flex', gap: 4 }}>
             <input
               type="password"
-              placeholder="sk-ant-..."
+              placeholder={t('chat.apiKeyPlaceholder')}
               value={keyInput}
               onChange={e => setKeyInput(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && saveApiKey(keyInput)}
@@ -241,11 +243,11 @@ export default function ChatPanel() {
                 fontSize: 10, padding: '4px 10px', borderRadius: 4, cursor: 'pointer',
               }}
             >
-              Save
+              {t('chat.save')}
             </button>
           </div>
           <div style={{ color: '#475569', fontSize: 9, marginTop: 4 }}>
-            Stored in localStorage. Sent only to api.anthropic.com.
+            {t('chat.apiKeyStorage')}
           </div>
         </div>
       )}
@@ -257,7 +259,7 @@ export default function ChatPanel() {
           flexShrink: 0,
         }}>
           <div style={{ color: '#475569', fontSize: 9 }}>
-            Context: Step {step + 1} — {scenario.timeline[step]?.label?.slice(0, 60)}
+            {t('chat.contextLabel', { step: step + 1, label: scenario.timeline[step]?.label?.slice(0, 60) })}
           </div>
         </div>
       )}
@@ -267,14 +269,14 @@ export default function ChatPanel() {
         {messages.length === 0 && !needsApiKey && (
           <div style={{ padding: 16, textAlign: 'center' }}>
             <div style={{ color: '#475569', fontSize: 11, marginBottom: 8 }}>
-              Ask about the current protocol step, packet fields, spec details, or anything RDMA/networking related.
+              {t('chat.emptyHint')}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               {[
-                'What is happening at this step?',
-                'Explain the BTH opcode field',
-                'Why does RoCEv2 use UDP?',
-                'What happens if the rkey is wrong?',
+                t('chat.suggestStep'),
+                t('chat.suggestBTH'),
+                t('chat.suggestRoCE'),
+                t('chat.suggestRkey'),
               ].map(q => (
                 <button
                   key={q}
@@ -314,7 +316,7 @@ export default function ChatPanel() {
               wordBreak: 'break-word',
             }}>
               {msg.content || (streaming && i === messages.length - 1 ? (
-                <span style={{ color: '#475569' }}>Thinking...</span>
+                <span style={{ color: '#475569' }}>{t('chat.thinking')}</span>
               ) : null)}
             </div>
           </div>
@@ -343,7 +345,7 @@ export default function ChatPanel() {
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={needsApiKey ? 'Set API key above...' : 'Ask about this protocol step...'}
+            placeholder={needsApiKey ? t('chat.setKeyPlaceholder') : t('chat.inputPlaceholder')}
             disabled={needsApiKey || streaming}
             rows={2}
             style={{
@@ -366,7 +368,7 @@ export default function ChatPanel() {
                 flex: 1,
               }}
             >
-              {streaming ? 'Stop' : 'Send'}
+              {streaming ? t('chat.stop') : t('chat.send')}
             </button>
           </div>
         </div>

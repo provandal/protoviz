@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next';
+
 const selectStyle = {
   background: '#1e293b', border: '1px solid #334155', color: '#94a3b8',
   fontSize: 11, borderRadius: 4, padding: '6px 10px', cursor: 'pointer',
@@ -5,6 +7,8 @@ const selectStyle = {
 };
 
 export default function FilterBar({ filter, onFilterChange, protocols, difficulties }) {
+  const { t } = useTranslation();
+
   return (
     <div style={{
       display: 'flex', gap: 10, padding: '16px 24px',
@@ -13,7 +17,7 @@ export default function FilterBar({ filter, onFilterChange, protocols, difficult
     }}>
       <input
         type="text"
-        placeholder="Search scenarios..."
+        placeholder={t('filter.searchPlaceholder')}
         value={filter.search}
         onChange={e => onFilterChange({ ...filter, search: e.target.value })}
         style={{
@@ -27,7 +31,7 @@ export default function FilterBar({ filter, onFilterChange, protocols, difficult
         onChange={e => onFilterChange({ ...filter, protocol: e.target.value })}
         style={selectStyle}
       >
-        <option value="">All Protocols</option>
+        <option value="">{t('filter.allProtocols')}</option>
         {protocols.map(p => <option key={p} value={p}>{p}</option>)}
       </select>
       <select
@@ -35,7 +39,7 @@ export default function FilterBar({ filter, onFilterChange, protocols, difficult
         onChange={e => onFilterChange({ ...filter, difficulty: e.target.value })}
         style={selectStyle}
       >
-        <option value="">All Levels</option>
+        <option value="">{t('filter.allLevels')}</option>
         {difficulties.map(d => (
           <option key={d} value={d} style={{ textTransform: 'capitalize' }}>{d}</option>
         ))}
@@ -48,7 +52,7 @@ export default function FilterBar({ filter, onFilterChange, protocols, difficult
             fontSize: 10, padding: '6px 10px', borderRadius: 4, cursor: 'pointer',
           }}
         >
-          Clear
+          {t('filter.clear')}
         </button>
       )}
     </div>

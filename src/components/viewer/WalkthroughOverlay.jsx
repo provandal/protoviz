@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import useWalkthrough from '../../hooks/useWalkthrough';
 
 const overlayStyle = {
@@ -109,6 +110,7 @@ const navBtnStyle = (enabled) => ({
 });
 
 export default function WalkthroughOverlay() {
+  const { t } = useTranslation();
   const {
     isWalkthroughActive,
     currentNarration,
@@ -132,13 +134,13 @@ export default function WalkthroughOverlay() {
           {/* Header */}
           <div style={headerStyle}>
             <div style={titleStyle}>
-              <span style={badgeStyle}>GUIDED TOUR</span>
-              <span style={progressStyle}>Step {current} of {total}</span>
+              <span style={badgeStyle}>{t('walkthrough.guidedTour')}</span>
+              <span style={progressStyle}>{t('walkthrough.stepOf', { current, total })}</span>
             </div>
             <button
               onClick={exitWalkthrough}
               style={closeBtnStyle}
-              title="Exit walkthrough"
+              title={t('walkthrough.exitWalkthrough')}
               onMouseEnter={e => { e.currentTarget.style.color = '#ef4444'; e.currentTarget.style.borderColor = '#ef4444'; }}
               onMouseLeave={e => { e.currentTarget.style.color = '#64748b'; e.currentTarget.style.borderColor = '#334155'; }}
             >
@@ -160,7 +162,7 @@ export default function WalkthroughOverlay() {
               onMouseEnter={e => { if (canPrev) { e.currentTarget.style.borderColor = '#3b82f6'; e.currentTarget.style.background = '#1e3a5f'; } }}
               onMouseLeave={e => { if (canPrev) { e.currentTarget.style.borderColor = '#334155'; e.currentTarget.style.background = '#1e293b'; } }}
             >
-              {'\u25C0'} Previous
+              {'\u25C0'} {t('walkthrough.previous')}
             </button>
             <div style={{ display: 'flex', gap: 3 }}>
               {Array.from({ length: total }, (_, i) => (
@@ -188,7 +190,7 @@ export default function WalkthroughOverlay() {
               onMouseEnter={e => { if (canNext) { e.currentTarget.style.borderColor = '#3b82f6'; e.currentTarget.style.background = '#1e3a5f'; } }}
               onMouseLeave={e => { if (canNext) { e.currentTarget.style.borderColor = '#334155'; e.currentTarget.style.background = '#1e293b'; } }}
             >
-              Next {'\u25B6'}
+              {t('walkthrough.next')} {'\u25B6'}
             </button>
           </div>
         </div>

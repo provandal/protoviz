@@ -1,17 +1,18 @@
+import { useTranslation } from 'react-i18next';
 import useViewerStore from '../../store/viewerStore';
 import useCommunityNotes, { buildDiscussionUrl } from '../../hooks/useCommunityNotes';
 
-function formatDate(dateStr) {
+function formatDate(dateStr, locale) {
   if (!dateStr) return '';
   try {
     const d = new Date(dateStr);
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    return d.toLocaleDateString(locale || undefined, { month: 'short', day: 'numeric', year: 'numeric' });
   } catch {
     return dateStr;
   }
 }
 
-function NoteCard({ note }) {
+function NoteCard({ note, locale, t }) {
   return (
     <div style={{
       background: '#1e293b', border: '1px solid #334155', borderRadius: 6,
@@ -30,12 +31,12 @@ function NoteCard({ note }) {
           {note.author}
         </span>
         <span style={{ color: '#475569', fontSize: 10 }}>
-          {formatDate(note.date)}
+          {formatDate(note.date, locale)}
         </span>
         {note.field && (
           <span style={{
             background: '#1e3a5f', color: '#7dd3fc', fontSize: 9, fontWeight: 600,
-            padding: '1px 6px', borderRadius: 3, marginLeft: 'auto',
+            padding: '1px 6px', borderRadius: 3, marginInlineStart: 'auto',
           }}>
             {note.field}
           </span>
@@ -70,7 +71,7 @@ function NoteCard({ note }) {
           onMouseEnter={e => e.currentTarget.style.textDecoration = 'underline'}
           onMouseLeave={e => e.currentTarget.style.textDecoration = 'none'}
         >
-          View on GitHub &rarr;
+          {t('community.viewOnGithub')} &rarr;
         </a>
       )}
     </div>
@@ -78,10 +79,12 @@ function NoteCard({ note }) {
 }
 
 export default function CommunityNotesPanel() {
+  const { t, i18n } = useTranslation();
   const step = useViewerStore(s => s.step);
   const slug = useViewerStore(s => s.currentSlug);
   const scenario = useViewerStore(s => s.scenario);
   const { getNotesForStep, loading, error } = useCommunityNotes(slug);
+  const locale = i18n.language || 'en';
 
   const notes = getNotesForStep(step);
   const scenarioTitle = scenario?.meta?.title || slug;
@@ -99,12 +102,12 @@ export default function CommunityNotesPanel() {
             color: '#475569', fontSize: 10, fontWeight: 700,
             textTransform: 'uppercase', letterSpacing: '0.05em',
           }}>
-            Community Notes
+            {t('community.title')}
           </span>
           <span style={{
             color: '#60a5fa', fontSize: 10, fontWeight: 600,
           }}>
-            Step {step + 1}
+            {t('community.stepLabel', { step: step + 1 })}
           </span>
         </div>
         <a
@@ -121,14 +124,14 @@ export default function CommunityNotesPanel() {
           onMouseEnter={e => { e.currentTarget.style.background = '#1e40af'; e.currentTarget.style.color = '#fff'; }}
           onMouseLeave={e => { e.currentTarget.style.background = '#1e3a5f'; e.currentTarget.style.color = '#93c5fd'; }}
         >
-          + Share a Note
+          {t('community.shareNote')}
         </a>
       </div>
 
       {/* Loading state */}
       {loading && (
         <div style={{ color: '#475569', fontSize: 11, padding: '20px 0', textAlign: 'center' }}>
-          Loading community notes...
+          {t('community.loading')}
         </div>
       )}
 
@@ -143,7 +146,7 @@ export default function CommunityNotesPanel() {
       {!loading && notes.length > 0 && (
         <div>
           {notes.map((note, i) => (
-            <NoteCard key={`${note.author}-${note.date}-${i}`} note={note} />
+            <NoteCard key={`${note.author}-${note.date}-${i}`} note={note} locale={locale} t={t} />
           ))}
         </div>
       )}
@@ -156,11 +159,10 @@ export default function CommunityNotesPanel() {
           padding: '32px 16px', textAlign: 'center',
         }}>
           <div style={{ color: '#475569', fontSize: 12, marginBottom: 8, fontWeight: 600 }}>
-            No community notes for this step yet
+            {t('community.noNotesTitle')}
           </div>
           <div style={{ color: '#334155', fontSize: 11, lineHeight: 1.5, maxWidth: 320, marginBottom: 16 }}>
-            Community notes are shared insights from other engineers studying this protocol flow.
-            Be the first to contribute!
+            {t('community.noNotesDescription')}
           </div>
           <a
             href={shareUrl}
@@ -176,7 +178,7 @@ export default function CommunityNotesPanel() {
             onMouseEnter={e => { e.currentTarget.style.background = '#1e40af'; e.currentTarget.style.color = '#fff'; }}
             onMouseLeave={e => { e.currentTarget.style.background = '#1e3a5f'; e.currentTarget.style.color = '#93c5fd'; }}
           >
-            Share a Note via GitHub Discussions
+            {t('community.shareViaGithub')}
           </a>
         </div>
       )}
