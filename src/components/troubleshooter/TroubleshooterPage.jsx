@@ -15,6 +15,7 @@ import FindingsPanel from './FindingsPanel';
 import FlowPicker from './FlowPicker';
 import PacketList from './PacketList';
 import TraceChatPanel from './TraceChatPanel';
+import LanguageSelector from '../common/LanguageSelector';
 
 /**
  * Detect file format from raw bytes, not file extension.
@@ -297,7 +298,8 @@ export default function TroubleshooterPage() {
           </span>
         </div>
         <span style={{ color: '#334155', fontSize: 12 }}>|</span>
-        <span style={{ color: '#94a3b8', fontSize: 12, fontWeight: 600 }}>{t('troubleshooter.title')}</span>
+        <span style={{ color: '#94a3b8', fontSize: 12, fontWeight: 600, flex: 1 }}>{t('troubleshooter.title')}</span>
+        <LanguageSelector />
       </div>
 
       {/* Upload area or results */}

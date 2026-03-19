@@ -17,6 +17,7 @@ import SwitchFooter from './SwitchFooter';
 import SplitLayout from '../layout/SplitLayout';
 import BottomPane from '../layout/BottomPane';
 import WalkthroughOverlay from './WalkthroughOverlay';
+import LanguageSelector from '../common/LanguageSelector';
 
 const DEFAULT_SCENARIO = 'roce-v2-rc-connection-rdma-write-read';
 
@@ -268,6 +269,7 @@ export default function ProtoVizViewer() {
             {ev.phase}
           </span>
           <span style={{ color: '#475569', fontSize: 10 }}>{t('viewer.step', { current: step + 1, total })}</span>
+          <LanguageSelector />
         </div>
       </div>
 

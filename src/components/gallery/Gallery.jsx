@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import ScenarioCard from './ScenarioCard';
 import FilterBar from './FilterBar';
+import LanguageSelector from '../common/LanguageSelector';
 
 export default function Gallery() {
   const { t } = useTranslation();
@@ -46,7 +47,11 @@ export default function Gallery() {
       <div style={{
         padding: '40px 24px 24px', textAlign: 'center',
         borderBottom: '1px solid #1e293b', background: '#0a0f1a',
+        position: 'relative',
       }}>
+        <div style={{ position: 'absolute', top: 12, insetInlineEnd: 16 }}>
+          <LanguageSelector />
+        </div>
         <div style={{
           background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)',
           borderRadius: 12, padding: '8px 20px', display: 'inline-block', marginBottom: 16,
