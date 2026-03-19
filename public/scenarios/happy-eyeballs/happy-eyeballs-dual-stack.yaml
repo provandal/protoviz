@@ -1,0 +1,2107 @@
+meta:
+  id: "happy-eyeballs-dual-stack"
+  title: "Happy Eyeballs: How Your Browser Chooses Between IPv4 and IPv6"
+  protocol: "Multi-protocol (DNS, TCP, IPv4, IPv6)"
+  protocol_family: "TCP/IP"
+  version: "1.0.0"
+  description: >
+    You type example.com into your browser. Behind the scenes, a clever algorithm
+    called Happy Eyeballs (RFC 8305) races IPv6 and IPv4 connections against each
+    other to give you the fastest possible experience — without you ever knowing.
+    Your browser asks DNS for both an AAAA record (IPv6) and an A record (IPv4),
+    then immediately tries IPv6 first. If IPv6 responds within 250 milliseconds,
+    great — you're on IPv6. If not, the browser fires off an IPv4 connection too,
+    and whichever responds first wins. This scenario shows both outcomes: IPv6
+    winning the race, and IPv6 failing with a seamless IPv4 fallback. The entire
+    process is invisible to the user, and it's the reason the internet's transition
+    from IPv4 to IPv6 has been mostly painless.
+
+  learning_objectives:
+    - "Understand that modern browsers send both AAAA (IPv6) and A (IPv4) DNS queries in parallel"
+    - "Learn that Happy Eyeballs always prefers IPv6 but won't wait long for it"
+    - "See the 250ms timer — long enough to be fair to IPv6, short enough that users don't notice"
+    - "Observe how a failed IPv6 path triggers automatic IPv4 fallback with minimal delay"
+    - "Appreciate that Happy Eyeballs is built into every modern browser and operating system"
+    - "Compare IPv4 (32-bit) and IPv6 (128-bit) address formats in actual packet headers"
+    - "Understand why without Happy Eyeballs, broken IPv6 would mean 20+ second timeouts"
+
+  difficulty: "beginner"
+
+  authors:
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+
+  created: "2026-03-19"
+  updated: "2026-03-19"
+
+  tags:
+    - "IPv6"
+    - "IPv4"
+    - "dual-stack"
+    - "Happy Eyeballs"
+    - "DNS"
+    - "TCP"
+    - "browser"
+    - "transition"
+    - "beginner"
+    - "intermediate"
+    - "education"
+    - "WIP"
+
+  primary_specs:
+    - document: "RFC 8305"
+      section: "1"
+      title: "Happy Eyeballs Version 2: Better Connectivity Using Concurrency"
+      url: "https://datatracker.ietf.org/doc/html/rfc8305"
+      alt_url: ""
+    - document: "RFC 6555"
+      section: "1"
+      title: "Happy Eyeballs — Success with Dual-Stack Hosts"
+      url: "https://datatracker.ietf.org/doc/html/rfc6555"
+      alt_url: ""
+    - document: "RFC 8200"
+      section: "1"
+      title: "Internet Protocol, Version 6 (IPv6) Specification"
+      url: "https://datatracker.ietf.org/doc/html/rfc8200"
+      alt_url: ""
+
+  content_disclaimer: >
+    This scenario illustrates the Happy Eyeballs algorithm (RFC 8305) for dual-stack
+    connection establishment. IP addresses, DNS responses, and TCP details are
+    illustrative. The 250ms connection attempt delay is the recommended default from
+    RFC 8305 Section 8; implementations may vary. The two phases (IPv6 wins, IPv4
+    fallback) are shown sequentially for educational purposes — in practice they
+    represent alternate outcomes for the same connection attempt.
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "laptop"
+      type: "host"
+      label: "Your Laptop"
+      description: "Your laptop running a web browser — dual-stack with both IPv4 and IPv6 addresses"
+      hardware: "Laptop with Wi-Fi / Ethernet"
+      os: "Windows / macOS / Linux"
+      ip: "10.0.1.10"
+      ipv6: "2001:db8:1::10"
+      mac: "a4:83:e7:2b:c1:00"
+      position: "left"
+
+    - id: "router"
+      type: "switch"
+      label: "Home Router"
+      description: "Dual-stack home router / default gateway — forwards both IPv4 and IPv6 traffic"
+      hardware: "Consumer Wi-Fi router (dual-stack)"
+      position: "center"
+
+    - id: "dns"
+      type: "host"
+      label: "DNS Resolver"
+      description: "Recursive DNS resolver — returns both A and AAAA records for dual-stack hosts"
+      hardware: "DNS server"
+      ip: "10.0.1.1"
+      ipv6: "2001:db8:1::1"
+      mac: "d4:6a:35:11:22:01"
+      position: "right"
+
+    - id: "webserver"
+      type: "host"
+      label: "Web Server (example.com)"
+      description: "Dual-stack web server reachable via both IPv4 (192.0.2.1) and IPv6 (2001:db8::443:1)"
+      hardware: "Web server"
+      os: "Linux"
+      ip: "192.0.2.1"
+      ipv6: "2001:db8::443:1"
+      mac: "00:00:00:00:00:00"
+      position: "right"
+
+  links:
+    - id: "link-laptop-router"
+      from: "laptop"
+      to: "router"
+      speed_gbps: 1
+      media: "copper"
+    - id: "link-router-dns"
+      from: "router"
+      to: "dns"
+      speed_gbps: 1
+      media: "copper"
+    - id: "link-router-webserver"
+      from: "router"
+      to: "webserver"
+      speed_gbps: 1
+      media: "copper"
+
+# ─────────────────────────────────────────────────────────────────
+# OSI LAYERS
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  laptop:
+    - layer: 7
+      name: "Application (Browser)"
+      components: ["Chrome / Firefox / Safari", "Happy Eyeballs engine"]
+      state_schema:
+        app_state:
+          type: "string"
+          description: "What the browser is doing right now"
+          initial: "idle"
+        url:
+          type: "string"
+          description: "URL being loaded"
+          initial: "—"
+        happy_eyeballs_timer:
+          type: "string"
+          description: "Happy Eyeballs 250ms timer state"
+          initial: "—"
+
+    - layer: 4
+      name: "TCP"
+      components: ["OS TCP stack"]
+      state_schema:
+        tcp_state_v6:
+          type: "string"
+          description: "TCP connection state over IPv6"
+          initial: "CLOSED"
+        tcp_state_v4:
+          type: "string"
+          description: "TCP connection state over IPv4"
+          initial: "CLOSED"
+        src_port:
+          type: "integer"
+          initial: 0
+        dst_port:
+          type: "integer"
+          initial: 0
+
+    - layer: 3
+      name: "IP (Dual-Stack)"
+      components: ["IPv4", "IPv6"]
+      state_schema:
+        src_ipv4:
+          type: "string"
+          initial: "10.0.1.10"
+        src_ipv6:
+          type: "string"
+          initial: "2001:db8:1::10"
+        active_protocol:
+          type: "string"
+          description: "Which IP version is currently active"
+          initial: "—"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+
+  router:
+    - layer: 3
+      name: "IP Routing (Dual-Stack)"
+      components: ["IPv4 NAT gateway", "IPv6 router", "DHCP / SLAAC"]
+      state_schema:
+        routing_state:
+          type: "string"
+          initial: "forwarding"
+    - layer: 2
+      name: "Ethernet Switching"
+      components: ["L2 bridge"]
+      state_schema:
+        fwd_table_entries:
+          type: "integer"
+          initial: 0
+    - layer: 1
+      name: "Physical"
+      components: ["Wi-Fi / Ethernet PHY"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "up"
+
+  dns:
+    - layer: 7
+      name: "DNS Resolver"
+      components: ["Recursive resolver (Unbound / BIND / dnsmasq)"]
+      state_schema:
+        query_state:
+          type: "string"
+          initial: "idle"
+        cache_hit:
+          type: "boolean"
+          initial: false
+
+    - layer: 4
+      name: "UDP"
+      components: ["UDP port 53"]
+      state_schema:
+        port:
+          type: "integer"
+          initial: 53
+
+    - layer: 3
+      name: "IP"
+      components: ["IPv4"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "10.0.1.1"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+
+  webserver:
+    - layer: 7
+      name: "Application (Web Server)"
+      components: ["nginx / Apache", "HTTPS listener"]
+      state_schema:
+        app_state:
+          type: "string"
+          initial: "listening"
+
+    - layer: 4
+      name: "TCP"
+      components: ["Linux TCP stack"]
+      state_schema:
+        tcp_state:
+          type: "string"
+          initial: "LISTEN"
+        src_port:
+          type: "integer"
+          initial: 443
+
+    - layer: 3
+      name: "IP (Dual-Stack)"
+      components: ["IPv4", "IPv6"]
+      state_schema:
+        ipv4:
+          type: "string"
+          initial: "192.0.2.1"
+        ipv6:
+          type: "string"
+          initial: "2001:db8::443:1"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+
+# ─────────────────────────────────────────────────────────────────
+# FRAMES
+# ─────────────────────────────────────────────────────────────────
+frames:
+  # ── Phase 1: DNS Resolution ────────────────────────────────────
+  - id: "dns_aaaa_query"
+    name: "DNS AAAA Query — example.com (IPv6)"
+    description: "Browser asks the DNS resolver for the IPv6 address of example.com"
+    from: "laptop"
+    to: "dns"
+    via: ["router"]
+    total_bytes: 82
+    color: "#7c3aed"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "d4:6a:35:11:22:01"
+            description: "Router's MAC — your laptop sends to the default gateway"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "a4:83:e7:2b:c1:00"
+            description: "Your laptop's MAC address"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4 (DNS query itself travels over IPv4 to the resolver)"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Your laptop's IPv4 address"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.1"
+            description: "DNS resolver's IPv4 address"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: "17 (UDP)"
+            description: "DNS typically uses UDP for queries under 512 bytes"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time to Live — decremented by each router, prevents infinite loops"
+
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 49152
+            description: "Random ephemeral port chosen by the OS"
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 53
+            description: "DNS always listens on port 53"
+          - name: "Length"
+            abbrev: "udp.length"
+            bits: 16
+            value: 48
+            description: "UDP header (8 bytes) + DNS payload (40 bytes)"
+
+      - name: "DNS Query"
+        abbrev: "dns"
+        layer: 7
+        total_bytes: 40
+        fields:
+          - name: "Transaction ID"
+            abbrev: "dns.id"
+            bits: 16
+            value: "0xAA01"
+            description: "Random ID to match this query with its response"
+            spec_refs:
+              - document: "RFC 1035"
+                section: "4.1.1"
+                title: "Header Section Format"
+                url: "https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.1"
+          - name: "Flags"
+            abbrev: "dns.flags"
+            bits: 16
+            value: "0x0100"
+            description: "QR=0 (Query), Opcode=0 (Standard Query), RD=1 (Recursion Desired)"
+          - name: "Questions"
+            abbrev: "dns.count.queries"
+            bits: 16
+            value: 1
+            description: "One question: 'What is the IPv6 address of example.com?'"
+          - name: "Query Name"
+            abbrev: "dns.qry.name"
+            bits: 104
+            value: "example.com"
+            description: "The domain name we are looking up"
+          - name: "Query Type"
+            abbrev: "dns.qry.type"
+            bits: 16
+            value: "AAAA (28)"
+            description: "Type AAAA = IPv6 address record (128-bit). This is the first query the browser sends — IPv6 preferred."
+            spec_refs:
+              - document: "RFC 3596"
+                section: "2.1"
+                title: "AAAA Record Type"
+                url: "https://datatracker.ietf.org/doc/html/rfc3596#section-2.1"
+          - name: "Query Class"
+            abbrev: "dns.qry.class"
+            bits: 16
+            value: "IN (1)"
+            description: "Internet class"
+
+  - id: "dns_a_query"
+    name: "DNS A Query — example.com (IPv4)"
+    description: "Browser sends the A record query in parallel with the AAAA query"
+    from: "laptop"
+    to: "dns"
+    via: ["router"]
+    total_bytes: 82
+    color: "#b45309"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "d4:6a:35:11:22:01"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "a4:83:e7:2b:c1:00"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.1"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: "17 (UDP)"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 49153
+            description: "Different ephemeral port from the AAAA query — both queries are in flight simultaneously"
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 53
+          - name: "Length"
+            abbrev: "udp.length"
+            bits: 16
+            value: 48
+
+      - name: "DNS Query"
+        abbrev: "dns"
+        layer: 7
+        total_bytes: 40
+        fields:
+          - name: "Transaction ID"
+            abbrev: "dns.id"
+            bits: 16
+            value: "0xAA02"
+            description: "Different transaction ID from the AAAA query — the resolver uses this to send back the right answer"
+          - name: "Flags"
+            abbrev: "dns.flags"
+            bits: 16
+            value: "0x0100"
+            description: "QR=0 (Query), RD=1 (Recursion Desired)"
+          - name: "Questions"
+            abbrev: "dns.count.queries"
+            bits: 16
+            value: 1
+            description: "One question: 'What is the IPv4 address of example.com?'"
+          - name: "Query Name"
+            abbrev: "dns.qry.name"
+            bits: 104
+            value: "example.com"
+          - name: "Query Type"
+            abbrev: "dns.qry.type"
+            bits: 16
+            value: "A (1)"
+            description: "Type A = IPv4 address record (32-bit). Sent in parallel with the AAAA query."
+            spec_refs:
+              - document: "RFC 1035"
+                section: "3.2.2"
+                title: "TYPE values"
+                url: "https://datatracker.ietf.org/doc/html/rfc1035#section-3.2.2"
+          - name: "Query Class"
+            abbrev: "dns.qry.class"
+            bits: 16
+            value: "IN (1)"
+
+  - id: "dns_aaaa_response"
+    name: "DNS AAAA Response — 2001:db8::443:1"
+    description: "DNS resolver returns the IPv6 address for example.com"
+    from: "dns"
+    to: "laptop"
+    via: ["router"]
+    total_bytes: 110
+    color: "#7c3aed"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "a4:83:e7:2b:c1:00"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "d4:6a:35:11:22:01"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.1"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.10"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: "17 (UDP)"
+
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 53
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 49152
+
+      - name: "DNS Response"
+        abbrev: "dns"
+        layer: 7
+        total_bytes: 68
+        fields:
+          - name: "Transaction ID"
+            abbrev: "dns.id"
+            bits: 16
+            value: "0xAA01"
+            description: "Matches the AAAA query — this is the IPv6 answer"
+          - name: "Flags"
+            abbrev: "dns.flags"
+            bits: 16
+            value: "0x8180"
+            description: "QR=1 (Response), RD=1, RA=1 (Recursion Available)"
+          - name: "Answer Count"
+            abbrev: "dns.count.answers"
+            bits: 16
+            value: 1
+            description: "One answer: the AAAA record"
+          - name: "Answer — AAAA Record"
+            abbrev: "dns.aaaa"
+            bits: 128
+            value: "2001:db8::443:1"
+            description: "The IPv6 address of example.com — a 128-bit address. This is 4x longer than an IPv4 address, providing a virtually unlimited address space."
+            spec_refs:
+              - document: "RFC 3596"
+                section: "2.2"
+                title: "AAAA Data Format"
+                url: "https://datatracker.ietf.org/doc/html/rfc3596#section-2.2"
+          - name: "TTL"
+            abbrev: "dns.resp.ttl"
+            bits: 32
+            value: 300
+            description: "Cache for 5 minutes"
+
+  - id: "dns_a_response"
+    name: "DNS A Response — 192.0.2.1"
+    description: "DNS resolver returns the IPv4 address for example.com"
+    from: "dns"
+    to: "laptop"
+    via: ["router"]
+    total_bytes: 98
+    color: "#b45309"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "a4:83:e7:2b:c1:00"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "d4:6a:35:11:22:01"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.1"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.10"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: "17 (UDP)"
+
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 53
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 49153
+
+      - name: "DNS Response"
+        abbrev: "dns"
+        layer: 7
+        total_bytes: 56
+        fields:
+          - name: "Transaction ID"
+            abbrev: "dns.id"
+            bits: 16
+            value: "0xAA02"
+            description: "Matches the A query — this is the IPv4 answer"
+          - name: "Flags"
+            abbrev: "dns.flags"
+            bits: 16
+            value: "0x8180"
+            description: "QR=1 (Response), RD=1, RA=1"
+          - name: "Answer Count"
+            abbrev: "dns.count.answers"
+            bits: 16
+            value: 1
+            description: "One answer: the A record"
+          - name: "Answer — A Record"
+            abbrev: "dns.a"
+            bits: 32
+            value: "192.0.2.1"
+            description: "The IPv4 address of example.com — a 32-bit address. Only ~4.3 billion possible IPv4 addresses exist, which is why we need IPv6."
+          - name: "TTL"
+            abbrev: "dns.resp.ttl"
+            bits: 32
+            value: 300
+            description: "Cache for 5 minutes"
+
+  # ── Phase 2: Happy Eyeballs — IPv6 Wins ───────────────────────
+  - id: "tcp_syn_ipv6"
+    name: "TCP SYN → example.com over IPv6"
+    description: "Browser immediately tries IPv6 first — Happy Eyeballs prefers it"
+    from: "laptop"
+    to: "webserver"
+    via: ["router"]
+    total_bytes: 94
+    color: "#7c3aed"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "d4:6a:35:11:22:01"
+            description: "Router's MAC — even on IPv6, the local link-layer frame goes to the gateway"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "a4:83:e7:2b:c1:00"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+            description: "IPv6 — notice this is different from IPv4's 0x0800. The EtherType tells the NIC which IP version to expect."
+            spec_refs:
+              - document: "RFC 8200"
+                section: "1"
+                title: "Internet Protocol, Version 6 (IPv6) Specification"
+                url: "https://datatracker.ietf.org/doc/html/rfc8200"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Version"
+            abbrev: "ipv6.version"
+            bits: 4
+            value: 6
+            description: "IP version 6"
+          - name: "Traffic Class"
+            abbrev: "ipv6.tclass"
+            bits: 8
+            value: "0x00"
+            description: "Default traffic class — no DSCP or ECN markings"
+          - name: "Flow Label"
+            abbrev: "ipv6.flow"
+            bits: 20
+            value: "0x7A3E1"
+            description: "Flow label for QoS — helps routers identify this traffic flow without inspecting higher layers"
+          - name: "Payload Length"
+            abbrev: "ipv6.plen"
+            bits: 16
+            value: 40
+            description: "TCP header with SYN options (40 bytes)"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: "6 (TCP)"
+            description: "TCP follows this IPv6 header — same protocol number as in IPv4"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 64
+            description: "IPv6's equivalent of TTL — decremented by each router"
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8:1::10"
+            description: "Your laptop's IPv6 address — 128 bits (16 bytes). IPv6 addresses are so large that every device on Earth can have trillions of unique addresses."
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "2001:db8::443:1"
+            description: "The web server's IPv6 address from the AAAA record"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 40
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 54400
+            description: "Random ephemeral port for this connection attempt"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 443
+            description: "HTTPS port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: "0x1A2B3C00"
+            description: "Initial sequence number (ISN) — randomly chosen for security"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 16
+            value: "0x002 (SYN)"
+            description: "SYN flag set — 'I want to start a connection over IPv6'"
+            spec_refs:
+              - document: "RFC 9293"
+                section: "3.5"
+                title: "Establishing a Connection"
+                url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+          - name: "Options — MSS"
+            abbrev: "tcp.options.mss_val"
+            bits: 32
+            value: 1440
+            description: "Maximum Segment Size — slightly smaller than IPv4's typical 1460 because the IPv6 header is 20 bytes larger"
+
+  - id: "tcp_syn_ack_ipv6"
+    name: "TCP SYN-ACK ← example.com over IPv6"
+    description: "Web server responds over IPv6 — fast! IPv6 wins the race."
+    from: "webserver"
+    to: "laptop"
+    via: ["router"]
+    total_bytes: 94
+    color: "#7c3aed"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "a4:83:e7:2b:c1:00"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "d4:6a:35:11:22:01"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+            description: "IPv6"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Version"
+            abbrev: "ipv6.version"
+            bits: 4
+            value: 6
+          - name: "Payload Length"
+            abbrev: "ipv6.plen"
+            bits: 16
+            value: 40
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: "6 (TCP)"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 57
+            description: "Started at 64, decremented by 7 routers along the path"
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8::443:1"
+            description: "The web server's IPv6 address"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "2001:db8:1::10"
+            description: "Your laptop's IPv6 address"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 40
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 443
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 54400
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: "0xDE4F5600"
+            description: "Server's initial sequence number"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: "0x1A2B3C01"
+            description: "ACK = client ISN + 1 — proves the server received the SYN"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 16
+            value: "0x012 (SYN, ACK)"
+            description: "SYN-ACK — the server says 'Yes, I accept your IPv6 connection'"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+          - name: "Options — MSS"
+            abbrev: "tcp.options.mss_val"
+            bits: 32
+            value: 1440
+
+  - id: "tcp_ack_ipv6"
+    name: "TCP ACK → IPv6 Connection Established"
+    description: "Client completes the 3-way handshake over IPv6"
+    from: "laptop"
+    to: "webserver"
+    via: ["router"]
+    total_bytes: 74
+    color: "#7c3aed"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "d4:6a:35:11:22:01"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "a4:83:e7:2b:c1:00"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Version"
+            abbrev: "ipv6.version"
+            bits: 4
+            value: 6
+          - name: "Payload Length"
+            abbrev: "ipv6.plen"
+            bits: 16
+            value: 20
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: "6 (TCP)"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 64
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8:1::10"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "2001:db8::443:1"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 20
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 54400
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 443
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: "0xDE4F5601"
+            description: "ACK = server ISN + 1 — handshake complete"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 16
+            value: "0x010 (ACK)"
+            description: "Final ACK — IPv6 TCP connection is now ESTABLISHED"
+
+  # ── Phase 3: Happy Eyeballs — IPv6 Fails, IPv4 Fallback ───────
+  - id: "tcp_syn_ipv6_retry"
+    name: "TCP SYN → example.com over IPv6 (second attempt)"
+    description: "New connection attempt starts with IPv6 — but this time IPv6 is broken"
+    from: "laptop"
+    to: "webserver"
+    via: ["router"]
+    total_bytes: 94
+    color: "#7c3aed"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "d4:6a:35:11:22:01"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "a4:83:e7:2b:c1:00"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Version"
+            abbrev: "ipv6.version"
+            bits: 4
+            value: 6
+          - name: "Payload Length"
+            abbrev: "ipv6.plen"
+            bits: 16
+            value: 40
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: "6 (TCP)"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 64
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8:1::10"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "2001:db8::443:1"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 40
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 54410
+            description: "New ephemeral port for this connection attempt"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 443
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: "0x2C3D4E00"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 16
+            value: "0x002 (SYN)"
+            description: "SYN — trying IPv6 again for a new connection"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+          - name: "Options — MSS"
+            abbrev: "tcp.options.mss_val"
+            bits: 32
+            value: 1440
+
+  - id: "tcp_syn_ipv4"
+    name: "TCP SYN → example.com over IPv4 (fallback)"
+    description: "250ms timer fired — IPv6 is not responding, so the browser starts IPv4 too"
+    from: "laptop"
+    to: "webserver"
+    via: ["router"]
+    total_bytes: 74
+    color: "#ea580c"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "d4:6a:35:11:22:01"
+            description: "Router's MAC — same as before, different IP version inside"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "a4:83:e7:2b:c1:00"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4 — back to the classic 0x0800 EtherType"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Version"
+            abbrev: "ip.version"
+            bits: 4
+            value: 4
+            description: "IP version 4 — the fallback"
+          - name: "Header Length"
+            abbrev: "ip.hdr_len"
+            bits: 4
+            value: 5
+            description: "5 x 4 = 20 bytes — the standard IPv4 header is smaller than IPv6's 40 bytes"
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 60
+            description: "IPv4 header (20) + TCP header with options (40)"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: "6 (TCP)"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Your laptop's IPv4 address — only 32 bits compared to IPv6's 128 bits"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.0.2.1"
+            description: "The web server's IPv4 address from the A record"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 40
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 54411
+            description: "Yet another ephemeral port — separate from the IPv6 attempt"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 443
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: "0x5E6F7800"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 16
+            value: "0x002 (SYN)"
+            description: "SYN over IPv4 — the fallback attempt. The IPv6 SYN is still pending (no response yet)."
+            spec_refs:
+              - document: "RFC 8305"
+                section: "5"
+                title: "Connection Attempts"
+                url: "https://datatracker.ietf.org/doc/html/rfc8305#section-5"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+          - name: "Options — MSS"
+            abbrev: "tcp.options.mss_val"
+            bits: 32
+            value: 1460
+            description: "1460 for IPv4 (vs 1440 for IPv6) — IPv4's smaller header leaves more room for payload"
+
+  - id: "tcp_syn_ack_ipv4"
+    name: "TCP SYN-ACK ← example.com over IPv4"
+    description: "Web server responds over IPv4 — IPv4 wins the fallback race"
+    from: "webserver"
+    to: "laptop"
+    via: ["router"]
+    total_bytes: 74
+    color: "#ea580c"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "a4:83:e7:2b:c1:00"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "d4:6a:35:11:22:01"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.0.2.1"
+            description: "Web server's IPv4 address"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.10"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: "6 (TCP)"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 57
+            description: "Decremented by routers along the path"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 40
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 443
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 54411
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: "0xAB120000"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: "0x5E6F7801"
+            description: "ACK = client ISN + 1 — server received the IPv4 SYN"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 16
+            value: "0x012 (SYN, ACK)"
+            description: "SYN-ACK over IPv4 — the server is reachable via IPv4 even though IPv6 is broken"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+          - name: "Options — MSS"
+            abbrev: "tcp.options.mss_val"
+            bits: 32
+            value: 1460
+
+  - id: "tcp_ack_ipv4"
+    name: "TCP ACK → IPv4 Connection Established"
+    description: "Client completes the 3-way handshake over IPv4 and cancels IPv6"
+    from: "laptop"
+    to: "webserver"
+    via: ["router"]
+    total_bytes: 54
+    color: "#ea580c"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "d4:6a:35:11:22:01"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "a4:83:e7:2b:c1:00"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.0.2.1"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: "6 (TCP)"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 20
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 54411
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 443
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: "0xAB120001"
+            description: "ACK = server ISN + 1 — IPv4 handshake complete"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 16
+            value: "0x010 (ACK)"
+            description: "Final ACK — IPv4 TCP connection is now ESTABLISHED. The stalled IPv6 attempt is cancelled."
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+  # ── Phase 1: DNS Resolution ────────────────────────────────────
+  - id: "dns_aaaa_query"
+    type: "frame_tx"
+    t_ns: 0
+    frame_id: "dns_aaaa_query"
+    annotation:
+      text: "DNS AAAA Query — 'What is the IPv6 address of example.com?'"
+      detail: >
+        You typed example.com into your browser and hit Enter. The very first thing
+        that happens is a DNS lookup — but not just one. Your browser sends a AAAA
+        query asking for the IPv6 address. This query uses DNS type 28, which
+        specifically requests a 128-bit IPv6 address. The query is tiny: just 82
+        bytes over UDP. Modern browsers and operating systems always ask for both
+        IPv6 and IPv4 addresses so they have options.
+    state_after:
+      - actor_id: "laptop"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "DNS lookup (AAAA)"
+              url: "https://example.com"
+              happy_eyeballs_timer: "—"
+          - layer: 4
+            state_fields:
+              tcp_state_v6: "CLOSED"
+              tcp_state_v4: "CLOSED"
+              src_port: 49152
+              dst_port: 53
+      - actor_id: "dns"
+        layers:
+          - layer: 7
+            state_fields:
+              query_state: "resolving example.com AAAA"
+
+  - id: "dns_a_query"
+    type: "frame_tx"
+    t_ns: 1000000
+    frame_id: "dns_a_query"
+    annotation:
+      text: "DNS A Query — 'What is the IPv4 address of example.com?' (sent in parallel)"
+      detail: >
+        Just 1 millisecond later, the browser sends a second DNS query — this time
+        an A record query (type 1) asking for the IPv4 address. Both DNS queries are
+        now in flight simultaneously, each with its own transaction ID so the
+        resolver can send back the right answer to the right question. This parallel
+        query strategy is specified in RFC 8305 Section 3: the browser wants both
+        addresses as quickly as possible so it can start the Happy Eyeballs race.
+    state_after:
+      - actor_id: "laptop"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "DNS lookup (AAAA + A)"
+      - actor_id: "dns"
+        layers:
+          - layer: 7
+            state_fields:
+              query_state: "resolving example.com AAAA + A"
+
+  - id: "dns_aaaa_response"
+    type: "frame_tx"
+    t_ns: 20000000
+    frame_id: "dns_aaaa_response"
+    annotation:
+      text: "DNS AAAA Response — 2001:db8::443:1"
+      detail: >
+        The resolver responds in 20 milliseconds with the AAAA record:
+        2001:db8::443:1. This is a 128-bit IPv6 address — compare it to IPv4's
+        32-bit addresses. IPv6 provides roughly 3.4 x 10^38 unique addresses,
+        enough for every grain of sand on Earth to have its own IP address.
+
+        The browser now has one of the two addresses it needs. Per RFC 8305, it
+        could start a connection attempt immediately with just the AAAA record,
+        but most implementations wait briefly for both responses.
+    state_after:
+      - actor_id: "laptop"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "AAAA received, waiting for A"
+          - layer: 3
+            state_fields:
+              active_protocol: "—"
+      - actor_id: "dns"
+        layers:
+          - layer: 7
+            state_fields:
+              query_state: "AAAA responded"
+              cache_hit: true
+
+  - id: "dns_a_response"
+    type: "frame_tx"
+    t_ns: 22000000
+    frame_id: "dns_a_response"
+    annotation:
+      text: "DNS A Response — 192.0.2.1"
+      detail: >
+        Two milliseconds later, the A record arrives: 192.0.2.1. The browser now
+        has both addresses. Notice the difference in size: the IPv4 address is 32
+        bits (4 bytes), while the IPv6 address is 128 bits (16 bytes) — four times
+        larger.
+
+        The browser now has a choice: use 2001:db8::443:1 (IPv6) or 192.0.2.1
+        (IPv4)? Both should work — example.com is dual-stack. This is exactly
+        where Happy Eyeballs kicks in.
+    state_after:
+      - actor_id: "laptop"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "Both addresses received — starting Happy Eyeballs"
+      - actor_id: "dns"
+        layers:
+          - layer: 7
+            state_fields:
+              query_state: "both responded"
+
+  - id: "annotation_addresses_ready"
+    type: "annotation"
+    t_ns: 23000000
+    annotation:
+      text: "The browser now has both addresses. Which does it use? This is where Happy Eyeballs kicks in."
+      detail: >
+        RFC 8305 specifies the algorithm: sort destination addresses with IPv6
+        preferred (address family interleaving), then attempt connections in order,
+        with a 250ms delay between attempts. The first address family to complete
+        a TCP handshake wins, and the losing attempt is cancelled.
+
+        Why prefer IPv6? Because the internet is transitioning from IPv4 to IPv6,
+        and the only way to drive adoption is to actually use it when it works.
+        But if it does not work, the user should never suffer for it.
+
+  # ── Phase 2: Happy Eyeballs — IPv6 Wins ───────────────────────
+  - id: "tcp_syn_ipv6"
+    type: "frame_tx"
+    t_ns: 24000000
+    frame_id: "tcp_syn_ipv6"
+    annotation:
+      text: "TCP SYN → IPv6 (first attempt — IPv6 always goes first)"
+      detail: >
+        The browser immediately sends a TCP SYN to the IPv6 address
+        2001:db8::443:1 on port 443 (HTTPS). Notice the EtherType is 0x86DD (IPv6)
+        instead of the usual 0x0800 (IPv4). The IPv6 header is 40 bytes — twice
+        the size of IPv4's 20-byte header — because those 128-bit addresses
+        take up 32 bytes by themselves.
+
+        At the same time, the browser starts a 250ms timer. If this IPv6 SYN does
+        not get a SYN-ACK within 250 milliseconds, the browser will also try IPv4.
+        This is the core of Happy Eyeballs: give IPv6 a head start, but do not
+        wait forever.
+    state_after:
+      - actor_id: "laptop"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "IPv6 connecting (preferred)"
+              happy_eyeballs_timer: "250ms countdown started"
+          - layer: 4
+            state_fields:
+              tcp_state_v6: "SYN_SENT"
+              tcp_state_v4: "CLOSED"
+              src_port: 54400
+              dst_port: 443
+          - layer: 3
+            state_fields:
+              active_protocol: "IPv6"
+
+  - id: "annotation_timer_started"
+    type: "annotation"
+    t_ns: 24500000
+    annotation:
+      text: "250ms timer started — if IPv6 doesn't respond in time, IPv4 will be tried too"
+      detail: >
+        The 250ms Connection Attempt Delay is the magic number in Happy Eyeballs
+        (RFC 8305 Section 8). Why 250 milliseconds?
+
+        Too short (say 50ms) and you would start unnecessary IPv4 connections even
+        when IPv6 is working fine — just a bit slow due to geographic distance.
+        Too long (say 2 seconds) and users on broken IPv6 networks would notice
+        the delay. 250ms is the sweet spot: long enough to give a working IPv6
+        path a fair chance, short enough that humans barely perceive the wait.
+
+  - id: "tcp_syn_ack_ipv6"
+    type: "frame_tx"
+    t_ns: 54000000
+    frame_id: "tcp_syn_ack_ipv6"
+    annotation:
+      text: "TCP SYN-ACK ← IPv6 responds in 30ms — IPv6 wins the race!"
+      detail: >
+        The web server responds with a SYN-ACK over IPv6 in just 30 milliseconds —
+        well within the 250ms timer. The browser cancels the timer. There is no
+        need to try IPv4 at all.
+
+        This is the happy path of Happy Eyeballs: IPv6 works, it is fast, and the
+        user never knows which IP version was used. The IPv4 attempt is never even
+        started. On a well-connected dual-stack network, this is the typical
+        outcome — IPv6 just works.
+    state_after:
+      - actor_id: "laptop"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "IPv6 SYN-ACK received"
+              happy_eyeballs_timer: "cancelled (IPv6 won)"
+          - layer: 4
+            state_fields:
+              tcp_state_v6: "SYN_SENT → SYN-ACK received"
+      - actor_id: "webserver"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "SYN_RECEIVED"
+
+  - id: "tcp_ack_ipv6"
+    type: "frame_tx"
+    t_ns: 55000000
+    frame_id: "tcp_ack_ipv6"
+    annotation:
+      text: "TCP ACK → IPv6 connection established"
+      detail: >
+        The client completes the 3-way handshake with the final ACK. The TCP
+        connection is now ESTABLISHED over IPv6. TLS and HTTP will proceed over
+        this IPv6 connection.
+
+        The IPv4 attempt was never started — IPv6 responded in 30ms, well
+        before the 250ms deadline. Total time from DNS to connected: about 55
+        milliseconds. The user sees nothing but a fast-loading page.
+    state_after:
+      - actor_id: "laptop"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "Connected over IPv6"
+              happy_eyeballs_timer: "—"
+          - layer: 4
+            state_fields:
+              tcp_state_v6: "ESTABLISHED"
+              tcp_state_v4: "CLOSED (never started)"
+          - layer: 3
+            state_fields:
+              active_protocol: "IPv6"
+      - actor_id: "webserver"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "ESTABLISHED"
+
+  - id: "annotation_ipv4_never_started"
+    type: "annotation"
+    t_ns: 56000000
+    annotation:
+      text: "IPv4 attempt was never started — IPv6 was fast enough"
+      detail: >
+        Because IPv6 completed the TCP handshake in 30ms (well under the 250ms
+        threshold), the browser never initiated an IPv4 connection at all. This is
+        efficient: no wasted packets, no wasted server resources. The browser will
+        proceed with TLS and HTTP over the IPv6 connection.
+
+  - id: "annotation_ipv6_success"
+    type: "annotation"
+    t_ns: 60000000
+    annotation:
+      text: "TLS + HTTP proceed over IPv6 — most users never know which protocol they're using"
+      detail: >
+        From here, TLS 1.3 and HTTP/2 proceed exactly the same as they would over
+        IPv4 — the upper layers do not care which IP version carries them. Your
+        browser's address bar might show a lock icon, but it will not say "IPv6."
+        Most users have no idea whether they are using IPv4 or IPv6 at any given
+        moment, and that is exactly the point: the transition should be invisible.
+
+  - id: "annotation_phase3_intro"
+    type: "annotation"
+    t_ns: 100000000
+    annotation:
+      text: "Now let's see what happens when IPv6 is broken..."
+      detail: >
+        Phase 2 showed the ideal case. But what happens when the IPv6 path is
+        broken — maybe a misconfigured firewall, a tunnel that went down, or an
+        ISP that advertises IPv6 but does not actually route it? Without Happy
+        Eyeballs, your browser would wait for the TCP SYN to time out — typically
+        20 to 30 seconds — before trying IPv4. That is an eternity in web browsing.
+        Happy Eyeballs solves this with the 250ms fallback timer.
+
+  # ── Phase 3: Happy Eyeballs — IPv6 Fails, IPv4 Fallback ───────
+  - id: "tcp_syn_ipv6_retry"
+    type: "frame_tx"
+    t_ns: 200000000
+    frame_id: "tcp_syn_ipv6_retry"
+    annotation:
+      text: "New connection: TCP SYN → IPv6 (trying IPv6 first, as always)"
+      detail: >
+        A new connection attempt starts — maybe the user clicked another link, or
+        the previous connection was closed. As always, the browser tries IPv6 first.
+        It sends a TCP SYN to 2001:db8::443:1. The 250ms timer starts again.
+
+        But this time, something is wrong with the IPv6 path. Maybe a router along
+        the way has a stale route, or an overzealous firewall is dropping IPv6
+        traffic, or the ISP's IPv6 tunnel is down. The SYN packet enters the
+        network and... silence.
+    state_after:
+      - actor_id: "laptop"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "IPv6 connecting (preferred)"
+              happy_eyeballs_timer: "250ms countdown started"
+          - layer: 4
+            state_fields:
+              tcp_state_v6: "SYN_SENT"
+              tcp_state_v4: "CLOSED"
+              src_port: 54410
+              dst_port: 443
+          - layer: 3
+            state_fields:
+              active_protocol: "IPv6"
+
+  - id: "annotation_timer_ticking"
+    type: "annotation"
+    t_ns: 300000000
+    annotation:
+      text: "Silence... 100ms pass with no SYN-ACK from IPv6"
+      detail: >
+        One hundred milliseconds have elapsed. Still no SYN-ACK. In Phase 2, the
+        response came in 30ms. Something is clearly wrong with the IPv6 path, but
+        the browser does not panic. It still has 150ms left on the timer. Maybe the
+        server is just a bit further away this time. Happy Eyeballs is patient —
+        but not too patient.
+
+  - id: "annotation_timer_expired"
+    type: "annotation"
+    t_ns: 450000000
+    annotation:
+      text: "250ms elapsed — timer fires! Starting IPv4 fallback."
+      detail: >
+        The 250ms Connection Attempt Delay has expired with no response from IPv6.
+        The browser does NOT give up on IPv6 — it keeps the IPv6 SYN pending in
+        case a late response arrives. But it now starts a parallel IPv4 connection
+        attempt. Both races are running simultaneously.
+
+        This is critical: the browser does not wait for IPv6 to fully time out
+        (which could take 20+ seconds). It starts the backup plan after just 250ms.
+        The user has barely had time to blink.
+    state_after:
+      - actor_id: "laptop"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "IPv6 timeout — starting IPv4 fallback"
+              happy_eyeballs_timer: "EXPIRED"
+          - layer: 4
+            state_fields:
+              tcp_state_v6: "SYN_SENT (no response)"
+
+  - id: "tcp_syn_ipv4"
+    type: "frame_tx"
+    t_ns: 451000000
+    frame_id: "tcp_syn_ipv4"
+    annotation:
+      text: "TCP SYN → IPv4 fallback (while IPv6 SYN is still pending)"
+      detail: >
+        The browser sends a TCP SYN to the IPv4 address 192.0.2.1 on port 443.
+        Notice the differences from the IPv6 SYN:
+        - EtherType is 0x0800 (IPv4) instead of 0x86DD (IPv6)
+        - IPv4 header is only 20 bytes (vs IPv6's 40 bytes)
+        - Source IP is 10.0.1.10 (32 bits) instead of 2001:db8:1::10 (128 bits)
+        - MSS is 1460 (vs 1440 for IPv6) because the smaller IPv4 header leaves
+          more room for payload
+
+        The IPv6 SYN is still out there, unanswered. Both attempts are now racing.
+        Whichever gets a SYN-ACK first wins.
+    state_after:
+      - actor_id: "laptop"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "Racing IPv4 + IPv6"
+              happy_eyeballs_timer: "—"
+          - layer: 4
+            state_fields:
+              tcp_state_v6: "SYN_SENT (no response)"
+              tcp_state_v4: "SYN_SENT"
+              src_port: 54411
+              dst_port: 443
+          - layer: 3
+            state_fields:
+              active_protocol: "IPv4 + IPv6 (racing)"
+
+  - id: "tcp_syn_ack_ipv4"
+    type: "frame_tx"
+    t_ns: 486000000
+    frame_id: "tcp_syn_ack_ipv4"
+    annotation:
+      text: "TCP SYN-ACK ← IPv4 responds in 35ms — IPv4 wins!"
+      detail: >
+        The web server responds over IPv4 with a SYN-ACK in just 35 milliseconds.
+        IPv4 works! The browser now has a winning connection and will proceed with
+        IPv4. The stalled IPv6 attempt will be cancelled — it has been silent for
+        285ms now and is clearly broken.
+
+        From the user's perspective, the total delay was: 22ms (DNS) + 250ms
+        (waiting for IPv6) + 35ms (IPv4 handshake) = 307ms. That is barely
+        noticeable. Without Happy Eyeballs, the delay would have been 22ms (DNS) +
+        20,000ms (IPv6 timeout) + 35ms (IPv4 handshake) = over 20 seconds. That is
+        the difference between "the page loaded" and "is the internet down?"
+    state_after:
+      - actor_id: "laptop"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "IPv4 SYN-ACK received — IPv4 wins"
+          - layer: 4
+            state_fields:
+              tcp_state_v4: "SYN_SENT → SYN-ACK received"
+              tcp_state_v6: "cancelling"
+      - actor_id: "webserver"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "SYN_RECEIVED"
+
+  - id: "tcp_ack_ipv4"
+    type: "frame_tx"
+    t_ns: 487000000
+    frame_id: "tcp_ack_ipv4"
+    annotation:
+      text: "TCP ACK → IPv4 connection established, IPv6 attempt cancelled"
+      detail: >
+        The client sends the final ACK over IPv4, completing the 3-way handshake.
+        The IPv6 attempt is now formally cancelled — the browser sends a RST (reset)
+        on the IPv6 socket if a late SYN-ACK ever arrives, or simply closes it.
+
+        The TCP connection is ESTABLISHED over IPv4. TLS and HTTP will proceed
+        over this IPv4 connection. The web page loads normally. The user had no
+        idea that IPv6 was broken, that a race condition was resolved, or that an
+        algorithm designed by internet engineers saved them from a 20-second wait.
+    state_after:
+      - actor_id: "laptop"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "Connected over IPv4 (fallback)"
+              happy_eyeballs_timer: "—"
+          - layer: 4
+            state_fields:
+              tcp_state_v4: "ESTABLISHED"
+              tcp_state_v6: "CLOSED (cancelled)"
+          - layer: 3
+            state_fields:
+              active_protocol: "IPv4"
+      - actor_id: "webserver"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "ESTABLISHED"
+
+  - id: "annotation_fallback_complete"
+    type: "annotation"
+    t_ns: 490000000
+    annotation:
+      text: "IPv6 was broken or unreachable, but the user never noticed a delay beyond 250ms. That's the magic of Happy Eyeballs."
+      detail: >
+        The entire fallback process added only about 250 milliseconds to the
+        connection time. Compare this to what would happen without Happy Eyeballs:
+
+        - Without Happy Eyeballs: Browser tries IPv6, waits 20-30 seconds for
+          TCP timeout, then tries IPv4. User stares at a blank page for half a
+          minute and thinks the site is down.
+
+        - With Happy Eyeballs: Browser tries IPv6, waits 250ms, starts IPv4
+          in parallel, connects in 285ms total. User sees a normal page load.
+
+        This algorithm is the reason the IPv4-to-IPv6 transition has been mostly
+        painless for end users. It is built into every modern browser (Chrome,
+        Firefox, Safari, Edge), every modern operating system (Windows, macOS,
+        Linux, iOS, Android), and even command-line tools like curl.
+
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
+glossary:
+  - term: "Happy Eyeballs"
+    definition: "An algorithm (RFC 8305, originally RFC 6555) that races IPv6 and IPv4 connection attempts to ensure fast, reliable connectivity on dual-stack networks. IPv6 is preferred but IPv4 is tried in parallel if IPv6 does not respond within 250ms. The name comes from the goal of making users happy by avoiding long timeouts."
+    spec_refs:
+      - document: "RFC 8305"
+        section: "1"
+        title: "Happy Eyeballs Version 2"
+        url: "https://datatracker.ietf.org/doc/html/rfc8305"
+
+  - term: "Dual-Stack"
+    definition: "A network configuration where a host or router has both an IPv4 address and an IPv6 address, and can communicate using either protocol. Dual-stack is the most common IPv6 deployment strategy — it allows IPv6 to coexist with IPv4 during the transition."
+    spec_refs:
+      - document: "RFC 4213"
+        section: "1"
+        title: "Basic Transition Mechanisms for IPv6 Hosts and Routers"
+        url: "https://datatracker.ietf.org/doc/html/rfc4213"
+
+  - term: "IPv6"
+    abbrev: "IPv6"
+    definition: "Internet Protocol version 6 (RFC 8200). Uses 128-bit addresses (e.g., 2001:db8::443:1), providing approximately 3.4 x 10^38 unique addresses. Designed to replace IPv4 and eliminate address exhaustion. The IPv6 header is 40 bytes — larger than IPv4's 20-byte header because of the longer addresses."
+    spec_refs:
+      - document: "RFC 8200"
+        section: "1"
+        title: "Internet Protocol, Version 6 (IPv6) Specification"
+        url: "https://datatracker.ietf.org/doc/html/rfc8200"
+
+  - term: "IPv4"
+    abbrev: "IPv4"
+    definition: "Internet Protocol version 4 (RFC 791). Uses 32-bit addresses (e.g., 192.0.2.1), providing approximately 4.3 billion unique addresses. The original internet protocol, now being supplemented by IPv6 due to address exhaustion."
+    spec_refs:
+      - document: "RFC 791"
+        section: "1"
+        title: "Internet Protocol"
+        url: "https://datatracker.ietf.org/doc/html/rfc791"
+
+  - term: "AAAA Record"
+    definition: "A DNS record type (type 28) that maps a domain name to an IPv6 address. Called 'quad-A' because an IPv6 address is four times the size of an IPv4 address (128 bits vs 32 bits). When a browser wants to connect via IPv6, it queries for AAAA records."
+    spec_refs:
+      - document: "RFC 3596"
+        section: "2"
+        title: "DNS Extensions to Support IP Version 6"
+        url: "https://datatracker.ietf.org/doc/html/rfc3596"
+
+  - term: "A Record"
+    definition: "A DNS record type (type 1) that maps a domain name to an IPv4 address. The original and most common DNS record type. Returns a 32-bit IPv4 address."
+    spec_refs:
+      - document: "RFC 1035"
+        section: "3.4.1"
+        title: "A RDATA Format"
+        url: "https://datatracker.ietf.org/doc/html/rfc1035#section-3.4.1"
+
+  - term: "Connection Attempt Delay"
+    definition: "The time a Happy Eyeballs implementation waits for the preferred address family (usually IPv6) before starting a connection with the next address. RFC 8305 recommends 250ms. This value balances fairness to IPv6 against user-perceived latency."
+    spec_refs:
+      - document: "RFC 8305"
+        section: "8"
+        title: "Summary of Configurable Values"
+        url: "https://datatracker.ietf.org/doc/html/rfc8305#section-8"
+
+  - term: "TCP 3-Way Handshake"
+    definition: "The SYN, SYN-ACK, ACK exchange that establishes a TCP connection. In the context of Happy Eyeballs, the first address family to complete this handshake wins the race. The losing connection is cancelled."
+    spec_refs:
+      - document: "RFC 9293"
+        section: "3.5"
+        title: "Establishing a Connection"
+        url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5"
+
+  - term: "EtherType"
+    definition: "A 2-byte field in the Ethernet II header that identifies the protocol carried in the payload. 0x0800 = IPv4, 0x86DD = IPv6, 0x0806 = ARP. This is how the network interface card knows which IP version to process."
+
+  - term: "MSS"
+    abbrev: "MSS"
+    definition: "Maximum Segment Size — the largest amount of TCP payload data in a single segment. Typically 1460 bytes for IPv4 (1500 MTU - 20 IPv4 - 20 TCP) and 1440 bytes for IPv6 (1500 MTU - 40 IPv6 - 20 TCP). The 20-byte difference is because IPv6 headers are larger."
+
+  - term: "Address Family Interleaving"
+    definition: "RFC 8305's strategy for ordering connection attempts. Rather than trying all IPv6 addresses first, then all IPv4 addresses, the algorithm interleaves them: IPv6 #1, IPv4 #1, IPv6 #2, IPv4 #2, etc. This ensures that if one address family is completely broken, the other is tried quickly."
+    spec_refs:
+      - document: "RFC 8305"
+        section: "4"
+        title: "Sorting Addresses"
+        url: "https://datatracker.ietf.org/doc/html/rfc8305#section-4"
+
+# ─────────────────────────────────────────────────────────────────
+# WALKTHROUGHS
+# ─────────────────────────────────────────────────────────────────
+walkthroughs:
+  - id: "default"
+    title: "Happy Eyeballs: How Your Browser Chooses Between IPv4 and IPv6"
+    description: "A guided tour through the Happy Eyeballs algorithm — showing how browsers race IPv6 and IPv4 connections to give you the fastest, most reliable experience"
+    steps:
+      - step: 0
+        narration: >
+          You type example.com into your browser. Before a single pixel appears,
+          your browser needs to figure out how to reach that server. But here is a
+          twist most people do not know: the server has TWO addresses — an IPv4
+          address and an IPv6 address. Your browser sends two DNS queries in
+          parallel, one for each. The AAAA query (type 28) asks for the IPv6
+          address. The A query (type 1) asks for the IPv4 address. Both are in
+          flight simultaneously, racing to the DNS resolver and back.
+        highlight_fields: ["dns.qry.type", "dns.qry.name", "dns.id"]
+
+      - step: 1
+        narration: >
+          Both DNS responses arrive within milliseconds of each other. The AAAA
+          record gives us 2001:db8::443:1 — a 128-bit IPv6 address. The A record
+          gives us 192.0.2.1 — a 32-bit IPv4 address. Your browser now has two
+          paths to the same server. Which one should it use? This is exactly the
+          problem that Happy Eyeballs solves.
+        highlight_fields: ["dns.aaaa", "dns.a", "dns.resp.ttl"]
+
+      - step: 2
+        narration: >
+          Your browser ALWAYS prefers IPv6 — but it is not willing to wait long.
+          It immediately sends a TCP SYN to the IPv6 address and starts a 250ms
+          timer. If IPv6 responds before the timer fires, great — IPv6 wins. If
+          not, the browser starts an IPv4 connection too, and whichever responds
+          first wins.
+
+          Look at the EtherType field in the Ethernet header: 0x86DD means IPv6.
+          Compare this to the 0x0800 you see in IPv4 packets. This is how network
+          hardware knows which IP version a frame carries.
+        highlight_fields: ["eth.type", "ipv6.src", "ipv6.dst", "tcp.flags"]
+
+      - step: 3
+        narration: >
+          250 milliseconds is the magic number — long enough to be fair to IPv6,
+          short enough that users do not notice. RFC 8305 Section 8 calls this the
+          "Connection Attempt Delay." If IPv6 is working normally, 250ms is more
+          than enough time for a SYN-ACK to return from almost anywhere on Earth.
+          If it does not come back in time, something is probably wrong.
+        highlight_fields: []
+
+      - step: 4
+        narration: >
+          In this first scenario, IPv6 works perfectly. The SYN-ACK comes back in
+          just 30 milliseconds — well within the 250ms deadline. The browser
+          immediately cancels the timer. There is no need to try IPv4 at all.
+          The 3-way handshake completes over IPv6, and the connection is
+          established.
+
+          This is the typical outcome on a healthy dual-stack network. IPv6 just
+          works, and the user never knows the difference.
+        highlight_fields: ["tcp.flags", "tcp.ack", "ipv6.src", "ipv6.dst"]
+
+      - step: 5
+        narration: >
+          The IPv4 attempt was never started — IPv6 was fast enough. Your browser
+          will proceed with TLS 1.3 and HTTP over this IPv6 connection. From the
+          user's perspective, the page just loaded. They have no idea whether they
+          are on IPv4 or IPv6. That is exactly the goal: seamless, invisible
+          protocol selection.
+        highlight_fields: ["tcp.flags"]
+
+      - step: 6
+        narration: >
+          Now let us see what happens when IPv6 is broken. This is where Happy
+          Eyeballs really earns its name. Maybe an upstream router has a stale IPv6
+          route. Maybe a corporate firewall blocks IPv6. Maybe your ISP advertises
+          IPv6 support but does not actually route it properly. These situations are
+          surprisingly common, and without Happy Eyeballs, they would make websites
+          appear to be down for 20 to 30 seconds.
+        highlight_fields: []
+
+      - step: 7
+        narration: >
+          A new connection starts. As always, the browser tries IPv6 first and
+          starts the 250ms timer. The SYN goes out to 2001:db8::443:1... and
+          nothing comes back. 100 milliseconds pass. Still nothing. 200
+          milliseconds. Silence. The browser keeps waiting, but the timer is
+          ticking down.
+        highlight_fields: ["tcp.flags", "ipv6.dst"]
+
+      - step: 8
+        narration: >
+          The 250ms timer fires. No SYN-ACK from IPv6. The browser does not give
+          up on IPv6 — it keeps that SYN pending just in case. But now it starts
+          a parallel attempt over IPv4. Two SYN packets are now out in the wild:
+          one over IPv6 (waiting, unanswered) and one over IPv4 (freshly sent).
+          This is a race, and both protocols are running at the same time.
+        highlight_fields: ["ip.src", "ip.dst", "tcp.flags", "tcp.options.mss_val"]
+
+      - step: 9
+        narration: >
+          Compare the two SYN packets side by side. The IPv6 SYN has a 40-byte
+          IP header with 128-bit addresses and EtherType 0x86DD. The IPv4 SYN has
+          a 20-byte IP header with 32-bit addresses and EtherType 0x0800. The IPv4
+          MSS is 1460 (vs 1440 for IPv6) because the smaller header leaves more
+          room for data. Despite these differences, both packets carry the same TCP
+          SYN to port 443. TCP does not care which IP version carries it.
+        highlight_fields: ["eth.type", "ip.src", "ipv6.src", "tcp.options.mss_val"]
+
+      - step: 10
+        narration: >
+          IPv4 responds with a SYN-ACK in 35 milliseconds. IPv4 works! The
+          browser now has a winning connection. It completes the 3-way handshake
+          over IPv4 and formally cancels the failed IPv6 attempt.
+
+          Total extra delay caused by the broken IPv6 path: about 250 milliseconds.
+          That is it. The user might not even notice the page was slightly slower
+          than usual.
+        highlight_fields: ["tcp.flags", "tcp.ack", "ip.src"]
+
+      - step: 11
+        narration: >
+          Without Happy Eyeballs, a broken IPv6 path would mean a 20+ second
+          timeout before the browser even tries IPv4. Twenty seconds of staring at
+          a blank page. With Happy Eyeballs, the delay is 250 milliseconds — barely
+          perceptible. This single algorithm is why the internet's transition from
+          IPv4 to IPv6 has been mostly transparent to end users.
+        highlight_fields: []
+
+      - step: 12
+        narration: >
+          This algorithm is why the IPv4-to-IPv6 transition mostly works
+          transparently. Happy Eyeballs is in every modern browser — Chrome,
+          Firefox, Safari, Edge. It is in every modern operating system — Windows,
+          macOS, Linux, iOS, Android. It is even in command-line tools like curl.
+          Billions of connections per day use Happy Eyeballs, and almost nobody
+          has ever heard of it.
+        highlight_fields: []
+
+      - step: 13
+        narration: >
+          Here is what the browser learns from each attempt, and why it matters
+          for future connections. Many Happy Eyeballs implementations cache the
+          winning address family. If IPv6 failed once, the browser may try IPv4
+          first next time (still with Happy Eyeballs, but with IPv4 as the
+          preferred family). This "connection history" means that subsequent
+          connections to the same host are even faster — the browser already knows
+          which path works.
+        highlight_fields: []
+
+      - step: 14
+        narration: >
+          Let us recap what we learned:
+
+          1. Your browser sends parallel DNS queries for AAAA (IPv6) and A (IPv4)
+          2. Happy Eyeballs tries IPv6 first (the preferred protocol)
+          3. A 250ms timer starts — the "Connection Attempt Delay" from RFC 8305
+          4. If IPv6 responds in time, it wins and IPv4 is never tried
+          5. If IPv6 is too slow or broken, IPv4 starts in parallel after 250ms
+          6. Whichever protocol completes the TCP handshake first wins the race
+          7. The losing attempt is cancelled — no wasted resources
+
+          Happy Eyeballs is one of the internet's unsung heroes: an elegant
+          algorithm that solves a real-world problem (broken IPv6 paths) while
+          driving adoption of the protocol the internet desperately needs (IPv6).
+          And the best part? It works so well that you never notice it running.
+        highlight_fields: []

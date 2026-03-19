@@ -1,0 +1,1769 @@
+meta:
+  id: "ipv6-vs-ipv4-header-comparison"
+  title: "IPv6 vs IPv4 Header Comparison: Simpler, Faster, Extensible"
+  protocol: "IPv6"
+  protocol_family: "TCP/IP"
+  version: "1.0.0"
+  description: >
+    A side-by-side comparison of IPv4 and IPv6 headers showing why IPv6 is simpler,
+    faster for routers, and more extensible. Walks through an IPv4 packet traversing
+    a router (with checksum recalculation and fragmentation concerns), then sends the
+    same data via IPv6 (no per-hop checksum, no router fragmentation, fixed 40-byte
+    header). Concludes with IPv6 extension header chaining -- demonstrating how
+    Hop-by-Hop options, Fragment headers, and Routing headers are cleanly separated
+    from the base header using the Next Header mechanism.
+
+  learning_objectives:
+    - "Compare the IPv4 header (13 fields, variable length) to the IPv6 header (8 fields, fixed 40 bytes)"
+    - "Understand why removing the header checksum from IPv6 speeds up router forwarding"
+    - "Explain why IPv6 prohibits router fragmentation and mandates Path MTU Discovery"
+    - "Describe the IPv6 Flow Label field and its role in identifying traffic flows without deep packet inspection"
+    - "Understand the Next Header chaining mechanism for IPv6 extension headers"
+    - "Identify common extension headers: Hop-by-Hop Options (0), Routing (43), Fragment (44)"
+    - "Explain why source-only fragmentation eliminates a class of attacks and performance issues"
+
+  difficulty: "beginner"
+
+  authors:
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+
+  created: "2026-03-19"
+  updated: "2026-03-19"
+
+  tags:
+    - "IPv6"
+    - "IPv4"
+    - "header comparison"
+    - "extension headers"
+    - "fragmentation"
+    - "Flow Label"
+    - "beginner"
+    - "education"
+    - "WIP"
+
+  primary_specs:
+    - document: "RFC 791"
+      section: "3.1"
+      title: "Internet Header Format (IPv4)"
+      url: "https://datatracker.ietf.org/doc/html/rfc791#section-3.1"
+      alt_url: "https://www.rfc-editor.org/rfc/rfc791"
+    - document: "RFC 8200"
+      section: "3"
+      title: "IPv6 Header Format"
+      url: "https://datatracker.ietf.org/doc/html/rfc8200#section-3"
+      alt_url: "https://www.rfc-editor.org/rfc/rfc8200"
+    - document: "RFC 8200"
+      section: "4"
+      title: "IPv6 Extension Headers"
+      url: "https://datatracker.ietf.org/doc/html/rfc8200#section-4"
+      alt_url: ""
+    - document: "RFC 8201"
+      section: "3"
+      title: "Path MTU Discovery for IPv6"
+      url: "https://datatracker.ietf.org/doc/html/rfc8201#section-3"
+      alt_url: "https://www.rfc-editor.org/rfc/rfc8201"
+
+  content_disclaimer: >
+    Protocol descriptions in this scenario are based on public RFCs and open-source
+    implementations (Linux kernel, Wireshark dissectors). No proprietary specification
+    text has been reproduced. RFC references are provided as citations for further reading.
+
+  source_references:
+    - repo: "torvalds/linux"
+      path: "net/ipv4/ip_output.c"
+      description: "IPv4 packet output -- header construction, fragmentation, checksum"
+    - repo: "torvalds/linux"
+      path: "net/ipv4/ip_forward.c"
+      description: "IPv4 forwarding -- TTL decrement, checksum recalculation, fragmentation decision"
+    - repo: "torvalds/linux"
+      path: "net/ipv6/ip6_output.c"
+      description: "IPv6 packet output -- header construction, extension header insertion"
+    - repo: "torvalds/linux"
+      path: "net/ipv6/ip6_input.c"
+      description: "IPv6 packet input -- Next Header parsing, extension header processing"
+    - repo: "torvalds/linux"
+      path: "net/ipv6/route.c"
+      description: "IPv6 routing -- forwarding decisions, Hop Limit decrement"
+    - repo: "torvalds/linux"
+      path: "net/ipv6/exthdrs.c"
+      description: "IPv6 extension header processing -- Hop-by-Hop, Routing, Fragment"
+
+# -----------------------------------------------------------------
+# TOPOLOGY
+# -----------------------------------------------------------------
+topology:
+  actors:
+    - id: "host_a"
+      type: "host"
+      label: "Host A"
+      description: "Source host -- sends both IPv4 and IPv6 packets"
+      hardware: "Generic 10GbE NIC"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "192.168.1.10"
+      ipv6: "2001:db8:a::10"
+      mac: "00:11:22:33:44:01"
+      position: "left"
+
+    - id: "router"
+      type: "router"
+      label: "Router"
+      description: "Dual-stack router forwarding both IPv4 and IPv6 traffic between subnets"
+      hardware: "Generic router"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip_left: "192.168.1.1"
+      ip_right: "192.168.2.1"
+      ipv6_left: "2001:db8:a::1"
+      ipv6_right: "2001:db8:b::1"
+      mac_left: "00:11:22:33:44:f1"
+      mac_right: "00:11:22:33:44:f2"
+      position: "center"
+
+    - id: "host_b"
+      type: "host"
+      label: "Host B"
+      description: "Destination host -- receives both IPv4 and IPv6 packets"
+      hardware: "Generic 10GbE NIC"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "192.168.2.20"
+      ipv6: "2001:db8:b::20"
+      mac: "00:11:22:33:44:02"
+      position: "right"
+
+  links:
+    - id: "link-a-r"
+      from: "host_a"
+      to: "router"
+      speed_gbps: 10
+      media: "copper_dac"
+      fec: "FC-FEC"
+      autoneg: true
+    - id: "link-r-b"
+      from: "router"
+      to: "host_b"
+      speed_gbps: 10
+      media: "copper_dac"
+      fec: "FC-FEC"
+      autoneg: true
+
+# -----------------------------------------------------------------
+# OSI LAYER DEFINITIONS (per actor)
+# -----------------------------------------------------------------
+osi_layers:
+  host_a:
+    - layer: 4
+      name: "TCP"
+      components: ["net/ipv4/tcp.c", "net/ipv6/tcp_ipv6.c"]
+      state_schema:
+        transport_state:
+          type: "string"
+          description: "Transport-level context"
+          initial: "ready"
+
+    - layer: 3
+      name: "IP (dual-stack)"
+      components: ["net/ipv4/ip_output.c", "net/ipv6/ip6_output.c"]
+      state_schema:
+        ip_version:
+          type: "string"
+          description: "Active IP version being demonstrated"
+          initial: "none"
+        src_ipv4:
+          type: "string"
+          initial: "192.168.1.10"
+        dst_ipv4:
+          type: "string"
+          initial: "null"
+        src_ipv6:
+          type: "string"
+          initial: "2001:db8:a::10"
+        dst_ipv6:
+          type: "string"
+          initial: "null"
+        ttl:
+          type: "integer"
+          description: "IPv4 TTL / IPv6 Hop Limit"
+          initial: 64
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver", "IEEE 802.3"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+        mac_addr:
+          type: "string"
+          initial: "00:11:22:33:44:01"
+
+  router:
+    - layer: 3
+      name: "IP Forwarding (dual-stack)"
+      components: ["net/ipv4/ip_forward.c", "net/ipv6/route.c"]
+      state_schema:
+        forwarding_action:
+          type: "string"
+          description: "What the router must do for the current packet"
+          initial: "idle"
+        checksum_recalc:
+          type: "boolean"
+          description: "Whether the router must recalculate a header checksum"
+          initial: false
+        fragmentation_possible:
+          type: "boolean"
+          description: "Whether the router is allowed to fragment"
+          initial: false
+        hops_remaining:
+          type: "integer"
+          description: "TTL/Hop Limit after decrement"
+          initial: 0
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver", "IEEE 802.3"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+
+  host_b:
+    - layer: 4
+      name: "TCP"
+      components: ["net/ipv4/tcp.c", "net/ipv6/tcp_ipv6.c"]
+      state_schema:
+        transport_state:
+          type: "string"
+          description: "Transport-level context"
+          initial: "ready"
+
+    - layer: 3
+      name: "IP (dual-stack)"
+      components: ["net/ipv4/ip_input.c", "net/ipv6/ip6_input.c"]
+      state_schema:
+        ip_version:
+          type: "string"
+          description: "Active IP version being demonstrated"
+          initial: "none"
+        src_ipv4:
+          type: "string"
+          initial: "null"
+        dst_ipv4:
+          type: "string"
+          initial: "192.168.2.20"
+        src_ipv6:
+          type: "string"
+          initial: "null"
+        dst_ipv6:
+          type: "string"
+          initial: "2001:db8:b::20"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver", "IEEE 802.3"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+        mac_addr:
+          type: "string"
+          initial: "00:11:22:33:44:02"
+
+# -----------------------------------------------------------------
+# FRAMES
+# -----------------------------------------------------------------
+frames:
+  # == Part 1: IPv4 Packet ==
+
+  - id: "ipv4_packet_a_to_router"
+    name: "IPv4 Packet (Host A -> Router)"
+    description: "Host A sends an IPv4/TCP packet to Host B via the router"
+    from: "host_a"
+    to: "router"
+    via: []
+    timestamp_ns: 100000000
+    total_bytes: 74
+    color: "#b45309"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:f1"
+            value_hex: "0x001122334401"
+            description: "Router's left-side MAC (default gateway)"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Host A's MAC address"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            value_hex: "0x0800"
+            description: "IPv4"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Version"
+            abbrev: "ip.version"
+            bits: 4
+            value: 4
+            description: "IPv4 -- this 4-bit field identifies the IP version"
+            spec_refs:
+              - document: "RFC 791"
+                section: "3.1"
+                title: "Internet Header Format"
+                url: "https://datatracker.ietf.org/doc/html/rfc791#section-3.1"
+          - name: "IHL (Internet Header Length)"
+            abbrev: "ip.hdr_len"
+            bits: 4
+            value: 5
+            description: "5 x 4 = 20 bytes. Variable! If Options are present, IHL can be 6-15 (24-60 bytes). Hardware must read this field before knowing the header size."
+            spec_refs:
+              - document: "RFC 791"
+                section: "3.1"
+                title: "Internet Header Format"
+                url: "https://datatracker.ietf.org/doc/html/rfc791#section-3.1"
+          - name: "DSCP (Differentiated Services)"
+            abbrev: "ip.dsfield.dscp"
+            bits: 6
+            value: 0
+            description: "Default PHB -- no QoS differentiation"
+            spec_refs:
+              - document: "RFC 2474"
+                section: "3"
+                title: "The DS Field"
+                url: "https://datatracker.ietf.org/doc/html/rfc2474#section-3"
+          - name: "ECN (Explicit Congestion Notification)"
+            abbrev: "ip.dsfield.ecn"
+            bits: 2
+            value: 0
+            description: "Not ECN-capable"
+            spec_refs:
+              - document: "RFC 3168"
+                section: "5"
+                title: "ECN Field"
+                url: "https://datatracker.ietf.org/doc/html/rfc3168#section-5"
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 60
+            description: "Total IP datagram size in bytes: 20 (IP header) + 20 (TCP header) + 20 (TCP payload)"
+            spec_refs:
+              - document: "RFC 791"
+                section: "3.1"
+                title: "Internet Header Format"
+                url: "https://datatracker.ietf.org/doc/html/rfc791#section-3.1"
+          - name: "Identification"
+            abbrev: "ip.id"
+            bits: 16
+            value: "0x1a2b"
+            value_hex: "0x1a2b"
+            description: "Unique per-datagram ID used for fragment reassembly. Every IPv4 packet carries this field even when fragmentation is not expected."
+            spec_refs:
+              - document: "RFC 791"
+                section: "3.1"
+                title: "Internet Header Format"
+                url: "https://datatracker.ietf.org/doc/html/rfc791#section-3.1"
+          - name: "Flags"
+            abbrev: "ip.flags"
+            bits: 3
+            value: "0x2"
+            description: "DF (Don't Fragment) set. MF (More Fragments) = 0. The DF bit tells routers: do NOT fragment this packet -- send ICMP 'Fragmentation Needed' instead."
+            spec_refs:
+              - document: "RFC 791"
+                section: "3.1"
+                title: "Internet Header Format -- Fragmentation"
+                url: "https://datatracker.ietf.org/doc/html/rfc791#section-3.1"
+            fields:
+              - name: "DF (Don't Fragment)"
+                abbrev: "ip.flags.df"
+                bits: 1
+                value: 1
+                description: "Set -- do not fragment"
+              - name: "MF (More Fragments)"
+                abbrev: "ip.flags.mf"
+                bits: 1
+                value: 0
+                description: "Not set -- this is not a fragment"
+          - name: "Fragment Offset"
+            abbrev: "ip.frag_offset"
+            bits: 13
+            value: 0
+            description: "0 -- not a fragment. In IPv4, ANY router can fragment packets. This field tells the receiver where this fragment belongs in the original datagram."
+            spec_refs:
+              - document: "RFC 791"
+                section: "3.1"
+                title: "Internet Header Format"
+                url: "https://datatracker.ietf.org/doc/html/rfc791#section-3.1"
+          - name: "TTL (Time to Live)"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Decremented by 1 at each router. When it reaches 0, the packet is discarded and ICMP Time Exceeded is sent. Prevents routing loops."
+            spec_refs:
+              - document: "RFC 791"
+                section: "3.1"
+                title: "Internet Header Format"
+                url: "https://datatracker.ietf.org/doc/html/rfc791#section-3.1"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP (protocol number 6). Tells the receiving IP layer which upper-layer protocol should get this packet."
+            spec_refs:
+              - document: "RFC 791"
+                section: "3.1"
+                title: "Internet Header Format"
+                url: "https://datatracker.ietf.org/doc/html/rfc791#section-3.1"
+          - name: "Header Checksum"
+            abbrev: "ip.checksum"
+            bits: 16
+            value: "0x4d3c"
+            value_hex: "0x4d3c"
+            description: "Ones' complement checksum over the IP header ONLY. Must be recalculated at EVERY router hop because TTL changes. This is the key performance cost IPv6 eliminates."
+            spec_refs:
+              - document: "RFC 791"
+                section: "3.1"
+                title: "Internet Header Format"
+                url: "https://datatracker.ietf.org/doc/html/rfc791#section-3.1"
+          - name: "Source IP Address"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.1.10"
+            description: "Host A's IPv4 address -- only 32 bits (4.3 billion addresses, long exhausted)"
+          - name: "Destination IP Address"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.2.20"
+            description: "Host B's IPv4 address"
+          - name: "Options (if present)"
+            abbrev: "ip.options"
+            bits: 0
+            value: "none"
+            description: "No options in this packet. IPv4 options are variable-length (0-40 bytes) and make the header size unpredictable. They are rarely used but must always be checked by parsing IHL."
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 20
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49152
+            description: "Ephemeral source port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 80
+            description: "HTTP destination port"
+          - name: "TCP Payload"
+            abbrev: "tcp.payload"
+            bits: 160
+            value: "20 bytes of application data"
+            description: "Sample TCP payload for comparison purposes"
+
+  - id: "ipv4_router_processing"
+    name: "IPv4 Router Processing"
+    description: "Router processes the IPv4 packet: decrement TTL, recalculate checksum, check fragmentation"
+    from: "router"
+    to: "router"
+    via: []
+    timestamp_ns: 100050000
+    total_bytes: 0
+    color: "#dc2626"
+    headers: []
+
+  - id: "ipv4_packet_router_to_b"
+    name: "IPv4 Packet (Router -> Host B)"
+    description: "Router forwards IPv4 packet with decremented TTL and recalculated checksum"
+    from: "router"
+    to: "host_b"
+    via: []
+    timestamp_ns: 100100000
+    total_bytes: 74
+    color: "#b45309"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Host B's MAC address (router rewrites L2 for next hop)"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:f2"
+            description: "Router's right-side MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+
+      - name: "IPv4 (after router processing)"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Version"
+            abbrev: "ip.version"
+            bits: 4
+            value: 4
+            description: "Still IPv4"
+          - name: "IHL"
+            abbrev: "ip.hdr_len"
+            bits: 4
+            value: 5
+            description: "Still 20 bytes -- no options added"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 63
+            description: "DECREMENTED from 64 to 63 -- router subtracted 1. This TTL change is what forces the checksum recalculation."
+          - name: "Header Checksum"
+            abbrev: "ip.checksum"
+            bits: 16
+            value: "0x4e3c"
+            value_hex: "0x4e3c"
+            description: "RECALCULATED! Because TTL changed from 64 to 63, the entire header checksum must be recomputed. At every single hop. For every single packet."
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.1.10"
+            description: "Unchanged -- source IP is preserved across hops"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.2.20"
+            description: "Unchanged -- destination IP is preserved across hops"
+
+  # == Part 2: IPv6 Packet (same data, same path) ==
+
+  - id: "ipv6_packet_a_to_router"
+    name: "IPv6 Packet (Host A -> Router)"
+    description: "Host A sends an IPv6/TCP packet to Host B via the router -- same data, same path"
+    from: "host_a"
+    to: "router"
+    via: []
+    timestamp_ns: 200000000
+    total_bytes: 94
+    color: "#0f766e"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:f1"
+            description: "Router's left-side MAC (default gateway)"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Host A's MAC address"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+            value_hex: "0x86DD"
+            description: "IPv6 (note: 0x0800 for IPv4, 0x86DD for IPv6)"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Version"
+            abbrev: "ipv6.version"
+            bits: 4
+            value: 6
+            description: "IPv6 -- version 6. Same position as in IPv4 so routers can quickly distinguish the two."
+            spec_refs:
+              - document: "RFC 8200"
+                section: "3"
+                title: "IPv6 Header Format"
+                url: "https://datatracker.ietf.org/doc/html/rfc8200#section-3"
+          - name: "Traffic Class"
+            abbrev: "ipv6.tclass"
+            bits: 8
+            value: 0
+            description: "Equivalent to IPv4's DSCP + ECN fields, combined into one 8-bit field. Used for QoS differentiation."
+            spec_refs:
+              - document: "RFC 8200"
+                section: "7"
+                title: "Traffic Classes"
+                url: "https://datatracker.ietf.org/doc/html/rfc8200#section-7"
+          - name: "Flow Label"
+            abbrev: "ipv6.flow"
+            bits: 20
+            value: "0x7a1b3"
+            value_hex: "0x7a1b3"
+            description: "NEW in IPv6 -- a 20-bit label that identifies a flow. Routers can use this to keep packets of the same flow on the same path WITHOUT inspecting TCP/UDP port numbers. Critical for encrypted traffic (IPsec, QUIC) where ports may not be visible."
+            spec_refs:
+              - document: "RFC 8200"
+                section: "6"
+                title: "Flow Labels"
+                url: "https://datatracker.ietf.org/doc/html/rfc8200#section-6"
+          - name: "Payload Length"
+            abbrev: "ipv6.plen"
+            bits: 16
+            value: 40
+            description: "Length of everything AFTER the IPv6 header (TCP header + data = 40 bytes). Unlike IPv4's Total Length, this does NOT include the IP header itself -- because IPv6's header is always 40 bytes."
+            spec_refs:
+              - document: "RFC 8200"
+                section: "3"
+                title: "IPv6 Header Format"
+                url: "https://datatracker.ietf.org/doc/html/rfc8200#section-3"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 6
+            description: "TCP (6). This field replaces IPv4's 'Protocol' field but is far more powerful -- it creates a chain. If extension headers are present, this points to the first extension header, which points to the next, and so on."
+            spec_refs:
+              - document: "RFC 8200"
+                section: "3"
+                title: "IPv6 Header Format"
+                url: "https://datatracker.ietf.org/doc/html/rfc8200#section-3"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 64
+            description: "Same purpose as IPv4's TTL -- decremented by 1 at each router. Renamed from 'Time to Live' because the original TTL concept (seconds) was never implemented; it was always a hop counter."
+            spec_refs:
+              - document: "RFC 8200"
+                section: "3"
+                title: "IPv6 Header Format"
+                url: "https://datatracker.ietf.org/doc/html/rfc8200#section-3"
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8:a::10"
+            description: "128-bit source address -- 3.4 x 10^38 possible addresses. No more NAT needed for address conservation (though NAT66 exists for other reasons)."
+            spec_refs:
+              - document: "RFC 8200"
+                section: "3"
+                title: "IPv6 Header Format"
+                url: "https://datatracker.ietf.org/doc/html/rfc8200#section-3"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "2001:db8:b::20"
+            description: "128-bit destination address"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 20
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49152
+            description: "Same ephemeral source port as in the IPv4 example"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 80
+            description: "Same HTTP destination port"
+          - name: "TCP Payload"
+            abbrev: "tcp.payload"
+            bits: 160
+            value: "20 bytes of application data"
+            description: "Identical application data -- only the IP header changed"
+
+  - id: "ipv6_router_processing"
+    name: "IPv6 Router Processing"
+    description: "Router processes the IPv6 packet: decrement Hop Limit -- that's it. No checksum, no fragmentation."
+    from: "router"
+    to: "router"
+    via: []
+    timestamp_ns: 200025000
+    total_bytes: 0
+    color: "#16a34a"
+    headers: []
+
+  - id: "ipv6_packet_router_to_b"
+    name: "IPv6 Packet (Router -> Host B)"
+    description: "Router forwards IPv6 packet with decremented Hop Limit -- much faster processing"
+    from: "router"
+    to: "host_b"
+    via: []
+    timestamp_ns: 200050000
+    total_bytes: 94
+    color: "#0f766e"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Host B's MAC address"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:f2"
+            description: "Router's right-side MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+            description: "IPv6"
+
+      - name: "IPv6 (after router processing)"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Version"
+            abbrev: "ipv6.version"
+            bits: 4
+            value: 6
+            description: "IPv6"
+          - name: "Traffic Class"
+            abbrev: "ipv6.tclass"
+            bits: 8
+            value: 0
+            description: "Unchanged"
+          - name: "Flow Label"
+            abbrev: "ipv6.flow"
+            bits: 20
+            value: "0x7a1b3"
+            description: "Unchanged -- routers use this for consistent per-flow forwarding"
+          - name: "Payload Length"
+            abbrev: "ipv6.plen"
+            bits: 16
+            value: 40
+            description: "Unchanged"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 6
+            description: "TCP -- unchanged"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 63
+            description: "DECREMENTED from 64 to 63 -- this is the ONLY field the router modifies. No checksum to recalculate!"
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8:a::10"
+            description: "Unchanged"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "2001:db8:b::20"
+            description: "Unchanged"
+
+  # == Part 3: IPv6 Extension Headers ==
+
+  - id: "ipv6_hop_by_hop"
+    name: "IPv6 with Hop-by-Hop Extension Header"
+    description: "Host A sends an IPv6 packet with a Hop-by-Hop Options extension header (e.g., Router Alert for MLD)"
+    from: "host_a"
+    to: "host_b"
+    via: ["router"]
+    timestamp_ns: 300000000
+    total_bytes: 102
+    color: "#7c3aed"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+            description: "IPv6"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Version"
+            abbrev: "ipv6.version"
+            bits: 4
+            value: 6
+            description: "IPv6"
+          - name: "Traffic Class"
+            abbrev: "ipv6.tclass"
+            bits: 8
+            value: 0
+            description: "Default"
+          - name: "Flow Label"
+            abbrev: "ipv6.flow"
+            bits: 20
+            value: "0x00000"
+            description: "0 -- Hop-by-Hop Options packets typically use flow label 0"
+          - name: "Payload Length"
+            abbrev: "ipv6.plen"
+            bits: 16
+            value: 48
+            description: "Hop-by-Hop header (8) + TCP header (20) + TCP payload (20)"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 0
+            description: "0 = Hop-by-Hop Options. The CHAIN BEGINS HERE: IPv6 header says 'my next header is Hop-by-Hop Options'. The Hop-by-Hop header's own Next Header field will point to TCP."
+            spec_refs:
+              - document: "RFC 8200"
+                section: "4.3"
+                title: "Hop-by-Hop Options Header"
+                url: "https://datatracker.ietf.org/doc/html/rfc8200#section-4.3"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 64
+            description: "Starting hop limit"
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8:a::10"
+            description: "Host A"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "2001:db8:b::20"
+            description: "Host B"
+
+      - name: "Hop-by-Hop Options"
+        abbrev: "ipv6.hopopt"
+        layer: 3
+        total_bytes: 8
+        fields:
+          - name: "Next Header"
+            abbrev: "ipv6.hopopt.nxt"
+            bits: 8
+            value: 6
+            description: "6 = TCP. The chain continues: Hop-by-Hop says 'after me comes TCP'. This is the Next Header chaining mechanism -- each header points to what follows."
+            spec_refs:
+              - document: "RFC 8200"
+                section: "4.3"
+                title: "Hop-by-Hop Options Header"
+                url: "https://datatracker.ietf.org/doc/html/rfc8200#section-4.3"
+          - name: "Header Extension Length"
+            abbrev: "ipv6.hopopt.len"
+            bits: 8
+            value: 0
+            description: "Length in 8-octet units, not counting the first 8 octets. 0 means total size = 8 bytes."
+          - name: "Option Type (Router Alert)"
+            abbrev: "ipv6.hopopt.opt.type"
+            bits: 8
+            value: 5
+            value_hex: "0x05"
+            description: "Router Alert option -- tells every router along the path to examine this packet more closely. Used by MLD (Multicast Listener Discovery) and RSVP."
+            spec_refs:
+              - document: "RFC 2711"
+                section: "2.1"
+                title: "Router Alert Option"
+                url: "https://datatracker.ietf.org/doc/html/rfc2711#section-2.1"
+          - name: "Option Data Length"
+            abbrev: "ipv6.hopopt.opt.len"
+            bits: 8
+            value: 2
+            description: "Router Alert option data is 2 bytes"
+          - name: "Router Alert Value"
+            abbrev: "ipv6.hopopt.opt.rtalert"
+            bits: 16
+            value: 0
+            description: "0 = MLD (Multicast Listener Discovery). Tells the router this packet relates to multicast group management."
+          - name: "Padding"
+            abbrev: "ipv6.hopopt.pad"
+            bits: 16
+            value: 0
+            description: "PadN option -- padding to align to 8-byte boundary"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 20
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49152
+            description: "Ephemeral source port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 80
+            description: "HTTP destination port"
+
+  - id: "ipv6_fragment"
+    name: "IPv6 with Fragment Extension Header"
+    description: "Host A sends a fragmented IPv6 packet -- only the SOURCE can fragment in IPv6, never the router"
+    from: "host_a"
+    to: "host_b"
+    via: ["router"]
+    timestamp_ns: 400000000
+    total_bytes: 1302
+    color: "#dc2626"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+            description: "IPv6"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Version"
+            abbrev: "ipv6.version"
+            bits: 4
+            value: 6
+            description: "IPv6"
+          - name: "Payload Length"
+            abbrev: "ipv6.plen"
+            bits: 16
+            value: 1248
+            description: "Fragment header (8) + fragment payload (1240). This is the first fragment of a larger datagram."
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 44
+            description: "44 = Fragment Header. The chain: IPv6 header -> Fragment Header -> payload. Unlike IPv4 where fragmentation fields are in the base header, IPv6 uses a dedicated extension header."
+            spec_refs:
+              - document: "RFC 8200"
+                section: "4.5"
+                title: "Fragment Header"
+                url: "https://datatracker.ietf.org/doc/html/rfc8200#section-4.5"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 64
+            description: "Starting hop limit"
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8:a::10"
+            description: "Host A -- the ONLY entity allowed to fragment in IPv6"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "2001:db8:b::20"
+            description: "Host B -- will reassemble the fragments"
+
+      - name: "Fragment Header"
+        abbrev: "ipv6.fraghdr"
+        layer: 3
+        total_bytes: 8
+        fields:
+          - name: "Next Header"
+            abbrev: "ipv6.fraghdr.nxt"
+            bits: 8
+            value: 6
+            description: "6 = TCP. The original (unfragmented) packet's upper-layer protocol. After reassembly, the receiver passes the data to TCP."
+            spec_refs:
+              - document: "RFC 8200"
+                section: "4.5"
+                title: "Fragment Header"
+                url: "https://datatracker.ietf.org/doc/html/rfc8200#section-4.5"
+          - name: "Reserved"
+            abbrev: "ipv6.fraghdr.reserved"
+            bits: 8
+            value: 0
+            description: "Reserved -- must be zero"
+          - name: "Fragment Offset"
+            abbrev: "ipv6.fraghdr.offset"
+            bits: 13
+            value: 0
+            description: "0 -- this is the first fragment. Measured in 8-octet units."
+          - name: "Res"
+            abbrev: "ipv6.fraghdr.res"
+            bits: 2
+            value: 0
+            description: "Reserved bits"
+          - name: "M (More Fragments)"
+            abbrev: "ipv6.fraghdr.more"
+            bits: 1
+            value: 1
+            description: "1 = more fragments follow. The destination must wait for all fragments before reassembly."
+          - name: "Identification"
+            abbrev: "ipv6.fraghdr.id"
+            bits: 32
+            value: "0x0000abcd"
+            value_hex: "0x0000abcd"
+            description: "32-bit ID unique to this datagram. Used by the destination to group fragments. Note: 32 bits vs IPv4's 16-bit ID -- reduces risk of ID collisions on high-speed links."
+
+  # == Summary comparison frame ==
+
+  - id: "comparison_summary"
+    name: "IPv4 vs IPv6 Header Comparison Summary"
+    description: "Side-by-side comparison of IPv4 and IPv6 header properties"
+    from: "host_a"
+    to: "host_b"
+    via: []
+    timestamp_ns: 500000000
+    total_bytes: 0
+    color: "#6366f1"
+    headers:
+      - name: "Comparison Table"
+        abbrev: "comparison"
+        layer: 3
+        total_bytes: 0
+        fields:
+          - name: "Header Fields"
+            abbrev: "cmp.fields"
+            bits: 0
+            value: "IPv4: 13 fields | IPv6: 8 fields"
+            description: "IPv6 removed 5 fields (IHL, Identification, Flags, Fragment Offset, Header Checksum) and renamed 2 (TTL -> Hop Limit, Protocol -> Next Header). The result is a simpler header that hardware can parse faster."
+          - name: "Header Size"
+            abbrev: "cmp.size"
+            bits: 0
+            value: "IPv4: 20-60 bytes (variable) | IPv6: 40 bytes (fixed)"
+            description: "IPv4's IHL field means the header size varies depending on options. IPv6 is ALWAYS 40 bytes -- hardware can jump directly to the payload without parsing a length field. Extension headers are separate."
+          - name: "Checksum"
+            abbrev: "cmp.checksum"
+            bits: 0
+            value: "IPv4: recalculated at every hop | IPv6: none"
+            description: "IPv6 eliminated the header checksum entirely. TCP and UDP already have their own checksums (mandatory in IPv6). Recalculating at every hop was redundant work that slowed routers down."
+          - name: "Fragmentation"
+            abbrev: "cmp.fragmentation"
+            bits: 0
+            value: "IPv4: any router can fragment | IPv6: only the source can fragment"
+            description: "IPv6 requires Path MTU Discovery (RFC 8201). If a packet is too large, the router sends ICMPv6 'Packet Too Big' and the SOURCE resizes. This eliminates router fragmentation overhead and a class of fragmentation-based attacks."
+          - name: "Address Size"
+            abbrev: "cmp.address"
+            bits: 0
+            value: "IPv4: 32 bits (4.3 billion) | IPv6: 128 bits (3.4 x 10^38)"
+            description: "IPv4 addresses were exhausted by 2011. IPv6 provides enough addresses for every grain of sand on Earth to have billions of addresses."
+          - name: "Flow Identification"
+            abbrev: "cmp.flow"
+            bits: 0
+            value: "IPv4: requires 5-tuple inspection | IPv6: Flow Label field"
+            description: "IPv6's 20-bit Flow Label lets routers identify flows without inspecting transport-layer headers. Essential for encrypted traffic (IPsec ESP, QUIC) where port numbers are not visible."
+          - name: "Options/Extensions"
+            abbrev: "cmp.options"
+            bits: 0
+            value: "IPv4: inline options (slow) | IPv6: extension header chain (modular)"
+            description: "IPv4 options are part of the base header, making every packet variable-length. IPv6 uses a clean Next Header chain -- extension headers are only present when needed and are independently parseable."
+
+# -----------------------------------------------------------------
+# TIMELINE
+# -----------------------------------------------------------------
+timeline:
+  # == Part 1: IPv4 Packet (for contrast) ==
+
+  - id: "evt_ipv4_send"
+    type: "frame_tx"
+    t_ns: 100000000
+    frame_id: "ipv4_packet_a_to_router"
+    annotation:
+      text: "Part 1 -- IPv4 packet: Host A sends to Host B through the router"
+      detail: >
+        Host A constructs an IPv4 packet with a 20-byte TCP payload destined for Host B
+        at 192.168.2.20. The IPv4 header contains 13 fields, including the variable-length
+        IHL, fragmentation fields (Identification, Flags, Fragment Offset), and the
+        Header Checksum. Even though we set DF (Don't Fragment), the fragmentation fields
+        are still present in every packet -- they cannot be removed from the fixed format.
+        The header is 20 bytes with no options, but could be up to 60 bytes if options
+        were present.
+    state_after:
+      - actor_id: "host_a"
+        layers:
+          - layer: 3
+            state_fields:
+              ip_version: "IPv4"
+              dst_ipv4: "192.168.2.20"
+              ttl: 64
+
+  - id: "evt_ipv4_header_detail"
+    type: "state_change"
+    t_ns: 100010000
+    annotation:
+      text: "IPv4 header detail: 13 fields, variable length, checksum required"
+      detail: >
+        The IPv4 header (RFC 791) has 13 fields: Version (4 bits), IHL (4 bits),
+        DSCP (6 bits), ECN (2 bits), Total Length (16 bits), Identification (16 bits),
+        Flags (3 bits), Fragment Offset (13 bits), TTL (8 bits), Protocol (8 bits),
+        Header Checksum (16 bits), Source IP (32 bits), Destination IP (32 bits),
+        plus variable-length Options.
+
+        Key problems for high-speed forwarding:
+        1. Variable header length (must read IHL before knowing where payload starts)
+        2. Header Checksum must be verified on receipt and recalculated on forwarding
+        3. Fragmentation fields always present even when not fragmenting
+        4. Options make hardware implementation difficult -- each packet may be different
+    state_after: []
+
+  - id: "evt_ipv4_router_recv"
+    type: "frame_tx"
+    t_ns: 100050000
+    frame_id: "ipv4_router_processing"
+    annotation:
+      text: "Router receives IPv4 packet: must recalculate checksum (TTL changed), may need to fragment"
+      detail: >
+        The router receives the IPv4 packet and must perform several operations:
+
+        1. VERIFY the Header Checksum -- compute the ones' complement sum of the header
+           and confirm it equals 0xFFFF. If not, the packet is silently discarded.
+        2. DECREMENT TTL from 64 to 63. If TTL reaches 0, discard and send ICMP
+           Time Exceeded.
+        3. RECALCULATE the Header Checksum -- because TTL changed, the checksum is now
+           invalid. The router must recompute it before forwarding. This is pure overhead
+           that IPv6 completely eliminates.
+        4. CHECK MTU -- if the outgoing interface has a smaller MTU than the packet size
+           AND DF is not set, the router FRAGMENTS the packet. With DF set, it sends
+           ICMP Fragmentation Needed instead.
+        5. REWRITE Layer 2 -- new source/destination MAC for the next hop.
+
+        At 10 Gbps with minimum-size packets (64 bytes), a router may process ~14.88
+        million packets per second. The checksum recalculation adds measurable latency.
+    state_after:
+      - actor_id: "router"
+        layers:
+          - layer: 3
+            state_fields:
+              forwarding_action: "decrement TTL, recalculate checksum"
+              checksum_recalc: true
+              fragmentation_possible: true
+              hops_remaining: 63
+
+  - id: "evt_ipv4_router_fwd"
+    type: "frame_tx"
+    t_ns: 100100000
+    frame_id: "ipv4_packet_router_to_b"
+    annotation:
+      text: "Router forwards IPv4 packet: TTL=63, new checksum 0x4e3c"
+      detail: >
+        The router forwards the packet with the decremented TTL (63) and the
+        recalculated header checksum (0x4e3c). The Layer 2 addresses are rewritten
+        for the router-to-Host-B segment. Every field in the IPv4 header is unchanged
+        except TTL and the checksum -- but the checksum had to be fully recomputed
+        because there is no incremental checksum mechanism in the standard. Some
+        router implementations use an incremental update (RFC 1141), but it is still
+        work that IPv6 avoids entirely.
+    state_after:
+      - actor_id: "router"
+        layers:
+          - layer: 3
+            state_fields:
+              forwarding_action: "forwarded"
+
+  - id: "evt_ipv4_annotation"
+    type: "state_change"
+    t_ns: 100150000
+    annotation:
+      text: "13 fields, variable length, checksum recalculation at every hop"
+      detail: >
+        IPv4 header summary: 13 fields, 20-60 bytes (variable due to Options), and
+        the Header Checksum must be recalculated at every single hop because TTL changes.
+        The fragmentation machinery (Identification, Flags, Fragment Offset) consumes 32
+        bits in every packet even when fragmentation is not used. The variable-length
+        Options field means hardware cannot assume a fixed offset to the payload.
+        These design choices made sense in 1981 (RFC 791) when routers were slow software
+        implementations. At modern line rates (100 Gbps+), they are a performance burden.
+    state_after: []
+
+  # == Part 2: IPv6 Packet (same data, same path) ==
+
+  - id: "evt_ipv6_send"
+    type: "frame_tx"
+    t_ns: 200000000
+    frame_id: "ipv6_packet_a_to_router"
+    annotation:
+      text: "Part 2 -- IPv6 packet: same data, same path, simpler header"
+      detail: >
+        Host A now sends the exact same TCP payload to Host B, but using IPv6. The
+        IPv6 header is strikingly simpler: only 8 fields, always exactly 40 bytes.
+        No IHL field (because the size never varies), no Header Checksum (because
+        TCP/UDP already checksum their data), no fragmentation fields (because only
+        the source can fragment in IPv6).
+
+        Notice the EtherType changed from 0x0800 (IPv4) to 0x86DD (IPv6), and the
+        addresses are now 128 bits instead of 32 bits. Despite the larger addresses,
+        the header is designed for speed: every field is at a known, fixed offset.
+    state_after:
+      - actor_id: "host_a"
+        layers:
+          - layer: 3
+            state_fields:
+              ip_version: "IPv6"
+              dst_ipv6: "2001:db8:b::20"
+              ttl: 64
+
+  - id: "evt_ipv6_header_detail"
+    type: "state_change"
+    t_ns: 200010000
+    annotation:
+      text: "IPv6 header detail: 8 fields, fixed 40 bytes, no checksum"
+      detail: >
+        The IPv6 header (RFC 8200) has only 8 fields: Version (4 bits), Traffic Class
+        (8 bits), Flow Label (20 bits), Payload Length (16 bits), Next Header (8 bits),
+        Hop Limit (8 bits), Source Address (128 bits), Destination Address (128 bits).
+
+        What was REMOVED compared to IPv4:
+        - IHL -- gone because the header is always 40 bytes
+        - Identification, Flags, Fragment Offset -- moved to a Fragment extension header
+        - Header Checksum -- eliminated entirely (TCP/UDP already have checksums)
+        - Options -- replaced by the extension header chain mechanism
+
+        What was ADDED:
+        - Flow Label (20 bits) -- lets routers identify flows without inspecting
+          transport headers, critical for encrypted traffic
+
+        What was RENAMED:
+        - TTL -> Hop Limit (honest name -- it was always a hop counter, not a timer)
+        - Protocol -> Next Header (now supports extension header chaining)
+    state_after: []
+
+  - id: "evt_ipv6_router_recv"
+    type: "frame_tx"
+    t_ns: 200025000
+    frame_id: "ipv6_router_processing"
+    annotation:
+      text: "Router receives IPv6 packet: NO checksum to recalculate, NO fragmentation -- just decrement Hop Limit"
+      detail: >
+        The router receives the IPv6 packet and its job is dramatically simpler:
+
+        1. NO checksum verification -- there is no header checksum to verify or recompute.
+        2. DECREMENT Hop Limit from 64 to 63. If it reaches 0, discard and send ICMPv6
+           Time Exceeded.
+        3. NO fragmentation decision -- if the packet is too big for the outgoing MTU,
+           the router sends ICMPv6 Packet Too Big (with the MTU value) and DISCARDS
+           the packet. The SOURCE must handle fragmentation via Path MTU Discovery.
+        4. REWRITE Layer 2 -- new source/destination MAC for the next hop.
+
+        That is it. No checksum computation. No fragmentation logic. The router can
+        forward at line rate with minimal per-packet processing. This is why IPv6 was
+        designed with a fixed-size, checksum-free header -- it makes hardware
+        implementation simpler and faster.
+    state_after:
+      - actor_id: "router"
+        layers:
+          - layer: 3
+            state_fields:
+              forwarding_action: "decrement Hop Limit only"
+              checksum_recalc: false
+              fragmentation_possible: false
+              hops_remaining: 63
+
+  - id: "evt_ipv6_router_fwd"
+    type: "frame_tx"
+    t_ns: 200050000
+    frame_id: "ipv6_packet_router_to_b"
+    annotation:
+      text: "Router forwards IPv6 -- much faster processing than IPv4"
+      detail: >
+        The router forwards the IPv6 packet with Hop Limit decremented to 63. No
+        checksum was recalculated because there is no checksum. The router's forwarding
+        path touched exactly one field in the IP header (Hop Limit) compared to two
+        fields for IPv4 (TTL and Header Checksum), and the checksum computation itself
+        is far more expensive than a simple decrement.
+
+        At scale, this difference is significant. A router forwarding 100 million
+        packets per second saves 100 million checksum operations per second when
+        forwarding IPv6 instead of IPv4.
+    state_after:
+      - actor_id: "router"
+        layers:
+          - layer: 3
+            state_fields:
+              forwarding_action: "forwarded"
+
+  - id: "evt_ipv6_annotation"
+    type: "state_change"
+    t_ns: 200075000
+    annotation:
+      text: "8 fields, fixed 40 bytes, no per-hop checksum -- routers are faster"
+      detail: >
+        IPv6 header summary: 8 fields, always exactly 40 bytes, and zero checksum
+        computation at any hop. The router's only mandatory per-packet modification is
+        decrementing the Hop Limit by 1. Compare this to IPv4 where the router must
+        decrement TTL AND recompute the header checksum for every packet forwarded.
+
+        The fixed header size means hardware can use constant offsets to access any field.
+        There is no need to parse a variable-length Options field. Extension headers,
+        when present, are chained after the base header and typically only examined by
+        the destination (except Hop-by-Hop Options).
+
+  # == Part 3: Extension Headers ==
+
+  - id: "evt_ext_hopbyhop_send"
+    type: "frame_tx"
+    t_ns: 300000000
+    frame_id: "ipv6_hop_by_hop"
+    annotation:
+      text: "Part 3 -- Extension header chaining: Hop-by-Hop Options with Router Alert"
+      detail: >
+        IPv6 extension headers are the mechanism that replaces IPv4's inline Options.
+        Instead of cramming optional features into a variable-length base header, IPv6
+        chains separate headers using the Next Header field.
+
+        In this example, Host A sends a packet with a Hop-by-Hop Options header carrying
+        a Router Alert option (used by MLD for multicast group management). The chain is:
+
+        IPv6 header (Next Header = 0) -> Hop-by-Hop Options (Next Header = 6) -> TCP
+
+        Each header's Next Header field points to what follows. The Hop-by-Hop Options
+        header is special: it is the ONLY extension header that every router along the
+        path must examine. All other extension headers are processed only by the
+        destination.
+
+        The Router Alert option (type 5) tells each router: "Look at this packet more
+        closely -- it contains control-plane information." Without it, routers would
+        fast-path the packet without inspection.
+    state_after:
+      - actor_id: "host_a"
+        layers:
+          - layer: 3
+            state_fields:
+              ip_version: "IPv6 + Hop-by-Hop ext"
+
+  - id: "evt_ext_hopbyhop_chain"
+    type: "state_change"
+    t_ns: 300050000
+    annotation:
+      text: "Extension header chain: IPv6 (Next Header=0) -> Hop-by-Hop (Next Header=6) -> TCP"
+      detail: >
+        The Next Header chaining mechanism is elegant in its simplicity:
+
+        1. IPv6 base header: Next Header = 0 (Hop-by-Hop Options)
+           "After me comes a Hop-by-Hop Options header"
+
+        2. Hop-by-Hop Options header: Next Header = 6 (TCP)
+           "After me comes TCP"
+
+        3. TCP header: this is the final upper-layer protocol
+
+        This chain can be extended indefinitely. Common Next Header values:
+        - 0: Hop-by-Hop Options (must be first if present)
+        - 6: TCP
+        - 17: UDP
+        - 43: Routing Header
+        - 44: Fragment Header
+        - 50: ESP (Encapsulating Security Payload)
+        - 51: AH (Authentication Header)
+        - 58: ICMPv6
+        - 59: No Next Header (nothing follows)
+
+        The order of extension headers is specified by RFC 8200 section 4.1:
+        Hop-by-Hop -> Destination Options -> Routing -> Fragment -> AH -> ESP ->
+        Destination Options (for final destination) -> Upper-layer header.
+    state_after: []
+
+  - id: "evt_ext_fragment_send"
+    type: "frame_tx"
+    t_ns: 400000000
+    frame_id: "ipv6_fragment"
+    annotation:
+      text: "IPv6 fragmentation: ONLY the source can fragment -- never a router"
+      detail: >
+        This is one of the most important differences between IPv4 and IPv6. In IPv4,
+        any router along the path can fragment a packet if it exceeds the outgoing MTU.
+        In IPv6, fragmentation is ONLY performed by the source host.
+
+        If a router encounters a packet too large for its outgoing link, it:
+        1. Drops the packet
+        2. Sends ICMPv6 Packet Too Big (Type 2) with the MTU of the link
+        3. The source receives this, reduces its packet size, and resends
+
+        This is Path MTU Discovery (RFC 8201), and it is MANDATORY for IPv6.
+
+        The Fragment Header is a separate extension header (Next Header = 44) that contains:
+        - Fragment Offset (13 bits): position of this fragment in the original datagram
+        - M flag (1 bit): 1 = more fragments follow
+        - Identification (32 bits): unique ID for reassembly (32-bit vs IPv4's 16-bit)
+
+        The chain here is: IPv6 (Next Header=44) -> Fragment Header (Next Header=6) -> TCP
+    state_after:
+      - actor_id: "host_a"
+        layers:
+          - layer: 3
+            state_fields:
+              ip_version: "IPv6 + Fragment ext"
+
+  - id: "evt_ext_fragment_chain"
+    type: "state_change"
+    t_ns: 400050000
+    annotation:
+      text: "Fragment chain: IPv6 (Next Header=44) -> Fragment Header (Next Header=6) -> TCP payload"
+      detail: >
+        The Fragment extension header chain:
+
+        1. IPv6 base header: Next Header = 44 (Fragment Header)
+           "After me comes a Fragment Header"
+
+        2. Fragment Header: Next Header = 6 (TCP)
+           Fragment Offset = 0 (this is the first fragment)
+           M = 1 (more fragments follow)
+           Identification = 0x0000abcd
+
+        3. TCP header + payload (the fragment content)
+
+        The destination collects all fragments with the same Source Address +
+        Destination Address + Identification, orders them by Fragment Offset, and
+        reassembles the original datagram. Only then is the TCP header parsed.
+
+        Benefits of source-only fragmentation:
+        - Routers never need fragmentation logic in their fast path
+        - Eliminates fragmentation-based attacks (e.g., tiny fragment attacks that split
+          TCP headers across fragments to bypass firewalls)
+        - 32-bit Identification field (vs 16-bit in IPv4) reduces ID collisions on
+          high-speed links
+        - Forces the use of Path MTU Discovery, which is more efficient than relying
+          on router fragmentation
+    state_after: []
+
+  - id: "evt_pmtud_annotation"
+    type: "state_change"
+    t_ns: 400100000
+    annotation:
+      text: "In IPv4, any router can fragment. In IPv6, only the source can. This is why Path MTU Discovery is mandatory."
+      detail: >
+        Path MTU Discovery (PMTUD) in IPv6 (RFC 8201) works as follows:
+
+        1. The source sends packets at its local link MTU (typically 1280-1500 bytes)
+        2. If a router along the path has a smaller MTU, it drops the packet and sends
+           ICMPv6 Packet Too Big with the smaller MTU value
+        3. The source caches this Path MTU and resizes subsequent packets
+        4. Periodically, the source probes with larger packets to detect MTU increases
+
+        The minimum IPv6 MTU is 1280 bytes (vs 68 bytes for IPv4). This means IPv6
+        fragments are never smaller than 1280 bytes, simplifying buffer management.
+
+        In practice, most IPv6 paths support 1500 bytes (standard Ethernet MTU), and
+        jumbo frames (9000+ bytes) are common in data center networks. PMTUD ensures
+        the source always uses the optimal packet size for the path.
+
+  - id: "evt_summary"
+    type: "state_change"
+    t_ns: 500000000
+    frame_id: "comparison_summary"
+    annotation:
+      text: "Summary: IPv6 is simpler (8 vs 13 fields), faster (no checksum), and more extensible (extension header chain)"
+      detail: >
+        IPv4 vs IPv6 Header Comparison:
+
+        | Property            | IPv4                        | IPv6                          |
+        |---------------------|-----------------------------|-------------------------------|
+        | Header fields       | 13                          | 8                             |
+        | Header size         | 20-60 bytes (variable)      | 40 bytes (fixed)              |
+        | Header checksum     | Yes (recalc every hop)      | None                          |
+        | Fragmentation       | Any router can fragment      | Source only (PMTUD mandatory) |
+        | Address size        | 32 bits (4.3 billion)       | 128 bits (3.4 x 10^38)       |
+        | Flow identification | 5-tuple deep inspection     | Flow Label (20 bits)          |
+        | Options/extensions  | Inline (variable header)    | Extension header chain        |
+        | Minimum MTU         | 68 bytes                    | 1280 bytes                    |
+
+        IPv6 was not just "IPv4 with bigger addresses." It was a fundamental redesign
+        of the IP header for high-speed hardware forwarding, extensibility, and security.
+        The elimination of per-hop checksum recalculation alone was a major win for
+        router performance. The extension header mechanism allows the protocol to evolve
+        without changing the base header format.
+    state_after: []
+
+# -----------------------------------------------------------------
+# GLOSSARY
+# -----------------------------------------------------------------
+glossary:
+  - term: "IPv4 Header"
+    abbrev: "IPv4"
+    definition: "The original Internet Protocol header (RFC 791) with 13 fields and variable length (20-60 bytes). Contains a header checksum that must be recalculated at every hop and inline fragmentation fields."
+    spec_refs:
+      - document: "RFC 791"
+        section: "3.1"
+        title: "Internet Header Format"
+        url: "https://datatracker.ietf.org/doc/html/rfc791#section-3.1"
+
+  - term: "IPv6 Header"
+    abbrev: "IPv6"
+    definition: "The next-generation Internet Protocol header (RFC 8200) with 8 fields and fixed 40-byte size. Eliminates the header checksum and inline fragmentation, adds the Flow Label for flow identification."
+    spec_refs:
+      - document: "RFC 8200"
+        section: "3"
+        title: "IPv6 Header Format"
+        url: "https://datatracker.ietf.org/doc/html/rfc8200#section-3"
+
+  - term: "IHL (Internet Header Length)"
+    abbrev: "IHL"
+    definition: "A 4-bit field in the IPv4 header specifying the header length in 32-bit words. Values range from 5 (20 bytes, no options) to 15 (60 bytes, maximum options). Eliminated in IPv6 because the header is always 40 bytes."
+    spec_refs:
+      - document: "RFC 791"
+        section: "3.1"
+        title: "Internet Header Format"
+        url: "https://datatracker.ietf.org/doc/html/rfc791#section-3.1"
+
+  - term: "Header Checksum"
+    definition: "A 16-bit ones' complement checksum in the IPv4 header, covering only the header (not payload). Must be verified on receipt and recalculated at every forwarding hop because TTL changes. Eliminated in IPv6 -- TCP/UDP checksums already protect the data."
+    spec_refs:
+      - document: "RFC 791"
+        section: "3.1"
+        title: "Internet Header Format"
+        url: "https://datatracker.ietf.org/doc/html/rfc791#section-3.1"
+
+  - term: "Flow Label"
+    definition: "A 20-bit field in the IPv6 header that identifies a flow of packets. Allows routers to perform per-flow processing (e.g., ECMP load balancing) without inspecting transport-layer headers. Critical for encrypted traffic where port numbers are not visible."
+    spec_refs:
+      - document: "RFC 8200"
+        section: "6"
+        title: "Flow Labels"
+        url: "https://datatracker.ietf.org/doc/html/rfc8200#section-6"
+
+  - term: "Next Header"
+    definition: "An 8-bit field in the IPv6 header (and each extension header) that identifies the type of the next header in the chain. Replaces IPv4's Protocol field but enables extension header chaining. Common values: 0 (Hop-by-Hop), 6 (TCP), 17 (UDP), 43 (Routing), 44 (Fragment), 58 (ICMPv6), 59 (No Next Header)."
+    spec_refs:
+      - document: "RFC 8200"
+        section: "3"
+        title: "IPv6 Header Format"
+        url: "https://datatracker.ietf.org/doc/html/rfc8200#section-3"
+
+  - term: "Extension Header"
+    definition: "Optional headers chained after the IPv6 base header using the Next Header mechanism. Include Hop-by-Hop Options (0), Routing (43), Fragment (44), AH (51), ESP (50), and Destination Options (60). Only Hop-by-Hop Options are examined by every router; all others are processed only by the destination."
+    spec_refs:
+      - document: "RFC 8200"
+        section: "4"
+        title: "IPv6 Extension Headers"
+        url: "https://datatracker.ietf.org/doc/html/rfc8200#section-4"
+
+  - term: "Hop-by-Hop Options Header"
+    abbrev: "HBH"
+    definition: "IPv6 extension header (Next Header = 0) that carries options to be examined by every router along the path. Must be the first extension header if present. Used for Router Alert (MLD, RSVP) and Jumbo Payload options."
+    spec_refs:
+      - document: "RFC 8200"
+        section: "4.3"
+        title: "Hop-by-Hop Options Header"
+        url: "https://datatracker.ietf.org/doc/html/rfc8200#section-4.3"
+
+  - term: "Fragment Header"
+    definition: "IPv6 extension header (Next Header = 44) used when the source needs to fragment a packet. Contains Fragment Offset, M (More Fragments) flag, and a 32-bit Identification field. In IPv6, ONLY the source can fragment -- routers never fragment."
+    spec_refs:
+      - document: "RFC 8200"
+        section: "4.5"
+        title: "Fragment Header"
+        url: "https://datatracker.ietf.org/doc/html/rfc8200#section-4.5"
+
+  - term: "Path MTU Discovery"
+    abbrev: "PMTUD"
+    definition: "A mechanism (mandatory in IPv6) where the source discovers the smallest MTU along the path to the destination. If a packet is too large, the router sends ICMPv6 Packet Too Big with the link MTU. The source then reduces its packet size. Eliminates the need for router fragmentation."
+    spec_refs:
+      - document: "RFC 8201"
+        section: "3"
+        title: "Path MTU Discovery for IPv6"
+        url: "https://datatracker.ietf.org/doc/html/rfc8201#section-3"
+
+  - term: "Hop Limit"
+    definition: "IPv6's equivalent of IPv4's TTL (Time to Live). An 8-bit field decremented by 1 at each router. When it reaches 0, the packet is discarded and ICMPv6 Time Exceeded is sent. Renamed from TTL because the original 'time' concept (seconds) was never implemented."
+    spec_refs:
+      - document: "RFC 8200"
+        section: "3"
+        title: "IPv6 Header Format"
+        url: "https://datatracker.ietf.org/doc/html/rfc8200#section-3"
+
+  - term: "TTL (Time to Live)"
+    abbrev: "TTL"
+    definition: "An 8-bit field in the IPv4 header decremented by each router. Originally intended to represent a time limit in seconds, but in practice it functions as a hop counter. Its change at every hop forces the Header Checksum to be recalculated."
+    spec_refs:
+      - document: "RFC 791"
+        section: "3.1"
+        title: "Internet Header Format"
+        url: "https://datatracker.ietf.org/doc/html/rfc791#section-3.1"
+
+  - term: "Router Alert"
+    definition: "A Hop-by-Hop option (type 5) that tells every router along the path to examine the packet more closely. Used by MLD (Multicast Listener Discovery, value 0) and RSVP (Resource Reservation Protocol, value 1) to signal control-plane traffic."
+    spec_refs:
+      - document: "RFC 2711"
+        section: "2.1"
+        title: "IPv6 Router Alert Option"
+        url: "https://datatracker.ietf.org/doc/html/rfc2711#section-2.1"
+
+# -----------------------------------------------------------------
+# WALKTHROUGHS
+# -----------------------------------------------------------------
+walkthroughs:
+  - id: "default"
+    title: "IPv6 vs IPv4 Header Comparison"
+    description: "Walk through why the IPv6 header is simpler, faster for routers, and more extensible than IPv4"
+    steps:
+      - step: 0
+        narration: >
+          We are going to compare IPv4 and IPv6 headers side by side. Both protocols
+          carry IP datagrams across networks, but IPv6 was designed 17 years after IPv4
+          with the benefit of hindsight. The question is not just "bigger addresses" --
+          it is "what did we learn about what makes routers slow, and how do we fix it?"
+          We will send the same data across the same network using both protocols and
+          watch what the router has to do differently for each one.
+        highlight_fields: []
+
+      - step: 1
+        narration: >
+          First, the IPv4 packet. Host A sends a TCP segment to Host B through a router.
+          Look at the IPv4 header: it has 13 fields. The IHL (Internet Header Length)
+          field tells you how long the header is -- it can be anywhere from 20 to 60 bytes
+          depending on whether Options are present. Hardware cannot assume a fixed offset
+          to the payload; it must read IHL first. This variable-length design made sense
+          in 1981 but is a burden for modern high-speed routers.
+        highlight_fields: ["ip.version", "ip.hdr_len", "ip.options"]
+
+      - step: 2
+        narration: >
+          Notice the fragmentation fields: Identification, Flags (DF/MF), and Fragment
+          Offset. These 32 bits are present in EVERY IPv4 packet, even when no
+          fragmentation is happening. They exist because in IPv4, any router along
+          the path can decide to fragment a packet if it exceeds the next link's MTU.
+          The Header Checksum field is the real performance killer -- it must be
+          recalculated at every single hop because TTL changes.
+        highlight_fields: ["ip.id", "ip.flags", "ip.frag_offset", "ip.checksum", "ip.ttl"]
+
+      - step: 3
+        narration: >
+          The router receives the IPv4 packet and has a checklist: verify the header
+          checksum, decrement TTL from 64 to 63, recalculate the header checksum
+          (because TTL changed), check if fragmentation is needed, and rewrite the
+          Layer 2 addresses. The checksum recalculation is pure overhead -- it is a
+          ones' complement sum over the entire header, and it must happen for every
+          packet at every hop. At 10 Gbps line rate, that is potentially 14.88 million
+          checksum operations per second.
+        highlight_fields: ["ip.ttl", "ip.checksum"]
+
+      - step: 4
+        narration: >
+          The router forwards the packet with TTL=63 and a brand-new checksum (0x4e3c).
+          Everything else is unchanged. But that checksum recalculation? It happens again
+          at the next router. And the next. And every router until the packet reaches
+          Host B. Multiply this by millions of packets per second across thousands of
+          routers, and you understand why the IPv6 designers decided: "This checksum
+          has to go."
+        highlight_fields: ["ip.ttl", "ip.checksum"]
+
+      - step: 5
+        narration: >
+          Let us pause and count what IPv4 asks of every router: 13 fields to parse,
+          variable header length to handle, a checksum to verify AND recalculate, and
+          the possibility of needing to fragment any packet. IPv4 was designed when
+          routers processed packets in software at kilobit speeds. At 100 Gbps and
+          beyond, every unnecessary per-packet operation matters. IPv6 was designed
+          to eliminate as much of this overhead as possible.
+        highlight_fields: []
+
+      - step: 6
+        narration: >
+          Now the same data travels via IPv6. Immediately notice: only 8 fields instead
+          of 13. Fixed 40 bytes -- always. No IHL field because the header size never
+          varies. The Flow Label is new -- 20 bits that identify a traffic flow so routers
+          can do per-flow load balancing without inspecting TCP/UDP ports. This is
+          especially important for encrypted traffic (IPsec, QUIC) where port numbers
+          may be hidden.
+        highlight_fields: ["ipv6.version", "ipv6.flow", "ipv6.nxt", "ipv6.hlim"]
+
+      - step: 7
+        narration: >
+          Look at what is missing compared to IPv4. No IHL -- the header is always 40
+          bytes, so hardware knows exactly where the payload starts. No Identification,
+          Flags, or Fragment Offset -- fragmentation is handled by a separate extension
+          header, only when needed. And most importantly: no Header Checksum. TCP and
+          UDP already have their own checksums that cover the data. The IPv4 header
+          checksum was redundant work at every hop. IPv6 simply removed it.
+        highlight_fields: ["ipv6.plen", "ipv6.nxt", "ipv6.src", "ipv6.dst"]
+
+      - step: 8
+        narration: >
+          The router receives the IPv6 packet and its job is dramatically simpler:
+          decrement the Hop Limit from 64 to 63 -- and forward. That is it. No checksum
+          to verify. No checksum to recalculate. No fragmentation decision (if the packet
+          is too big, send ICMPv6 Packet Too Big and let the source deal with it). The
+          router touches exactly one field in the IP header. Hardware can process this
+          at full line rate with minimal per-packet logic.
+        highlight_fields: ["ipv6.hlim"]
+
+      - step: 9
+        narration: >
+          The forwarded IPv6 packet arrives at Host B with Hop Limit=63. Compare
+          what the router did for IPv4 (decrement TTL + recalculate checksum + check
+          fragmentation) versus IPv6 (decrement Hop Limit). 8 fields instead of 13 --
+          simpler to parse. Fixed 40 bytes -- hardware can process at line rate. No
+          checksum -- TCP and UDP already have checksums, the IPv4 header checksum was
+          redundant work at every hop. No router fragmentation -- eliminates a whole
+          class of attacks and performance issues.
+        highlight_fields: ["ipv6.hlim", "ipv6.flow"]
+
+      - step: 10
+        narration: >
+          Now let us see how IPv6 handles extensibility. Instead of cramming optional
+          features into a variable-length base header (like IPv4 Options), IPv6 uses
+          extension header chaining. Each header has a Next Header field that points
+          to what follows. Here, Host A sends a packet with a Hop-by-Hop Options header
+          carrying a Router Alert for MLD. The chain is: IPv6 (Next Header=0) leads to
+          Hop-by-Hop Options (Next Header=6) leads to TCP.
+        highlight_fields: ["ipv6.nxt", "ipv6.hopopt.nxt"]
+
+      - step: 11
+        narration: >
+          The Hop-by-Hop Options header is special -- it is the ONLY extension header
+          that every router must examine. All other extension headers (Routing, Fragment,
+          ESP, AH) are processed only by the destination. This means routers can fast-path
+          the vast majority of packets by looking only at the 40-byte base header. The
+          Router Alert option (type 5) tells routers "this packet contains control-plane
+          information -- look more closely." Without it, routers skip extension headers
+          entirely.
+        highlight_fields: ["ipv6.hopopt.opt.type", "ipv6.hopopt.opt.rtalert"]
+
+      - step: 12
+        narration: >
+          Finally, IPv6 fragmentation. In IPv4, any router can fragment a packet --
+          the Identification, Flags, and Fragment Offset fields are in every packet's
+          base header. In IPv6, fragmentation uses a dedicated Fragment extension header
+          (Next Header=44), and ONLY the source host can fragment. If a router encounters
+          a packet too large for its link, it sends ICMPv6 Packet Too Big and the source
+          must resize. This is Path MTU Discovery (RFC 8201), and it is mandatory in IPv6.
+        highlight_fields: ["ipv6.nxt", "ipv6.fraghdr.nxt", "ipv6.fraghdr.offset", "ipv6.fraghdr.more", "ipv6.fraghdr.id"]
+
+      - step: 13
+        narration: >
+          Source-only fragmentation has profound benefits. It eliminates a whole class of
+          fragmentation-based attacks (tiny fragment attacks that split TCP headers to
+          bypass firewalls). It removes fragmentation logic from the router fast path. The
+          32-bit Identification field (vs IPv4's 16-bit) reduces ID collisions on
+          high-speed links. And it forces Path MTU Discovery, which is more efficient than
+          hoping routers will fragment correctly. Flow Label lets routers identify flows
+          without looking at TCP/UDP ports -- important for encrypted traffic.
+        highlight_fields: ["ipv6.fraghdr.id"]
+
+      - step: 14
+        narration: >
+          Let us summarize what we learned. IPv6 is not just "IPv4 with bigger addresses."
+          It is a fundamental redesign for high-speed forwarding. 8 fields instead of 13 --
+          simpler to parse. Fixed 40 bytes -- hardware can process at line rate. No header
+          checksum -- TCP/UDP already have checksums, so the per-hop recalculation was
+          eliminated. No router fragmentation -- Path MTU Discovery is mandatory. The
+          Flow Label enables per-flow routing without deep packet inspection. And the
+          extension header chain provides clean, modular extensibility without affecting
+          the base header format. Every one of these changes was driven by real-world
+          experience with IPv4's limitations at scale.
+        highlight_fields: []

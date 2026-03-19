@@ -1,0 +1,2460 @@
+meta:
+  id: "dhcpv6-stateful-stateless"
+  title: "DHCPv6: Stateless (O-flag) vs Stateful (M-flag) + Prefix Delegation"
+  protocol: "DHCPv6"
+  protocol_family: "IPv6"
+  version: "1.0.0"
+  description: >
+    Demonstrates the two modes of DHCPv6 and how Router Advertisement M and O
+    flags select between them.  Part 1 shows stateless DHCPv6 (O=1, M=0) where
+    the client obtains an address via SLAAC and only asks DHCPv6 for DNS/NTP.
+    Part 2 shows stateful DHCPv6 (M=1) with the full 4-message SARR exchange
+    (Solicit-Advertise-Request-Reply).  Part 3 shows Prefix Delegation (IA_PD),
+    which is how home routers obtain an IPv6 prefix from an ISP — eliminating
+    the need for NAT.
+
+  learning_objectives:
+    - "Understand the role of RA M and O flags in selecting stateless vs stateful DHCPv6"
+    - "See how stateless DHCPv6 (Information-Request / Reply) delivers DNS and NTP without tracking addresses"
+    - "Trace the stateful DHCPv6 4-message SARR exchange (Solicit → Advertise → Request → Reply)"
+    - "Identify DHCPv6 message types, DUID identifiers, and key options (IA_NA, IA_Address, DNS servers)"
+    - "Understand DHCPv6 Prefix Delegation (IA_PD) and why it eliminates the need for IPv6 NAT"
+    - "Compare DHCPv6 SARR with DHCPv4 DORA and understand the architectural differences"
+    - "Recognize that IPv6 splits address assignment (SLAAC) and configuration (DHCPv6) by design"
+
+  difficulty: "intermediate"
+
+  authors:
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+
+  created: "2026-03-19"
+  updated: "2026-03-19"
+
+  tags:
+    - "IPv6"
+    - "DHCPv6"
+    - "SLAAC"
+    - "stateful"
+    - "stateless"
+    - "prefix delegation"
+    - "RA flags"
+    - "M-flag"
+    - "O-flag"
+    - "DUID"
+    - "intermediate"
+    - "education"
+    - "WIP"
+
+  primary_specs:
+    - document: "RFC 8415"
+      section: "1"
+      title: "Dynamic Host Configuration Protocol for IPv6 (DHCPv6)"
+      url: "https://datatracker.ietf.org/doc/html/rfc8415"
+      alt_url: "https://www.rfc-editor.org/rfc/rfc8415"
+    - document: "RFC 4861"
+      section: "4.2"
+      title: "Neighbor Discovery for IPv6 — Router Advertisement"
+      url: "https://datatracker.ietf.org/doc/html/rfc4861#section-4.2"
+      alt_url: ""
+    - document: "RFC 8106"
+      section: "5"
+      title: "IPv6 Router Advertisement Options for DNS Configuration"
+      url: "https://datatracker.ietf.org/doc/html/rfc8106#section-5"
+      alt_url: ""
+    - document: "RFC 4862"
+      section: "5.5"
+      title: "IPv6 Stateless Address Autoconfiguration"
+      url: "https://datatracker.ietf.org/doc/html/rfc4862#section-5.5"
+      alt_url: ""
+
+  content_disclaimer: >
+    Protocol descriptions in this scenario are based on public RFCs and
+    open-source implementations.  No proprietary specification text has been
+    reproduced.  RFC references are provided as citations for further reading.
+
+  source_references:
+    - repo: "torvalds/linux"
+      path: "net/ipv6/ndisc.c"
+      description: "Neighbor Discovery — Router Advertisement processing, M/O flag handling"
+    - repo: "torvalds/linux"
+      path: "net/ipv6/addrconf.c"
+      description: "SLAAC address autoconfiguration, prefix handling"
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "client"
+      type: "host"
+      label: "Client"
+      description: "IPv6 host — receives RAs, runs SLAAC and/or DHCPv6 client"
+      hardware: "Generic 1GbE NIC"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "fe80::1 (link-local initially)"
+      mac: "00:11:22:33:44:01"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "Ethernet Switch"
+      description: "Layer-2 Ethernet switch forwarding frames between all devices"
+      hardware: "Generic 1GbE switch"
+      position: "center"
+
+    - id: "router"
+      type: "router"
+      label: "Router"
+      description: "IPv6 router — sends Router Advertisements with M/O flags and prefix info"
+      hardware: "Generic 1GbE router"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "fe80::gw (link-local), 2001:db8:1::1/64"
+      mac: "00:11:22:33:44:ff"
+      position: "center-top"
+
+    - id: "dhcpv6_server"
+      type: "host"
+      label: "DHCPv6 Server"
+      description: "DHCPv6 server — provides addresses, prefixes, and configuration options"
+      hardware: "Generic 1GbE NIC"
+      os: "Linux 6.x (ISC Kea / dhcpd)"
+      kernel_version: "6.8"
+      ip: "2001:db8:1::53, fe80::53"
+      mac: "00:11:22:33:44:53"
+      position: "right"
+
+    - id: "home_router"
+      type: "router"
+      label: "Home Router (CPE)"
+      description: "Customer premises equipment — requests prefix delegation from ISP"
+      hardware: "Generic CPE"
+      os: "OpenWrt"
+      ip: "fe80::cpe"
+      mac: "00:11:22:33:44:ce"
+      position: "bottom"
+
+  links:
+    - id: "link-c-sw"
+      from: "client"
+      to: "switch"
+      speed_gbps: 1
+      media: "copper"
+      autoneg: true
+    - id: "link-r-sw"
+      from: "router"
+      to: "switch"
+      speed_gbps: 1
+      media: "copper"
+      autoneg: true
+    - id: "link-d-sw"
+      from: "dhcpv6_server"
+      to: "switch"
+      speed_gbps: 1
+      media: "copper"
+      autoneg: true
+    - id: "link-hr-sw"
+      from: "home_router"
+      to: "switch"
+      speed_gbps: 1
+      media: "copper"
+      autoneg: true
+
+# ─────────────────────────────────────────────────────────────────
+# OSI LAYER DEFINITIONS (per actor)
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  client:
+    - layer: 7
+      name: "Application (DHCPv6 Client)"
+      components: ["dhclient / NetworkManager / systemd-networkd"]
+      state_schema:
+        dhcpv6_mode:
+          type: "string"
+          description: "DHCPv6 operational mode based on RA flags"
+          initial: "none"
+        dns_servers:
+          type: "string"
+          description: "Configured DNS recursive name servers"
+          initial: "none"
+        dns_search:
+          type: "string"
+          description: "DNS search list"
+          initial: "none"
+
+    - layer: 3
+      name: "IPv6 / NDP"
+      components: ["net/ipv6/ndisc.c", "net/ipv6/addrconf.c"]
+      state_schema:
+        link_local:
+          type: "string"
+          description: "Link-local address (always present)"
+          initial: "fe80::211:22ff:fe33:4401"
+        global_addr:
+          type: "string"
+          description: "Global unicast address (from SLAAC or DHCPv6)"
+          initial: "none"
+        default_gw:
+          type: "string"
+          description: "Default gateway (from RA)"
+          initial: "none"
+        ra_m_flag:
+          type: "integer"
+          description: "Managed Address Configuration flag from RA"
+          initial: 0
+        ra_o_flag:
+          type: "integer"
+          description: "Other Configuration flag from RA"
+          initial: 0
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver", "IEEE 802.3"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+        mac_addr:
+          type: "string"
+          initial: "00:11:22:33:44:01"
+
+  router:
+    - layer: 3
+      name: "IPv6 / NDP"
+      components: ["net/ipv6/ndisc.c", "radvd"]
+      state_schema:
+        link_local:
+          type: "string"
+          initial: "fe80::211:22ff:fe33:44ff"
+        global_addr:
+          type: "string"
+          initial: "2001:db8:1::1"
+        ra_interval:
+          type: "string"
+          description: "RA send interval"
+          initial: "200-600s"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+        mac_addr:
+          type: "string"
+          initial: "00:11:22:33:44:ff"
+
+  dhcpv6_server:
+    - layer: 7
+      name: "Application (DHCPv6 Server)"
+      components: ["ISC Kea DHCPv6 / dhcpd"]
+      state_schema:
+        bindings:
+          type: "string"
+          description: "Number of active address bindings"
+          initial: "0"
+        delegations:
+          type: "string"
+          description: "Number of active prefix delegations"
+          initial: "0"
+
+    - layer: 3
+      name: "IPv6"
+      components: ["net/ipv6"]
+      state_schema:
+        link_local:
+          type: "string"
+          initial: "fe80::211:22ff:fe33:4453"
+        global_addr:
+          type: "string"
+          initial: "2001:db8:1::53"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+        mac_addr:
+          type: "string"
+          initial: "00:11:22:33:44:53"
+
+  home_router:
+    - layer: 7
+      name: "Application (DHCPv6-PD Client)"
+      components: ["odhcp6c / wide-dhcpv6"]
+      state_schema:
+        delegated_prefix:
+          type: "string"
+          description: "Prefix received via DHCPv6-PD"
+          initial: "none"
+        lan_prefix:
+          type: "string"
+          description: "Prefix advertised on LAN interface"
+          initial: "none"
+
+    - layer: 3
+      name: "IPv6"
+      components: ["net/ipv6"]
+      state_schema:
+        link_local:
+          type: "string"
+          initial: "fe80::211:22ff:fe33:44ce"
+        wan_addr:
+          type: "string"
+          initial: "none"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+        mac_addr:
+          type: "string"
+          initial: "00:11:22:33:44:ce"
+
+# ─────────────────────────────────────────────────────────────────
+# FRAMES
+# ─────────────────────────────────────────────────────────────────
+frames:
+
+  # ══════════════════════════════════════════════════════════════
+  # Part 1 — Stateless DHCPv6 (O=1, M=0)
+  # ══════════════════════════════════════════════════════════════
+
+  - id: "ra_stateless"
+    name: "Router Advertisement (M=0, O=1)"
+    description: "Router sends RA indicating SLAAC for addressing, DHCPv6 for other config"
+    from: "router"
+    to: "multicast"
+    via: ["switch"]
+    timestamp_ns: 100000000
+    total_bytes: 118
+    color: "#0f766e"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "33:33:00:00:00:01"
+            value_hex: "0x333300000001"
+            description: "IPv6 multicast MAC for all-nodes (ff02::1)"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:ff"
+            description: "Router's MAC address"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+            value_hex: "0x86DD"
+            description: "IPv6"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Version"
+            abbrev: "ipv6.version"
+            bits: 4
+            value: 6
+            description: "IPv6"
+          - name: "Traffic Class"
+            abbrev: "ipv6.tclass"
+            bits: 8
+            value: 0
+            description: "Default — no QoS marking"
+          - name: "Payload Length"
+            abbrev: "ipv6.plen"
+            bits: 16
+            value: 64
+            description: "ICMPv6 RA with options"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 58
+            description: "ICMPv6 (58)"
+            spec_refs:
+              - document: "RFC 8200"
+                section: "4.6"
+                title: "IPv6 Next Header values"
+                url: "https://datatracker.ietf.org/doc/html/rfc8200"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 255
+            description: "Must be 255 for NDP — receiver discards if not 255 (prevents off-link spoofing)"
+            spec_refs:
+              - document: "RFC 4861"
+                section: "6.1.2"
+                title: "Validation of Router Advertisement"
+                url: "https://datatracker.ietf.org/doc/html/rfc4861#section-6.1.2"
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "fe80::211:22ff:fe33:44ff"
+            description: "Router's link-local address — RAs always use link-local source"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "ff02::1"
+            description: "All-nodes multicast — every IPv6 host on the link receives this"
+
+      - name: "ICMPv6 Router Advertisement"
+        abbrev: "icmpv6.ra"
+        layer: 3
+        total_bytes: 64
+        fields:
+          - name: "Type"
+            abbrev: "icmpv6.type"
+            bits: 8
+            value: 134
+            description: "Router Advertisement (134)"
+            spec_refs:
+              - document: "RFC 4861"
+                section: "4.2"
+                title: "Router Advertisement Message Format"
+                url: "https://datatracker.ietf.org/doc/html/rfc4861#section-4.2"
+          - name: "Code"
+            abbrev: "icmpv6.code"
+            bits: 8
+            value: 0
+            description: "Always 0 for RA"
+          - name: "Checksum"
+            abbrev: "icmpv6.checksum"
+            bits: 16
+            value: "0xa1b2"
+            description: "ICMPv6 checksum (covers pseudo-header + payload)"
+          - name: "Cur Hop Limit"
+            abbrev: "icmpv6.ra.cur_hop_limit"
+            bits: 8
+            value: 64
+            description: "Recommended hop limit for outgoing packets"
+          - name: "M (Managed Address) Flag"
+            abbrev: "icmpv6.ra.flag_m"
+            bits: 1
+            value: 0
+            description: "M=0 — do NOT use DHCPv6 for addresses. Use SLAAC instead."
+            spec_refs:
+              - document: "RFC 4861"
+                section: "4.2"
+                title: "Router Advertisement — M flag"
+                url: "https://datatracker.ietf.org/doc/html/rfc4861#section-4.2"
+          - name: "O (Other Configuration) Flag"
+            abbrev: "icmpv6.ra.flag_o"
+            bits: 1
+            value: 1
+            description: "O=1 — use DHCPv6 for OTHER configuration (DNS, NTP, search domains). This is the most common enterprise/ISP setup."
+            spec_refs:
+              - document: "RFC 4861"
+                section: "4.2"
+                title: "Router Advertisement — O flag"
+                url: "https://datatracker.ietf.org/doc/html/rfc4861#section-4.2"
+          - name: "Router Lifetime"
+            abbrev: "icmpv6.ra.router_lifetime"
+            bits: 16
+            value: 1800
+            description: "1800 seconds (30 min) — how long this router is valid as default gateway"
+          - name: "Reachable Time"
+            abbrev: "icmpv6.ra.reachable_time"
+            bits: 32
+            value: 0
+            description: "0 = unspecified — use host default"
+          - name: "Retrans Timer"
+            abbrev: "icmpv6.ra.retrans_timer"
+            bits: 32
+            value: 0
+            description: "0 = unspecified — use host default for NS retransmit interval"
+          - name: "Prefix Info Option — Type"
+            abbrev: "icmpv6.opt.prefix.type"
+            bits: 8
+            value: 3
+            description: "Prefix Information option (type 3)"
+          - name: "Prefix Info Option — Length"
+            abbrev: "icmpv6.opt.prefix.length"
+            bits: 8
+            value: 4
+            description: "4 units of 8 bytes = 32 bytes"
+          - name: "Prefix Length"
+            abbrev: "icmpv6.opt.prefix.prefix_length"
+            bits: 8
+            value: 64
+            description: "/64 — standard subnet prefix length for SLAAC"
+          - name: "L (On-Link) Flag"
+            abbrev: "icmpv6.opt.prefix.flag_l"
+            bits: 1
+            value: 1
+            description: "L=1 — this prefix is on-link (can be reached directly without routing)"
+          - name: "A (Autonomous) Flag"
+            abbrev: "icmpv6.opt.prefix.flag_a"
+            bits: 1
+            value: 1
+            description: "A=1 — hosts SHOULD use this prefix for SLAAC address generation"
+            spec_refs:
+              - document: "RFC 4862"
+                section: "5.5.3"
+                title: "Router Advertisement Processing"
+                url: "https://datatracker.ietf.org/doc/html/rfc4862#section-5.5.3"
+          - name: "Valid Lifetime"
+            abbrev: "icmpv6.opt.prefix.valid_lifetime"
+            bits: 32
+            value: 2592000
+            description: "30 days — how long the prefix is valid for on-link determination"
+          - name: "Preferred Lifetime"
+            abbrev: "icmpv6.opt.prefix.preferred_lifetime"
+            bits: 32
+            value: 604800
+            description: "7 days — how long SLAAC addresses remain preferred"
+          - name: "Prefix"
+            abbrev: "icmpv6.opt.prefix.prefix"
+            bits: 128
+            value: "2001:db8:1::"
+            description: "Prefix for SLAAC — client appends its interface ID to form a /128 address"
+
+  - id: "slaac_complete"
+    name: "SLAAC Address Autoconfiguration (internal)"
+    description: "Client autoconfigures 2001:db8:1::211:22ff:fe33:4401 via SLAAC (EUI-64)"
+    from: "client"
+    to: "client"
+    via: []
+    timestamp_ns: 100500000
+    total_bytes: 0
+    color: "#6d28d9"
+    headers: []
+
+  - id: "dhcpv6_info_request"
+    name: "DHCPv6 Information-Request"
+    description: "Client asks DHCPv6 server for DNS/NTP config (stateless — no address needed)"
+    from: "client"
+    to: "multicast"
+    via: ["switch"]
+    timestamp_ns: 101000000
+    total_bytes: 106
+    color: "#2563eb"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "33:33:00:01:00:02"
+            value_hex: "0x333300010002"
+            description: "IPv6 multicast MAC for All_DHCP_Relay_Agents_and_Servers (ff02::1:2)"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+            description: "IPv6"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "fe80::211:22ff:fe33:4401"
+            description: "Client's link-local address"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "ff02::1:2"
+            description: "All_DHCP_Relay_Agents_and_Servers — well-known DHCPv6 multicast group"
+            spec_refs:
+              - document: "RFC 8415"
+                section: "7.1"
+                title: "Multicast Addresses"
+                url: "https://datatracker.ietf.org/doc/html/rfc8415#section-7.1"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 17
+            description: "UDP (17)"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 1
+            description: "Link-local scope — must not leave the link"
+
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 546
+            description: "DHCPv6 client port"
+            spec_refs:
+              - document: "RFC 8415"
+                section: "7.2"
+                title: "UDP Ports"
+                url: "https://datatracker.ietf.org/doc/html/rfc8415#section-7.2"
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 547
+            description: "DHCPv6 server port"
+          - name: "Length"
+            abbrev: "udp.length"
+            bits: 16
+            value: 44
+            description: "UDP header (8) + DHCPv6 payload (36)"
+          - name: "Checksum"
+            abbrev: "udp.checksum"
+            bits: 16
+            value: "0xfe3a"
+            description: "UDP checksum (mandatory in IPv6)"
+
+      - name: "DHCPv6"
+        abbrev: "dhcpv6"
+        layer: 7
+        total_bytes: 36
+        fields:
+          - name: "Message Type"
+            abbrev: "dhcpv6.msgtype"
+            bits: 8
+            value: 11
+            description: "Information-Request (11) — client wants config only, no address"
+            spec_refs:
+              - document: "RFC 8415"
+                section: "16.16"
+                title: "Information-Request Message"
+                url: "https://datatracker.ietf.org/doc/html/rfc8415#section-16.16"
+          - name: "Transaction ID"
+            abbrev: "dhcpv6.xid"
+            bits: 24
+            value: "0x1a2b3c"
+            description: "Random ID to match requests with replies"
+          - name: "Option — Client Identifier (DUID)"
+            abbrev: "dhcpv6.option.clientid"
+            bits: 112
+            value: "DUID-LLT: 00:01:00:01:time:00:11:22:33:44:01"
+            description: "Client DUID (DUID-LLT = Link-Layer + Time) — uniquely identifies this client"
+            spec_refs:
+              - document: "RFC 8415"
+                section: "11"
+                title: "DHCP Unique Identifier (DUID)"
+                url: "https://datatracker.ietf.org/doc/html/rfc8415#section-11"
+          - name: "Option — Option Request (ORO)"
+            abbrev: "dhcpv6.option.oro"
+            bits: 48
+            value: "23, 24, 31"
+            description: "Requesting: DNS Recursive Name Server (23), DNS Search List (24), SNTP Servers (31)"
+            spec_refs:
+              - document: "RFC 8415"
+                section: "21.7"
+                title: "Option Request Option"
+                url: "https://datatracker.ietf.org/doc/html/rfc8415#section-21.7"
+
+  - id: "dhcpv6_reply_stateless"
+    name: "DHCPv6 Reply (Stateless)"
+    description: "Server provides DNS servers, search list, and SNTP servers — no address binding"
+    from: "dhcpv6_server"
+    to: "client"
+    via: ["switch"]
+    timestamp_ns: 101100000
+    total_bytes: 162
+    color: "#2563eb"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Unicast to client"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:53"
+            description: "DHCPv6 server's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+            description: "IPv6"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "fe80::211:22ff:fe33:4453"
+            description: "Server's link-local address"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "fe80::211:22ff:fe33:4401"
+            description: "Client's link-local address (unicast reply)"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 17
+            description: "UDP (17)"
+
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 547
+            description: "DHCPv6 server port"
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 546
+            description: "DHCPv6 client port"
+
+      - name: "DHCPv6"
+        abbrev: "dhcpv6"
+        layer: 7
+        total_bytes: 100
+        fields:
+          - name: "Message Type"
+            abbrev: "dhcpv6.msgtype"
+            bits: 8
+            value: 7
+            description: "Reply (7)"
+            spec_refs:
+              - document: "RFC 8415"
+                section: "16.10"
+                title: "Reply Message"
+                url: "https://datatracker.ietf.org/doc/html/rfc8415#section-16.10"
+          - name: "Transaction ID"
+            abbrev: "dhcpv6.xid"
+            bits: 24
+            value: "0x1a2b3c"
+            description: "Matches the Information-Request"
+          - name: "Option — Server Identifier (DUID)"
+            abbrev: "dhcpv6.option.serverid"
+            bits: 112
+            value: "DUID-LLT: 00:01:00:01:time:00:11:22:33:44:53"
+            description: "Server's DUID"
+          - name: "Option — DNS Recursive Name Server (23)"
+            abbrev: "dhcpv6.option.dns_servers"
+            bits: 256
+            value: "2001:db8:1::53, 2001:4860:4860::8888"
+            description: "Primary and secondary DNS servers"
+            spec_refs:
+              - document: "RFC 8415"
+                section: "21.23"
+                title: "DNS Recursive Name Server option"
+                url: "https://datatracker.ietf.org/doc/html/rfc8415"
+          - name: "Option — DNS Search List (24)"
+            abbrev: "dhcpv6.option.dns_search"
+            bits: 128
+            value: "example.com, lab.example.com"
+            description: "DNS search domains for unqualified lookups"
+          - name: "Option — SNTP Servers (31)"
+            abbrev: "dhcpv6.option.sntp_servers"
+            bits: 128
+            value: "2001:db8:1::123"
+            description: "SNTP/NTP server for time synchronization"
+
+  # ══════════════════════════════════════════════════════════════
+  # Part 2 — Stateful DHCPv6 (M=1)
+  # ══════════════════════════════════════════════════════════════
+
+  - id: "ra_stateful"
+    name: "Router Advertisement (M=1, O=1)"
+    description: "Router sends RA instructing hosts to use DHCPv6 for address assignment"
+    from: "router"
+    to: "multicast"
+    via: ["switch"]
+    timestamp_ns: 200000000
+    total_bytes: 86
+    color: "#0f766e"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "33:33:00:00:00:01"
+            description: "All-nodes multicast"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:ff"
+            description: "Router's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+            description: "IPv6"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "fe80::211:22ff:fe33:44ff"
+            description: "Router's link-local"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "ff02::1"
+            description: "All-nodes multicast"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 58
+            description: "ICMPv6 (58)"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 255
+            description: "Must be 255 for NDP"
+
+      - name: "ICMPv6 Router Advertisement"
+        abbrev: "icmpv6.ra"
+        layer: 3
+        total_bytes: 32
+        fields:
+          - name: "Type"
+            abbrev: "icmpv6.type"
+            bits: 8
+            value: 134
+            description: "Router Advertisement (134)"
+          - name: "Code"
+            abbrev: "icmpv6.code"
+            bits: 8
+            value: 0
+          - name: "Checksum"
+            abbrev: "icmpv6.checksum"
+            bits: 16
+            value: "0xc3d4"
+          - name: "Cur Hop Limit"
+            abbrev: "icmpv6.ra.cur_hop_limit"
+            bits: 8
+            value: 64
+          - name: "M (Managed Address) Flag"
+            abbrev: "icmpv6.ra.flag_m"
+            bits: 1
+            value: 1
+            description: "M=1 — hosts MUST use DHCPv6 to obtain addresses. This is the enterprise/managed network model."
+            spec_refs:
+              - document: "RFC 4861"
+                section: "4.2"
+                title: "Router Advertisement — M flag"
+                url: "https://datatracker.ietf.org/doc/html/rfc4861#section-4.2"
+          - name: "O (Other Configuration) Flag"
+            abbrev: "icmpv6.ra.flag_o"
+            bits: 1
+            value: 1
+            description: "O=1 — also get DNS/NTP from DHCPv6 (implied when M=1, but set explicitly)"
+          - name: "Router Lifetime"
+            abbrev: "icmpv6.ra.router_lifetime"
+            bits: 16
+            value: 1800
+            description: "1800 seconds — router is default gateway"
+          - name: "Prefix Info Option (A=0)"
+            abbrev: "icmpv6.opt.prefix"
+            bits: 256
+            value: "2001:db8:1::/64, A=0, L=1"
+            description: "Prefix is on-link (L=1) but A=0 — do NOT use for SLAAC. Address comes from DHCPv6."
+
+  - id: "dhcpv6_solicit"
+    name: "DHCPv6 Solicit"
+    description: "Client begins stateful DHCPv6 — looking for servers to assign an address"
+    from: "client"
+    to: "multicast"
+    via: ["switch"]
+    timestamp_ns: 200500000
+    total_bytes: 130
+    color: "#dc2626"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "33:33:00:01:00:02"
+            description: "All_DHCP_Relay_Agents_and_Servers multicast MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+            description: "IPv6"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "fe80::211:22ff:fe33:4401"
+            description: "Client's link-local (only address it has at this point)"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "ff02::1:2"
+            description: "All_DHCP_Relay_Agents_and_Servers"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 17
+            description: "UDP"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 1
+            description: "Link-local scope"
+
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 546
+            description: "DHCPv6 client port"
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 547
+            description: "DHCPv6 server port"
+
+      - name: "DHCPv6"
+        abbrev: "dhcpv6"
+        layer: 7
+        total_bytes: 68
+        fields:
+          - name: "Message Type"
+            abbrev: "dhcpv6.msgtype"
+            bits: 8
+            value: 1
+            description: "Solicit (1) — 'Any DHCPv6 servers out there? I need an address.'"
+            spec_refs:
+              - document: "RFC 8415"
+                section: "16.2"
+                title: "Solicit Message"
+                url: "https://datatracker.ietf.org/doc/html/rfc8415#section-16.2"
+          - name: "Transaction ID"
+            abbrev: "dhcpv6.xid"
+            bits: 24
+            value: "0xaabbcc"
+            description: "Random transaction identifier"
+          - name: "Option — Client Identifier (1)"
+            abbrev: "dhcpv6.option.clientid"
+            bits: 112
+            value: "DUID-LLT: 00:01:00:01:6606a000:00:11:22:33:44:01"
+            description: "Client's DUID (DUID-LLT = type 1, Link-Layer address + time)"
+            spec_refs:
+              - document: "RFC 8415"
+                section: "11.2"
+                title: "DUID Based on Link-Layer Address Plus Time (DUID-LLT)"
+                url: "https://datatracker.ietf.org/doc/html/rfc8415#section-11.2"
+          - name: "Option — IA_NA (3)"
+            abbrev: "dhcpv6.option.ia_na"
+            bits: 96
+            value: "IAID: 0x00000001, T1: 0, T2: 0"
+            description: "Identity Association for Non-temporary Addresses — client requests a stable address. T1/T2=0 means server decides renewal times."
+            spec_refs:
+              - document: "RFC 8415"
+                section: "21.4"
+                title: "Identity Association for Non-temporary Addresses Option"
+                url: "https://datatracker.ietf.org/doc/html/rfc8415#section-21.4"
+          - name: "Option — Option Request (ORO)"
+            abbrev: "dhcpv6.option.oro"
+            bits: 48
+            value: "23, 24"
+            description: "Also requesting DNS servers and search list"
+          - name: "Option — Elapsed Time"
+            abbrev: "dhcpv6.option.elapsed_time"
+            bits: 16
+            value: 0
+            description: "First transmission — 0 centiseconds elapsed"
+
+  - id: "dhcpv6_advertise"
+    name: "DHCPv6 Advertise"
+    description: "Server offers an address and configuration to the client"
+    from: "dhcpv6_server"
+    to: "client"
+    via: ["switch"]
+    timestamp_ns: 200600000
+    total_bytes: 186
+    color: "#dc2626"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Unicast to client"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:53"
+            description: "Server's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+            description: "IPv6"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "fe80::211:22ff:fe33:4453"
+            description: "Server's link-local"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "fe80::211:22ff:fe33:4401"
+            description: "Client's link-local"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 17
+            description: "UDP"
+
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 547
+            description: "DHCPv6 server port"
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 546
+            description: "DHCPv6 client port"
+
+      - name: "DHCPv6"
+        abbrev: "dhcpv6"
+        layer: 7
+        total_bytes: 124
+        fields:
+          - name: "Message Type"
+            abbrev: "dhcpv6.msgtype"
+            bits: 8
+            value: 2
+            description: "Advertise (2) — 'I can serve you. Here is what I offer.'"
+            spec_refs:
+              - document: "RFC 8415"
+                section: "16.3"
+                title: "Advertise Message"
+                url: "https://datatracker.ietf.org/doc/html/rfc8415#section-16.3"
+          - name: "Transaction ID"
+            abbrev: "dhcpv6.xid"
+            bits: 24
+            value: "0xaabbcc"
+            description: "Matches the Solicit"
+          - name: "Option — Server Identifier (2)"
+            abbrev: "dhcpv6.option.serverid"
+            bits: 112
+            value: "DUID-LLT: 00:01:00:01:time:00:11:22:33:44:53"
+            description: "Server's DUID — client uses this to select and address a specific server"
+          - name: "Option — Client Identifier (1)"
+            abbrev: "dhcpv6.option.clientid"
+            bits: 112
+            value: "DUID-LLT: 00:01:00:01:6606a000:00:11:22:33:44:01"
+            description: "Echoed back so client knows this Advertise is for it"
+          - name: "Option — IA_NA (3) with IA_Address (5)"
+            abbrev: "dhcpv6.option.ia_na"
+            bits: 320
+            value: "IAID: 0x00000001, T1: 43200, T2: 69120"
+            description: "T1=43200s (12h) = renewal time, T2=69120s (19.2h) = rebinding time"
+          - name: "  └─ IA_Address (5)"
+            abbrev: "dhcpv6.option.ia_address"
+            bits: 192
+            value: "2001:db8:1::100"
+            description: "Offered address: 2001:db8:1::100, preferred lifetime 86400s (24h), valid lifetime 172800s (48h)"
+            spec_refs:
+              - document: "RFC 8415"
+                section: "21.6"
+                title: "IA Address Option"
+                url: "https://datatracker.ietf.org/doc/html/rfc8415#section-21.6"
+          - name: "Option — DNS Servers (23)"
+            abbrev: "dhcpv6.option.dns_servers"
+            bits: 256
+            value: "2001:db8:1::53, 2001:4860:4860::8888"
+            description: "DNS recursive name servers"
+          - name: "Option — DNS Search List (24)"
+            abbrev: "dhcpv6.option.dns_search"
+            bits: 128
+            value: "example.com"
+            description: "DNS search domain"
+          - name: "Option — Preference (7)"
+            abbrev: "dhcpv6.option.preference"
+            bits: 8
+            value: 255
+            description: "Preference 255 (maximum) — client should select this server immediately without waiting for other Advertise messages"
+
+  - id: "dhcpv6_request"
+    name: "DHCPv6 Request"
+    description: "Client accepts the offered address and requests it from the specific server"
+    from: "client"
+    to: "multicast"
+    via: ["switch"]
+    timestamp_ns: 200700000
+    total_bytes: 146
+    color: "#dc2626"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "33:33:00:01:00:02"
+            description: "Still sent to All_DHCP multicast — other servers see the Request and know client chose a different server"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "fe80::211:22ff:fe33:4401"
+            description: "Client's link-local"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "ff02::1:2"
+            description: "All_DHCP_Relay_Agents_and_Servers"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 17
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 1
+
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 546
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 547
+
+      - name: "DHCPv6"
+        abbrev: "dhcpv6"
+        layer: 7
+        total_bytes: 84
+        fields:
+          - name: "Message Type"
+            abbrev: "dhcpv6.msgtype"
+            bits: 8
+            value: 3
+            description: "Request (3) — 'I'll take the offer from server DUID ...53. Please confirm.'"
+            spec_refs:
+              - document: "RFC 8415"
+                section: "16.4"
+                title: "Request Message"
+                url: "https://datatracker.ietf.org/doc/html/rfc8415#section-16.4"
+          - name: "Transaction ID"
+            abbrev: "dhcpv6.xid"
+            bits: 24
+            value: "0xddeeff"
+            description: "New transaction ID for the Request"
+          - name: "Option — Client Identifier (1)"
+            abbrev: "dhcpv6.option.clientid"
+            bits: 112
+            value: "DUID-LLT: 00:01:00:01:6606a000:00:11:22:33:44:01"
+            description: "Client's DUID"
+          - name: "Option — Server Identifier (2)"
+            abbrev: "dhcpv6.option.serverid"
+            bits: 112
+            value: "DUID-LLT: 00:01:00:01:time:00:11:22:33:44:53"
+            description: "Server's DUID — copied from the Advertise. This tells the server 'I chose you.'"
+          - name: "Option — IA_NA (3) with IA_Address (5)"
+            abbrev: "dhcpv6.option.ia_na"
+            bits: 320
+            value: "IAID: 0x00000001, address: 2001:db8:1::100"
+            description: "Requesting the specific address offered in the Advertise"
+          - name: "Option — Option Request (ORO)"
+            abbrev: "dhcpv6.option.oro"
+            bits: 48
+            value: "23, 24"
+            description: "Also requesting DNS configuration"
+
+  - id: "dhcpv6_reply_stateful"
+    name: "DHCPv6 Reply (Stateful)"
+    description: "Server confirms address assignment — binding is now active"
+    from: "dhcpv6_server"
+    to: "client"
+    via: ["switch"]
+    timestamp_ns: 200800000
+    total_bytes: 186
+    color: "#dc2626"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Unicast to client"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:53"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "fe80::211:22ff:fe33:4453"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "fe80::211:22ff:fe33:4401"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 17
+
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 547
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 546
+
+      - name: "DHCPv6"
+        abbrev: "dhcpv6"
+        layer: 7
+        total_bytes: 124
+        fields:
+          - name: "Message Type"
+            abbrev: "dhcpv6.msgtype"
+            bits: 8
+            value: 7
+            description: "Reply (7) — 'Address confirmed. You are 2001:db8:1::100.'"
+            spec_refs:
+              - document: "RFC 8415"
+                section: "16.10"
+                title: "Reply Message"
+                url: "https://datatracker.ietf.org/doc/html/rfc8415#section-16.10"
+          - name: "Transaction ID"
+            abbrev: "dhcpv6.xid"
+            bits: 24
+            value: "0xddeeff"
+            description: "Matches the Request"
+          - name: "Option — Server Identifier (2)"
+            abbrev: "dhcpv6.option.serverid"
+            bits: 112
+            value: "DUID-LLT: 00:01:00:01:time:00:11:22:33:44:53"
+          - name: "Option — Client Identifier (1)"
+            abbrev: "dhcpv6.option.clientid"
+            bits: 112
+            value: "DUID-LLT: 00:01:00:01:6606a000:00:11:22:33:44:01"
+          - name: "Option — IA_NA (3) with IA_Address (5)"
+            abbrev: "dhcpv6.option.ia_na"
+            bits: 320
+            value: "IAID: 0x00000001, T1: 43200, T2: 69120"
+            description: "Confirmed. Server has created a binding: DUID → 2001:db8:1::100"
+          - name: "  └─ IA_Address (5)"
+            abbrev: "dhcpv6.option.ia_address"
+            bits: 192
+            value: "2001:db8:1::100, preferred: 86400, valid: 172800"
+            description: "Assigned address with lifetimes — client must renew before preferred lifetime expires"
+          - name: "Option — DNS Servers (23)"
+            abbrev: "dhcpv6.option.dns_servers"
+            bits: 256
+            value: "2001:db8:1::53, 2001:4860:4860::8888"
+          - name: "Option — DNS Search List (24)"
+            abbrev: "dhcpv6.option.dns_search"
+            bits: 128
+            value: "example.com"
+
+  - id: "dad_stateful"
+    name: "DAD for DHCPv6 Address (NS)"
+    description: "Client performs Duplicate Address Detection on the DHCPv6-assigned address"
+    from: "client"
+    to: "multicast"
+    via: ["switch"]
+    timestamp_ns: 200900000
+    total_bytes: 78
+    color: "#6d28d9"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "33:33:ff:00:01:00"
+            description: "Solicited-node multicast MAC for ::100"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "::"
+            description: "Unspecified address — used during DAD because the address is not yet confirmed"
+            spec_refs:
+              - document: "RFC 4862"
+                section: "5.4.2"
+                title: "Sending Neighbor Solicitation Messages"
+                url: "https://datatracker.ietf.org/doc/html/rfc4862#section-5.4.2"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "ff02::1:ff00:100"
+            description: "Solicited-node multicast for 2001:db8:1::100"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 58
+            description: "ICMPv6"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 255
+
+      - name: "ICMPv6 Neighbor Solicitation"
+        abbrev: "icmpv6.ns"
+        layer: 3
+        total_bytes: 24
+        fields:
+          - name: "Type"
+            abbrev: "icmpv6.type"
+            bits: 8
+            value: 135
+            description: "Neighbor Solicitation (135) — used here for DAD"
+          - name: "Target Address"
+            abbrev: "icmpv6.ns.target"
+            bits: 128
+            value: "2001:db8:1::100"
+            description: "Is anyone else using this address? (No reply = address is unique)"
+
+  # ══════════════════════════════════════════════════════════════
+  # Part 3 — Prefix Delegation (PD)
+  # ══════════════════════════════════════════════════════════════
+
+  - id: "dhcpv6_pd_solicit"
+    name: "DHCPv6 Solicit with IA_PD"
+    description: "Home router requests a prefix delegation from the ISP DHCPv6 server"
+    from: "home_router"
+    to: "multicast"
+    via: ["switch"]
+    timestamp_ns: 300000000
+    total_bytes: 122
+    color: "#ea580c"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "33:33:00:01:00:02"
+            description: "All_DHCP_Relay_Agents_and_Servers"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:ce"
+            description: "Home router (CPE) MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "fe80::211:22ff:fe33:44ce"
+            description: "Home router's link-local"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "ff02::1:2"
+            description: "All_DHCP_Relay_Agents_and_Servers"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 17
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 1
+
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 546
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 547
+
+      - name: "DHCPv6"
+        abbrev: "dhcpv6"
+        layer: 7
+        total_bytes: 60
+        fields:
+          - name: "Message Type"
+            abbrev: "dhcpv6.msgtype"
+            bits: 8
+            value: 1
+            description: "Solicit (1) — home router looking for a delegating server"
+          - name: "Transaction ID"
+            abbrev: "dhcpv6.xid"
+            bits: 24
+            value: "0x112233"
+          - name: "Option — Client Identifier (1)"
+            abbrev: "dhcpv6.option.clientid"
+            bits: 112
+            value: "DUID-LLT: 00:01:00:01:time:00:11:22:33:44:ce"
+            description: "Home router's DUID"
+          - name: "Option — IA_PD (25)"
+            abbrev: "dhcpv6.option.ia_pd"
+            bits: 96
+            value: "IAID: 0x00000001, T1: 0, T2: 0"
+            description: "Identity Association for Prefix Delegation — 'Give me a prefix to advertise on my LAN'"
+            spec_refs:
+              - document: "RFC 8415"
+                section: "21.21"
+                title: "IA_PD Prefix Option"
+                url: "https://datatracker.ietf.org/doc/html/rfc8415#section-21.21"
+          - name: "  └─ IA_PD Hint"
+            abbrev: "dhcpv6.option.ia_pd.hint"
+            bits: 0
+            value: "prefix-length hint: /48"
+            description: "Client hints it wants a /48 — server may or may not honor this"
+
+  - id: "dhcpv6_pd_reply"
+    name: "DHCPv6 Reply with Delegated Prefix"
+    description: "ISP server delegates prefix 2001:db8:abcd::/48 to the home router"
+    from: "dhcpv6_server"
+    to: "home_router"
+    via: ["switch"]
+    timestamp_ns: 300200000
+    total_bytes: 170
+    color: "#ea580c"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:ce"
+            description: "Unicast to home router"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:53"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "fe80::211:22ff:fe33:4453"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "fe80::211:22ff:fe33:44ce"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 17
+
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 547
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 546
+
+      - name: "DHCPv6"
+        abbrev: "dhcpv6"
+        layer: 7
+        total_bytes: 108
+        fields:
+          - name: "Message Type"
+            abbrev: "dhcpv6.msgtype"
+            bits: 8
+            value: 7
+            description: "Reply (7) — rapid-commit or server preference 255 skips Advertise/Request"
+          - name: "Transaction ID"
+            abbrev: "dhcpv6.xid"
+            bits: 24
+            value: "0x112233"
+          - name: "Option — Server Identifier (2)"
+            abbrev: "dhcpv6.option.serverid"
+            bits: 112
+            value: "DUID-LLT: 00:01:00:01:time:00:11:22:33:44:53"
+          - name: "Option — Client Identifier (1)"
+            abbrev: "dhcpv6.option.clientid"
+            bits: 112
+            value: "DUID-LLT: 00:01:00:01:time:00:11:22:33:44:ce"
+          - name: "Option — IA_PD (25) with IA_Prefix (26)"
+            abbrev: "dhcpv6.option.ia_pd"
+            bits: 96
+            value: "IAID: 0x00000001, T1: 43200, T2: 69120"
+            description: "Prefix delegation confirmed"
+          - name: "  └─ IA_Prefix (26)"
+            abbrev: "dhcpv6.option.ia_prefix"
+            bits: 208
+            value: "2001:db8:abcd::/48, preferred: 604800, valid: 2592000"
+            description: "Delegated prefix: 2001:db8:abcd::/48 — the home router can subnet this into 65536 /64s for its LAN segments"
+            spec_refs:
+              - document: "RFC 8415"
+                section: "21.22"
+                title: "IA Prefix Option"
+                url: "https://datatracker.ietf.org/doc/html/rfc8415#section-21.22"
+
+  - id: "ra_from_home_router"
+    name: "RA from Home Router on LAN"
+    description: "Home router advertises 2001:db8:abcd:1::/64 to its LAN clients via RA"
+    from: "home_router"
+    to: "multicast"
+    via: []
+    timestamp_ns: 300500000
+    total_bytes: 118
+    color: "#ea580c"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "33:33:00:00:00:01"
+            description: "All-nodes multicast on LAN"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:ce"
+            description: "Home router's LAN-facing MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "fe80::211:22ff:fe33:44ce"
+            description: "Home router's link-local on LAN interface"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "ff02::1"
+            description: "All-nodes multicast"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 58
+            description: "ICMPv6"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 255
+
+      - name: "ICMPv6 Router Advertisement"
+        abbrev: "icmpv6.ra"
+        layer: 3
+        total_bytes: 64
+        fields:
+          - name: "Type"
+            abbrev: "icmpv6.type"
+            bits: 8
+            value: 134
+            description: "Router Advertisement"
+          - name: "M Flag"
+            abbrev: "icmpv6.ra.flag_m"
+            bits: 1
+            value: 0
+            description: "M=0 — LAN clients use SLAAC"
+          - name: "O Flag"
+            abbrev: "icmpv6.ra.flag_o"
+            bits: 1
+            value: 0
+            description: "O=0 — no DHCPv6 needed on LAN (home router could set O=1 to provide DNS via DHCPv6)"
+          - name: "Prefix"
+            abbrev: "icmpv6.opt.prefix.prefix"
+            bits: 128
+            value: "2001:db8:abcd:1::/64"
+            description: "One /64 subnet from the delegated /48 — LAN clients SLAAC from this prefix"
+          - name: "A (Autonomous) Flag"
+            abbrev: "icmpv6.opt.prefix.flag_a"
+            bits: 1
+            value: 1
+            description: "A=1 — LAN clients should autoconfigure addresses from this prefix"
+          - name: "L (On-Link) Flag"
+            abbrev: "icmpv6.opt.prefix.flag_l"
+            bits: 1
+            value: 1
+            description: "L=1 — prefix is on-link"
+          - name: "Valid Lifetime"
+            abbrev: "icmpv6.opt.prefix.valid_lifetime"
+            bits: 32
+            value: 2592000
+            description: "Derived from delegated prefix valid lifetime"
+          - name: "Preferred Lifetime"
+            abbrev: "icmpv6.opt.prefix.preferred_lifetime"
+            bits: 32
+            value: 604800
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+
+  # ── Part 1: Stateless DHCPv6 (O=1, M=0) ──────────────────────
+
+  - id: "evt_ra_stateless"
+    type: "frame_tx"
+    t_ns: 100000000
+    frame_id: "ra_stateless"
+    annotation:
+      text: "RA → Router announces prefix 2001:db8:1::/64 with M=0, O=1, A=1"
+      detail: >
+        The router periodically sends Router Advertisements to ff02::1 (all nodes).
+        This RA carries three critical flags: M=0 means 'do NOT use DHCPv6 for your
+        address — use SLAAC instead.'  O=1 means 'DO use DHCPv6 for other config
+        like DNS and NTP.'  The Prefix Information option includes 2001:db8:1::/64
+        with A=1 (autonomous), which tells hosts to generate a SLAAC address from
+        this prefix.  This M=0/O=1 combination is the most common deployment model
+        — it gives hosts the simplicity of SLAAC for addressing while still
+        providing centralized DNS configuration via DHCPv6.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 3
+            state_fields:
+              default_gw: "fe80::211:22ff:fe33:44ff"
+              ra_m_flag: 0
+              ra_o_flag: 1
+
+  - id: "evt_slaac"
+    type: "frame_tx"
+    t_ns: 100500000
+    frame_id: "slaac_complete"
+    annotation:
+      text: "SLAAC → Client autoconfigures 2001:db8:1::211:22ff:fe33:4401/64"
+      detail: >
+        Because the RA had A=1 on the prefix and M=0, the client uses Stateless
+        Address Autoconfiguration (RFC 4862).  It combines the /64 prefix with its
+        interface identifier (derived from its MAC via EUI-64 or a random stable ID
+        per RFC 7217) to form a globally routable address.  DAD (Duplicate Address
+        Detection) is performed before the address is used.  For full SLAAC details,
+        see the IPv6 SLAAC scenario.  The client now has a working IPv6 address but
+        no DNS servers — that is where DHCPv6 comes in.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 3
+            state_fields:
+              global_addr: "2001:db8:1::211:22ff:fe33:4401"
+
+  - id: "evt_client_sees_o_flag"
+    type: "annotation"
+    t_ns: 100600000
+    annotation:
+      text: "Client sees O=1: 'I need to ask DHCPv6 for additional configuration'"
+      detail: >
+        The client's network stack processes the RA flags.  O=1 triggers the
+        DHCPv6 client to send an Information-Request message.  Unlike a Solicit
+        (which requests an address), an Information-Request only asks for
+        configuration parameters — this is 'stateless' DHCPv6 because the server
+        does not need to track any per-client state or address bindings.  The
+        client already has its address from SLAAC.
+
+  - id: "evt_info_request"
+    type: "frame_tx"
+    t_ns: 101000000
+    frame_id: "dhcpv6_info_request"
+    annotation:
+      text: "DHCPv6 Information-Request → Client asks for DNS, search list, NTP"
+      detail: >
+        The client sends an Information-Request (message type 11) to ff02::1:2
+        (All_DHCP_Relay_Agents_and_Servers) using UDP source port 546 and
+        destination port 547.  The message includes a Client Identifier (DUID)
+        and an Option Request Option (ORO) listing the options it wants:
+        DNS Recursive Name Server (23), DNS Search List (24), and SNTP Servers (31).
+        Note: no IA_NA option is present — the client is NOT asking for an address.
+        This is the key difference between stateless and stateful DHCPv6.
+      spec_refs:
+        - document: "RFC 8415"
+          section: "16.16"
+          title: "Information-Request Message"
+          url: "https://datatracker.ietf.org/doc/html/rfc8415#section-16.16"
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            state_fields:
+              dhcpv6_mode: "stateless (Information-Request)"
+
+  - id: "evt_reply_stateless"
+    type: "frame_tx"
+    t_ns: 101100000
+    frame_id: "dhcpv6_reply_stateless"
+    annotation:
+      text: "DHCPv6 Reply ← Server provides DNS 2001:db8:1::53, search domain, SNTP"
+      detail: >
+        The server responds with a Reply (type 7) containing the requested options.
+        DNS servers: 2001:db8:1::53 and 2001:4860:4860::8888.  DNS search list:
+        example.com, lab.example.com.  SNTP server: 2001:db8:1::123.  The server
+        does NOT record any binding — it simply hands out the same configuration
+        to every client that asks.  This is why it is called 'stateless.'  The server
+        could be rebooted and lose all memory, and it would still work perfectly
+        because there is nothing to remember.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            state_fields:
+              dns_servers: "2001:db8:1::53, 2001:4860:4860::8888"
+              dns_search: "example.com, lab.example.com"
+
+  - id: "evt_stateless_complete"
+    type: "annotation"
+    t_ns: 101500000
+    annotation:
+      text: "Client fully configured: SLAAC address + DHCPv6-provided DNS"
+      detail: >
+        The client now has everything it needs: a globally routable IPv6 address
+        (2001:db8:1::211:22ff:fe33:4401 from SLAAC), a default gateway
+        (fe80::211:22ff:fe33:44ff from the RA), DNS servers and search domain
+        (from DHCPv6), and an NTP server (from DHCPv6).  This is the most common
+        IPv6 deployment model: SLAAC for addresses, DHCPv6 for DNS/NTP.
+
+  - id: "evt_stateless_annotation"
+    type: "annotation"
+    t_ns: 102000000
+    annotation:
+      text: "Stateless DHCPv6 — the server does not track who has what. It just hands out config info to anyone who asks."
+      detail: >
+        In IPv4, DHCP does everything — addresses, DNS, NTP, gateway, subnet mask.
+        In IPv6, the work is split: Router Advertisements provide the gateway and
+        prefix, SLAAC generates the address, and DHCPv6 fills in DNS and NTP.
+        This separation of concerns is an intentional IPv6 design choice.  O=1 is
+        by far the most common RA flag setting in both enterprise and ISP networks.
+
+  # ── Part 2: Stateful DHCPv6 (M=1) ────────────────────────────
+
+  - id: "evt_ra_stateful"
+    type: "frame_tx"
+    t_ns: 200000000
+    frame_id: "ra_stateful"
+    annotation:
+      text: "RA → Router announces M=1, O=1 — 'Use DHCPv6 for your address'"
+      detail: >
+        A different network segment (or reconfigured router) sends an RA with
+        M=1.  This tells hosts: 'Do NOT autoconfigure addresses from SLAAC — get
+        your address from a DHCPv6 server instead.'  The prefix information option
+        has A=0, confirming that SLAAC should not be used.  This is the enterprise
+        model where IT administrators need tight control over address assignments
+        for audit trails, access control, and DNS registration.  When M=1, the
+        O flag is effectively implied (you will get config along with the address),
+        but it is usually set explicitly.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 3
+            state_fields:
+              ra_m_flag: 1
+              ra_o_flag: 1
+              global_addr: "none"
+
+  - id: "evt_client_sees_m_flag"
+    type: "annotation"
+    t_ns: 200100000
+    annotation:
+      text: "Client sees M=1: 'I must use DHCPv6 to get my address'"
+      detail: >
+        The M flag triggers a full DHCPv6 exchange.  Unlike the stateless case
+        (Information-Request / Reply), the client will now go through the 4-message
+        SARR exchange: Solicit → Advertise → Request → Reply.  This is analogous
+        to DHCPv4's DORA (Discover → Offer → Request → Ack).  The server will
+        maintain a binding database that tracks which DUID has which address,
+        with lease lifetimes and renewal timers — hence 'stateful.'
+
+  - id: "evt_solicit"
+    type: "frame_tx"
+    t_ns: 200500000
+    frame_id: "dhcpv6_solicit"
+    annotation:
+      text: "DHCPv6 Solicit → Client searches for DHCPv6 servers (msg type 1)"
+      detail: >
+        The client sends a Solicit to ff02::1:2.  It includes its Client Identifier
+        (DUID-LLT — Link-Layer address + Time, the most common DUID type), an
+        IA_NA (Identity Association for Non-temporary Addresses) requesting a stable
+        address, an Option Request for DNS, and an Elapsed Time option.  The IA_NA's
+        IAID (Identity Association ID) is typically derived from the interface index.
+        T1 and T2 are set to 0, meaning 'let the server decide the renewal schedule.'
+        Any DHCPv6 server on the link will respond with an Advertise.
+      spec_refs:
+        - document: "RFC 8415"
+          section: "16.2"
+          title: "Solicit Message"
+          url: "https://datatracker.ietf.org/doc/html/rfc8415#section-16.2"
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            state_fields:
+              dhcpv6_mode: "stateful (SARR)"
+
+  - id: "evt_advertise"
+    type: "frame_tx"
+    t_ns: 200600000
+    frame_id: "dhcpv6_advertise"
+    annotation:
+      text: "DHCPv6 Advertise ← Server offers 2001:db8:1::100 (msg type 2)"
+      detail: >
+        The server responds with an Advertise, offering address 2001:db8:1::100 with
+        a preferred lifetime of 86400s (24h) and valid lifetime of 172800s (48h).
+        The IA_NA includes T1=43200s (12h) and T2=69120s (19.2h) — T1 is when the
+        client should begin renewal (unicast Renew to this server), and T2 is when it
+        should begin rebinding (multicast Rebind to any server, in case this one is
+        gone).  The Preference option is set to 255 (maximum), which tells the client
+        to accept this offer immediately without waiting for other servers.  DNS
+        servers and search list are also included.
+    state_after:
+      - actor_id: "dhcpv6_server"
+        layers:
+          - layer: 7
+            state_fields:
+              bindings: "1 (pending)"
+
+  - id: "evt_request"
+    type: "frame_tx"
+    t_ns: 200700000
+    frame_id: "dhcpv6_request"
+    annotation:
+      text: "DHCPv6 Request → Client accepts: 'I'll take 2001:db8:1::100 from server ...53' (msg type 3)"
+      detail: >
+        The client sends a Request to ff02::1:2 (still multicast, so other servers
+        know this client has chosen).  Crucially, the Request includes BOTH the Client
+        Identifier AND the Server Identifier — the Server ID copied from the Advertise
+        tells the chosen server to commit the binding, and tells other servers to
+        release any tentative offers.  The IA_NA echoes the offered address.  This is
+        the 'R' in SARR, analogous to the 'R' in DORA for DHCPv4.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            state_fields:
+              dhcpv6_mode: "stateful — Request sent"
+
+  - id: "evt_reply_stateful"
+    type: "frame_tx"
+    t_ns: 200800000
+    frame_id: "dhcpv6_reply_stateful"
+    annotation:
+      text: "DHCPv6 Reply ← Server confirms 2001:db8:1::100 — binding active (msg type 7)"
+      detail: >
+        The server sends a Reply confirming the address assignment.  The server has
+        now created a persistent binding: Client DUID → 2001:db8:1::100, with
+        lifetimes and renewal timers.  This binding survives server restarts (stored
+        in a lease file or database).  The client will send a Renew at T1 (12h) to
+        extend the lease.  If the server does not respond by T2 (19.2h), the client
+        multicasts a Rebind to any available server.  If the valid lifetime expires,
+        the address is released.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 3
+            state_fields:
+              global_addr: "2001:db8:1::100 (tentative — DAD pending)"
+          - layer: 7
+            state_fields:
+              dhcpv6_mode: "stateful — address assigned"
+              dns_servers: "2001:db8:1::53, 2001:4860:4860::8888"
+              dns_search: "example.com"
+      - actor_id: "dhcpv6_server"
+        layers:
+          - layer: 7
+            state_fields:
+              bindings: "1 (active)"
+
+  - id: "evt_dad_stateful"
+    type: "frame_tx"
+    t_ns: 200900000
+    frame_id: "dad_stateful"
+    annotation:
+      text: "DAD → Client checks 2001:db8:1::100 for duplicates (NS from ::)"
+      detail: >
+        Even though the address came from DHCPv6, the client MUST perform Duplicate
+        Address Detection before using it.  The client sends a Neighbor Solicitation
+        with source :: (unspecified) to the solicited-node multicast address
+        ff02::1:ff00:100.  If no Neighbor Advertisement is received within 1 second,
+        the address is considered unique and transitions from 'tentative' to
+        'preferred.'  If a duplicate IS detected, the client sends a DHCPv6 Decline
+        message and tries again.
+      spec_refs:
+        - document: "RFC 4862"
+          section: "5.4"
+          title: "Duplicate Address Detection"
+          url: "https://datatracker.ietf.org/doc/html/rfc4862#section-5.4"
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 3
+            state_fields:
+              global_addr: "2001:db8:1::100"
+
+  - id: "evt_stateful_complete"
+    type: "annotation"
+    t_ns: 201000000
+    annotation:
+      text: "Client configured: DHCPv6-assigned address 2001:db8:1::100 + DNS"
+      detail: >
+        The client is fully operational with a server-assigned address and DNS
+        configuration.  Unlike the stateless case, the server maintains a binding
+        for this client and will expect renewal.  This model gives administrators
+        full visibility into address assignments — essential for enterprise networks
+        that need audit trails, access control lists based on IP, and dynamic DNS
+        registration.
+
+  - id: "evt_sarr_annotation"
+    type: "annotation"
+    t_ns: 201500000
+    annotation:
+      text: "4-message exchange (SARR), like DHCP DORA in IPv4, but over UDP 546/547 with multicast"
+      detail: >
+        DHCPv6 SARR (Solicit-Advertise-Request-Reply) maps to DHCPv4 DORA
+        (Discover-Offer-Request-Ack).  Key differences: DHCPv6 uses UDP ports
+        546 (client) and 547 (server) instead of 67/68.  DHCPv6 uses IPv6
+        multicast (ff02::1:2) instead of IPv4 broadcast (255.255.255.255).
+        DHCPv6 identifies clients by DUID (globally unique) rather than MAC
+        address — this is more robust when a host has multiple interfaces.
+        DHCPv6 does NOT provide a default gateway — that always comes from the RA.
+
+  # ── Part 3: Prefix Delegation (PD) ───────────────────────────
+
+  - id: "evt_pd_solicit"
+    type: "frame_tx"
+    t_ns: 300000000
+    frame_id: "dhcpv6_pd_solicit"
+    annotation:
+      text: "DHCPv6 Solicit + IA_PD → Home router asks ISP for a prefix"
+      detail: >
+        The home router (CPE — Customer Premises Equipment) sends a Solicit with
+        an IA_PD option (Identity Association for Prefix Delegation, option 25).
+        This is different from IA_NA — the router is NOT asking for a single address
+        for itself, it is asking for an entire prefix that it can subnet and
+        advertise to devices on its LAN.  The hint suggests /48, which would give
+        the home router 65536 /64 subnets to work with (one per VLAN, guest network,
+        IoT segment, etc.).  ISPs commonly delegate /48, /56, or /60.
+      spec_refs:
+        - document: "RFC 8415"
+          section: "6.3"
+          title: "Prefix Delegation"
+          url: "https://datatracker.ietf.org/doc/html/rfc8415#section-6.3"
+    state_after:
+      - actor_id: "home_router"
+        layers:
+          - layer: 7
+            state_fields:
+              delegated_prefix: "requesting..."
+
+  - id: "evt_pd_reply"
+    type: "frame_tx"
+    t_ns: 300200000
+    frame_id: "dhcpv6_pd_reply"
+    annotation:
+      text: "DHCPv6 Reply ← ISP delegates 2001:db8:abcd::/48 to the home router"
+      detail: >
+        The ISP's DHCPv6 server responds with a Reply containing IA_PD with
+        IA_Prefix option 26: delegated prefix 2001:db8:abcd::/48 with a preferred
+        lifetime of 7 days and valid lifetime of 30 days.  The home router now
+        'owns' this /48 and can subnet it however it likes.  A /48 provides
+        65536 /64 subnets — more than any home or small business will ever need.
+        The server records this delegation and will expect renewal.  If the ISP used
+        rapid-commit or preference 255, the Advertise/Request steps were skipped
+        (2-message exchange).
+    state_after:
+      - actor_id: "home_router"
+        layers:
+          - layer: 7
+            state_fields:
+              delegated_prefix: "2001:db8:abcd::/48"
+      - actor_id: "dhcpv6_server"
+        layers:
+          - layer: 7
+            state_fields:
+              delegations: "1 (active)"
+
+  - id: "evt_home_ra"
+    type: "frame_tx"
+    t_ns: 300500000
+    frame_id: "ra_from_home_router"
+    annotation:
+      text: "RA → Home router advertises 2001:db8:abcd:1::/64 on its LAN"
+      detail: >
+        The home router takes the delegated /48, carves out the first /64 subnet
+        (2001:db8:abcd:1::/64), and begins advertising it via Router Advertisements
+        on its LAN interface.  LAN clients receive this RA, perform SLAAC, and get
+        globally routable IPv6 addresses.  No NAT is involved — every device on the
+        LAN has a real, routable address.  The home router's firewall provides
+        security (stateful packet filtering), not address translation.  This is a
+        fundamental difference from IPv4 home networking.
+    state_after:
+      - actor_id: "home_router"
+        layers:
+          - layer: 7
+            state_fields:
+              lan_prefix: "2001:db8:abcd:1::/64"
+
+  - id: "evt_pd_annotation"
+    type: "annotation"
+    t_ns: 301000000
+    annotation:
+      text: "This is how your home router gets an IPv6 prefix from your ISP — no NAT needed"
+      detail: >
+        Prefix Delegation is the mechanism that makes IPv6 end-to-end connectivity
+        work at scale.  Your ISP delegates a /48 or /56 to your home router, which
+        subnets it and advertises /64s on each LAN segment.  Every device gets a
+        globally unique, routable address.  No NAT means no port forwarding hassles,
+        no broken peer-to-peer protocols, no NAT state tables to overflow.  Security
+        comes from the router's stateful firewall, which blocks unsolicited inbound
+        connections by default — the same protection NAT accidentally provided, but
+        without the downsides.  This is IPv6 working as designed.
+
+  # ── Summary ─────────────────────────────────────────────────
+
+  - id: "evt_summary"
+    type: "annotation"
+    t_ns: 400000000
+    annotation:
+      text: "Scenario complete — DHCPv6 stateless, stateful, and prefix delegation"
+      detail: >
+        This scenario demonstrated three DHCPv6 operating modes:
+
+        1. STATELESS (M=0, O=1) — Client gets address from SLAAC, DNS/NTP from
+           DHCPv6 Information-Request.  Server tracks nothing.  Most common setup.
+
+        2. STATEFUL (M=1) — Client gets address AND config from DHCPv6 via the
+           4-message SARR exchange.  Server maintains binding database.  Used in
+           enterprise networks needing address accountability.
+
+        3. PREFIX DELEGATION — Router gets an entire prefix from DHCPv6 and
+           subnets it for its LAN.  This is how IPv6 avoids NAT — every device
+           gets a globally routable address.
+
+        In IPv4, DHCP does everything.  In IPv6, SLAAC and DHCPv6 split the work.
+        The RA M and O flags are the control plane that decides how this split works.
+
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
+glossary:
+  - term: "DHCPv6"
+    abbrev: "Dynamic Host Configuration Protocol for IPv6"
+    definition: "Protocol for assigning IPv6 addresses, prefixes, and configuration options to hosts and routers. Can operate in stateful mode (server tracks bindings) or stateless mode (server just provides config). Defined in RFC 8415."
+    spec_refs:
+      - document: "RFC 8415"
+        section: "1"
+        title: "DHCPv6"
+        url: "https://datatracker.ietf.org/doc/html/rfc8415"
+
+  - term: "SLAAC"
+    abbrev: "Stateless Address Autoconfiguration"
+    definition: "IPv6 mechanism where hosts generate their own addresses from a prefix advertised in Router Advertisements, without any server involvement. Uses the prefix from RA + an interface identifier (EUI-64 or RFC 7217 stable random)."
+    spec_refs:
+      - document: "RFC 4862"
+        section: "1"
+        title: "IPv6 Stateless Address Autoconfiguration"
+        url: "https://datatracker.ietf.org/doc/html/rfc4862"
+
+  - term: "Router Advertisement"
+    abbrev: "RA"
+    definition: "ICMPv6 message (type 134) sent by routers to advertise their presence, prefixes, and configuration flags (M, O). Sent periodically and in response to Router Solicitations. The RA is the control plane for IPv6 address configuration."
+    spec_refs:
+      - document: "RFC 4861"
+        section: "4.2"
+        title: "Router Advertisement Message Format"
+        url: "https://datatracker.ietf.org/doc/html/rfc4861#section-4.2"
+
+  - term: "M Flag (Managed Address Configuration)"
+    definition: "Bit in the Router Advertisement that, when set to 1, tells hosts to use DHCPv6 for address assignment instead of SLAAC. M=1 triggers the full SARR exchange."
+    spec_refs:
+      - document: "RFC 4861"
+        section: "4.2"
+        title: "RA Flags"
+        url: "https://datatracker.ietf.org/doc/html/rfc4861#section-4.2"
+
+  - term: "O Flag (Other Configuration)"
+    definition: "Bit in the Router Advertisement that, when set to 1, tells hosts to use DHCPv6 for non-address configuration (DNS, NTP, search domains). O=1 with M=0 triggers a DHCPv6 Information-Request."
+    spec_refs:
+      - document: "RFC 4861"
+        section: "4.2"
+        title: "RA Flags"
+        url: "https://datatracker.ietf.org/doc/html/rfc4861#section-4.2"
+
+  - term: "DUID"
+    abbrev: "DHCP Unique Identifier"
+    definition: "A globally unique identifier for DHCPv6 participants. DUID-LLT (Link-Layer + Time) is the most common type — it combines the MAC address with a timestamp to create an identifier that is unique even if the NIC is replaced."
+    spec_refs:
+      - document: "RFC 8415"
+        section: "11"
+        title: "DHCP Unique Identifier (DUID)"
+        url: "https://datatracker.ietf.org/doc/html/rfc8415#section-11"
+
+  - term: "IA_NA"
+    abbrev: "Identity Association for Non-temporary Addresses"
+    definition: "DHCPv6 option (3) that carries address assignment information. Contains an IAID (interface-specific identifier), renewal timers T1/T2, and one or more IA_Address sub-options with actual IPv6 addresses and lifetimes."
+    spec_refs:
+      - document: "RFC 8415"
+        section: "21.4"
+        title: "IA_NA Option"
+        url: "https://datatracker.ietf.org/doc/html/rfc8415#section-21.4"
+
+  - term: "IA_PD"
+    abbrev: "Identity Association for Prefix Delegation"
+    definition: "DHCPv6 option (25) used by routers to request delegation of an IPv6 prefix from an upstream DHCPv6 server. The delegated prefix is then subnetted and advertised on downstream interfaces. This mechanism eliminates IPv6 NAT."
+    spec_refs:
+      - document: "RFC 8415"
+        section: "21.21"
+        title: "IA_PD Option"
+        url: "https://datatracker.ietf.org/doc/html/rfc8415#section-21.21"
+
+  - term: "SARR"
+    abbrev: "Solicit-Advertise-Request-Reply"
+    definition: "The 4-message exchange for stateful DHCPv6 address assignment. Analogous to DHCPv4's DORA (Discover-Offer-Request-Ack). The Solicit discovers servers, Advertise presents offers, Request selects a server, and Reply confirms the binding."
+
+  - term: "Prefix Delegation"
+    abbrev: "PD"
+    definition: "DHCPv6 mechanism where an ISP delegates an IPv6 prefix (typically /48 or /56) to a customer router. The customer router subnets this prefix and advertises /64s on its LAN. This is how IPv6 provides globally routable addresses to every device without NAT."
+
+  - term: "DAD"
+    abbrev: "Duplicate Address Detection"
+    definition: "NDP procedure where a host sends a Neighbor Solicitation from the unspecified address (::) to verify that a tentative address is not already in use on the link. Required for both SLAAC and DHCPv6-assigned addresses."
+    spec_refs:
+      - document: "RFC 4862"
+        section: "5.4"
+        title: "Duplicate Address Detection"
+        url: "https://datatracker.ietf.org/doc/html/rfc4862#section-5.4"
+
+  - term: "All_DHCP_Relay_Agents_and_Servers"
+    definition: "The well-known IPv6 multicast address ff02::1:2, used as the destination for DHCPv6 client messages (Solicit, Request, Information-Request). All DHCPv6 servers and relay agents on the link listen on this address."
+    spec_refs:
+      - document: "RFC 8415"
+        section: "7.1"
+        title: "Multicast Addresses"
+        url: "https://datatracker.ietf.org/doc/html/rfc8415#section-7.1"
+
+# ─────────────────────────────────────────────────────────────────
+# WALKTHROUGHS
+# ─────────────────────────────────────────────────────────────────
+walkthroughs:
+  - id: "default"
+    title: "DHCPv6: Stateless, Stateful, and Prefix Delegation"
+    description: "Walk through the three modes of DHCPv6 and how RA flags control the client's behavior"
+    steps:
+      - step: 0
+        narration: >
+          In IPv4, DHCP does everything -- it hands out addresses, DNS servers,
+          default gateways, and subnet masks all in one protocol.  In IPv6, the
+          work is split: Router Advertisements provide the gateway and prefix,
+          SLAAC can generate addresses, and DHCPv6 fills in the rest.  The RA's
+          M and O flags are the control knobs that decide how this split works.
+          Let's see all three modes in action.
+        highlight_fields: []
+
+      - step: 1
+        narration: >
+          The router sends a Router Advertisement with M=0 and O=1.  M=0 means
+          'do not use DHCPv6 for your address -- use SLAAC.'  O=1 means 'do use
+          DHCPv6 for other configuration like DNS and NTP.'  The RA also includes
+          prefix 2001:db8:1::/64 with the A (Autonomous) flag set, which tells
+          hosts they can use this prefix for SLAAC.  This M=0/O=1 combination is
+          the most common deployment model on the Internet today.
+        highlight_fields: ["icmpv6.ra.flag_m", "icmpv6.ra.flag_o", "icmpv6.opt.prefix.flag_a", "icmpv6.opt.prefix.prefix"]
+
+      - step: 2
+        narration: >
+          The client takes the /64 prefix from the RA and appends its interface
+          identifier to form a full /128 address via SLAAC.  Using EUI-64, the MAC
+          00:11:22:33:44:01 becomes the interface ID 0211:22ff:fe33:4401, giving the
+          client address 2001:db8:1::211:22ff:fe33:4401.  DAD confirms no one else
+          has this address.  The client now has a working IPv6 address but no DNS
+          servers -- that is where DHCPv6 comes in.
+        highlight_fields: []
+
+      - step: 3
+        narration: >
+          Because the RA had O=1, the client sends a DHCPv6 Information-Request
+          (message type 11) to the multicast address ff02::1:2 on UDP port 547.
+          This is the key message for stateless DHCPv6 -- notice there is no IA_NA
+          option, meaning the client is NOT asking for an address.  It only wants
+          DNS servers (option 23), a DNS search list (option 24), and SNTP servers
+          (option 31).  The message includes the client's DUID for identification.
+        highlight_fields: ["dhcpv6.msgtype", "dhcpv6.option.oro", "udp.srcport", "udp.dstport"]
+
+      - step: 4
+        narration: >
+          The DHCPv6 server responds with a Reply containing DNS servers, a search
+          list, and an SNTP server.  The server does not record any binding -- it
+          gives the same information to every client that asks.  This is why it is
+          called 'stateless.'  The server could be rebooted and would still work
+          perfectly because there is nothing to remember.  The client is now fully
+          configured: SLAAC address plus DHCPv6-provided DNS.  O=1 is by far the
+          most common setup -- it is simple, scalable, and works well.
+        highlight_fields: ["dhcpv6.msgtype", "dhcpv6.option.dns_servers", "dhcpv6.option.dns_search"]
+
+      - step: 5
+        narration: >
+          Now let's look at stateful DHCPv6.  A different RA arrives with M=1,
+          telling clients 'get your address from DHCPv6, not SLAAC.'  The prefix
+          information has A=0, confirming SLAAC is disabled for addressing.  This
+          is the enterprise model -- IT administrators need to know exactly which
+          address belongs to which device for security audits, access control, and
+          dynamic DNS registration.  M=1 triggers a completely different DHCPv6
+          exchange.
+        highlight_fields: ["icmpv6.ra.flag_m", "icmpv6.ra.flag_o", "icmpv6.opt.prefix"]
+
+      - step: 6
+        narration: >
+          The client sends a DHCPv6 Solicit (message type 1) -- the 'S' in SARR,
+          analogous to DHCP Discover in IPv4.  It includes the client's DUID
+          (DUID-LLT, based on MAC + timestamp), an IA_NA option requesting a
+          non-temporary address, and an Option Request for DNS.  The Solicit goes
+          to ff02::1:2, so all DHCPv6 servers on the link hear it.  The Elapsed
+          Time option starts at 0, indicating this is the first transmission.
+        highlight_fields: ["dhcpv6.msgtype", "dhcpv6.option.clientid", "dhcpv6.option.ia_na"]
+
+      - step: 7
+        narration: >
+          The server responds with an Advertise (message type 2), offering address
+          2001:db8:1::100.  The IA_NA includes T1 (renewal time, 12 hours) and T2
+          (rebinding time, 19.2 hours).  The IA_Address sub-option carries the
+          actual address with preferred lifetime (24h) and valid lifetime (48h).
+          The Preference option is set to 255 (maximum), telling the client to
+          accept immediately without waiting for other servers to respond.  DNS
+          servers are included in the offer.
+        highlight_fields: ["dhcpv6.msgtype", "dhcpv6.option.ia_address", "dhcpv6.option.serverid", "dhcpv6.option.preference"]
+
+      - step: 8
+        narration: >
+          The client sends a Request (message type 3) -- 'I accept the offer from
+          server ...53.'  This message goes to ff02::1:2 (multicast), not unicast
+          to the server, so that other servers on the link see it and release any
+          tentative offers.  The Request includes both the Client ID and the Server
+          ID -- the Server ID copied from the Advertise is how the client says
+          'I chose you.'  This is the 'R' in SARR.
+        highlight_fields: ["dhcpv6.msgtype", "dhcpv6.option.serverid", "dhcpv6.option.clientid"]
+
+      - step: 9
+        narration: >
+          The server sends a Reply (message type 7) confirming the address
+          assignment.  The server has now created a persistent binding: this
+          client's DUID maps to 2001:db8:1::100.  The binding will survive server
+          restarts.  The client must renew at T1 (12h) by sending a Renew message.
+          If the server is unreachable at T2 (19.2h), the client multicasts a
+          Rebind.  The 4-message SARR is complete -- like DORA in IPv4, but over
+          UDP 546/547 with multicast instead of broadcast.
+        highlight_fields: ["dhcpv6.msgtype", "dhcpv6.option.ia_address"]
+
+      - step: 10
+        narration: >
+          Even though the address came from a server, the client still performs
+          DAD (Duplicate Address Detection).  It sends a Neighbor Solicitation from
+          the unspecified address (::) to the solicited-node multicast group for
+          2001:db8:1::100.  If no one responds within 1 second, the address is
+          confirmed unique.  If a duplicate is found, the client sends a DHCPv6
+          Decline and requests a different address.  DAD is mandatory in IPv6
+          regardless of how the address was obtained.
+        highlight_fields: ["ipv6.src", "icmpv6.ns.target"]
+
+      - step: 11
+        narration: >
+          Now for Prefix Delegation -- this is how your home router gets IPv6 from
+          your ISP.  The home router (CPE) sends a Solicit with an IA_PD option
+          instead of IA_NA.  It is not asking for a single address -- it is asking
+          for an entire prefix that it can subnet and advertise on its LAN.  The
+          hint requests a /48, which would give 65536 /64 subnets.  ISPs commonly
+          delegate /48, /56, or /60 depending on their allocation policy.
+        highlight_fields: ["dhcpv6.msgtype", "dhcpv6.option.ia_pd"]
+
+      - step: 12
+        narration: >
+          The ISP's DHCPv6 server responds with a Reply containing the delegated
+          prefix 2001:db8:abcd::/48.  The home router now owns this prefix and can
+          carve it into /64 subnets however it likes -- one for the main LAN, one
+          for a guest network, one for IoT devices.  A /48 provides 65536 /64
+          subnets.  The server records this delegation with lifetimes and will
+          expect renewal.
+        highlight_fields: ["dhcpv6.option.ia_prefix"]
+
+      - step: 13
+        narration: >
+          The home router immediately begins advertising one of its new /64 subnets
+          (2001:db8:abcd:1::/64) on its LAN via Router Advertisements.  LAN devices
+          receive the RA, perform SLAAC, and get globally routable IPv6 addresses.
+          No NAT is involved -- every laptop, phone, and smart thermostat gets a
+          real, publicly routable address.  Security comes from the router's
+          stateful firewall, which blocks unsolicited inbound traffic.
+        highlight_fields: ["icmpv6.opt.prefix.prefix", "icmpv6.opt.prefix.flag_a"]
+
+      - step: 14
+        narration: >
+          Prefix Delegation is how the entire IPv6 Internet avoids NAT.  Your ISP
+          gives your router its own prefix.  No NAT means no port forwarding
+          hassles, no broken peer-to-peer protocols, no NAT state table overflows.
+          Every device gets a globally routable address -- this is by design, not a
+          bug.  Security comes from stateful firewalling, not address hiding.
+        highlight_fields: []
+
+      - step: 15
+        narration: >
+          Let's recap.  We saw three DHCPv6 modes, all controlled by two bits in
+          the Router Advertisement.  O=1 alone means 'get DNS from DHCPv6, address
+          from SLAAC' -- the most common setup.  M=1 means 'get your address from
+          DHCPv6' -- used in enterprise networks that need address tracking.  And
+          Prefix Delegation gives routers entire prefixes to subnet for their LANs,
+          which is how IPv6 eliminates NAT.  In IPv4, DHCP does everything.  In
+          IPv6, SLAAC and DHCPv6 split the work -- and that split is what makes
+          IPv6 more flexible and scalable.
+        highlight_fields: []

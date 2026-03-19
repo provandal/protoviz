@@ -1,0 +1,1986 @@
+meta:
+  id: "ipv6-path-mtu-discovery"
+  title: "IPv6 Path MTU Discovery: Why Routers Cannot Fragment"
+  protocol: "IPv6"
+  protocol_family: "TCP/IP"
+  version: "1.0.0"
+  description: >
+    Path MTU Discovery (PMTUD) is mandatory in IPv6 because routers are
+    forbidden from fragmenting packets — only the source host may fragment.
+    This scenario contrasts the IPv4 approach (any router can fragment) with
+    IPv6 PMTUD working correctly (ICMPv6 Packet Too Big informs the source),
+    and then demonstrates the dreaded "PMTUD black hole" that occurs when a
+    firewall blocks ICMPv6. The topology features a bottleneck tunnel link
+    with MTU 1280 (the minimum IPv6 link MTU per RFC 8200) between two
+    routers, showing exactly why ICMPv6 type 2 must never be filtered.
+
+  learning_objectives:
+    - "Understand why IPv6 eliminated router fragmentation — a fundamental design change from IPv4"
+    - "Trace the ICMPv6 Packet Too Big message flow and see how it triggers Path MTU cache updates"
+    - "Observe the difference between IPv4 router fragmentation (DF=0) and IPv6 source-only fragmentation"
+    - "See how the IPv6 Fragment extension header (Next Header 44) works when the source must fragment"
+    - "Understand TCP MSS adjustment based on PMTUD results — most applications never see MTU issues"
+    - "Recognize the PMTUD black hole problem caused by firewalls blocking ICMPv6"
+    - "Know which ICMPv6 messages must never be filtered (RFC 4890)"
+    - "Identify tunnels (6in4, GRE, IPsec) as the most common cause of reduced MTU on IPv6 paths"
+
+  difficulty: "intermediate"
+
+  authors:
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+
+  created: "2026-03-19"
+  updated: "2026-03-19"
+
+  tags:
+    - "IPv6"
+    - "PMTUD"
+    - "Path MTU Discovery"
+    - "ICMPv6"
+    - "fragmentation"
+    - "Packet Too Big"
+    - "black hole"
+    - "MTU"
+    - "intermediate"
+    - "education"
+    - "WIP"
+
+  primary_specs:
+    - document: "RFC 8201"
+      section: "3"
+      title: "Path MTU Discovery for IPv6"
+      url: "https://datatracker.ietf.org/doc/html/rfc8201#section-3"
+      alt_url: "https://www.rfc-editor.org/rfc/rfc8201"
+    - document: "RFC 8200"
+      section: "5"
+      title: "IPv6 — Packet Size Issues"
+      url: "https://datatracker.ietf.org/doc/html/rfc8200#section-5"
+      alt_url: "https://www.rfc-editor.org/rfc/rfc8200"
+    - document: "RFC 4443"
+      section: "3.2"
+      title: "ICMPv6 — Packet Too Big Message"
+      url: "https://datatracker.ietf.org/doc/html/rfc4443#section-3.2"
+      alt_url: ""
+    - document: "RFC 4890"
+      section: "4.3.1"
+      title: "Recommendations for Filtering ICMPv6 Messages in Firewalls"
+      url: "https://datatracker.ietf.org/doc/html/rfc4890#section-4.3.1"
+      alt_url: ""
+    - document: "RFC 791"
+      section: "3.1"
+      title: "IPv4 — Fragmentation and Reassembly"
+      url: "https://datatracker.ietf.org/doc/html/rfc791#section-3.1"
+      alt_url: ""
+
+  content_disclaimer: >
+    Protocol descriptions in this scenario are based on public RFCs and
+    open-source implementations (Linux kernel, Wireshark dissectors). No
+    proprietary specification text has been reproduced. RFC references are
+    provided as citations for further reading.
+
+  source_references:
+    - repo: "torvalds/linux"
+      path: "net/ipv6/ip6_output.c"
+      description: "IPv6 packet output — fragmentation at the source, PMTUD checks"
+    - repo: "torvalds/linux"
+      path: "net/ipv6/icmp.c"
+      description: "ICMPv6 message generation and processing — Packet Too Big handling"
+    - repo: "torvalds/linux"
+      path: "net/ipv6/route.c"
+      description: "IPv6 routing and Path MTU cache (dst_entry PMTU storage)"
+    - repo: "torvalds/linux"
+      path: "net/ipv4/ip_output.c"
+      description: "IPv4 packet output — router fragmentation for contrast"
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "host_a"
+      type: "host"
+      label: "Host A"
+      description: "Source host — sends packets and runs PMTUD"
+      hardware: "Generic 1GbE NIC"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "2001:db8:a::1"
+      ipv4: "192.0.2.1"
+      mac: "00:11:22:33:44:01"
+      position: "far-left"
+
+    - id: "router1"
+      type: "router"
+      label: "Router 1"
+      description: "First-hop router — MTU 1500 on Host A side, MTU 1280 on tunnel side"
+      hardware: "Generic router"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip_left: "2001:db8:a::ff"
+      ip_right: "2001:db8:t::1"
+      ipv4_left: "192.0.2.254"
+      ipv4_right: "198.51.100.1"
+      mac_left: "00:aa:bb:cc:dd:01"
+      mac_right: "00:aa:bb:cc:dd:02"
+      mtu_left: 1500
+      mtu_right: 1280
+      position: "center-left"
+
+    - id: "router2"
+      type: "router"
+      label: "Router 2"
+      description: "Second-hop router — MTU 1280 on tunnel side, MTU 1500 on Host B side"
+      hardware: "Generic router"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip_left: "2001:db8:t::2"
+      ip_right: "2001:db8:b::ff"
+      ipv4_left: "198.51.100.2"
+      ipv4_right: "203.0.113.254"
+      mac_left: "00:aa:bb:cc:dd:03"
+      mac_right: "00:aa:bb:cc:dd:04"
+      mtu_left: 1280
+      mtu_right: 1500
+      position: "center-right"
+
+    - id: "host_b"
+      type: "host"
+      label: "Host B"
+      description: "Destination host — receives packets and reassembles fragments"
+      hardware: "Generic 1GbE NIC"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "2001:db8:b::1"
+      ipv4: "203.0.113.1"
+      mac: "00:11:22:33:44:02"
+      position: "far-right"
+
+  links:
+    - id: "link-a-r1"
+      from: "host_a"
+      to: "router1"
+      speed_gbps: 1
+      media: "copper"
+      mtu: 1500
+      description: "Standard Ethernet — MTU 1500"
+    - id: "link-r1-r2"
+      from: "router1"
+      to: "router2"
+      speed_gbps: 1
+      media: "tunnel"
+      mtu: 1280
+      description: "Tunnel link (e.g., GRE/IPsec) — MTU reduced to 1280 by encapsulation overhead"
+    - id: "link-r2-b"
+      from: "router2"
+      to: "host_b"
+      speed_gbps: 1
+      media: "copper"
+      mtu: 1500
+      description: "Standard Ethernet — MTU 1500"
+
+# ─────────────────────────────────────────────────────────────────
+# OSI LAYER DEFINITIONS (per actor)
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  host_a:
+    - layer: 4
+      name: "TCP"
+      components: ["net/ipv4/tcp.c", "net/ipv4/tcp_output.c"]
+      state_schema:
+        tcp_mss:
+          type: "integer"
+          description: "TCP Maximum Segment Size, adjusted by PMTUD"
+          initial: 1440
+        tcp_state:
+          type: "string"
+          description: "TCP connection state"
+          initial: "ESTABLISHED"
+
+    - layer: 3
+      name: "IPv6 / IPv4"
+      components: ["net/ipv6/ip6_output.c", "net/ipv4/ip_output.c", "net/ipv6/route.c"]
+      state_schema:
+        src_ip:
+          type: "string"
+          description: "Source IP address"
+          initial: "2001:db8:a::1"
+        dst_ip:
+          type: "string"
+          description: "Destination IP address"
+          initial: "2001:db8:b::1"
+        path_mtu:
+          type: "integer"
+          description: "Cached Path MTU for destination (starts at link MTU)"
+          initial: 1500
+        hop_limit:
+          type: "integer"
+          description: "IPv6 Hop Limit / IPv4 TTL"
+          initial: 64
+        pmtu_state:
+          type: "string"
+          description: "PMTUD state machine"
+          initial: "initial"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver", "IEEE 802.3"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+        mac_addr:
+          type: "string"
+          initial: "00:11:22:33:44:01"
+
+  router1:
+    - layer: 3
+      name: "IPv6 / IPv4 Forwarding"
+      components: ["net/ipv6/ip6_output.c", "net/ipv4/ip_forward.c"]
+      state_schema:
+        forwarding:
+          type: "string"
+          description: "Forwarding state"
+          initial: "enabled"
+        mtu_left:
+          type: "integer"
+          description: "MTU on Host A-facing interface"
+          initial: 1500
+        mtu_right:
+          type: "integer"
+          description: "MTU on tunnel-facing interface"
+          initial: 1280
+        action:
+          type: "string"
+          description: "Current forwarding action"
+          initial: "idle"
+
+  router2:
+    - layer: 3
+      name: "IPv6 / IPv4 Forwarding"
+      components: ["net/ipv6/ip6_output.c", "net/ipv4/ip_forward.c"]
+      state_schema:
+        forwarding:
+          type: "string"
+          description: "Forwarding state"
+          initial: "enabled"
+        mtu_left:
+          type: "integer"
+          description: "MTU on tunnel-facing interface"
+          initial: 1280
+        mtu_right:
+          type: "integer"
+          description: "MTU on Host B-facing interface"
+          initial: 1500
+        action:
+          type: "string"
+          description: "Current forwarding action"
+          initial: "idle"
+
+  host_b:
+    - layer: 4
+      name: "TCP"
+      components: ["net/ipv4/tcp.c", "net/ipv4/tcp_input.c"]
+      state_schema:
+        tcp_mss:
+          type: "integer"
+          description: "TCP Maximum Segment Size"
+          initial: 1440
+        tcp_state:
+          type: "string"
+          description: "TCP connection state"
+          initial: "ESTABLISHED"
+
+    - layer: 3
+      name: "IPv6 / IPv4"
+      components: ["net/ipv6/ip6_input.c", "net/ipv4/ip_input.c"]
+      state_schema:
+        src_ip:
+          type: "string"
+          description: "Source IP address"
+          initial: "2001:db8:b::1"
+        dst_ip:
+          type: "string"
+          description: "Destination IP address"
+          initial: "2001:db8:a::1"
+        reassembly:
+          type: "string"
+          description: "Fragment reassembly state"
+          initial: "idle"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver", "IEEE 802.3"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+        mac_addr:
+          type: "string"
+          initial: "00:11:22:33:44:02"
+
+# ─────────────────────────────────────────────────────────────────
+# FRAMES
+# ─────────────────────────────────────────────────────────────────
+frames:
+  # ══════════════════════════════════════════════════════════════════
+  # Part 1 — IPv4 Approach (Router Fragmentation, for contrast)
+  # ══════════════════════════════════════════════════════════════════
+
+  - id: "ipv4_packet_1500"
+    name: "IPv4 Packet (1500 B, DF=0)"
+    description: "Host A sends a 1500-byte IPv4 packet with fragmentation allowed"
+    from: "host_a"
+    to: "host_b"
+    via: ["router1"]
+    timestamp_ns: 100000000
+    total_bytes: 1500
+    color: "#6366f1"
+    headers:
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Version"
+            abbrev: "ip.version"
+            bits: 4
+            value: 4
+            description: "IPv4"
+          - name: "Header Length"
+            abbrev: "ip.hdr_len"
+            bits: 4
+            value: 5
+            description: "5 x 4 = 20 bytes (no IP options)"
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 1500
+            description: "Full 1500-byte packet — uses the entire link MTU"
+          - name: "Identification"
+            abbrev: "ip.id"
+            bits: 16
+            value: "0x1a2b"
+            value_hex: "0x1a2b"
+            description: "Unique ID for this datagram — used to reassemble fragments at the destination"
+            spec_refs:
+              - document: "RFC 791"
+                section: "3.1"
+                title: "Internet Header Format — Identification"
+                url: "https://datatracker.ietf.org/doc/html/rfc791#section-3.1"
+          - name: "Flags"
+            abbrev: "ip.flags"
+            bits: 3
+            value: "0x0"
+            description: "DF=0 (Don't Fragment NOT set) — any router may fragment this packet"
+            spec_refs:
+              - document: "RFC 791"
+                section: "3.1"
+                title: "Internet Header Format — Flags"
+                url: "https://datatracker.ietf.org/doc/html/rfc791#section-3.1"
+            fields:
+              - name: "Don't Fragment"
+                abbrev: "ip.flags.df"
+                bits: 1
+                value: 0
+                description: "DF=0 — fragmentation is permitted"
+              - name: "More Fragments"
+                abbrev: "ip.flags.mf"
+                bits: 1
+                value: 0
+                description: "MF=0 — this is a complete (unfragmented) packet"
+          - name: "Fragment Offset"
+            abbrev: "ip.frag_offset"
+            bits: 13
+            value: 0
+            description: "0 — not a fragment"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP (protocol number 6)"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.0.2.1"
+            description: "Host A's IPv4 address"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "203.0.113.1"
+            description: "Host B's IPv4 address"
+
+      - name: "TCP + Payload"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 1480
+        fields:
+          - name: "TCP Header + Data"
+            abbrev: "tcp.payload"
+            bits: 11840
+            value: "1480 bytes (20-byte TCP header + 1460 bytes application data)"
+            description: "Full MSS data segment — MSS 1460 = MTU 1500 - 20 IP - 20 TCP"
+
+  - id: "ipv4_fragment_1"
+    name: "IPv4 Fragment 1 (1280 B)"
+    description: "Router 1 fragments the packet — first fragment (1280 bytes)"
+    from: "router1"
+    to: "host_b"
+    via: ["router2"]
+    timestamp_ns: 100010000
+    total_bytes: 1280
+    color: "#6366f1"
+    headers:
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Version"
+            abbrev: "ip.version"
+            bits: 4
+            value: 4
+            description: "IPv4"
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 1280
+            description: "First fragment — 1280 bytes fits the tunnel MTU"
+          - name: "Identification"
+            abbrev: "ip.id"
+            bits: 16
+            value: "0x1a2b"
+            value_hex: "0x1a2b"
+            description: "Same ID as the original packet — receiver uses this to reassemble"
+          - name: "Flags"
+            abbrev: "ip.flags"
+            bits: 3
+            value: "0x1"
+            description: "MF=1 (More Fragments) — there are additional fragments following"
+            fields:
+              - name: "Don't Fragment"
+                abbrev: "ip.flags.df"
+                bits: 1
+                value: 0
+                description: "DF=0"
+              - name: "More Fragments"
+                abbrev: "ip.flags.mf"
+                bits: 1
+                value: 1
+                description: "MF=1 — more fragments to come"
+          - name: "Fragment Offset"
+            abbrev: "ip.frag_offset"
+            bits: 13
+            value: 0
+            description: "Offset 0 — this is the first fragment (contains the TCP header)"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 63
+            description: "Decremented by Router 1"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.0.2.1"
+            description: "Original source (Host A) — preserved across fragmentation"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "203.0.113.1"
+            description: "Original destination (Host B)"
+
+      - name: "Fragment Payload"
+        abbrev: "data"
+        layer: 4
+        total_bytes: 1260
+        fields:
+          - name: "Data"
+            abbrev: "data.data"
+            bits: 10080
+            value: "1260 bytes of original payload (TCP header + first portion of data)"
+            description: "First 1260 bytes of the original 1480-byte payload"
+
+  - id: "ipv4_fragment_2"
+    name: "IPv4 Fragment 2 (240 B)"
+    description: "Router 1 fragments the packet — second/last fragment (remaining 240 bytes)"
+    from: "router1"
+    to: "host_b"
+    via: ["router2"]
+    timestamp_ns: 100011000
+    total_bytes: 240
+    color: "#6366f1"
+    headers:
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 240
+            description: "Last fragment — 20 IP header + 220 remaining data bytes"
+          - name: "Identification"
+            abbrev: "ip.id"
+            bits: 16
+            value: "0x1a2b"
+            value_hex: "0x1a2b"
+            description: "Same ID — receiver matches fragments by this field"
+          - name: "Flags"
+            abbrev: "ip.flags"
+            bits: 3
+            value: "0x0"
+            description: "MF=0 — this is the last fragment"
+            fields:
+              - name: "Don't Fragment"
+                abbrev: "ip.flags.df"
+                bits: 1
+                value: 0
+                description: "DF=0"
+              - name: "More Fragments"
+                abbrev: "ip.flags.mf"
+                bits: 1
+                value: 0
+                description: "MF=0 — final fragment"
+          - name: "Fragment Offset"
+            abbrev: "ip.frag_offset"
+            bits: 13
+            value: 158
+            description: "Offset 158 (in 8-byte units = byte offset 1264) — where this fragment's data starts in the original datagram. Note: 1260 rounds down to 1256 at the 8-byte boundary, so offset = 1260/8 = 157.5, rounded to 158 with data adjustment."
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 63
+            description: "Decremented by Router 1"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.0.2.1"
+            description: "Original source preserved"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "203.0.113.1"
+            description: "Original destination preserved"
+
+      - name: "Fragment Payload"
+        abbrev: "data"
+        layer: 4
+        total_bytes: 220
+        fields:
+          - name: "Data"
+            abbrev: "data.data"
+            bits: 1760
+            value: "220 bytes — remainder of the original payload"
+            description: "Final portion of the original 1480-byte payload"
+
+  # ══════════════════════════════════════════════════════════════════
+  # Part 2 — IPv6 PMTUD Working Correctly
+  # ══════════════════════════════════════════════════════════════════
+
+  - id: "ipv6_packet_1500"
+    name: "IPv6 Packet (1500 B)"
+    description: "Host A sends a 1500-byte IPv6 packet assuming path MTU = 1500"
+    from: "host_a"
+    to: "host_b"
+    via: ["router1"]
+    timestamp_ns: 200000000
+    total_bytes: 1500
+    color: "#0f766e"
+    headers:
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Version"
+            abbrev: "ipv6.version"
+            bits: 4
+            value: 6
+            description: "IPv6"
+            spec_refs:
+              - document: "RFC 8200"
+                section: "3"
+                title: "IPv6 Header Format"
+                url: "https://datatracker.ietf.org/doc/html/rfc8200#section-3"
+          - name: "Traffic Class"
+            abbrev: "ipv6.tclass"
+            bits: 8
+            value: 0
+            description: "Default — no DSCP or ECN marking"
+          - name: "Flow Label"
+            abbrev: "ipv6.flow"
+            bits: 20
+            value: "0x12345"
+            description: "Flow label — can be used by routers for per-flow load balancing"
+          - name: "Payload Length"
+            abbrev: "ipv6.plen"
+            bits: 16
+            value: 1460
+            description: "1460 bytes — everything after the 40-byte fixed IPv6 header (total packet = 1500)"
+            spec_refs:
+              - document: "RFC 8200"
+                section: "3"
+                title: "IPv6 Header Format — Payload Length"
+                url: "https://datatracker.ietf.org/doc/html/rfc8200#section-3"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 6
+            description: "TCP (protocol number 6) — no extension headers"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 64
+            description: "Hop Limit — equivalent to IPv4 TTL, decremented by each router"
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8:a::1"
+            description: "Host A's IPv6 address"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "2001:db8:b::1"
+            description: "Host B's IPv6 address"
+
+      - name: "TCP + Payload"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 1460
+        fields:
+          - name: "TCP Header + Data"
+            abbrev: "tcp.payload"
+            bits: 11680
+            value: "1460 bytes (20-byte TCP header + 1440 bytes application data)"
+            description: "Full MSS payload — MSS 1440 = MTU 1500 - 40 IPv6 - 20 TCP"
+
+  - id: "icmpv6_pkt_too_big"
+    name: "ICMPv6 Packet Too Big"
+    description: "Router 1 cannot fragment, drops the packet, sends Packet Too Big with MTU=1280"
+    from: "router1"
+    to: "host_a"
+    via: []
+    timestamp_ns: 200020000
+    total_bytes: 1240
+    color: "#dc2626"
+    headers:
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Version"
+            abbrev: "ipv6.version"
+            bits: 4
+            value: 6
+            description: "IPv6"
+          - name: "Payload Length"
+            abbrev: "ipv6.plen"
+            bits: 16
+            value: 1200
+            description: "ICMPv6 header (8) + as much of the original packet as fits (up to 1192 bytes)"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 58
+            description: "ICMPv6 (protocol number 58)"
+            spec_refs:
+              - document: "RFC 4443"
+                section: "2.1"
+                title: "ICMPv6 — Message General Format"
+                url: "https://datatracker.ietf.org/doc/html/rfc4443#section-2.1"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 64
+            description: "Hop limit for the ICMPv6 message itself"
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8:a::ff"
+            description: "Router 1's interface address (facing Host A)"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "2001:db8:a::1"
+            description: "Host A — the original sender"
+
+      - name: "ICMPv6 Packet Too Big"
+        abbrev: "icmpv6"
+        layer: 3
+        total_bytes: 1200
+        fields:
+          - name: "Type"
+            abbrev: "icmpv6.type"
+            bits: 8
+            value: 2
+            description: "Type 2 — Packet Too Big"
+            spec_refs:
+              - document: "RFC 4443"
+                section: "3.2"
+                title: "Packet Too Big Message"
+                url: "https://datatracker.ietf.org/doc/html/rfc4443#section-3.2"
+          - name: "Code"
+            abbrev: "icmpv6.code"
+            bits: 8
+            value: 0
+            description: "Code 0 — always zero for Packet Too Big"
+          - name: "Checksum"
+            abbrev: "icmpv6.checksum"
+            bits: 16
+            value: "0xa1b2"
+            description: "ICMPv6 checksum (includes IPv6 pseudo-header)"
+          - name: "MTU"
+            abbrev: "icmpv6.mtu"
+            bits: 32
+            value: 1280
+            description: "The maximum packet size the next hop can accept — 1280 bytes (the tunnel link MTU). This is the critical field that tells Host A to reduce its packet size."
+            spec_refs:
+              - document: "RFC 4443"
+                section: "3.2"
+                title: "Packet Too Big — MTU field"
+                url: "https://datatracker.ietf.org/doc/html/rfc4443#section-3.2"
+              - document: "RFC 8201"
+                section: "4"
+                title: "Protocol Requirements — PMTU changes"
+                url: "https://datatracker.ietf.org/doc/html/rfc8201#section-4"
+          - name: "Original Packet (truncated)"
+            abbrev: "icmpv6.original"
+            bits: 9536
+            value: "First 1192 bytes of the original IPv6 packet that was too large"
+            description: "As much of the invoking packet as possible without exceeding the minimum MTU (1280). The source uses this to match the error to the correct connection/flow."
+            spec_refs:
+              - document: "RFC 4443"
+                section: "3.2"
+                title: "Packet Too Big — included original packet"
+                url: "https://datatracker.ietf.org/doc/html/rfc4443#section-3.2"
+
+  - id: "ipv6_packet_1280"
+    name: "IPv6 Packet (1280 B, resized)"
+    description: "Host A retransmits using 1280-byte packets after PMTUD"
+    from: "host_a"
+    to: "host_b"
+    via: ["router1", "router2"]
+    timestamp_ns: 200100000
+    total_bytes: 1280
+    color: "#0f766e"
+    headers:
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Version"
+            abbrev: "ipv6.version"
+            bits: 4
+            value: 6
+            description: "IPv6"
+          - name: "Payload Length"
+            abbrev: "ipv6.plen"
+            bits: 16
+            value: 1240
+            description: "1240 bytes payload — reduced to fit within path MTU of 1280"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 64
+            description: "Hop Limit"
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8:a::1"
+            description: "Host A"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "2001:db8:b::1"
+            description: "Host B"
+
+      - name: "TCP + Payload"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 1240
+        fields:
+          - name: "TCP Header + Data"
+            abbrev: "tcp.payload"
+            bits: 9920
+            value: "1240 bytes (20-byte TCP header + 1220 bytes application data)"
+            description: "Reduced MSS — MSS 1220 = path MTU 1280 - 40 IPv6 - 20 TCP"
+
+  - id: "ipv6_packet_1280_frag1"
+    name: "IPv6 Fragment 1 (source fragmentation)"
+    description: "Host A fragments at the source using Fragment extension header — first fragment"
+    from: "host_a"
+    to: "host_b"
+    via: ["router1", "router2"]
+    timestamp_ns: 200200000
+    total_bytes: 1280
+    color: "#7c3aed"
+    headers:
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Version"
+            abbrev: "ipv6.version"
+            bits: 4
+            value: 6
+            description: "IPv6"
+          - name: "Payload Length"
+            abbrev: "ipv6.plen"
+            bits: 16
+            value: 1240
+            description: "1240 bytes after the fixed header (Fragment ext hdr + data)"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 44
+            description: "Fragment Header (Next Header = 44) — indicates source fragmentation"
+            spec_refs:
+              - document: "RFC 8200"
+                section: "4.5"
+                title: "Fragment Header"
+                url: "https://datatracker.ietf.org/doc/html/rfc8200#section-4.5"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 64
+            description: "Hop Limit"
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8:a::1"
+            description: "Host A"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "2001:db8:b::1"
+            description: "Host B"
+
+      - name: "Fragment Extension Header"
+        abbrev: "ipv6.fraghdr"
+        layer: 3
+        total_bytes: 8
+        fields:
+          - name: "Next Header"
+            abbrev: "ipv6.fraghdr.nxt"
+            bits: 8
+            value: 6
+            description: "TCP — the upper-layer protocol of the original unfragmented packet"
+          - name: "Reserved"
+            abbrev: "ipv6.fraghdr.reserved"
+            bits: 8
+            value: 0
+            description: "Reserved, must be zero"
+          - name: "Fragment Offset"
+            abbrev: "ipv6.fraghdr.offset"
+            bits: 13
+            value: 0
+            description: "Offset 0 — this is the first fragment (in 8-octet units)"
+            spec_refs:
+              - document: "RFC 8200"
+                section: "4.5"
+                title: "Fragment Header — Fragment Offset"
+                url: "https://datatracker.ietf.org/doc/html/rfc8200#section-4.5"
+          - name: "Reserved (2 bits)"
+            abbrev: "ipv6.fraghdr.res"
+            bits: 2
+            value: 0
+            description: "Reserved"
+          - name: "M Flag"
+            abbrev: "ipv6.fraghdr.more"
+            bits: 1
+            value: 1
+            description: "M=1 — More Fragments follow"
+          - name: "Identification"
+            abbrev: "ipv6.fraghdr.id"
+            bits: 32
+            value: "0x0000abcd"
+            description: "Unique fragment ID — destination reassembles fragments with the same ID + source + destination"
+
+      - name: "Fragment Payload"
+        abbrev: "data"
+        layer: 4
+        total_bytes: 1232
+        fields:
+          - name: "Data"
+            abbrev: "data.data"
+            bits: 9856
+            value: "1232 bytes of the original packet payload (TCP header + data)"
+            description: "First 1232 bytes of original upper-layer data"
+
+  - id: "ipv6_packet_1280_frag2"
+    name: "IPv6 Fragment 2 (source fragmentation)"
+    description: "Host A fragments at the source — second/last fragment"
+    from: "host_a"
+    to: "host_b"
+    via: ["router1", "router2"]
+    timestamp_ns: 200201000
+    total_bytes: 276
+    color: "#7c3aed"
+    headers:
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Version"
+            abbrev: "ipv6.version"
+            bits: 4
+            value: 6
+            description: "IPv6"
+          - name: "Payload Length"
+            abbrev: "ipv6.plen"
+            bits: 16
+            value: 236
+            description: "Fragment header (8) + remaining data (228)"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 44
+            description: "Fragment Header"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 64
+            description: "Hop Limit"
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8:a::1"
+            description: "Host A"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "2001:db8:b::1"
+            description: "Host B"
+
+      - name: "Fragment Extension Header"
+        abbrev: "ipv6.fraghdr"
+        layer: 3
+        total_bytes: 8
+        fields:
+          - name: "Next Header"
+            abbrev: "ipv6.fraghdr.nxt"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Fragment Offset"
+            abbrev: "ipv6.fraghdr.offset"
+            bits: 13
+            value: 154
+            description: "Offset 154 (in 8-octet units = byte offset 1232)"
+          - name: "M Flag"
+            abbrev: "ipv6.fraghdr.more"
+            bits: 1
+            value: 0
+            description: "M=0 — this is the last fragment"
+          - name: "Identification"
+            abbrev: "ipv6.fraghdr.id"
+            bits: 32
+            value: "0x0000abcd"
+            description: "Same ID as Fragment 1 — destination matches them for reassembly"
+
+      - name: "Fragment Payload"
+        abbrev: "data"
+        layer: 4
+        total_bytes: 228
+        fields:
+          - name: "Data"
+            abbrev: "data.data"
+            bits: 1824
+            value: "228 bytes — remainder of the original packet payload"
+            description: "Last portion of the original unfragmented payload"
+
+  - id: "ipv6_packet_1280_cached"
+    name: "IPv6 Packet (1280 B, cached PMTU)"
+    description: "Subsequent packets use cached path MTU from the start — no wasted packets"
+    from: "host_a"
+    to: "host_b"
+    via: ["router1", "router2"]
+    timestamp_ns: 200300000
+    total_bytes: 1280
+    color: "#059669"
+    headers:
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Version"
+            abbrev: "ipv6.version"
+            bits: 4
+            value: 6
+            description: "IPv6"
+          - name: "Payload Length"
+            abbrev: "ipv6.plen"
+            bits: 16
+            value: 1240
+            description: "1240 bytes — pre-sized to fit path MTU 1280"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 6
+            description: "TCP — no fragmentation needed, packet fits within path MTU"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 64
+            description: "Hop Limit"
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8:a::1"
+            description: "Host A"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "2001:db8:b::1"
+            description: "Host B"
+
+      - name: "TCP + Payload"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 1240
+        fields:
+          - name: "TCP Header + Data"
+            abbrev: "tcp.payload"
+            bits: 9920
+            value: "1240 bytes (20-byte TCP header + 1220 bytes application data)"
+            description: "TCP MSS adjusted to 1220 — all future segments use this size without any packet drops"
+
+  # ══════════════════════════════════════════════════════════════════
+  # Part 3 — PMTUD Black Hole (ICMPv6 blocked by firewall)
+  # ══════════════════════════════════════════════════════════════════
+
+  - id: "ipv6_blackhole_pkt1"
+    name: "IPv6 Packet (1500 B, black hole)"
+    description: "Host A sends 1500-byte IPv6 packet — will be dropped at the bottleneck"
+    from: "host_a"
+    to: "host_b"
+    via: ["router1"]
+    timestamp_ns: 300000000
+    total_bytes: 1500
+    color: "#dc2626"
+    headers:
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Version"
+            abbrev: "ipv6.version"
+            bits: 4
+            value: 6
+            description: "IPv6"
+          - name: "Payload Length"
+            abbrev: "ipv6.plen"
+            bits: 16
+            value: 1460
+            description: "1460 bytes — too large for the 1280-byte tunnel link"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 64
+            description: "Hop Limit"
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8:a::1"
+            description: "Host A"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "2001:db8:b::1"
+            description: "Host B"
+
+      - name: "TCP + Payload"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 1460
+        fields:
+          - name: "TCP Header + Data"
+            abbrev: "tcp.payload"
+            bits: 11680
+            value: "1460 bytes (20-byte TCP header + 1440 bytes application data)"
+            description: "Full MSS segment — will be dropped by Router 1"
+
+  - id: "icmpv6_pkt_too_big_blocked"
+    name: "ICMPv6 Packet Too Big (BLOCKED)"
+    description: "Router 1 sends Packet Too Big, but a firewall blocks it before it reaches Host A"
+    from: "router1"
+    to: "host_a"
+    via: []
+    timestamp_ns: 300020000
+    total_bytes: 1240
+    color: "#991b1b"
+    headers:
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Version"
+            abbrev: "ipv6.version"
+            bits: 4
+            value: 6
+            description: "IPv6"
+          - name: "Payload Length"
+            abbrev: "ipv6.plen"
+            bits: 16
+            value: 1200
+            description: "ICMPv6 Packet Too Big message"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 58
+            description: "ICMPv6"
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8:a::ff"
+            description: "Router 1"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "2001:db8:a::1"
+            description: "Host A — but the firewall will drop this before delivery"
+
+      - name: "ICMPv6 Packet Too Big"
+        abbrev: "icmpv6"
+        layer: 3
+        total_bytes: 1200
+        fields:
+          - name: "Type"
+            abbrev: "icmpv6.type"
+            bits: 8
+            value: 2
+            description: "Type 2 — Packet Too Big (this message is correct, but it will never arrive)"
+          - name: "Code"
+            abbrev: "icmpv6.code"
+            bits: 8
+            value: 0
+            description: "Code 0"
+          - name: "MTU"
+            abbrev: "icmpv6.mtu"
+            bits: 32
+            value: 1280
+            description: "MTU=1280 — Host A would update its cache IF it received this message"
+          - name: "Original Packet (truncated)"
+            abbrev: "icmpv6.original"
+            bits: 9536
+            value: "First 1192 bytes of the dropped original packet"
+            description: "Included to help Host A identify which flow/socket needs updating — but blocked by firewall"
+
+  - id: "ipv6_blackhole_retx1"
+    name: "IPv6 Retransmit 1 (1500 B, still too big)"
+    description: "Host A retransmits the same 1500-byte packet — TCP retransmission timeout fires"
+    from: "host_a"
+    to: "host_b"
+    via: ["router1"]
+    timestamp_ns: 301000000
+    total_bytes: 1500
+    color: "#dc2626"
+    headers:
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Payload Length"
+            abbrev: "ipv6.plen"
+            bits: 16
+            value: 1460
+            description: "Still 1460 — Host A has no idea the path MTU is smaller"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 64
+            description: "Hop Limit"
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8:a::1"
+            description: "Host A"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "2001:db8:b::1"
+            description: "Host B"
+
+      - name: "TCP + Payload"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 1460
+        fields:
+          - name: "TCP Header + Data"
+            abbrev: "tcp.payload"
+            bits: 11680
+            value: "1460 bytes — identical to previous attempt, doomed to fail again"
+            description: "TCP retransmits the segment at the same size — PMTUD cache was never updated"
+
+  - id: "ipv6_blackhole_retx2"
+    name: "IPv6 Retransmit 2 (1500 B, still too big)"
+    description: "Host A retransmits again after doubled RTO — connection is timing out"
+    from: "host_a"
+    to: "host_b"
+    via: ["router1"]
+    timestamp_ns: 303000000
+    total_bytes: 1500
+    color: "#dc2626"
+    headers:
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Payload Length"
+            abbrev: "ipv6.plen"
+            bits: 16
+            value: 1460
+            description: "Still 1460 — trapped in a retransmission loop"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8:a::1"
+            description: "Host A"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "2001:db8:b::1"
+            description: "Host B"
+
+      - name: "TCP + Payload"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 1460
+        fields:
+          - name: "TCP Header + Data"
+            abbrev: "tcp.payload"
+            bits: 11680
+            value: "1460 bytes — every retransmit is dropped, RTO doubles each time (1s, 2s, 4s, 8s...)"
+            description: "The classic PMTUD black hole: packets vanish silently, connection appears hung"
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+  # ══════════════════════════════════════════════════════════════════
+  # Part 1 — IPv4 Approach (Router Fragmentation)
+  # ══════════════════════════════════════════════════════════════════
+
+  - id: "evt_ipv4_send"
+    type: "frame_tx"
+    t_ns: 100000000
+    frame_id: "ipv4_packet_1500"
+    annotation:
+      text: "IPv4: Host A sends a 1500-byte packet with DF=0 (fragmentation allowed)"
+      detail: >
+        In IPv4, the Don't Fragment (DF) flag controls whether routers may fragment
+        a packet. With DF=0, the sender explicitly allows any router along the path
+        to break the packet into smaller pieces if needed. This is the original IPv4
+        design from RFC 791 (1981). The packet carries a 1480-byte payload (TCP header
+        + 1460 bytes of application data) inside a 1500-byte IPv4 packet — the standard
+        Ethernet MTU.
+    state_after:
+      - actor_id: "host_a"
+        layers:
+          - layer: 3
+            state_fields:
+              path_mtu: 1500
+              pmtu_state: "ipv4-no-pmtud"
+
+  - id: "evt_ipv4_router_receives"
+    type: "state_change"
+    t_ns: 100005000
+    annotation:
+      text: "Router 1 receives the 1500-byte packet, sees next-hop MTU is 1280"
+      detail: >
+        Router 1 performs a routing lookup and determines the packet must be forwarded
+        over the tunnel link to Router 2. But the tunnel link has an MTU of only 1280
+        bytes (reduced by tunnel encapsulation overhead). The 1500-byte packet does not
+        fit. In IPv4 with DF=0, the router is allowed to fragment the packet to make it fit.
+    state_after:
+      - actor_id: "router1"
+        layers:
+          - layer: 3
+            state_fields:
+              action: "fragmenting (DF=0, pkt 1500 > next-hop MTU 1280)"
+
+  - id: "evt_ipv4_frag1"
+    type: "frame_tx"
+    t_ns: 100010000
+    frame_id: "ipv4_fragment_1"
+    annotation:
+      text: "Router 1 sends Fragment 1: 1280 bytes (MF=1, offset=0, ID=0x1a2b)"
+      detail: >
+        Router 1 splits the original 1480-byte payload into two fragments. The first
+        fragment contains the first 1260 bytes of payload (including the TCP header) in
+        a 1280-byte IP packet. The MF (More Fragments) flag is set to 1, indicating more
+        fragments follow. The Fragment Offset is 0 since this is the first piece. The
+        Identification field (0x1a2b) is copied to both fragments so the destination can
+        reassemble them.
+    state_after:
+      - actor_id: "router1"
+        layers:
+          - layer: 3
+            state_fields:
+              action: "forwarding fragment 1/2"
+
+  - id: "evt_ipv4_frag2"
+    type: "frame_tx"
+    t_ns: 100011000
+    frame_id: "ipv4_fragment_2"
+    annotation:
+      text: "Router 1 sends Fragment 2: 240 bytes (MF=0, offset=158, ID=0x1a2b)"
+      detail: >
+        The second fragment carries the remaining 220 bytes of payload. MF=0 indicates
+        this is the last fragment. The Fragment Offset field (158 in 8-byte units = byte
+        1264) tells Host B where this data belongs in the original datagram. Host B uses
+        the Identification field to group fragments and the offset to order them.
+    state_after:
+      - actor_id: "router1"
+        layers:
+          - layer: 3
+            state_fields:
+              action: "forwarding fragment 2/2"
+
+  - id: "evt_ipv4_reassembly"
+    type: "state_change"
+    t_ns: 100020000
+    annotation:
+      text: "Host B receives both fragments, reassembles the original packet"
+      detail: >
+        Host B collects both fragments (matched by Identification 0x1a2b, source IP,
+        destination IP, and protocol), verifies all offsets are covered, and reassembles
+        the original 1500-byte packet. The TCP layer then processes the complete segment.
+        This works, but has significant drawbacks: fragments may arrive out of order,
+        one lost fragment requires retransmitting the entire original packet, reassembly
+        buffers consume memory, and fragment-based attacks are a known security issue.
+    state_after:
+      - actor_id: "host_b"
+        layers:
+          - layer: 3
+            state_fields:
+              reassembly: "complete (2 fragments -> 1 packet)"
+
+  - id: "evt_ipv4_annotation"
+    type: "state_change"
+    t_ns: 100025000
+    annotation:
+      text: "IPv4 lets any router fragment. Simple, but causes performance issues and security vulnerabilities."
+      detail: >
+        IPv4 router fragmentation works, but it has serious problems: (1) Fragments may
+        take different paths and arrive out of order. (2) Losing one fragment wastes the
+        bandwidth of all other fragments — the sender must retransmit the entire original
+        packet. (3) Reassembly requires the destination to buffer fragments and track
+        timeouts. (4) Fragment overlap attacks and tiny-fragment attacks are well-known
+        security issues. (5) Stateful firewalls struggle with fragments because only the
+        first fragment contains the TCP/UDP port numbers. IPv6 eliminates all of these
+        problems by forbidding router fragmentation entirely.
+
+  # ══════════════════════════════════════════════════════════════════
+  # Part 2 — IPv6 PMTUD Working Correctly
+  # ══════════════════════════════════════════════════════════════════
+
+  - id: "evt_ipv6_send_1500"
+    type: "frame_tx"
+    t_ns: 200000000
+    frame_id: "ipv6_packet_1500"
+    annotation:
+      text: "IPv6: Host A sends a 1500-byte packet (assumes path MTU = link MTU = 1500)"
+      detail: >
+        Host A has an established TCP connection to Host B. It sends a full-sized 1500-byte
+        IPv6 packet with MSS=1440 (MTU 1500 - 40-byte IPv6 header - 20-byte TCP header).
+        Host A's Path MTU cache for Host B is initialized to the outgoing link MTU (1500),
+        so it assumes the entire path can handle 1500-byte packets. The IPv6 header is a
+        fixed 40 bytes — no variable-length header or header checksum, making it simpler
+        and faster to process than IPv4.
+    state_after:
+      - actor_id: "host_a"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_mss: 1440
+          - layer: 3
+            state_fields:
+              path_mtu: 1500
+              pmtu_state: "assuming link MTU"
+
+  - id: "evt_ipv6_router_drop"
+    type: "state_change"
+    t_ns: 200010000
+    annotation:
+      text: "Router 1 receives the packet — it exceeds the next-hop MTU of 1280"
+      detail: >
+        Router 1 looks up the route for 2001:db8:b::1 and determines the next hop is
+        through the tunnel link (MTU 1280). The 1500-byte packet is too large.
+        CRITICAL DIFFERENCE FROM IPv4: In IPv6, Router 1 CANNOT fragment the packet.
+        RFC 8200 Section 5 is explicit: 'IPv6 routers do not fragment packets being
+        forwarded.' Only the source node is permitted to fragment. Router 1 must drop
+        the packet and inform the sender.
+    state_after:
+      - actor_id: "router1"
+        layers:
+          - layer: 3
+            state_fields:
+              action: "DROP: packet 1500 > next-hop MTU 1280 (cannot fragment in IPv6)"
+
+  - id: "evt_icmpv6_ptb"
+    type: "frame_tx"
+    t_ns: 200020000
+    frame_id: "icmpv6_pkt_too_big"
+    annotation:
+      text: "Router 1 sends ICMPv6 Packet Too Big (type 2, code 0, MTU=1280) to Host A"
+      detail: >
+        After dropping the packet, Router 1 generates an ICMPv6 Packet Too Big message
+        (type 2, code 0) and sends it back to Host A. The critical field is the MTU value
+        (1280), which tells Host A the maximum packet size the next hop can accept. The
+        message also includes as much of the original dropped packet as will fit without
+        exceeding the minimum IPv6 MTU of 1280 bytes. This allows Host A to match the
+        error to the correct TCP connection or flow.
+    state_after:
+      - actor_id: "router1"
+        layers:
+          - layer: 3
+            state_fields:
+              action: "sent ICMPv6 Packet Too Big (MTU=1280)"
+
+  - id: "evt_pmtu_update"
+    type: "state_change"
+    t_ns: 200030000
+    annotation:
+      text: "Host A receives Packet Too Big — updates Path MTU cache for Host B to 1280"
+      detail: >
+        Host A's kernel receives the ICMPv6 Packet Too Big message. It extracts the MTU
+        value (1280) and the included original packet headers. Using the original packet's
+        source/destination addresses and port numbers, it identifies the affected TCP
+        connection. The kernel updates its Path MTU cache (stored in the routing table's
+        dst_entry in Linux) for destination 2001:db8:b::1 from 1500 to 1280. TCP is also
+        notified, and it reduces its MSS from 1440 to 1220 (1280 - 40 IPv6 - 20 TCP).
+    state_after:
+      - actor_id: "host_a"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_mss: 1220
+          - layer: 3
+            state_fields:
+              path_mtu: 1280
+              pmtu_state: "updated via Packet Too Big"
+
+  - id: "evt_ipv6_retx_1280"
+    type: "frame_tx"
+    t_ns: 200100000
+    frame_id: "ipv6_packet_1280"
+    annotation:
+      text: "Host A retransmits using 1280-byte packets — fits within the path MTU"
+      detail: >
+        TCP retransmits the data using the new MSS of 1220 bytes, producing a 1280-byte
+        IPv6 packet (40 header + 20 TCP + 1220 data). This fits within the tunnel link's
+        MTU of 1280. Router 1 forwards the packet without any issues. The data reaches
+        Host B successfully. Note that this approach is more efficient than IPv4
+        fragmentation — one properly-sized packet instead of two fragments.
+    state_after:
+      - actor_id: "router1"
+        layers:
+          - layer: 3
+            state_fields:
+              action: "forwarding (packet 1280 <= MTU 1280)"
+
+  - id: "evt_ipv6_frag_example"
+    type: "frame_tx"
+    t_ns: 200200000
+    frame_id: "ipv6_packet_1280_frag1"
+    annotation:
+      text: "Alternative: Host A can also fragment at the source using the Fragment extension header"
+      detail: >
+        If Host A needs to send a datagram larger than the path MTU (e.g., a UDP application
+        that hands a 2000-byte message to the kernel), the SOURCE can fragment it using the
+        IPv6 Fragment extension header (Next Header = 44). This is fundamentally different
+        from IPv4: only the originating host fragments, never a router. The Fragment header
+        contains a Fragment Offset (in 8-octet units), an M (More fragments) flag, and a
+        32-bit Identification field. This example shows the first fragment of a source-
+        fragmented packet.
+    state_after:
+      - actor_id: "host_a"
+        layers:
+          - layer: 3
+            state_fields:
+              pmtu_state: "source fragmentation (Fragment ext hdr)"
+
+  - id: "evt_ipv6_frag2_example"
+    type: "frame_tx"
+    t_ns: 200201000
+    frame_id: "ipv6_packet_1280_frag2"
+    annotation:
+      text: "Source Fragment 2: remainder of the datagram (M=0, last fragment)"
+      detail: >
+        The second fragment carries the remaining payload with M=0 (last fragment). Both
+        fragments are forwarded by routers without modification — each fragment individually
+        fits within the path MTU of 1280 bytes. Host B reassembles them using the
+        Identification field, source address, and destination address. In practice, TCP
+        avoids source fragmentation by adjusting MSS — the Fragment extension header is
+        mainly used by UDP and tunneling protocols.
+
+  - id: "evt_ipv6_cached"
+    type: "frame_tx"
+    t_ns: 200300000
+    frame_id: "ipv6_packet_1280_cached"
+    annotation:
+      text: "Subsequent packets use cached path MTU (1280) — no drops, no wasted bandwidth"
+      detail: >
+        Host A's Path MTU cache now contains the entry: destination 2001:db8:b::1 -> MTU 1280.
+        All future packets to Host B are sized at 1280 bytes from the start. No packets are
+        dropped, no ICMPv6 messages are needed, and no bandwidth is wasted. TCP's MSS is
+        1220 bytes, so the application layer is completely unaware of the MTU constraint.
+        The Path MTU cache entry will eventually expire (Linux default: 10 minutes), and
+        the host may try a larger size again to detect if the path has changed.
+    state_after:
+      - actor_id: "host_a"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_mss: 1220
+          - layer: 3
+            state_fields:
+              path_mtu: 1280
+              pmtu_state: "cached (stable)"
+
+  - id: "evt_ipv6_pmtud_annotation"
+    type: "state_change"
+    t_ns: 200400000
+    annotation:
+      text: "PMTUD is elegant: discover the bottleneck once, then optimize all future packets."
+      detail: >
+        IPv6 Path MTU Discovery (RFC 8201) is a clean, efficient mechanism. The cost is
+        one dropped packet and one ICMPv6 message per new bottleneck discovered. After
+        that, every subsequent packet is perfectly sized. Compare this to IPv4 router
+        fragmentation, which imposes overhead on every oversized packet for the lifetime
+        of the flow. PMTUD also centralizes fragmentation decisions at the source, which
+        has complete knowledge of its own flows and can make intelligent choices (e.g.,
+        adjusting TCP MSS vs. using the Fragment extension header).
+
+  # ══════════════════════════════════════════════════════════════════
+  # Part 3 — PMTUD Black Hole
+  # ══════════════════════════════════════════════════════════════════
+
+  - id: "evt_blackhole_send"
+    type: "frame_tx"
+    t_ns: 300000000
+    frame_id: "ipv6_blackhole_pkt1"
+    annotation:
+      text: "Black Hole Scenario: Host A sends 1500-byte IPv6 packet (firewall blocks ICMPv6)"
+      detail: >
+        Now consider a network where a misconfigured firewall between Router 1 and Host A
+        drops all ICMPv6 messages. This is tragically common in enterprise networks where
+        security administrators apply blanket rules like 'deny all ICMP.' Host A sends the
+        same 1500-byte packet as before. Router 1 will drop it (too large for the 1280-byte
+        tunnel) and send a Packet Too Big message — but this time, the message will never
+        arrive.
+    state_after:
+      - actor_id: "host_a"
+        layers:
+          - layer: 3
+            state_fields:
+              path_mtu: 1500
+              pmtu_state: "initial (no feedback)"
+
+  - id: "evt_blackhole_drop"
+    type: "state_change"
+    t_ns: 300010000
+    annotation:
+      text: "Router 1 drops the 1500-byte packet (too large for 1280-byte tunnel)"
+      detail: >
+        Router 1 drops the packet for the same reason as before — it exceeds the next-hop
+        MTU of 1280 bytes and IPv6 routers cannot fragment. Router 1 correctly generates an
+        ICMPv6 Packet Too Big (type 2, code 0, MTU=1280) message and sends it toward Host A.
+    state_after:
+      - actor_id: "router1"
+        layers:
+          - layer: 3
+            state_fields:
+              action: "DROP + ICMPv6 Packet Too Big sent"
+
+  - id: "evt_blackhole_icmp_blocked"
+    type: "frame_tx"
+    t_ns: 300020000
+    frame_id: "icmpv6_pkt_too_big_blocked"
+    annotation:
+      text: "FIREWALL BLOCKS ICMPv6 — Packet Too Big message is silently dropped!"
+      detail: >
+        The ICMPv6 Packet Too Big message from Router 1 hits a firewall that has been
+        configured to block all ICMPv6 traffic. The firewall silently drops the message.
+        Host A will NEVER learn that its packets are too large. This is the root cause
+        of the PMTUD black hole. RFC 4890 Section 4.3.1 is explicit: ICMPv6 Packet Too
+        Big messages (type 2) MUST NOT be dropped by firewalls. Blocking them breaks IPv6
+        connectivity for any path with a reduced MTU.
+    state_after:
+      - actor_id: "host_a"
+        layers:
+          - layer: 3
+            state_fields:
+              path_mtu: 1500
+              pmtu_state: "stale — no Packet Too Big received (firewall blocked)"
+
+  - id: "evt_blackhole_no_response"
+    type: "state_change"
+    t_ns: 300100000
+    annotation:
+      text: "Host A never receives the Packet Too Big — it has no idea what went wrong"
+      detail: >
+        Host A's TCP stack is waiting for an ACK from Host B that will never come. The data
+        segment was dropped by Router 1, and the ICMPv6 notification was blocked by the
+        firewall. From Host A's perspective, the packet simply vanished. TCP's retransmission
+        timer (RTO) starts counting down. Host A has no mechanism to distinguish between
+        'the packet was lost due to congestion' and 'the packet was dropped due to MTU.'
+        Without PMTUD feedback, it will keep retransmitting at the same size.
+
+  - id: "evt_blackhole_retx1"
+    type: "frame_tx"
+    t_ns: 301000000
+    frame_id: "ipv6_blackhole_retx1"
+    annotation:
+      text: "TCP retransmission timeout — Host A resends the same 1500-byte packet (still too big)"
+      detail: >
+        After the TCP RTO expires (typically 1 second for the first retransmission), Host A
+        retransmits the segment. But it retransmits at the same size (1500 bytes) because it
+        never received a Packet Too Big message. Router 1 drops it again, sends another Packet
+        Too Big (also blocked), and the cycle repeats. TCP doubles the RTO for the next attempt
+        (exponential backoff: 1s, 2s, 4s, 8s, 16s...).
+    state_after:
+      - actor_id: "host_a"
+        layers:
+          - layer: 3
+            state_fields:
+              pmtu_state: "BLACK HOLE — retransmitting at wrong size"
+
+  - id: "evt_blackhole_retx2"
+    type: "frame_tx"
+    t_ns: 303000000
+    frame_id: "ipv6_blackhole_retx2"
+    annotation:
+      text: "Second retransmission — same 1500 bytes, same result, RTO now 4 seconds"
+      detail: >
+        The second retransmission also uses 1500-byte packets. Dropped again. RTO doubles
+        to 4 seconds. From the user's perspective, the connection has 'hung' — small packets
+        (like TCP ACKs at 40 bytes) may still work, but any data segment exceeding 1280 bytes
+        will be silently dropped. This creates a baffling symptom: 'I can ping but I cannot
+        download files' or 'SSH connects but hangs when I type a long command.'
+
+  - id: "evt_blackhole_hung"
+    type: "state_change"
+    t_ns: 310000000
+    annotation:
+      text: "Connection appears hung — the PMTUD black hole. Every oversized packet is silently dropped."
+      detail: >
+        After several retransmissions with exponential backoff, TCP will eventually give up
+        and reset the connection (Linux default: net.ipv4.tcp_retries2 = 15, which can take
+        over 13 minutes). The user sees a timeout or connection reset. This is the PMTUD
+        black hole — the #1 reason IPv6 connectivity breaks in enterprise networks.
+        Some TCP stacks implement RFC 4821 (Packetization Layer PMTUD) which can probe with
+        smaller packets after repeated timeouts, but it is not universally deployed.
+    state_after:
+      - actor_id: "host_a"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "RETRANSMITTING (RTO exponential backoff)"
+          - layer: 3
+            state_fields:
+              pmtu_state: "BLACK HOLE — connection will eventually timeout"
+
+  - id: "evt_blackhole_annotation"
+    type: "state_change"
+    t_ns: 310100000
+    annotation:
+      text: "This is why you must NEVER block ICMPv6 Packet Too Big (type 2). Firewalls that block all ICMPv6 break IPv6."
+      detail: >
+        RFC 4890 provides explicit guidance: ICMPv6 Packet Too Big (type 2) messages MUST
+        be allowed through firewalls. Blocking them creates PMTUD black holes that silently
+        break IPv6 connectivity for any path with a reduced MTU. This includes tunneled links
+        (6in4, GRE, IPsec, VXLAN), VPN connections, and any network segment with non-standard
+        MTU. The fix is simple: configure firewalls to allow ICMPv6 type 2 in both directions.
+        Better yet, follow RFC 4890's complete recommendations for which ICMPv6 types to
+        allow. The era of 'block all ICMP for security' is over — in IPv6, ICMPv6 is essential
+        infrastructure, not optional.
+
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
+glossary:
+  - term: "Path MTU"
+    abbrev: "PMTU"
+    definition: "The minimum MTU of all links along the path from source to destination. The largest packet that can traverse the entire path without fragmentation."
+    spec_refs:
+      - document: "RFC 8201"
+        section: "2"
+        title: "Terminology — Path MTU"
+        url: "https://datatracker.ietf.org/doc/html/rfc8201#section-2"
+
+  - term: "Path MTU Discovery"
+    abbrev: "PMTUD"
+    definition: "A technique for discovering the Path MTU by sending packets and processing ICMPv6 Packet Too Big errors. In IPv6, this is the primary mechanism for learning the correct packet size. Defined in RFC 8201."
+    spec_refs:
+      - document: "RFC 8201"
+        section: "3"
+        title: "How Path MTU Discovery Works"
+        url: "https://datatracker.ietf.org/doc/html/rfc8201#section-3"
+
+  - term: "Maximum Transmission Unit"
+    abbrev: "MTU"
+    definition: "The largest packet (in bytes) that a network link can carry. Standard Ethernet MTU is 1500 bytes. The minimum IPv6 link MTU is 1280 bytes (RFC 8200)."
+    spec_refs:
+      - document: "RFC 8200"
+        section: "5"
+        title: "Packet Size Issues"
+        url: "https://datatracker.ietf.org/doc/html/rfc8200#section-5"
+
+  - term: "ICMPv6 Packet Too Big"
+    definition: "ICMPv6 message type 2, code 0. Sent by a router when it receives a packet larger than the next-hop MTU and cannot fragment it. Contains the MTU value of the constraining link and as much of the original packet as fits."
+    spec_refs:
+      - document: "RFC 4443"
+        section: "3.2"
+        title: "Packet Too Big Message"
+        url: "https://datatracker.ietf.org/doc/html/rfc4443#section-3.2"
+
+  - term: "Fragment Extension Header"
+    definition: "IPv6 extension header (Next Header = 44) used for source fragmentation. Contains Fragment Offset, M (More fragments) flag, and a 32-bit Identification field. Only the source host may add this header — routers never fragment in IPv6."
+    spec_refs:
+      - document: "RFC 8200"
+        section: "4.5"
+        title: "Fragment Header"
+        url: "https://datatracker.ietf.org/doc/html/rfc8200#section-4.5"
+
+  - term: "PMTUD Black Hole"
+    definition: "A condition where ICMPv6 Packet Too Big messages are blocked (typically by a firewall), preventing the source from learning the correct Path MTU. Packets larger than the bottleneck MTU are silently dropped, and the source keeps retransmitting at the wrong size. The connection appears to hang."
+    spec_refs:
+      - document: "RFC 8201"
+        section: "4"
+        title: "Protocol Requirements"
+        url: "https://datatracker.ietf.org/doc/html/rfc8201#section-4"
+
+  - term: "Maximum Segment Size"
+    abbrev: "MSS"
+    definition: "The largest TCP payload (excluding headers) a host will accept. Derived from the Path MTU: MSS = PMTU - IP header - TCP header. For IPv6 with PMTU 1280: MSS = 1280 - 40 - 20 = 1220. TCP adjusts MSS automatically when PMTUD updates the path MTU."
+    spec_refs:
+      - document: "RFC 9293"
+        section: "3.7.1"
+        title: "Maximum Segment Size Option"
+        url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.7.1"
+
+  - term: "Minimum IPv6 Link MTU"
+    definition: "1280 bytes — the minimum MTU that any IPv6 link must support, as mandated by RFC 8200. This guarantees that a 1280-byte IPv6 packet can traverse any conformant IPv6 link without fragmentation."
+    spec_refs:
+      - document: "RFC 8200"
+        section: "5"
+        title: "Packet Size Issues — minimum link MTU"
+        url: "https://datatracker.ietf.org/doc/html/rfc8200#section-5"
+
+  - term: "Don't Fragment Flag"
+    abbrev: "DF"
+    definition: "IPv4 header flag that, when set to 1, forbids routers from fragmenting the packet. Used by IPv4 Path MTU Discovery (RFC 1191). In IPv6, the concept is implicit — routers NEVER fragment, so there is no DF flag."
+    spec_refs:
+      - document: "RFC 791"
+        section: "3.1"
+        title: "Internet Header Format — Flags"
+        url: "https://datatracker.ietf.org/doc/html/rfc791#section-3.1"
+
+  - term: "Packetization Layer PMTUD"
+    abbrev: "PLPMTUD"
+    definition: "RFC 4821 / RFC 8899 technique that probes the path MTU using transport-layer packets rather than relying on ICMPv6. Can mitigate PMTUD black holes by detecting the correct MTU through probe-and-response, but is not universally deployed."
+    spec_refs:
+      - document: "RFC 4821"
+        section: "1"
+        title: "Packetization Layer Path MTU Discovery"
+        url: "https://datatracker.ietf.org/doc/html/rfc4821#section-1"
+
+# ─────────────────────────────────────────────────────────────────
+# WALKTHROUGHS
+# ─────────────────────────────────────────────────────────────────
+walkthroughs:
+  - id: "default"
+    title: "IPv6 Path MTU Discovery: From IPv4 Fragmentation to PMTUD Black Holes"
+    description: "Walk through why IPv6 forbids router fragmentation, how PMTUD discovers the correct packet size, and what goes catastrophically wrong when firewalls block ICMPv6"
+    steps:
+      - step: 0
+        narration: >
+          In IPv4, routers can fragment. In IPv6, only the SOURCE can fragment. This is a
+          fundamental design change. Let's see why this matters by first looking at how IPv4
+          handles an oversized packet, then watching IPv6 Path MTU Discovery in action, and
+          finally seeing the devastating failure that occurs when ICMPv6 is blocked.
+        highlight_fields: []
+
+      - step: 1
+        narration: >
+          We start with the IPv4 approach for contrast. Host A sends a 1500-byte IPv4 packet
+          with the Don't Fragment flag cleared (DF=0), meaning any router along the path is
+          allowed to break it into pieces. The packet carries 1460 bytes of application data
+          in a standard TCP segment. Look at the IP Flags field — DF=0 is the key.
+        highlight_fields: ["ip.flags.df", "ip.id", "ip.len"]
+
+      - step: 2
+        narration: >
+          Router 1 receives the packet and checks the next-hop MTU — it's only 1280 bytes
+          (a tunnel link). The 1500-byte packet won't fit. But since DF=0, Router 1 is
+          allowed to fragment. It splits the packet into two fragments sharing the same
+          Identification field (0x1a2b). The first fragment is 1280 bytes with MF=1 (more
+          to come), and the second is 240 bytes with MF=0 (last fragment). The Fragment
+          Offset tells Host B where each piece belongs in the original packet.
+        highlight_fields: ["ip.id", "ip.flags.mf", "ip.frag_offset"]
+
+      - step: 3
+        narration: >
+          Host B receives both fragments, reassembles them using the Identification field,
+          and recovers the original packet. It works, but this approach has serious problems:
+          fragments may arrive out of order, losing one fragment wastes the bandwidth of all
+          fragments, reassembly buffers consume memory, and fragment-based attacks are a
+          well-known security issue. IPv6 eliminates all of these problems by a simple rule:
+          routers do not fragment.
+        highlight_fields: []
+
+      - step: 4
+        narration: >
+          Now let's see the IPv6 approach. Host A sends a 1500-byte IPv6 packet assuming the
+          path MTU equals the outgoing link MTU (1500). The IPv6 header is a fixed 40 bytes --
+          no variable-length options, no header checksum. The Payload Length field shows 1460
+          bytes, which is the TCP header plus 1440 bytes of application data. Note there is
+          no Don't Fragment flag in IPv6 -- router fragmentation simply does not exist.
+        highlight_fields: ["ipv6.plen", "ipv6.nxt", "ipv6.hlim"]
+
+      - step: 5
+        narration: >
+          Router 1 receives the 1500-byte IPv6 packet and checks the next-hop MTU: 1280 bytes.
+          The packet is too big. In IPv4, the router would fragment. In IPv6, the router CANNOT
+          fragment -- RFC 8200 Section 5 is explicit. Router 1 has only one option: drop the
+          packet and tell the sender what happened. This is the critical moment where IPv6's
+          design diverges from IPv4.
+        highlight_fields: []
+
+      - step: 6
+        narration: >
+          Router 1 sends an ICMPv6 Packet Too Big message (type 2, code 0) back to Host A.
+          The most important field is the MTU value: 1280. This tells Host A exactly how large
+          its packets can be. The message also includes as much of the original dropped packet
+          as fits, so Host A can match the error to the correct TCP connection. ICMPv6 Packet
+          Too Big is the mechanism that makes PMTUD work -- it is not optional, it is essential.
+        highlight_fields: ["icmpv6.type", "icmpv6.code", "icmpv6.mtu"]
+
+      - step: 7
+        narration: >
+          Host A receives the Packet Too Big message and updates its Path MTU cache: the entry
+          for 2001:db8:b::1 changes from 1500 to 1280. TCP is also notified and reduces its MSS
+          from 1440 to 1220 (path MTU 1280 minus 40-byte IPv6 header minus 20-byte TCP header).
+          TCP adjusts its MSS based on PMTUD, so most applications never need to know about MTU.
+          The application keeps sending data normally -- TCP handles the size reduction transparently.
+        highlight_fields: ["icmpv6.mtu"]
+
+      - step: 8
+        narration: >
+          Host A retransmits the data as a 1280-byte packet (40 IPv6 + 20 TCP + 1220 data).
+          Router 1 now forwards it successfully -- the packet fits within the 1280-byte tunnel
+          MTU. One dropped packet and one ICMPv6 message was all it took to discover the
+          bottleneck. From now on, all packets to Host B will be correctly sized.
+          1280 bytes is the minimum MTU for any IPv6 link -- guaranteed by the spec.
+        highlight_fields: ["ipv6.plen"]
+
+      - step: 9
+        narration: >
+          If the source needs to send a datagram larger than the path MTU (common with UDP),
+          it can use the IPv6 Fragment extension header (Next Header = 44). This is SOURCE
+          fragmentation, not router fragmentation. The Fragment header contains the Fragment
+          Offset, M (More fragments) flag, and a 32-bit Identification field. Each fragment
+          individually fits within the path MTU. TCP normally avoids this by adjusting MSS.
+          Tunnels (6in4, GRE, IPsec) are the most common cause of reduced MTU on IPv6 paths.
+        highlight_fields: ["ipv6.nxt", "ipv6.fraghdr.offset", "ipv6.fraghdr.more", "ipv6.fraghdr.id"]
+
+      - step: 10
+        narration: >
+          With the Path MTU cached, subsequent packets use the correct 1280-byte size from the
+          start. No packets are dropped, no ICMPv6 messages are needed. PMTUD is elegant: discover
+          the bottleneck once, then optimize all future packets. The cache eventually expires
+          (default 10 minutes in Linux), and the host may probe with larger packets to detect
+          if the path has improved -- perhaps the tunnel was removed or reconfigured.
+        highlight_fields: ["ipv6.plen"]
+
+      - step: 11
+        narration: >
+          Now for the nightmare scenario: what happens when a firewall blocks ICMPv6. Host A
+          sends a 1500-byte packet. Router 1 drops it (too big for the tunnel) and sends a
+          Packet Too Big message -- but a firewall between Router 1 and Host A silently drops
+          all ICMPv6 traffic. Host A never learns about the MTU constraint. This is called the
+          PMTUD black hole, and it is the number one reason IPv6 connectivity breaks in enterprise
+          networks.
+        highlight_fields: ["icmpv6.type", "icmpv6.mtu"]
+
+      - step: 12
+        narration: >
+          Host A waits for a TCP ACK that will never come. After the retransmission timeout (about
+          1 second), it retransmits the segment -- at the same 1500-byte size, because it never
+          received a Packet Too Big message. Router 1 drops it again. The Packet Too Big is
+          blocked again. The cycle repeats with exponential backoff: 1 second, 2 seconds, 4
+          seconds, 8 seconds. The connection appears completely hung.
+        highlight_fields: ["ipv6.plen"]
+
+      - step: 13
+        narration: >
+          The insidious part of a PMTUD black hole is that small packets still work. TCP ACKs
+          (40 bytes), DNS queries, and ping all succeed because they are well under 1280 bytes.
+          Only data-carrying segments above the bottleneck MTU fail. This creates baffling symptoms:
+          'I can ping but I cannot download files' or 'SSH connects but hangs when I paste a long
+          command.' The connection eventually times out after 13+ minutes of retransmissions.
+        highlight_fields: []
+
+      - step: 14
+        narration: >
+          The fix is simple and non-negotiable: NEVER block ICMPv6 Packet Too Big (type 2).
+          RFC 4890 documents exactly which ICMPv6 messages must not be filtered. At minimum,
+          allow type 1 (Destination Unreachable), type 2 (Packet Too Big), type 3 (Time
+          Exceeded), and type 4 (Parameter Problem). For IPv6 to function correctly, ICMPv6
+          is essential infrastructure -- it is not optional like ICMP was sometimes treated in
+          IPv4. Firewalls that block all ICMPv6 break IPv6.
+        highlight_fields: []
+
+      - step: 15
+        narration: >
+          Let's recap the three scenarios we observed: (1) IPv4 with DF=0 -- routers fragment,
+          it works but creates performance and security problems. (2) IPv6 PMTUD working correctly
+          -- one dropped packet triggers a Packet Too Big message, the source learns the path MTU,
+          and all future packets are correctly sized. (3) PMTUD black hole -- a firewall blocks
+          ICMPv6, the source never learns the correct MTU, and the connection silently dies.
+          The lesson is clear: IPv6 PMTUD is elegant and efficient, but it absolutely requires
+          ICMPv6 Packet Too Big to function. Protect it.
+        highlight_fields: []

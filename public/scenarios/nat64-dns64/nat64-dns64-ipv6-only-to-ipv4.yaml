@@ -1,0 +1,2027 @@
+meta:
+  id: "nat64-dns64-ipv6-only-to-ipv4"
+  title: "NAT64/DNS64: IPv6-Only Client Reaches an IPv4-Only Server"
+  protocol: "NAT64/DNS64"
+  protocol_family: "IPv6 Transition"
+  version: "1.0.0"
+  description: >
+    An IPv6-only client needs to reach legacy-api.example.com, which only has an
+    IPv4 A record. DNS64 synthesizes a AAAA record using the well-known prefix
+    64:ff9b::/96, the client connects over pure IPv6, and the NAT64 gateway
+    translates packets between the IPv6 and IPv4 worlds. The scenario also covers
+    464XLAT for legacy applications that hardcode IPv4 addresses. This is the key
+    technology enabling federal agencies to operate IPv6-only networks per OMB
+    M-21-07 while maintaining access to the IPv4 internet.
+
+  learning_objectives:
+    - "Understand how DNS64 synthesizes AAAA records from A records when no native AAAA exists"
+    - "Learn the well-known NAT64 prefix 64:ff9b::/96 and how IPv4 addresses are embedded in IPv6"
+    - "Trace a TCP connection from an IPv6-only client through NAT64 to an IPv4-only server"
+    - "See how NAT64 maintains stateful translation mappings between IPv6 and IPv4 sessions"
+    - "Observe the protocol boundary: client always sees IPv6, server always sees IPv4"
+    - "Understand 464XLAT (CLAT + PLAT) for legacy apps that hardcode IPv4 addresses"
+    - "Recognize why NAT64/DNS64 is the foundation for IPv6-only network deployments at scale"
+
+  difficulty: "intermediate"
+
+  authors:
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+
+  created: "2026-03-19"
+  updated: "2026-03-19"
+
+  tags:
+    - "IPv6"
+    - "NAT64"
+    - "DNS64"
+    - "464XLAT"
+    - "IPv6-only"
+    - "IPv4 transition"
+    - "federal"
+    - "dual-stack"
+    - "intermediate"
+    - "education"
+    - "WIP"
+
+  primary_specs:
+    - document: "RFC 6146"
+      section: "2"
+      title: "Stateful NAT64: Network Address and Protocol Translation from IPv6 Clients to IPv4 Servers"
+      url: "https://datatracker.ietf.org/doc/html/rfc6146#section-2"
+      alt_url: "https://www.rfc-editor.org/rfc/rfc6146"
+    - document: "RFC 6147"
+      section: "3"
+      title: "DNS64: DNS Extensions for Network Address Translation from IPv6 Clients to IPv4 Servers"
+      url: "https://datatracker.ietf.org/doc/html/rfc6147#section-3"
+      alt_url: "https://www.rfc-editor.org/rfc/rfc6147"
+    - document: "RFC 6052"
+      section: "2"
+      title: "IPv6 Addressing of IPv4/IPv6 Translators"
+      url: "https://datatracker.ietf.org/doc/html/rfc6052#section-2"
+      alt_url: "https://www.rfc-editor.org/rfc/rfc6052"
+    - document: "RFC 6877"
+      section: "3"
+      title: "464XLAT: Combination of Stateful and Stateless Translation"
+      url: "https://datatracker.ietf.org/doc/html/rfc6877#section-3"
+      alt_url: "https://www.rfc-editor.org/rfc/rfc6877"
+    - document: "RFC 8200"
+      section: "3"
+      title: "Internet Protocol, Version 6 (IPv6) Specification"
+      url: "https://datatracker.ietf.org/doc/html/rfc8200#section-3"
+      alt_url: "https://www.rfc-editor.org/rfc/rfc8200"
+
+  content_disclaimer: >
+    Protocol descriptions in this scenario are based on public RFCs and open-source
+    implementations (TAYGA, Jool, Linux kernel). No proprietary specification text
+    has been reproduced. RFC references are provided as citations for further reading.
+
+  source_references:
+    - repo: "torvalds/linux"
+      path: "net/ipv6/ip6_output.c"
+      description: "IPv6 packet output path"
+    - repo: "torvalds/linux"
+      path: "net/ipv6/addrconf.c"
+      description: "IPv6 address configuration and management"
+    - repo: "torvalds/linux"
+      path: "net/ipv6/ndisc.c"
+      description: "Neighbor Discovery Protocol (NDP) — IPv6 equivalent of ARP"
+    - repo: "NICMx/Jool"
+      path: "src/mod/common/steps/handling_hairpinning.c"
+      description: "Jool NAT64 — open-source stateful NAT64 implementation for Linux"
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "client"
+      type: "host"
+      label: "IPv6-Only Client"
+      description: "Client operating on an IPv6-only network — has no IPv4 address at all"
+      hardware: "Generic NIC"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ipv6: "2001:db8:1::10"
+      mac: "00:11:22:33:44:01"
+      position: "left"
+
+    - id: "dns64"
+      type: "server"
+      label: "DNS64 Resolver"
+      description: "Recursive DNS resolver with DNS64 function — synthesizes AAAA records for IPv4-only destinations"
+      hardware: "Generic server"
+      os: "Linux 6.x (BIND 9 / Unbound)"
+      ipv6: "2001:db8:1::53"
+      mac: "00:11:22:33:44:02"
+      position: "center-left"
+
+    - id: "nat64gw"
+      type: "gateway"
+      label: "NAT64 Gateway"
+      description: "Stateful NAT64 translator — owns the 64:ff9b::/96 prefix and translates between IPv6 and IPv4"
+      hardware: "Gateway appliance (Jool / TAYGA)"
+      os: "Linux 6.x"
+      ipv6: "2001:db8:1::64"
+      ipv4: "203.0.113.50"
+      mac: "00:11:22:33:44:03"
+      position: "center-right"
+
+    - id: "server"
+      type: "host"
+      label: "IPv4-Only Web Server"
+      description: "Legacy server running only IPv4 — has no IPv6 connectivity at all"
+      hardware: "Generic NIC"
+      os: "Linux 5.x"
+      ip: "198.51.100.1"
+      mac: "00:11:22:33:44:04"
+      position: "right"
+
+  links:
+    - id: "link-c-dns64"
+      from: "client"
+      to: "dns64"
+      speed_gbps: 10
+      media: "ethernet"
+      description: "IPv6-only LAN segment"
+    - id: "link-c-nat64"
+      from: "client"
+      to: "nat64gw"
+      speed_gbps: 10
+      media: "ethernet"
+      description: "IPv6-only LAN segment (client to NAT64 gateway)"
+    - id: "link-nat64-server"
+      from: "nat64gw"
+      to: "server"
+      speed_gbps: 10
+      media: "ethernet"
+      description: "IPv4-only WAN/transit segment (NAT64 gateway to legacy server)"
+
+# ─────────────────────────────────────────────────────────────────
+# OSI LAYER DEFINITIONS (per actor)
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  client:
+    - layer: 7
+      name: "Application (HTTP)"
+      components: ["user application", "libc socket API"]
+      state_schema:
+        app_state:
+          type: "string"
+          description: "Application-level state"
+          initial: "idle"
+        dns_query:
+          type: "string"
+          description: "Hostname being resolved"
+          initial: "none"
+        resolved_address:
+          type: "string"
+          description: "Address returned by DNS (always IPv6 from client's perspective)"
+          initial: "none"
+
+    - layer: 4
+      name: "TCP"
+      components: ["net/ipv6/tcp_ipv6.c"]
+      state_schema:
+        tcp_state:
+          type: "string"
+          description: "TCP state machine state"
+          initial: "CLOSED"
+        src_port:
+          type: "integer"
+          description: "Ephemeral source port"
+          initial: 0
+        dst_port:
+          type: "integer"
+          description: "Destination port"
+          initial: 0
+
+    - layer: 3
+      name: "IPv6"
+      components: ["net/ipv6/ip6_output.c", "net/ipv6/route.c"]
+      state_schema:
+        src_ipv6:
+          type: "string"
+          description: "Source IPv6 address"
+          initial: "2001:db8:1::10"
+        dst_ipv6:
+          type: "string"
+          description: "Destination IPv6 address"
+          initial: "none"
+        hop_limit:
+          type: "integer"
+          initial: 64
+        protocol_view:
+          type: "string"
+          description: "What the client sees — always IPv6"
+          initial: "IPv6-only"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver", "IEEE 802.3"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+        mac_addr:
+          type: "string"
+          initial: "00:11:22:33:44:01"
+
+  dns64:
+    - layer: 7
+      name: "DNS64 Service"
+      components: ["BIND 9 / Unbound with dns64 module"]
+      state_schema:
+        dns64_state:
+          type: "string"
+          description: "DNS64 processing state"
+          initial: "idle"
+        query_name:
+          type: "string"
+          description: "Current query being processed"
+          initial: "none"
+        real_a_record:
+          type: "string"
+          description: "A record fetched from authoritative DNS"
+          initial: "none"
+        synthesized_aaaa:
+          type: "string"
+          description: "Synthesized AAAA record using 64:ff9b::/96 prefix"
+          initial: "none"
+
+    - layer: 3
+      name: "IPv6 / IPv4 (dual-stack)"
+      components: ["net/ipv6/ip6_output.c", "net/ipv4/ip_output.c"]
+      state_schema:
+        ipv6_addr:
+          type: "string"
+          initial: "2001:db8:1::53"
+        note:
+          type: "string"
+          description: "DNS64 resolver is dual-stack to reach authoritative DNS over IPv4"
+          initial: "dual-stack DNS resolver"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+        mac_addr:
+          type: "string"
+          initial: "00:11:22:33:44:02"
+
+  nat64gw:
+    - layer: 7
+      name: "NAT64 Translation Engine"
+      components: ["Jool / TAYGA / kernel nat64"]
+      state_schema:
+        nat64_state:
+          type: "string"
+          description: "NAT64 gateway operational state"
+          initial: "idle"
+        active_mappings:
+          type: "integer"
+          description: "Number of active translation mappings (BIB entries)"
+          initial: 0
+        mapping_table:
+          type: "string"
+          description: "Current active mapping: IPv6 src/dst → IPv4 src/dst"
+          initial: "empty"
+
+    - layer: 3
+      name: "IPv6 ↔ IPv4 Translation"
+      components: ["Stateful NAT64 (RFC 6146)"]
+      state_schema:
+        ipv6_prefix:
+          type: "string"
+          description: "Well-known NAT64 prefix"
+          initial: "64:ff9b::/96"
+        ipv4_pool:
+          type: "string"
+          description: "IPv4 address pool for source NAT"
+          initial: "203.0.113.0/24"
+        ipv6_interface:
+          type: "string"
+          initial: "2001:db8:1::64"
+        ipv4_interface:
+          type: "string"
+          initial: "203.0.113.50"
+        translation_direction:
+          type: "string"
+          description: "Current translation direction"
+          initial: "none"
+
+    - layer: 2
+      name: "Ethernet (dual-homed)"
+      components: ["NIC driver — two interfaces"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+        mac_addr:
+          type: "string"
+          initial: "00:11:22:33:44:03"
+
+  server:
+    - layer: 7
+      name: "Application (HTTP)"
+      components: ["HTTP server", "libc socket API"]
+      state_schema:
+        app_state:
+          type: "string"
+          description: "Application-level state"
+          initial: "listening"
+        perceived_client_ip:
+          type: "string"
+          description: "The server sees an IPv4 client (NAT64 pool address)"
+          initial: "none"
+
+    - layer: 4
+      name: "TCP"
+      components: ["net/ipv4/tcp.c"]
+      state_schema:
+        tcp_state:
+          type: "string"
+          description: "TCP state machine state"
+          initial: "LISTEN"
+        src_port:
+          type: "integer"
+          initial: 443
+        dst_port:
+          type: "integer"
+          initial: 0
+
+    - layer: 3
+      name: "IPv4"
+      components: ["net/ipv4/ip_output.c"]
+      state_schema:
+        src_ip:
+          type: "string"
+          description: "Source IPv4 address"
+          initial: "198.51.100.1"
+        dst_ip:
+          type: "string"
+          description: "Destination IPv4 address"
+          initial: "none"
+        ttl:
+          type: "integer"
+          initial: 64
+        protocol_view:
+          type: "string"
+          description: "What the server sees — always IPv4"
+          initial: "IPv4-only"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver", "IEEE 802.3"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+        mac_addr:
+          type: "string"
+          initial: "00:11:22:33:44:04"
+
+# ─────────────────────────────────────────────────────────────────
+# FRAMES
+# ─────────────────────────────────────────────────────────────────
+frames:
+  # ── Phase 1: DNS64 Address Synthesis ──────────────────────────
+  - id: "dns_aaaa_query"
+    name: "DNS AAAA Query"
+    description: "Client queries DNS64 resolver for AAAA record of legacy-api.example.com"
+    from: "client"
+    to: "dns64"
+    via: []
+    timestamp_ns: 100000000
+    total_bytes: 78
+    color: "#6366f1"
+    headers:
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Version"
+            abbrev: "ipv6.version"
+            bits: 4
+            value: 6
+            description: "IPv6"
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8:1::10"
+            description: "Client IPv6 address"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "2001:db8:1::53"
+            description: "DNS64 resolver IPv6 address"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 17
+            description: "UDP (17)"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 64
+            description: "Hop limit"
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - name: "Source Port"
+            abbrev: "udp.srcport"
+            bits: 16
+            value: 51234
+            description: "Ephemeral source port"
+          - name: "Destination Port"
+            abbrev: "udp.dstport"
+            bits: 16
+            value: 53
+            description: "DNS port"
+      - name: "DNS"
+        abbrev: "dns"
+        layer: 7
+        total_bytes: 30
+        fields:
+          - name: "Transaction ID"
+            abbrev: "dns.id"
+            bits: 16
+            value: "0xabcd"
+            description: "DNS transaction identifier"
+          - name: "Flags"
+            abbrev: "dns.flags"
+            bits: 16
+            value: "0x0100"
+            description: "Standard query, recursion desired (RD=1)"
+          - name: "Query Name"
+            abbrev: "dns.qry.name"
+            bits: 0
+            value: "legacy-api.example.com"
+            description: "The hostname the client wants to resolve"
+          - name: "Query Type"
+            abbrev: "dns.qry.type"
+            bits: 16
+            value: "AAAA (28)"
+            description: "Client requests an IPv6 AAAA record"
+            spec_refs:
+              - document: "RFC 3596"
+                section: "2"
+                title: "DNS Extensions to Support IP Version 6"
+                url: "https://datatracker.ietf.org/doc/html/rfc3596#section-2"
+
+  - id: "dns_a_query_upstream"
+    name: "DNS A Query (Upstream)"
+    description: "DNS64 resolver queries authoritative DNS for A record after finding no AAAA"
+    from: "dns64"
+    to: "server"
+    via: []
+    timestamp_ns: 100500000
+    total_bytes: 70
+    color: "#6366f1"
+    headers:
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.0.2.53"
+            description: "DNS64 resolver's IPv4 address (for upstream queries)"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "198.51.100.200"
+            description: "Authoritative DNS server for example.com"
+      - name: "DNS"
+        abbrev: "dns"
+        layer: 7
+        total_bytes: 30
+        fields:
+          - name: "Query Name"
+            abbrev: "dns.qry.name"
+            bits: 0
+            value: "legacy-api.example.com"
+            description: "Same hostname, now querying for A record"
+          - name: "Query Type"
+            abbrev: "dns.qry.type"
+            bits: 16
+            value: "A (1)"
+            description: "DNS64 falls back to A record query after AAAA returns NODATA"
+            spec_refs:
+              - document: "RFC 6147"
+                section: "5.1.6"
+                title: "Handling of the response"
+                url: "https://datatracker.ietf.org/doc/html/rfc6147#section-5.1.6"
+
+  - id: "dns_a_response_upstream"
+    name: "DNS A Response (Upstream)"
+    description: "Authoritative DNS returns A record: 198.51.100.1"
+    from: "server"
+    to: "dns64"
+    via: []
+    timestamp_ns: 101000000
+    total_bytes: 86
+    color: "#6366f1"
+    headers:
+      - name: "DNS"
+        abbrev: "dns"
+        layer: 7
+        total_bytes: 46
+        fields:
+          - name: "Flags"
+            abbrev: "dns.flags"
+            bits: 16
+            value: "0x8180"
+            description: "Standard response, no error, recursion available"
+          - name: "Answer Name"
+            abbrev: "dns.resp.name"
+            bits: 0
+            value: "legacy-api.example.com"
+            description: "The queried hostname"
+          - name: "Answer Type"
+            abbrev: "dns.resp.type"
+            bits: 16
+            value: "A (1)"
+            description: "IPv4 address record — this confirms the server is IPv4-only"
+          - name: "Answer Data"
+            abbrev: "dns.a"
+            bits: 32
+            value: "198.51.100.1"
+            description: "The IPv4 address of the legacy server"
+
+  - id: "dns_aaaa_response_synthesized"
+    name: "DNS AAAA Response (Synthesized)"
+    description: "DNS64 returns synthesized AAAA record: 64:ff9b::c633:6401 to client"
+    from: "dns64"
+    to: "client"
+    via: []
+    timestamp_ns: 101500000
+    total_bytes: 94
+    color: "#10b981"
+    headers:
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8:1::53"
+            description: "DNS64 resolver"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "2001:db8:1::10"
+            description: "Client"
+      - name: "DNS"
+        abbrev: "dns"
+        layer: 7
+        total_bytes: 46
+        fields:
+          - name: "Transaction ID"
+            abbrev: "dns.id"
+            bits: 16
+            value: "0xabcd"
+            description: "Matches the original query"
+          - name: "Flags"
+            abbrev: "dns.flags"
+            bits: 16
+            value: "0x8180"
+            description: "Standard response, no error"
+          - name: "Answer Name"
+            abbrev: "dns.resp.name"
+            bits: 0
+            value: "legacy-api.example.com"
+            description: "The queried hostname"
+          - name: "Answer Type"
+            abbrev: "dns.resp.type"
+            bits: 16
+            value: "AAAA (28)"
+            description: "IPv6 address record — synthesized by DNS64"
+            spec_refs:
+              - document: "RFC 6147"
+                section: "5.1.6"
+                title: "DNS64 synthesizes AAAA from A record"
+                url: "https://datatracker.ietf.org/doc/html/rfc6147#section-5.1.6"
+          - name: "Answer Data (Synthesized)"
+            abbrev: "dns.aaaa"
+            bits: 128
+            value: "64:ff9b::c633:6401"
+            description: >
+              Synthesized AAAA: prefix 64:ff9b::/96 + embedded IPv4 198.51.100.1.
+              198.51.100.1 in hex = c6.33.64.01, so the full address is 64:ff9b::c633:6401.
+            spec_refs:
+              - document: "RFC 6052"
+                section: "2.1"
+                title: "IPv4-Embedded IPv6 Address Format"
+                url: "https://datatracker.ietf.org/doc/html/rfc6052#section-2.1"
+
+  # ── Phase 2: NAT64 TCP Connection ─────────────────────────────
+  - id: "tcp_syn_ipv6"
+    name: "TCP SYN (IPv6)"
+    description: "Client sends TCP SYN over IPv6 to the synthesized address 64:ff9b::c633:6401"
+    from: "client"
+    to: "nat64gw"
+    via: []
+    timestamp_ns: 200000000
+    total_bytes: 80
+    color: "#3b82f6"
+    headers:
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Version"
+            abbrev: "ipv6.version"
+            bits: 4
+            value: 6
+            description: "IPv6 — the client only speaks IPv6"
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8:1::10"
+            description: "Client's IPv6 address"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "64:ff9b::c633:6401"
+            description: >
+              The synthesized address. The client treats this as a normal IPv6 address.
+              It has no idea the real server is IPv4-only.
+            spec_refs:
+              - document: "RFC 6052"
+                section: "2"
+                title: "Well-Known Prefix 64:ff9b::/96"
+                url: "https://datatracker.ietf.org/doc/html/rfc6052#section-2"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 6
+            description: "TCP (6)"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 64
+            description: "Hop limit"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 40
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49200
+            description: "Ephemeral source port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 443
+            description: "HTTPS port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 5000000
+            description: "Initial Sequence Number (ISN)"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 16
+            value: "0x002"
+            value_hex: "0x002"
+            description: "SYN"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Initial window size"
+
+  - id: "tcp_syn_ipv4"
+    name: "TCP SYN (IPv4 — translated)"
+    description: "NAT64 gateway translates IPv6 SYN to IPv4 SYN and forwards to legacy server"
+    from: "nat64gw"
+    to: "server"
+    via: []
+    timestamp_ns: 200100000
+    total_bytes: 60
+    color: "#f59e0b"
+    headers:
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Version"
+            abbrev: "ip.version"
+            bits: 4
+            value: 4
+            description: "IPv4 — this is now a completely normal IPv4 packet"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "203.0.113.50"
+            description: >
+              NAT64 pool address — the gateway assigns this from its IPv4 pool.
+              The real server will never see the client's IPv6 address.
+            spec_refs:
+              - document: "RFC 6146"
+                section: "3.5"
+                title: "Stateful NAT64 address binding"
+                url: "https://datatracker.ietf.org/doc/html/rfc6146#section-3.5"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "198.51.100.1"
+            description: >
+              Extracted from the last 32 bits of 64:ff9b::c633:6401.
+              c633:6401 = 198.51.100.1 in dotted-decimal.
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 63
+            description: "Decremented by 1 during translation (was hop limit 64)"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP (6) — protocol number preserved across translation"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 40
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49200
+            description: "Source port preserved (or remapped if port conflict)"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 443
+            description: "HTTPS port — unchanged"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 5000000
+            description: "ISN preserved — NAT64 does not modify TCP sequence numbers"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 16
+            value: "0x002"
+            description: "SYN — unchanged"
+
+  - id: "tcp_syn_ack_ipv4"
+    name: "TCP SYN-ACK (IPv4)"
+    description: "Legacy server responds with SYN-ACK over IPv4"
+    from: "server"
+    to: "nat64gw"
+    via: []
+    timestamp_ns: 200200000
+    total_bytes: 60
+    color: "#f59e0b"
+    headers:
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "198.51.100.1"
+            description: "Legacy server's IPv4 address"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "203.0.113.50"
+            description: "NAT64 pool address — the server thinks this IS the client"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Server's TTL"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 40
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 443
+            description: "Server's HTTPS port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 49200
+            description: "Client's ephemeral port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 8000000
+            description: "Server's ISN"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 5000001
+            description: "Acknowledges client's SYN (ISN + 1)"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 16
+            value: "0x012"
+            description: "SYN-ACK"
+
+  - id: "tcp_syn_ack_ipv6"
+    name: "TCP SYN-ACK (IPv6 — translated back)"
+    description: "NAT64 translates SYN-ACK from IPv4 back to IPv6 for the client"
+    from: "nat64gw"
+    to: "client"
+    via: []
+    timestamp_ns: 200300000
+    total_bytes: 80
+    color: "#3b82f6"
+    headers:
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "64:ff9b::c633:6401"
+            description: "NAT64 reconstructs the synthesized IPv6 address from the IPv4 source"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "2001:db8:1::10"
+            description: "Client's real IPv6 address (looked up from mapping table)"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 63
+            description: "Decremented during translation"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 40
+        fields:
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 8000000
+            description: "Server's ISN — preserved through translation"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 5000001
+            description: "Acknowledges client SYN"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 16
+            value: "0x012"
+            description: "SYN-ACK — client sees a normal IPv6 TCP SYN-ACK"
+
+  - id: "tcp_ack_ipv6"
+    name: "TCP ACK (IPv6)"
+    description: "Client completes 3-way handshake — pure IPv6 from client's perspective"
+    from: "client"
+    to: "nat64gw"
+    via: []
+    timestamp_ns: 200400000
+    total_bytes: 80
+    color: "#3b82f6"
+    headers:
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8:1::10"
+            description: "Client"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "64:ff9b::c633:6401"
+            description: "Synthesized IPv6 destination"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 40
+        fields:
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 5000001
+            description: "Next byte after SYN"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 8000001
+            description: "Acknowledges server's SYN"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 16
+            value: "0x010"
+            description: "ACK — handshake complete"
+
+  - id: "tcp_ack_ipv4_translated"
+    name: "TCP ACK (IPv4 — translated)"
+    description: "NAT64 translates handshake ACK to IPv4 for the server"
+    from: "nat64gw"
+    to: "server"
+    via: []
+    timestamp_ns: 200500000
+    total_bytes: 60
+    color: "#f59e0b"
+    headers:
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "203.0.113.50"
+            description: "NAT64 pool address"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "198.51.100.1"
+            description: "Legacy server"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 40
+        fields:
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 16
+            value: "0x010"
+            description: "ACK — server sees a normal IPv4 handshake completion"
+
+  - id: "http_get_ipv6"
+    name: "HTTP GET (IPv6)"
+    description: "Client sends HTTP GET request over IPv6"
+    from: "client"
+    to: "nat64gw"
+    via: []
+    timestamp_ns: 300000000
+    total_bytes: 280
+    color: "#3b82f6"
+    headers:
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8:1::10"
+            description: "Client"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "64:ff9b::c633:6401"
+            description: "Synthesized destination"
+          - name: "Payload Length"
+            abbrev: "ipv6.plen"
+            bits: 16
+            value: 240
+            description: "TCP header + HTTP GET payload"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 20
+        fields:
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 16
+            value: "0x018"
+            description: "PSH+ACK — push data to application"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 5000001
+            description: "First data byte"
+      - name: "HTTP"
+        abbrev: "http"
+        layer: 7
+        total_bytes: 200
+        fields:
+          - name: "Method"
+            abbrev: "http.request.method"
+            bits: 0
+            value: "GET"
+            description: "HTTP GET request"
+          - name: "URI"
+            abbrev: "http.request.uri"
+            bits: 0
+            value: "/api/v1/status"
+            description: "Requesting API endpoint on legacy server"
+          - name: "Host"
+            abbrev: "http.host"
+            bits: 0
+            value: "legacy-api.example.com"
+            description: "Host header — the server sees this as a normal HTTP request"
+
+  - id: "http_get_ipv4_translated"
+    name: "HTTP GET (IPv4 — translated)"
+    description: "NAT64 translates the HTTP GET from IPv6 to IPv4"
+    from: "nat64gw"
+    to: "server"
+    via: []
+    timestamp_ns: 300100000
+    total_bytes: 260
+    color: "#f59e0b"
+    headers:
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "203.0.113.50"
+            description: "NAT64 pool address"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "198.51.100.1"
+            description: "Legacy server"
+      - name: "HTTP"
+        abbrev: "http"
+        layer: 7
+        total_bytes: 200
+        fields:
+          - name: "Method"
+            abbrev: "http.request.method"
+            bits: 0
+            value: "GET"
+            description: "Identical HTTP payload — NAT64 only translates IP headers, not application data"
+          - name: "URI"
+            abbrev: "http.request.uri"
+            bits: 0
+            value: "/api/v1/status"
+            description: "Application layer is untouched by translation"
+
+  - id: "http_response_ipv4"
+    name: "HTTP 200 OK (IPv4)"
+    description: "Legacy server sends HTTP response over IPv4"
+    from: "server"
+    to: "nat64gw"
+    via: []
+    timestamp_ns: 300500000
+    total_bytes: 560
+    color: "#f59e0b"
+    headers:
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "198.51.100.1"
+            description: "Legacy server"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "203.0.113.50"
+            description: "NAT64 pool address — the server has no idea the real client is IPv6"
+      - name: "HTTP"
+        abbrev: "http"
+        layer: 7
+        total_bytes: 500
+        fields:
+          - name: "Status"
+            abbrev: "http.response.code"
+            bits: 0
+            value: "200 OK"
+            description: "Successful response from legacy server"
+          - name: "Content-Type"
+            abbrev: "http.content_type"
+            bits: 0
+            value: "application/json"
+            description: "JSON API response"
+
+  - id: "http_response_ipv6_translated"
+    name: "HTTP 200 OK (IPv6 — translated back)"
+    description: "NAT64 translates the HTTP response from IPv4 back to IPv6 for the client"
+    from: "nat64gw"
+    to: "client"
+    via: []
+    timestamp_ns: 300600000
+    total_bytes: 580
+    color: "#10b981"
+    headers:
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "64:ff9b::c633:6401"
+            description: "Reconstructed synthesized source"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "2001:db8:1::10"
+            description: "Client's IPv6 address"
+      - name: "HTTP"
+        abbrev: "http"
+        layer: 7
+        total_bytes: 500
+        fields:
+          - name: "Status"
+            abbrev: "http.response.code"
+            bits: 0
+            value: "200 OK"
+            description: "Client receives a perfectly normal IPv6 HTTP response — translation is invisible"
+
+  # ── Phase 3: ICMPv6 ↔ ICMP Translation ────────────────────────
+  - id: "icmpv6_echo_request"
+    name: "ICMPv6 Echo Request"
+    description: "Client pings the synthesized address (ICMPv6)"
+    from: "client"
+    to: "nat64gw"
+    via: []
+    timestamp_ns: 400000000
+    total_bytes: 104
+    color: "#8b5cf6"
+    headers:
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "2001:db8:1::10"
+            description: "Client"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "64:ff9b::c633:6401"
+            description: "Synthesized address"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: 58
+            description: "ICMPv6 (58)"
+      - name: "ICMPv6"
+        abbrev: "icmpv6"
+        layer: 4
+        total_bytes: 64
+        fields:
+          - name: "Type"
+            abbrev: "icmpv6.type"
+            bits: 8
+            value: 128
+            description: "Echo Request (128) — ICMPv6 type numbers differ from ICMPv4"
+          - name: "Code"
+            abbrev: "icmpv6.code"
+            bits: 8
+            value: 0
+            description: "Code 0"
+          - name: "Identifier"
+            abbrev: "icmpv6.echo.id"
+            bits: 16
+            value: "0x1234"
+            description: "Echo identifier"
+
+  - id: "icmp_echo_request_translated"
+    name: "ICMP Echo Request (IPv4 — translated)"
+    description: "NAT64 translates ICMPv6 Echo Request to ICMPv4 Echo Request"
+    from: "nat64gw"
+    to: "server"
+    via: []
+    timestamp_ns: 400100000
+    total_bytes: 84
+    color: "#f59e0b"
+    headers:
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "203.0.113.50"
+            description: "NAT64 pool address"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "198.51.100.1"
+            description: "Legacy server"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 1
+            description: "ICMP (1) — translated from ICMPv6 (58)"
+      - name: "ICMP"
+        abbrev: "icmp"
+        layer: 4
+        total_bytes: 64
+        fields:
+          - name: "Type"
+            abbrev: "icmp.type"
+            bits: 8
+            value: 8
+            description: >
+              Echo Request (8) — note: ICMPv6 type 128 maps to ICMPv4 type 8.
+              NAT64 must translate ICMP type/code values, not just addresses.
+            spec_refs:
+              - document: "RFC 6145"
+                section: "5.2"
+                title: "Translating ICMPv6 to ICMPv4"
+                url: "https://datatracker.ietf.org/doc/html/rfc6145#section-5.2"
+          - name: "Identifier"
+            abbrev: "icmp.echo.id"
+            bits: 16
+            value: "0x1234"
+            description: "Identifier preserved for mapping"
+
+  - id: "icmp_echo_reply"
+    name: "ICMP Echo Reply (IPv4)"
+    description: "Legacy server responds with ICMP Echo Reply"
+    from: "server"
+    to: "nat64gw"
+    via: []
+    timestamp_ns: 400200000
+    total_bytes: 84
+    color: "#f59e0b"
+    headers:
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "198.51.100.1"
+            description: "Legacy server"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "203.0.113.50"
+            description: "NAT64 pool address"
+      - name: "ICMP"
+        abbrev: "icmp"
+        layer: 4
+        total_bytes: 64
+        fields:
+          - name: "Type"
+            abbrev: "icmp.type"
+            bits: 8
+            value: 0
+            description: "Echo Reply (0)"
+
+  - id: "icmpv6_echo_reply_translated"
+    name: "ICMPv6 Echo Reply (translated back)"
+    description: "NAT64 translates ICMP Echo Reply back to ICMPv6 for the client"
+    from: "nat64gw"
+    to: "client"
+    via: []
+    timestamp_ns: 400300000
+    total_bytes: 104
+    color: "#8b5cf6"
+    headers:
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source Address"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "64:ff9b::c633:6401"
+            description: "Reconstructed synthesized address"
+          - name: "Destination Address"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "2001:db8:1::10"
+            description: "Client"
+      - name: "ICMPv6"
+        abbrev: "icmpv6"
+        layer: 4
+        total_bytes: 64
+        fields:
+          - name: "Type"
+            abbrev: "icmpv6.type"
+            bits: 8
+            value: 129
+            description: >
+              Echo Reply (129) — translated from ICMPv4 type 0.
+              The client receives a normal ICMPv6 echo reply.
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+  # ── Phase 1: DNS64 Synthesizes an Address ──────────────────────
+  - id: "evt_dns_query"
+    type: "frame_tx"
+    t_ns: 100000000
+    frame_id: "dns_aaaa_query"
+    annotation:
+      text: "DNS AAAA Query — Client asks for IPv6 address of legacy-api.example.com"
+      detail: >
+        The IPv6-only client application wants to reach legacy-api.example.com.
+        It calls getaddrinfo() which sends a DNS AAAA query to the configured
+        DNS64 resolver at 2001:db8:1::53. The client only knows IPv6 — it asks
+        for a AAAA record and expects an IPv6 address back.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "resolving"
+              dns_query: "legacy-api.example.com"
+          - layer: 3
+            state_fields:
+              dst_ipv6: "2001:db8:1::53"
+
+  - id: "evt_dns64_no_aaaa"
+    type: "state_change"
+    t_ns: 100200000
+    annotation:
+      text: "DNS64 checks: no AAAA record exists for legacy-api.example.com"
+      detail: >
+        The DNS64 resolver queries authoritative DNS and gets NODATA for the AAAA
+        query — the server legacy-api.example.com has no IPv6 address. This triggers
+        DNS64 behavior: the resolver will now query for an A record instead. Per
+        RFC 6147, DNS64 only synthesizes when there is no real AAAA record available.
+    state_after:
+      - actor_id: "dns64"
+        layers:
+          - layer: 7
+            state_fields:
+              dns64_state: "no_aaaa_found"
+              query_name: "legacy-api.example.com"
+
+  - id: "evt_dns_a_upstream"
+    type: "frame_tx"
+    t_ns: 100500000
+    frame_id: "dns_a_query_upstream"
+    annotation:
+      text: "DNS64 queries authoritative DNS for A record"
+      detail: >
+        Since no AAAA exists, the DNS64 resolver falls back to querying for an A
+        record. This query goes out over the resolver's IPv4 interface to reach
+        the authoritative DNS server. The DNS64 resolver itself is dual-stack — it
+        needs IPv4 connectivity to reach authoritative servers for IPv4-only zones.
+    state_after:
+      - actor_id: "dns64"
+        layers:
+          - layer: 7
+            state_fields:
+              dns64_state: "querying_A"
+
+  - id: "evt_dns_a_response"
+    type: "frame_tx"
+    t_ns: 101000000
+    frame_id: "dns_a_response_upstream"
+    annotation:
+      text: "Authoritative DNS returns A record: 198.51.100.1"
+      detail: >
+        The authoritative DNS server for example.com returns the A record for
+        legacy-api.example.com: 198.51.100.1. This is the server's real IPv4 address.
+        Now DNS64 has the raw material it needs to synthesize an IPv6 address.
+    state_after:
+      - actor_id: "dns64"
+        layers:
+          - layer: 7
+            state_fields:
+              dns64_state: "synthesizing"
+              real_a_record: "198.51.100.1"
+
+  - id: "evt_dns64_synthesize"
+    type: "state_change"
+    t_ns: 101200000
+    annotation:
+      text: "DNS64 synthesizes AAAA: 64:ff9b::c633:6401 from A record 198.51.100.1"
+      detail: >
+        DNS64 takes the well-known prefix 64:ff9b::/96 and embeds the IPv4 address
+        in the last 32 bits. 198.51.100.1 in hexadecimal is c6.33.64.01, so the
+        synthesized address is 64:ff9b::c633:6401. The prefix 64:ff9b::/96 is
+        reserved by IANA specifically for NAT64 (RFC 6052 Section 2.1). Any router
+        seeing traffic to 64:ff9b::/96 knows it must be routed to a NAT64 gateway.
+    state_after:
+      - actor_id: "dns64"
+        layers:
+          - layer: 7
+            state_fields:
+              dns64_state: "synthesized"
+              synthesized_aaaa: "64:ff9b::c633:6401"
+
+  - id: "evt_dns64_response"
+    type: "frame_tx"
+    t_ns: 101500000
+    frame_id: "dns_aaaa_response_synthesized"
+    annotation:
+      text: "DNS64 returns synthesized AAAA record to client"
+      detail: >
+        The DNS64 resolver sends the synthesized AAAA record back to the client.
+        From the client's perspective, this looks exactly like a normal AAAA response.
+        The client has no idea the address was synthesized — it just sees an IPv6
+        address and will connect to it using normal IPv6 sockets.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "resolved"
+              resolved_address: "64:ff9b::c633:6401"
+          - layer: 3
+            state_fields:
+              dst_ipv6: "64:ff9b::c633:6401"
+      - actor_id: "dns64"
+        layers:
+          - layer: 7
+            state_fields:
+              dns64_state: "idle"
+
+  - id: "evt_client_perspective"
+    type: "state_change"
+    t_ns: 101800000
+    annotation:
+      text: "The client thinks it is talking to an IPv6 server. It has no idea the real server is IPv4-only."
+      detail: >
+        This is the elegance of DNS64: the client's IPv6-only network stack is
+        completely unaware of the IPv4 world behind the scenes. The application
+        received a AAAA record and will now connect() to it over IPv6 just like
+        any other IPv6 destination. The translation happens entirely in the network,
+        invisible to the endpoints.
+
+  # ── Phase 2: NAT64 Translates the Connection ──────────────────
+  - id: "evt_tcp_syn_ipv6"
+    type: "frame_tx"
+    t_ns: 200000000
+    frame_id: "tcp_syn_ipv6"
+    annotation:
+      text: "TCP SYN → Client sends IPv6 packet to 64:ff9b::c633:6401 port 443"
+      detail: >
+        The client application calls connect() and the kernel sends a TCP SYN to
+        the synthesized address. This is a perfectly normal IPv6 packet — the client's
+        TCP/IP stack has no special handling for NAT64. The packet is routed to the
+        NAT64 gateway because the network is configured to route 64:ff9b::/96 there.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "SYN_SENT"
+              src_port: 49200
+              dst_port: 443
+
+  - id: "evt_nat64_extract"
+    type: "state_change"
+    t_ns: 200050000
+    annotation:
+      text: "NAT64 gateway receives the IPv6 packet and recognizes the 64:ff9b::/96 prefix"
+      detail: >
+        The NAT64 gateway owns the 64:ff9b::/96 prefix. When it receives a packet
+        destined for this prefix, it extracts the embedded IPv4 address from the
+        last 32 bits: 64:ff9b::c633:6401 → c6336401 → 198.51.100.1. It then creates
+        a Binding Information Base (BIB) entry to track this session.
+    state_after:
+      - actor_id: "nat64gw"
+        layers:
+          - layer: 7
+            state_fields:
+              nat64_state: "translating"
+              active_mappings: 1
+              mapping_table: "[2001:db8:1::10]:49200 ↔ 203.0.113.50:49200 → 198.51.100.1:443"
+          - layer: 3
+            state_fields:
+              translation_direction: "IPv6 → IPv4"
+
+  - id: "evt_tcp_syn_ipv4"
+    type: "frame_tx"
+    t_ns: 200100000
+    frame_id: "tcp_syn_ipv4"
+    annotation:
+      text: "NAT64 creates an IPv4 SYN packet — new IP header, same TCP payload"
+      detail: >
+        The NAT64 gateway constructs a new IPv4 packet. It assigns a source IPv4
+        address from its pool (203.0.113.50), sets the destination to the extracted
+        address (198.51.100.1), translates the IPv6 hop limit to an IPv4 TTL
+        (decremented by 1), and forwards the packet. The TCP header and payload
+        are preserved — NAT64 translates at the IP layer, not the transport layer.
+    state_after:
+      - actor_id: "nat64gw"
+        layers:
+          - layer: 3
+            state_fields:
+              translation_direction: "IPv6 → IPv4"
+
+  - id: "evt_tcp_syn_ack_ipv4"
+    type: "frame_tx"
+    t_ns: 200200000
+    frame_id: "tcp_syn_ack_ipv4"
+    annotation:
+      text: "Legacy server responds with SYN-ACK — normal IPv4, no idea about IPv6"
+      detail: >
+        The legacy server at 198.51.100.1 receives a completely normal IPv4 TCP SYN
+        from 203.0.113.50 (the NAT64 pool address). It responds with a standard
+        SYN-ACK. The server has no awareness that the real client is on an IPv6-only
+        network — from the server's perspective, this is ordinary IPv4 traffic from
+        what appears to be a single IPv4 host.
+    state_after:
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "SYN_RECEIVED"
+              dst_port: 49200
+          - layer: 7
+            state_fields:
+              perceived_client_ip: "203.0.113.50"
+
+  - id: "evt_tcp_syn_ack_ipv6"
+    type: "frame_tx"
+    t_ns: 200300000
+    frame_id: "tcp_syn_ack_ipv6"
+    annotation:
+      text: "NAT64 translates SYN-ACK back to IPv6 for the client"
+      detail: >
+        The NAT64 gateway looks up its mapping table: traffic from 198.51.100.1:443
+        to 203.0.113.50:49200 matches the BIB entry for client [2001:db8:1::10]:49200.
+        It constructs an IPv6 packet with source 64:ff9b::c633:6401 and destination
+        2001:db8:1::10. The client receives a normal IPv6 SYN-ACK.
+    state_after:
+      - actor_id: "nat64gw"
+        layers:
+          - layer: 3
+            state_fields:
+              translation_direction: "IPv4 → IPv6"
+
+  - id: "evt_tcp_handshake_complete"
+    type: "frame_tx"
+    t_ns: 200400000
+    frame_id: "tcp_ack_ipv6"
+    annotation:
+      text: "TCP handshake complete — client sees pure IPv6, server sees pure IPv4"
+      detail: >
+        The client sends the final ACK, completing the 3-way handshake. The connection
+        is now ESTABLISHED on both sides. The protocol boundary is crystal clear: the
+        client operates entirely in IPv6, the server operates entirely in IPv4, and the
+        NAT64 gateway seamlessly bridges the two worlds. Neither endpoint is aware of
+        the other's IP version.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "ESTABLISHED"
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            state_fields:
+              tcp_state: "ESTABLISHED"
+
+  - id: "evt_tcp_ack_ipv4_translated"
+    type: "frame_tx"
+    t_ns: 200500000
+    frame_id: "tcp_ack_ipv4_translated"
+    annotation:
+      text: "ACK translated to IPv4 — server confirms ESTABLISHED state"
+      detail: >
+        The NAT64 gateway translates the client's ACK to IPv4 and delivers it to
+        the server. Both sides are now in ESTABLISHED state and data can flow
+        bidirectionally through the NAT64 translator.
+
+  # ── Data Transfer Through NAT64 ───────────────────────────────
+  - id: "evt_http_get_ipv6"
+    type: "frame_tx"
+    t_ns: 300000000
+    frame_id: "http_get_ipv6"
+    annotation:
+      text: "Client sends HTTP GET over IPv6 → NAT64 translates → server receives over IPv4"
+      detail: >
+        The client sends an HTTP GET request for /api/v1/status. The request
+        travels as a normal IPv6 packet to the NAT64 gateway, which translates
+        it to IPv4 and forwards it to the legacy server. The HTTP payload is
+        completely untouched — NAT64 only translates IP and ICMP headers. The
+        Host header still says legacy-api.example.com.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "request_sent"
+
+  - id: "evt_http_get_ipv4"
+    type: "frame_tx"
+    t_ns: 300100000
+    frame_id: "http_get_ipv4_translated"
+    annotation:
+      text: "HTTP GET arrives at legacy server as normal IPv4 traffic"
+      detail: >
+        The legacy server receives a perfectly normal IPv4 HTTP GET request from
+        203.0.113.50. The server's access logs will show this NAT64 pool address
+        as the client IP. If the server needs the real client address, the network
+        can use mechanisms like Proxy Protocol or X-Forwarded-For headers (but that
+        requires application-layer awareness).
+
+  - id: "evt_http_response_ipv4"
+    type: "frame_tx"
+    t_ns: 300500000
+    frame_id: "http_response_ipv4"
+    annotation:
+      text: "Legacy server responds with HTTP 200 OK over IPv4"
+      detail: >
+        The server processes the API request and sends back a JSON response over
+        IPv4. This response is addressed to 203.0.113.50 — the NAT64 pool address.
+        The server side of this connection is completely standard IPv4 throughout.
+    state_after:
+      - actor_id: "server"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "response_sent"
+
+  - id: "evt_http_response_ipv6"
+    type: "frame_tx"
+    t_ns: 300600000
+    frame_id: "http_response_ipv6_translated"
+    annotation:
+      text: "NAT64 translates response back to IPv6 — client receives it seamlessly"
+      detail: >
+        The NAT64 gateway translates the IPv4 response packet back to IPv6 using its
+        mapping table and delivers it to the client. The client receives a normal
+        IPv6 HTTP 200 OK response. The entire transaction — DNS resolution, TCP
+        handshake, HTTP request/response — happened without the client ever touching IPv4.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "response_received"
+
+  # ── ICMPv6 ↔ ICMP Translation ─────────────────────────────────
+  - id: "evt_icmpv6_echo"
+    type: "frame_tx"
+    t_ns: 400000000
+    frame_id: "icmpv6_echo_request"
+    annotation:
+      text: "ICMPv6 Echo Request — client pings the synthesized address"
+      detail: >
+        NAT64 does not only translate TCP and UDP. It also handles ICMP ↔ ICMPv6
+        translation. The client sends an ICMPv6 Echo Request (type 128) to the
+        synthesized address. NAT64 must translate this to an ICMPv4 Echo Request
+        (type 8), because ICMPv6 and ICMPv4 use different type/code numbering.
+
+  - id: "evt_icmp_echo_translated"
+    type: "frame_tx"
+    t_ns: 400100000
+    frame_id: "icmp_echo_request_translated"
+    annotation:
+      text: "NAT64 translates ICMPv6 type 128 → ICMPv4 type 8 (Echo Request)"
+      detail: >
+        The NAT64 gateway translates both the IP header and the ICMP header.
+        ICMPv6 type 128 (Echo Request) becomes ICMPv4 type 8 (Echo Request).
+        The echo identifier and sequence number are preserved for mapping the reply.
+        This translation is defined in RFC 6145 Section 5.2 (IP/ICMP Translation).
+
+  - id: "evt_icmp_echo_reply"
+    type: "frame_tx"
+    t_ns: 400200000
+    frame_id: "icmp_echo_reply"
+    annotation:
+      text: "Legacy server sends ICMP Echo Reply (IPv4)"
+      detail: >
+        The server responds with a standard ICMPv4 Echo Reply (type 0) to the
+        NAT64 pool address. This is completely normal IPv4 ICMP behavior.
+
+  - id: "evt_icmpv6_echo_reply"
+    type: "frame_tx"
+    t_ns: 400300000
+    frame_id: "icmpv6_echo_reply_translated"
+    annotation:
+      text: "NAT64 translates ICMPv4 type 0 → ICMPv6 type 129 (Echo Reply) — ping succeeds"
+      detail: >
+        The NAT64 gateway translates the ICMPv4 Echo Reply (type 0) back to an
+        ICMPv6 Echo Reply (type 129) and delivers it to the client. The ping
+        completes successfully. The client's ping utility shows a response from
+        64:ff9b::c633:6401 — it never sees the IPv4 address 198.51.100.1.
+
+  # ── Phase 3: 464XLAT for Legacy Apps ───────────────────────────
+  - id: "evt_464xlat_problem"
+    type: "state_change"
+    t_ns: 500000000
+    annotation:
+      text: "Some legacy apps hardcode IPv4 addresses (e.g., connect to '192.168.1.1' directly)"
+      detail: >
+        NAT64/DNS64 works perfectly for well-behaved applications that use hostnames
+        and DNS. But some legacy applications hardcode IPv4 address literals — they
+        call connect("192.168.1.1") directly without DNS. Since the client has no
+        IPv4 address or IPv4 routing, these connections fail. This is where 464XLAT
+        comes in.
+
+  - id: "evt_464xlat_clat"
+    type: "state_change"
+    t_ns: 500500000
+    annotation:
+      text: "CLAT (Customer-side translator) on the client provides a local IPv4 interface"
+      detail: >
+        464XLAT (RFC 6877) adds a stateless translator called CLAT on the client.
+        CLAT creates a virtual IPv4 interface (e.g., v4-wlan0) with a local IPv4
+        address from the 192.0.0.0/29 range. When a legacy app sends an IPv4 packet,
+        CLAT translates it to IPv6 using the NAT64 prefix. The packet then flows
+        to the PLAT (Provider-side translator, which is the NAT64 gateway), which
+        translates it back to IPv4 for the destination.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 3
+            state_fields:
+              protocol_view: "IPv6-only (with CLAT virtual IPv4)"
+
+  - id: "evt_464xlat_double_translation"
+    type: "state_change"
+    t_ns: 501000000
+    annotation:
+      text: "Double translation: App → IPv4 → CLAT → IPv6 → NAT64 (PLAT) → IPv4"
+      detail: >
+        The 464XLAT name describes the journey: the app generates an IPv4 packet (4),
+        CLAT translates it to IPv6 (6), and the PLAT/NAT64 gateway translates it
+        back to IPv4 (4). Hence "464". The first translation is stateless (CLAT, using
+        SIIT from RFC 7915), and the second is stateful (NAT64/PLAT, using RFC 6146).
+        Despite the double translation, this works at line rate on modern hardware.
+    state_after:
+      - actor_id: "nat64gw"
+        layers:
+          - layer: 7
+            state_fields:
+              nat64_state: "translating (464XLAT)"
+              active_mappings: 2
+
+  - id: "evt_464xlat_deployed"
+    type: "state_change"
+    t_ns: 502000000
+    annotation:
+      text: "464XLAT handles the edge cases. Android has used this since 2014 for IPv6-only mobile networks."
+      detail: >
+        464XLAT is not theoretical — it runs at massive scale today. Android has
+        included CLAT (clatd) since version 4.3, enabling IPv6-only mobile networks
+        on T-Mobile, Reliance Jio, and hundreds of other carriers. Apple added CLAT
+        support in iOS 12.  Together, NAT64/DNS64 handles well-behaved applications
+        and 464XLAT handles the rest, enabling true IPv6-only operation while
+        maintaining full IPv4 internet reachability.
+
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
+glossary:
+  - term: "NAT64"
+    abbrev: "Network Address Translation 64"
+    definition: "A stateful translation mechanism that allows IPv6-only clients to communicate with IPv4-only servers. The NAT64 gateway translates between IPv6 and IPv4 packet headers, maintaining session state (BIB entries) to map connections bidirectionally."
+    spec_refs:
+      - document: "RFC 6146"
+        section: "1"
+        title: "Stateful NAT64"
+        url: "https://datatracker.ietf.org/doc/html/rfc6146#section-1"
+
+  - term: "DNS64"
+    definition: "A DNS extension that synthesizes AAAA (IPv6) records from A (IPv4) records when no native AAAA exists. DNS64 uses the NAT64 prefix (typically 64:ff9b::/96) to embed the IPv4 address in a synthesized IPv6 address, enabling IPv6-only clients to resolve IPv4-only hostnames."
+    spec_refs:
+      - document: "RFC 6147"
+        section: "1"
+        title: "DNS64"
+        url: "https://datatracker.ietf.org/doc/html/rfc6147#section-1"
+
+  - term: "Well-Known Prefix"
+    abbrev: "64:ff9b::/96"
+    definition: "The IANA-reserved IPv6 prefix used by NAT64. The last 32 bits of an address in this prefix contain the embedded IPv4 address. For example, 64:ff9b::c633:6401 embeds IPv4 address 198.51.100.1 (c6=198, 33=51, 64=100, 01=1)."
+    spec_refs:
+      - document: "RFC 6052"
+        section: "2.1"
+        title: "Well-Known Prefix"
+        url: "https://datatracker.ietf.org/doc/html/rfc6052#section-2.1"
+
+  - term: "464XLAT"
+    definition: "A combination of a stateless CLAT (Customer-side translator) and a stateful PLAT (Provider-side translator / NAT64) that enables IPv4 literal traffic to traverse an IPv6-only network. The packet undergoes double translation: IPv4 → IPv6 (CLAT) → IPv4 (PLAT). Used by Android since 2014 and iOS since iOS 12."
+    spec_refs:
+      - document: "RFC 6877"
+        section: "1"
+        title: "464XLAT"
+        url: "https://datatracker.ietf.org/doc/html/rfc6877#section-1"
+
+  - term: "CLAT"
+    abbrev: "Customer-side Translator"
+    definition: "The client-side component of 464XLAT. A stateless NAT46 translator (SIIT, RFC 7915) that runs on the end-user device, providing a virtual IPv4 interface for legacy applications. Translates outgoing IPv4 packets to IPv6 using the NAT64 prefix."
+
+  - term: "PLAT"
+    abbrev: "Provider-side Translator"
+    definition: "The network-side component of 464XLAT — this is the NAT64 gateway. Performs stateful translation from IPv6 back to IPv4 for delivery to IPv4-only servers. In a 464XLAT deployment, the PLAT is the same NAT64 gateway used for DNS64-based translation."
+
+  - term: "BIB"
+    abbrev: "Binding Information Base"
+    definition: "The state table maintained by a stateful NAT64 gateway. Each entry maps an IPv6 transport address (IPv6 address + port) to an IPv4 transport address (IPv4 pool address + port). BIB entries are created when new sessions are established and expire after inactivity."
+    spec_refs:
+      - document: "RFC 6146"
+        section: "3.1"
+        title: "Binding Information Base"
+        url: "https://datatracker.ietf.org/doc/html/rfc6146#section-3.1"
+
+  - term: "Synthesized AAAA Record"
+    definition: "A DNS AAAA record created by a DNS64 resolver by combining the NAT64 prefix with an IPv4 address. The client receives this as a normal AAAA response and is unaware the address was synthesized. Only created when no native AAAA record exists."
+
+  - term: "IPv6-Only Network"
+    definition: "A network that carries only IPv6 traffic — no IPv4 addresses are assigned to hosts. Requires NAT64/DNS64 (and optionally 464XLAT) to maintain access to IPv4-only internet resources. Mandated for US federal agencies by OMB M-21-07."
+
+  - term: "SIIT"
+    abbrev: "Stateless IP/ICMP Translation"
+    definition: "A stateless algorithm for translating between IPv4 and IPv6 packet headers, defined in RFC 7915. Used by CLAT in 464XLAT for client-side translation. Unlike NAT64, SIIT does not maintain per-session state."
+    spec_refs:
+      - document: "RFC 7915"
+        section: "4"
+        title: "Translating from IPv4 to IPv6"
+        url: "https://datatracker.ietf.org/doc/html/rfc7915#section-4"
+
+# ─────────────────────────────────────────────────────────────────
+# WALKTHROUGHS
+# ─────────────────────────────────────────────────────────────────
+walkthroughs:
+  - id: "default"
+    title: "NAT64/DNS64: Bridging IPv6-Only Clients to the IPv4 Internet"
+    description: "Walk through DNS64 address synthesis, NAT64 stateful translation, ICMP mapping, and 464XLAT for legacy applications"
+    steps:
+      - step: 0
+        narration: >
+          OMB M-21-07 requires federal agencies to operate IPv6-only networks by
+          2025. But the IPv4 internet is not going away anytime soon — there are
+          still millions of IPv4-only servers. How does an IPv6-only client reach
+          them? The answer is NAT64 and DNS64, working together to make the IPv4
+          world accessible from IPv6-only networks without the client ever needing
+          an IPv4 address.
+        highlight_fields: []
+
+      - step: 1
+        narration: >
+          Our IPv6-only client wants to reach legacy-api.example.com. The
+          application calls getaddrinfo(), which sends a DNS AAAA query to the
+          DNS64 resolver. The client asks for an IPv6 address — it only speaks
+          IPv6 and has no idea whether the server is IPv4 or IPv6. Notice the
+          query type is AAAA (28), requesting a 128-bit IPv6 address.
+        highlight_fields: ["dns.qry.name", "dns.qry.type"]
+
+      - step: 2
+        narration: >
+          The DNS64 resolver checks authoritative DNS and finds no AAAA record for
+          legacy-api.example.com. This is the trigger for DNS64 behavior: since
+          there is no native IPv6 address, the resolver queries for an A record
+          instead. It gets back 198.51.100.1 — confirming this is an IPv4-only
+          server. Per RFC 6147, DNS64 only synthesizes when no real AAAA exists,
+          so dual-stack servers with native AAAA records are unaffected.
+        highlight_fields: ["dns.qry.type", "dns.a"]
+
+      - step: 3
+        narration: >
+          Now the magic of DNS64: it takes the well-known prefix 64:ff9b::/96
+          (RFC 6052) and embeds the IPv4 address in the last 32 bits. 198.51.100.1
+          in hexadecimal is c6.33.64.01, so the synthesized address is
+          64:ff9b::c633:6401. The client receives this as a normal AAAA response
+          and stores it as the server's IPv6 address. The client has no idea this
+          address was manufactured seconds ago from an IPv4 address.
+        highlight_fields: ["dns.aaaa", "dns.resp.type"]
+
+      - step: 4
+        narration: >
+          The client connects to the synthesized address like any normal IPv6
+          destination. It sends a TCP SYN to 64:ff9b::c633:6401 port 443. This is
+          a standard IPv6 packet — the client's TCP/IP stack has zero special
+          handling for NAT64. The network routes packets destined for 64:ff9b::/96
+          to the NAT64 gateway, just like any other prefix route.
+        highlight_fields: ["ipv6.dst", "tcp.flags", "tcp.dstport"]
+
+      - step: 5
+        narration: >
+          The NAT64 gateway receives the IPv6 SYN and recognizes the 64:ff9b::/96
+          prefix. It extracts the embedded IPv4 address (198.51.100.1) from the
+          last 32 bits, assigns a source IPv4 address from its pool (203.0.113.50),
+          and creates a Binding Information Base (BIB) entry to track this session.
+          It then constructs a brand new IPv4 SYN packet — same TCP payload, but
+          with IPv4 headers replacing the IPv6 headers.
+        highlight_fields: ["ip.src", "ip.dst", "tcp.seq"]
+
+      - step: 6
+        narration: >
+          The legacy server at 198.51.100.1 receives a completely normal IPv4 TCP
+          SYN from 203.0.113.50. It has no idea the real client is on an IPv6-only
+          network. It responds with a standard SYN-ACK, just as it would for any
+          IPv4 client. This is the beauty of NAT64 — the server requires zero
+          modifications. It could be a 20-year-old application that has never heard
+          of IPv6.
+        highlight_fields: ["ip.src", "ip.dst", "tcp.flags"]
+
+      - step: 7
+        narration: >
+          The NAT64 gateway translates the SYN-ACK back to IPv6 using its mapping
+          table. The source becomes 64:ff9b::c633:6401 (the synthesized address),
+          and the destination is the client's real IPv6 address 2001:db8:1::10.
+          The client receives what looks like a perfectly normal IPv6 SYN-ACK.
+          The TCP handshake completes with the client in pure IPv6 and the server
+          in pure IPv4 — the protocol boundary is completely invisible to both.
+        highlight_fields: ["ipv6.src", "ipv6.dst", "tcp.flags"]
+
+      - step: 8
+        narration: >
+          With the connection established, data flows freely. The client sends an
+          HTTP GET over IPv6 to the NAT64 gateway, which translates it to IPv4 and
+          forwards it to the legacy server. The HTTP payload — headers, body,
+          everything — passes through completely untouched. NAT64 only translates
+          IP headers and ICMP; application data is preserved bit-for-bit.
+        highlight_fields: ["http.request.method", "http.request.uri"]
+
+      - step: 9
+        narration: >
+          The legacy server processes the request and returns an HTTP 200 OK over
+          IPv4. The response flows back through the NAT64 gateway, which translates
+          it to IPv6 and delivers it to the client. End to end, the client made a
+          standard IPv6 HTTPS request and got a standard IPv6 HTTPS response. The
+          fact that the server was IPv4-only is entirely hidden by the network.
+        highlight_fields: ["http.response.code"]
+
+      - step: 10
+        narration: >
+          NAT64 also handles ICMP. When the client pings the synthesized address,
+          it sends an ICMPv6 Echo Request (type 128). The NAT64 gateway must
+          translate not just the IP header, but also the ICMP type and code values,
+          because ICMPv6 and ICMPv4 use different numbering. Type 128 (ICMPv6 Echo
+          Request) becomes type 8 (ICMPv4 Echo Request).
+        highlight_fields: ["icmpv6.type", "icmp.type"]
+
+      - step: 11
+        narration: >
+          The ICMP Echo Reply flows back through the same translation: ICMPv4
+          type 0 (Echo Reply) becomes ICMPv6 type 129 (Echo Reply). The client's
+          ping utility shows a response from 64:ff9b::c633:6401 — it never sees
+          the real IPv4 address. This ICMP translation is critical for network
+          diagnostics and Path MTU Discovery to work across the NAT64 boundary.
+        highlight_fields: ["icmpv6.type", "icmp.type"]
+
+      - step: 12
+        narration: >
+          NAT64/DNS64 covers about 95% of real-world traffic. But some legacy
+          applications hardcode IPv4 address literals — they call connect("192.168.1.1")
+          directly without DNS. These break on IPv6-only networks because there
+          is no DNS step for DNS64 to intercept. This is where 464XLAT (RFC 6877)
+          comes in.
+        highlight_fields: []
+
+      - step: 13
+        narration: >
+          464XLAT adds a CLAT (Customer-side translator) on the client device. CLAT
+          creates a virtual IPv4 interface and performs stateless translation: the
+          legacy app sends IPv4, CLAT converts it to IPv6 using the NAT64 prefix,
+          the packet traverses the IPv6-only network to the NAT64 gateway (PLAT),
+          which converts it back to IPv4. The "464" name describes this journey:
+          IPv4 → IPv6 → IPv4.
+        highlight_fields: []
+
+      - step: 14
+        narration: >
+          464XLAT is not a niche solution — it runs at enormous scale today.
+          Android has included CLAT (clatd) since version 4.3 (2013), and Apple
+          added CLAT in iOS 12. T-Mobile, Reliance Jio, and hundreds of other
+          mobile carriers operate IPv6-only networks with NAT64 and 464XLAT,
+          serving billions of devices. This is production-proven technology.
+        highlight_fields: []
+
+      - step: 15
+        narration: >
+          Let us recap the full picture. NAT64/DNS64 is how you run an IPv6-only
+          network without breaking access to the IPv4 internet. The client never
+          needs an IPv4 address — this is true IPv6-only operation. DNS64 makes
+          IPv4-only servers appear as IPv6 destinations. NAT64 translates packets
+          at the network boundary. 464XLAT handles the last 5% of apps that refuse
+          to work with DNS. 64:ff9b::/96 is the well-known prefix reserved for
+          NAT64 (RFC 6052). Together, these technologies are the foundation of the
+          federal IPv6-only mandate and the future of Internet addressing.
+        highlight_fields: []

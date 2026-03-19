@@ -1,0 +1,1686 @@
+meta:
+  id: "ipv6-slaac-autoconfiguration"
+  title: "IPv6 SLAAC: Stateless Address Autoconfiguration"
+  protocol: "ICMPv6 / NDP"
+  protocol_family: "TCP/IP"
+  version: "1.0.0"
+  description: >
+    How does an IPv6 host configure itself without a DHCP server? This scenario
+    walks through the complete SLAAC process: Router Solicitation, Router
+    Advertisement with prefix information, link-local and global address
+    generation, Duplicate Address Detection (DAD), and privacy/temporary
+    addresses (RFC 8981). By the end, the host has a link-local address, a
+    global SLAAC address, a privacy address, a default gateway, and DNS --
+    all without any manual configuration or DHCP server. This is the #1
+    thing that confuses people coming from IPv4, where addresses always
+    require either static configuration or DHCP.
+
+  learning_objectives:
+    - "Understand why IPv6 hosts can configure themselves without a DHCP server"
+    - "Follow the Router Solicitation / Router Advertisement exchange"
+    - "See how a host generates a link-local address (fe80::) from its interface ID"
+    - "Understand Duplicate Address Detection (DAD) and why it uses the unspecified address (::)"
+    - "Trace global address generation by combining the RA prefix with an interface ID"
+    - "Learn what privacy/temporary addresses are and why they exist (RFC 8981)"
+    - "See the complete address state machine: tentative -> valid -> preferred"
+    - "Contrast each step with IPv4 equivalents -- DHCP, ARP, static config"
+
+  difficulty: "beginner"
+
+  authors:
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+
+  created: "2026-03-19"
+  updated: "2026-03-19"
+
+  tags:
+    - "IPv6"
+    - "SLAAC"
+    - "NDP"
+    - "Router Advertisement"
+    - "DAD"
+    - "autoconfiguration"
+    - "link-local"
+    - "privacy extensions"
+    - "beginner"
+    - "education"
+    - "WIP"
+
+  primary_specs:
+    - document: "RFC 4861"
+      section: "1"
+      title: "Neighbor Discovery for IP version 6 (IPv6)"
+      url: "https://www.rfc-editor.org/rfc/rfc4861"
+    - document: "RFC 4862"
+      section: "1"
+      title: "IPv6 Stateless Address Autoconfiguration"
+      url: "https://www.rfc-editor.org/rfc/rfc4862"
+    - document: "RFC 8981"
+      section: "1"
+      title: "Temporary Address Extensions for Stateless Address Autoconfiguration in IPv6"
+      url: "https://www.rfc-editor.org/rfc/rfc8981"
+    - document: "RFC 8106"
+      section: "1"
+      title: "IPv6 Router Advertisement Options for DNS Configuration"
+      url: "https://www.rfc-editor.org/rfc/rfc8106"
+
+  content_disclaimer: >
+    This scenario illustrates IPv6 SLAAC as specified in RFC 4862, with NDP
+    messages from RFC 4861, privacy extensions from RFC 8981, and DNS options
+    from RFC 8106. Protocol descriptions are based on public RFCs and
+    open-source implementations.
+
+# ---------------------------------------------------------------------
+# TOPOLOGY
+# ---------------------------------------------------------------------
+topology:
+  actors:
+    - id: "host"
+      type: "host"
+      label: "Host"
+      description: "A laptop/workstation that just connected to the network and needs to autoconfigure its IPv6 addresses"
+      hardware: "Workstation with 1GbE NIC"
+      os: "Linux"
+      ip: "(unconfigured -- will be assigned via SLAAC)"
+      mac: "52:54:00:A1:B2:C3"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "Ethernet Switch"
+      description: "L2 switch connecting the host and the router"
+      hardware: "Managed switch"
+      position: "center"
+
+    - id: "router"
+      type: "host"
+      label: "Router"
+      description: "IPv6 router advertising prefix 2001:db8:1::/64 and providing default gateway"
+      hardware: "Router with 1GbE interfaces"
+      os: "Linux / Router OS"
+      ip: "fe80::1 (link-local), 2001:db8:1::1 (global)"
+      mac: "00:1A:2B:3C:4D:5E"
+      position: "right"
+
+  links:
+    - id: "link-host-sw"
+      from: "host"
+      to: "switch"
+      speed_gbps: 1
+      media: "copper"
+    - id: "link-sw-rtr"
+      from: "switch"
+      to: "router"
+      speed_gbps: 1
+      media: "copper"
+
+# ---------------------------------------------------------------------
+# OSI LAYER DEFINITIONS (per actor)
+# ---------------------------------------------------------------------
+osi_layers:
+  host:
+    - layer: 7
+      name: "Application"
+      components: ["User process"]
+      state_schema:
+        app_status:
+          type: "string"
+          description: "Application-level connectivity status"
+          initial: "no network"
+
+    - layer: 3
+      name: "Network (IPv6 / ICMPv6)"
+      components: ["IPv6", "ICMPv6 / NDP", "SLAAC"]
+      state_schema:
+        link_local_addr:
+          type: "string"
+          description: "Host's link-local IPv6 address and its state"
+          initial: "(none)"
+        global_addr:
+          type: "string"
+          description: "Host's global SLAAC IPv6 address and its state"
+          initial: "(none)"
+        privacy_addr:
+          type: "string"
+          description: "Host's privacy/temporary IPv6 address and its state"
+          initial: "(none)"
+        default_gateway:
+          type: "string"
+          description: "Default gateway learned from Router Advertisement"
+          initial: "(none)"
+        dns_server:
+          type: "string"
+          description: "DNS server learned from RDNSS option in RA"
+          initial: "(none)"
+        ndp_table:
+          type: "string"
+          description: "IPv6 neighbor cache entries"
+          initial: "(empty)"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "down"
+
+    - layer: 1
+      name: "Physical"
+      components: ["1000BASE-T"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "down"
+
+  router:
+    - layer: 7
+      name: "Routing"
+      components: ["Routing daemon"]
+      state_schema:
+        routing_status:
+          type: "string"
+          initial: "advertising prefix 2001:db8:1::/64"
+
+    - layer: 3
+      name: "Network (IPv6 / ICMPv6)"
+      components: ["IPv6", "ICMPv6 / NDP", "RA daemon"]
+      state_schema:
+        advertised_prefix:
+          type: "string"
+          description: "Prefix being advertised in Router Advertisements"
+          initial: "2001:db8:1::/64"
+        ra_interval:
+          type: "string"
+          description: "Router Advertisement interval"
+          initial: "200-600 seconds"
+        ndp_table:
+          type: "string"
+          description: "IPv6 neighbor cache entries"
+          initial: "(empty)"
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+
+    - layer: 1
+      name: "Physical"
+      components: ["1000BASE-T"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "up"
+
+  switch:
+    - layer: 2
+      name: "Ethernet Switching"
+      components: ["L2 bridge", "MAC table"]
+      state_schema:
+        mac_table_entries:
+          type: "integer"
+          initial: 0
+    - layer: 1
+      name: "Physical"
+      components: ["per-port PHY"]
+      state_schema:
+        port_host_phy:
+          type: "string"
+          initial: "down"
+        port_router_phy:
+          type: "string"
+          initial: "up"
+
+# ---------------------------------------------------------------------
+# FRAMES
+# ---------------------------------------------------------------------
+frames:
+  # -- Router Solicitation (RS) ------------------------------------
+  - id: "rs"
+    name: "Router Solicitation (RS)"
+    description: "Host asks all routers on the link for Router Advertisements"
+    from: "host"
+    to: "router"
+    via: ["switch"]
+    total_bytes: 70
+    color: "#2563eb"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "33:33:00:00:00:02"
+            description: "All-routers multicast (ff02::2) mapped to Ethernet. Only routers listen on this group -- regular hosts ignore it."
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "52:54:00:A1:B2:C3"
+            description: "Host's MAC address"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+            description: "IPv6"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "fe80::5054:ff:fea1:b2c3"
+            description: "Host's link-local address (may also be :: if link-local is not yet confirmed)"
+          - name: "Destination"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "ff02::2"
+            description: "All-routers multicast -- only IPv6 routers process this. In IPv4, there is no equivalent; hosts must be pre-configured with a gateway or use DHCP."
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: "58 (ICMPv6)"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 255
+            description: "MUST be 255. If less, the packet was forwarded through a router and MUST be discarded. Prevents off-link NDP spoofing."
+            spec_refs:
+              - document: "RFC 4861"
+                section: "6.1.1"
+                title: "Validation of Router Solicitation Messages"
+                url: "https://www.rfc-editor.org/rfc/rfc4861#section-6.1.1"
+
+      - name: "ICMPv6: Router Solicitation"
+        abbrev: "icmpv6"
+        layer: 3
+        total_bytes: 16
+        fields:
+          - name: "Type"
+            abbrev: "icmpv6.type"
+            bits: 8
+            value: "133 (Router Solicitation)"
+            description: "ICMPv6 type 133 -- 'Are there any routers on this link? Please send me a Router Advertisement.'"
+            spec_refs:
+              - document: "RFC 4861"
+                section: "4.1"
+                title: "Router Solicitation Message Format"
+                url: "https://www.rfc-editor.org/rfc/rfc4861#section-4.1"
+          - name: "Code"
+            abbrev: "icmpv6.code"
+            bits: 8
+            value: 0
+          - name: "Checksum"
+            abbrev: "icmpv6.checksum"
+            bits: 16
+            value: "0x----"
+            description: "ICMPv6 checksum (computed over pseudo-header + message)"
+          - name: "Reserved"
+            abbrev: "icmpv6.rs.reserved"
+            bits: 32
+            value: 0
+          - name: "Option: Source Link-Layer Address"
+            abbrev: "icmpv6.opt.source_linkaddr"
+            bits: 64
+            value: "52:54:00:A1:B2:C3"
+            description: "Host includes its MAC so the router can reply without doing neighbor discovery. This option is omitted if the source address is :: (unspecified)."
+
+  # -- Router Advertisement (RA) -----------------------------------
+  - id: "ra"
+    name: "Router Advertisement (RA)"
+    description: "Router announces prefix 2001:db8:1::/64 with SLAAC flags, MTU, and DNS"
+    from: "router"
+    to: "host"
+    via: ["switch"]
+    total_bytes: 134
+    color: "#15803d"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "33:33:00:00:00:01"
+            description: "All-nodes multicast (ff02::1) -- every IPv6 host on the link receives this"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:1A:2B:3C:4D:5E"
+            description: "Router's MAC address"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "fe80::1"
+            description: "Router's link-local address -- hosts use this as their default gateway"
+          - name: "Destination"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "ff02::1"
+            description: "All-nodes multicast. In response to an RS, the router may also unicast the RA to the soliciting host."
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: "58 (ICMPv6)"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 255
+
+      - name: "ICMPv6: Router Advertisement"
+        abbrev: "icmpv6"
+        layer: 3
+        total_bytes: 80
+        fields:
+          - name: "Type"
+            abbrev: "icmpv6.type"
+            bits: 8
+            value: "134 (Router Advertisement)"
+            description: "ICMPv6 type 134 -- the router's response to RS (or periodic unsolicited announcement)"
+            spec_refs:
+              - document: "RFC 4861"
+                section: "4.2"
+                title: "Router Advertisement Message Format"
+                url: "https://www.rfc-editor.org/rfc/rfc4861#section-4.2"
+          - name: "Code"
+            abbrev: "icmpv6.code"
+            bits: 8
+            value: 0
+          - name: "Cur Hop Limit"
+            abbrev: "icmpv6.ra.cur_hop_limit"
+            bits: 8
+            value: 64
+            description: "Recommended hop limit for outgoing packets. Hosts use this value unless overridden locally."
+          - name: "Managed (M) Flag"
+            abbrev: "icmpv6.ra.flag_m"
+            bits: 1
+            value: "0"
+            description: "M=0: Do NOT use DHCPv6 for address assignment. Addresses come from SLAAC only. If M=1, hosts would also contact a DHCPv6 server for addresses."
+          - name: "Other (O) Flag"
+            abbrev: "icmpv6.ra.flag_o"
+            bits: 1
+            value: "0"
+            description: "O=0: Do NOT use DHCPv6 for other configuration (DNS, NTP, etc.). DNS is provided via the RDNSS option in this RA instead. If O=1, hosts would use DHCPv6 for non-address config."
+          - name: "Router Lifetime"
+            abbrev: "icmpv6.ra.router_lifetime"
+            bits: 16
+            value: "1800 seconds (30 min)"
+            description: "How long the host should use this router as a default gateway. 0 means the router is not a default router. The host must receive a new RA before this timer expires."
+          - name: "Reachable Time"
+            abbrev: "icmpv6.ra.reachable_time"
+            bits: 32
+            value: "30000 ms (30 sec)"
+            description: "How long a neighbor is considered reachable after receiving a reachability confirmation. Used by NDP neighbor unreachability detection."
+          - name: "Retrans Timer"
+            abbrev: "icmpv6.ra.retrans_timer"
+            bits: 32
+            value: "1000 ms (1 sec)"
+            description: "Time between retransmitted Neighbor Solicitations during address resolution or DAD."
+
+          - name: "Option: Prefix Information (Type 3)"
+            abbrev: "icmpv6.opt.prefix"
+            bits: 256
+            value: "2001:db8:1::/64, Valid: 86400s (24h), Preferred: 14400s (4h), A=1, L=1"
+            description: >
+              The prefix that hosts use for SLAAC. A=1 (Autonomous) means hosts
+              can use this prefix to generate addresses autonomously. L=1 (On-Link)
+              means destinations within this prefix are directly reachable on
+              this link (no router needed). Valid Lifetime = how long the address
+              remains valid. Preferred Lifetime = how long the address is preferred
+              for new connections (after this, the address becomes deprecated but
+              still usable for existing connections).
+            spec_refs:
+              - document: "RFC 4862"
+                section: "5.5.3"
+                title: "Router Advertisement Processing"
+                url: "https://www.rfc-editor.org/rfc/rfc4862#section-5.5.3"
+
+          - name: "Option: MTU (Type 5)"
+            abbrev: "icmpv6.opt.mtu"
+            bits: 64
+            value: "1500"
+            description: "Link MTU. Ensures all hosts on the link agree on the maximum packet size. Especially important on links where the MTU is not well-known (e.g., tunnels)."
+
+          - name: "Option: RDNSS (Type 25)"
+            abbrev: "icmpv6.opt.rdnss"
+            bits: 192
+            value: "2001:db8:1::53, Lifetime: 1800s"
+            description: >
+              Recursive DNS Server option (RFC 8106). Provides DNS server
+              addresses directly in the RA, eliminating the need for DHCPv6
+              just to learn DNS. The lifetime indicates how long the DNS
+              server address is valid.
+            spec_refs:
+              - document: "RFC 8106"
+                section: "5.1"
+                title: "Recursive DNS Server Option"
+                url: "https://www.rfc-editor.org/rfc/rfc8106#section-5.1"
+
+  # -- NS for DAD (link-local) -------------------------------------
+  - id: "ns_dad_linklocal"
+    name: "NS for DAD: Tentative Link-Local Address"
+    description: "Host performs Duplicate Address Detection for its link-local address"
+    from: "host"
+    to: "router"
+    via: ["switch"]
+    total_bytes: 78
+    color: "#7c3aed"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "33:33:FF:A1:B2:C3"
+            description: "Solicited-node multicast for the tentative address. Derived from last 24 bits of the address (A1:B2:C3). Only hosts with addresses ending in these bytes process this."
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "52:54:00:A1:B2:C3"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "::"
+            description: "The UNSPECIFIED address (::). The host cannot use the tentative address as a source because it has not been confirmed unique yet. This is the key difference between DAD and normal neighbor solicitation."
+            spec_refs:
+              - document: "RFC 4862"
+                section: "5.4.2"
+                title: "Sending Neighbor Solicitation Messages"
+                url: "https://www.rfc-editor.org/rfc/rfc4862#section-5.4.2"
+          - name: "Destination"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "ff02::1:ffa1:b2c3"
+            description: "Solicited-node multicast address for fe80::5054:ff:fea1:b2c3"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: "58 (ICMPv6)"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 255
+
+      - name: "ICMPv6: Neighbor Solicitation (DAD)"
+        abbrev: "icmpv6"
+        layer: 3
+        total_bytes: 24
+        fields:
+          - name: "Type"
+            abbrev: "icmpv6.type"
+            bits: 8
+            value: "135 (Neighbor Solicitation)"
+            description: "ICMPv6 type 135. During DAD, this asks: 'Is anyone already using this address?' A normal NS asks: 'What is your MAC address?'"
+            spec_refs:
+              - document: "RFC 4861"
+                section: "4.3"
+                title: "Neighbor Solicitation Message Format"
+                url: "https://www.rfc-editor.org/rfc/rfc4861#section-4.3"
+          - name: "Code"
+            abbrev: "icmpv6.code"
+            bits: 8
+            value: 0
+          - name: "Target Address"
+            abbrev: "icmpv6.ns.target"
+            bits: 128
+            value: "fe80::5054:ff:fea1:b2c3"
+            description: "The tentative link-local address being tested. If any host responds with an NA for this address, DAD fails and the address cannot be used."
+
+  # -- NS for DAD (global) -----------------------------------------
+  - id: "ns_dad_global"
+    name: "NS for DAD: Tentative Global SLAAC Address"
+    description: "Host performs Duplicate Address Detection for its global SLAAC address"
+    from: "host"
+    to: "router"
+    via: ["switch"]
+    total_bytes: 78
+    color: "#7c3aed"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "33:33:FF:A1:B2:C3"
+            description: "Solicited-node multicast -- same last 24 bits because the interface ID is the same as the link-local"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "52:54:00:A1:B2:C3"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "::"
+            description: "Unspecified address -- still performing DAD, cannot use the tentative address yet"
+          - name: "Destination"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "ff02::1:ffa1:b2c3"
+            description: "Solicited-node multicast address for 2001:db8:1::5054:ff:fea1:b2c3"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: "58 (ICMPv6)"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 255
+
+      - name: "ICMPv6: Neighbor Solicitation (DAD)"
+        abbrev: "icmpv6"
+        layer: 3
+        total_bytes: 24
+        fields:
+          - name: "Type"
+            abbrev: "icmpv6.type"
+            bits: 8
+            value: "135 (Neighbor Solicitation)"
+          - name: "Code"
+            abbrev: "icmpv6.code"
+            bits: 8
+            value: 0
+          - name: "Target Address"
+            abbrev: "icmpv6.ns.target"
+            bits: 128
+            value: "2001:db8:1::5054:ff:fea1:b2c3"
+            description: "The tentative global address being tested -- prefix (2001:db8:1::/64) from the RA + interface ID (5054:ff:fea1:b2c3) from EUI-64"
+
+  # -- NS for DAD (privacy) ----------------------------------------
+  - id: "ns_dad_privacy"
+    name: "NS for DAD: Tentative Privacy/Temporary Address"
+    description: "Host performs Duplicate Address Detection for its privacy address"
+    from: "host"
+    to: "router"
+    via: ["switch"]
+    total_bytes: 78
+    color: "#7c3aed"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "33:33:FF:7E:92:D4"
+            description: "Solicited-node multicast for the privacy address. Different last 24 bits because the interface ID is random."
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "52:54:00:A1:B2:C3"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "::"
+            description: "Unspecified address -- DAD in progress for the privacy address"
+          - name: "Destination"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "ff02::1:ff7e:92d4"
+            description: "Solicited-node multicast for 2001:db8:1::3f8a:7e92:d4"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: "58 (ICMPv6)"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 255
+
+      - name: "ICMPv6: Neighbor Solicitation (DAD)"
+        abbrev: "icmpv6"
+        layer: 3
+        total_bytes: 24
+        fields:
+          - name: "Type"
+            abbrev: "icmpv6.type"
+            bits: 8
+            value: "135 (Neighbor Solicitation)"
+          - name: "Code"
+            abbrev: "icmpv6.code"
+            bits: 8
+            value: 0
+          - name: "Target Address"
+            abbrev: "icmpv6.ns.target"
+            bits: 128
+            value: "2001:db8:1::3f8a:7e92:d4"
+            description: "The tentative privacy address -- prefix (2001:db8:1::/64) from the RA + randomly generated interface ID. RFC 8981 recommends random IIDs to prevent tracking."
+            spec_refs:
+              - document: "RFC 8981"
+                section: "3.3"
+                title: "Generating Temporary Addresses"
+                url: "https://www.rfc-editor.org/rfc/rfc8981#section-3.3"
+
+  # -- ICMPv6 Echo Request -----------------------------------------
+  - id: "echo_request"
+    name: "ICMPv6 Echo Request (Ping)"
+    description: "Host pings the router's link-local address to verify connectivity"
+    from: "host"
+    to: "router"
+    via: ["switch"]
+    total_bytes: 118
+    color: "#0369a1"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:1A:2B:3C:4D:5E"
+            description: "Unicast to the router's MAC address (learned from the RA's source link-layer address option)"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "52:54:00:A1:B2:C3"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "fe80::5054:ff:fea1:b2c3"
+            description: "Host's confirmed link-local address"
+          - name: "Destination"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "fe80::1"
+            description: "Router's link-local address -- used as default gateway"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: "58 (ICMPv6)"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 64
+
+      - name: "ICMPv6: Echo Request"
+        abbrev: "icmpv6"
+        layer: 3
+        total_bytes: 64
+        fields:
+          - name: "Type"
+            abbrev: "icmpv6.type"
+            bits: 8
+            value: "128 (Echo Request)"
+            description: "ICMPv6 Echo Request -- the IPv6 equivalent of 'ping'. In IPv4, this is ICMP type 8."
+          - name: "Code"
+            abbrev: "icmpv6.code"
+            bits: 8
+            value: 0
+          - name: "Identifier"
+            abbrev: "icmpv6.echo.id"
+            bits: 16
+            value: "0x0001"
+          - name: "Sequence Number"
+            abbrev: "icmpv6.echo.seq"
+            bits: 16
+            value: "1"
+          - name: "Data"
+            abbrev: "icmpv6.echo.data"
+            bits: 448
+            value: "(56 bytes of padding)"
+
+  # -- ICMPv6 Echo Reply -------------------------------------------
+  - id: "echo_reply"
+    name: "ICMPv6 Echo Reply (Pong)"
+    description: "Router replies to the host's ping, confirming link-local connectivity"
+    from: "router"
+    to: "host"
+    via: ["switch"]
+    total_bytes: 118
+    color: "#0369a1"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "52:54:00:A1:B2:C3"
+            description: "Unicast to the host's MAC address"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:1A:2B:3C:4D:5E"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "fe80::1"
+          - name: "Destination"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "fe80::5054:ff:fea1:b2c3"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: "58 (ICMPv6)"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 64
+
+      - name: "ICMPv6: Echo Reply"
+        abbrev: "icmpv6"
+        layer: 3
+        total_bytes: 64
+        fields:
+          - name: "Type"
+            abbrev: "icmpv6.type"
+            bits: 8
+            value: "129 (Echo Reply)"
+            description: "ICMPv6 Echo Reply. In IPv4, this is ICMP type 0."
+          - name: "Code"
+            abbrev: "icmpv6.code"
+            bits: 8
+            value: 0
+          - name: "Identifier"
+            abbrev: "icmpv6.echo.id"
+            bits: 16
+            value: "0x0001"
+          - name: "Sequence Number"
+            abbrev: "icmpv6.echo.seq"
+            bits: 16
+            value: "1"
+          - name: "Data"
+            abbrev: "icmpv6.echo.data"
+            bits: 448
+            value: "(56 bytes of padding)"
+
+  # -- Unsolicited RA (periodic) -----------------------------------
+  - id: "ra_periodic"
+    name: "Periodic Router Advertisement (unsolicited)"
+    description: "Router sends an unsolicited RA on its regular timer, refreshing all hosts on the link"
+    from: "router"
+    to: "host"
+    via: ["switch"]
+    total_bytes: 134
+    color: "#15803d"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "33:33:00:00:00:01"
+            description: "All-nodes multicast -- all IPv6 hosts on the link"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:1A:2B:3C:4D:5E"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x86DD"
+
+      - name: "IPv6"
+        abbrev: "ipv6"
+        layer: 3
+        total_bytes: 40
+        fields:
+          - name: "Source"
+            abbrev: "ipv6.src"
+            bits: 128
+            value: "fe80::1"
+          - name: "Destination"
+            abbrev: "ipv6.dst"
+            bits: 128
+            value: "ff02::1"
+          - name: "Next Header"
+            abbrev: "ipv6.nxt"
+            bits: 8
+            value: "58 (ICMPv6)"
+          - name: "Hop Limit"
+            abbrev: "ipv6.hlim"
+            bits: 8
+            value: 255
+
+      - name: "ICMPv6: Router Advertisement"
+        abbrev: "icmpv6"
+        layer: 3
+        total_bytes: 80
+        fields:
+          - name: "Type"
+            abbrev: "icmpv6.type"
+            bits: 8
+            value: "134 (Router Advertisement)"
+            description: "Periodic unsolicited RA. Routers send these every 200-600 seconds (default) to keep all hosts' configuration fresh. No solicitation needed."
+          - name: "Cur Hop Limit"
+            abbrev: "icmpv6.ra.cur_hop_limit"
+            bits: 8
+            value: 64
+          - name: "M Flag"
+            abbrev: "icmpv6.ra.flag_m"
+            bits: 1
+            value: "0"
+          - name: "O Flag"
+            abbrev: "icmpv6.ra.flag_o"
+            bits: 1
+            value: "0"
+          - name: "Router Lifetime"
+            abbrev: "icmpv6.ra.router_lifetime"
+            bits: 16
+            value: "1800 seconds"
+          - name: "Option: Prefix Information (Type 3)"
+            abbrev: "icmpv6.opt.prefix"
+            bits: 256
+            value: "2001:db8:1::/64, Valid: 86400s, Preferred: 14400s, A=1, L=1"
+          - name: "Option: MTU (Type 5)"
+            abbrev: "icmpv6.opt.mtu"
+            bits: 64
+            value: "1500"
+          - name: "Option: RDNSS (Type 25)"
+            abbrev: "icmpv6.opt.rdnss"
+            bits: 192
+            value: "2001:db8:1::53, Lifetime: 1800s"
+
+# ---------------------------------------------------------------------
+# TIMELINE
+# ---------------------------------------------------------------------
+timeline:
+  # -- Step 1: Link up ---------------------------------------------
+  - id: "evt_link_up"
+    type: "state_change"
+    t_ns: 0
+    annotation:
+      text: "Physical link up on both sides"
+      detail: >
+        The host's Ethernet cable is plugged in (or Wi-Fi associates).
+        The physical layer (1000BASE-T) completes auto-negotiation and
+        the link comes up. The router's link has been up and running.
+
+        At this point, the host has zero IPv6 addresses. It cannot communicate
+        with anyone on the network yet. In IPv4, the host would be completely
+        stuck until either a static IP is configured or a DHCP server responds.
+        In IPv6, the host can bootstrap itself.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 1
+            state_fields:
+              phy_state: "up"
+          - layer: 2
+            state_fields:
+              link_state: "up"
+      - actor_id: "switch"
+        layers:
+          - layer: 1
+            state_fields:
+              port_host_phy: "up"
+
+  # -- Step 2: Host generates tentative link-local -----------------
+  - id: "evt_gen_linklocal"
+    type: "state_change"
+    t_ns: 100000
+    annotation:
+      text: "Host generates a tentative link-local address (fe80::)"
+      detail: >
+        The very first thing an IPv6 host does on link-up is generate a
+        link-local address. This address is formed by combining the well-known
+        prefix fe80::/10 with an interface identifier (IID). The IID can be:
+
+        1. EUI-64: derived from the MAC address (52:54:00:A1:B2:C3) by inserting
+           FF:FE in the middle and flipping the Universal/Local bit. This gives
+           fe80::5054:ff:fea1:b2c3.
+
+        2. Random (RFC 8981): a cryptographically random 64-bit value.
+
+        This address is TENTATIVE -- the host cannot use it yet. It must first
+        verify that no other host on the link already has this address.
+
+        In IPv4, there is no automatic link-local equivalent in most
+        deployments. (169.254.x.x APIPA exists but is rarely used
+        intentionally.)
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 3
+            state_fields:
+              link_local_addr: "fe80::5054:ff:fea1:b2c3 (TENTATIVE)"
+
+  # -- Step 3: DAD for link-local ----------------------------------
+  - id: "evt_dad_linklocal"
+    type: "frame_tx"
+    t_ns: 200000
+    frame_id: "ns_dad_linklocal"
+    annotation:
+      text: "DAD: Host sends NS to verify link-local address is unique"
+      detail: >
+        Duplicate Address Detection (DAD) -- the host sends a Neighbor
+        Solicitation (NS) for its own tentative address. Key details:
+
+        - Source IP = :: (unspecified) -- the host cannot use the tentative
+          address as a source because it is not confirmed yet.
+        - Destination = solicited-node multicast (ff02::1:ffa1:b2c3).
+        - Target = the tentative link-local address.
+        - No Source Link-Layer Address option (because source is ::).
+
+        If any host on the link is already using this address, it will respond
+        with a Neighbor Advertisement (NA), and the host's DAD fails. The host
+        must then try a different address.
+
+        The host waits for RetransTimer (1 second, from RFC 4862 default
+        DupAddrDetectTransmits=1) before concluding DAD succeeded.
+
+        In IPv4, there is nothing like this built into the protocol. ARP-based
+        duplicate detection (RFC 5227) exists but is optional and rarely used
+        outside of DHCP.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 3
+            state_fields:
+              link_local_addr: "fe80::5054:ff:fea1:b2c3 (TENTATIVE, DAD in progress)"
+
+  # -- Step 4: DAD succeeds for link-local -------------------------
+  - id: "evt_dad_linklocal_ok"
+    type: "state_change"
+    t_ns: 1200000
+    annotation:
+      text: "DAD succeeded -- link-local address is valid!"
+      detail: >
+        No Neighbor Advertisement came back within the retransmission
+        timeout. This means no other host on the link is using
+        fe80::5054:ff:fea1:b2c3. The address transitions from TENTATIVE
+        to VALID (preferred).
+
+        The host now has its first usable IPv6 address! It can communicate
+        with other hosts on the same link using this link-local address.
+        However, link-local addresses are not routable -- they only work
+        on this network segment. The host still needs a global address
+        to reach the Internet.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 3
+            state_fields:
+              link_local_addr: "fe80::5054:ff:fea1:b2c3 (VALID, preferred)"
+
+  # -- Step 5: Router Solicitation ---------------------------------
+  - id: "evt_rs"
+    type: "frame_tx"
+    t_ns: 1300000
+    frame_id: "rs"
+    annotation:
+      text: "Host sends Router Solicitation -- 'Are there any routers here?'"
+      detail: >
+        Now that the host has a valid link-local address, it sends a Router
+        Solicitation (RS) to the all-routers multicast address (ff02::2).
+        This is the host asking: "Are there any IPv6 routers on this link?
+        If so, please send me a Router Advertisement so I can configure myself."
+
+        Only routers listen on ff02::2, so regular hosts ignore this message.
+        The host could also just wait for a periodic unsolicited RA, but
+        sending an RS gets a response much faster (within a few milliseconds
+        vs. waiting up to 600 seconds).
+
+        In IPv4, the equivalent is a DHCP Discover broadcast -- but that
+        requires a DHCP server to be running. If no DHCP server exists,
+        the IPv4 host gets nothing. In IPv6, SLAAC works with just a router.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 3
+            state_fields:
+              default_gateway: "(awaiting RA)"
+
+  # -- Step 6: Router Advertisement --------------------------------
+  - id: "evt_ra"
+    type: "frame_tx"
+    t_ns: 1400000
+    frame_id: "ra"
+    annotation:
+      text: "Router responds with RA: prefix 2001:db8:1::/64, A=1, L=1, M=0, O=0"
+      detail: >
+        The router receives the RS and responds with a Router Advertisement
+        containing everything the host needs:
+
+        1. PREFIX INFORMATION: 2001:db8:1::/64 with A=1 (autonomous -- use
+           for SLAAC) and L=1 (on-link -- destinations in this prefix are
+           directly reachable). Valid lifetime = 24 hours, preferred = 4 hours.
+
+        2. FLAGS: M=0 (no DHCPv6 for addresses), O=0 (no DHCPv6 for other
+           config). This is pure SLAAC -- no DHCP server involved at all.
+
+        3. DEFAULT GATEWAY: The router's source address (fe80::1) becomes
+           the host's default gateway. Hosts always use the router's
+           link-local address as the gateway, not its global address.
+
+        4. MTU: 1500 bytes.
+
+        5. RDNSS: DNS server at 2001:db8:1::53. This eliminates the need
+           for DHCPv6 just to learn DNS server addresses.
+
+        From this single message, the host has everything it needs to fully
+        configure itself. In IPv4, this would require a DHCP server running
+        on the network with a configured scope, lease time, gateway option,
+        and DNS option.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 3
+            state_fields:
+              default_gateway: "fe80::1 (from RA)"
+              dns_server: "2001:db8:1::53 (from RA RDNSS)"
+      - actor_id: "router"
+        layers:
+          - layer: 3
+            state_fields:
+              ndp_table: "fe80::5054:ff:fea1:b2c3 -> 52:54:00:A1:B2:C3 (from RS)"
+
+  # -- Step 7: Generate tentative global address -------------------
+  - id: "evt_gen_global"
+    type: "state_change"
+    t_ns: 1500000
+    annotation:
+      text: "Host generates global address: prefix + interface ID"
+      detail: >
+        The host takes the prefix from the RA (2001:db8:1::/64) and
+        combines it with the same interface ID used for the link-local
+        address (5054:ff:fea1:b2c3 from EUI-64). The result is:
+
+          2001:db8:1::5054:ff:fea1:b2c3
+
+        This is a TENTATIVE global address. Before using it, the host
+        must perform DAD again -- just because the link-local was unique
+        does not guarantee the global address is unique (though in practice,
+        if the IID is the same, a collision is extremely unlikely).
+
+        In IPv4, the host would have received its address from DHCP in the
+        DHCP Offer/ACK. The DHCP server tracks which addresses are in use.
+        In IPv6 SLAAC, there is no server tracking -- the host picks its
+        own address and verifies uniqueness via DAD.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 3
+            state_fields:
+              global_addr: "2001:db8:1::5054:ff:fea1:b2c3 (TENTATIVE)"
+
+  # -- Step 8: DAD for global address ------------------------------
+  - id: "evt_dad_global"
+    type: "frame_tx"
+    t_ns: 1600000
+    frame_id: "ns_dad_global"
+    annotation:
+      text: "DAD: Host sends NS to verify global address is unique"
+      detail: >
+        Same DAD procedure as for the link-local address:
+        - Source = :: (unspecified)
+        - Target = 2001:db8:1::5054:ff:fea1:b2c3
+        - Destination = solicited-node multicast ff02::1:ffa1:b2c3
+
+        The host waits for a response. No response means the address is unique.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 3
+            state_fields:
+              global_addr: "2001:db8:1::5054:ff:fea1:b2c3 (TENTATIVE, DAD in progress)"
+
+  # -- Step 9: DAD succeeds for global address ---------------------
+  - id: "evt_dad_global_ok"
+    type: "state_change"
+    t_ns: 2600000
+    annotation:
+      text: "DAD succeeded -- global SLAAC address is valid!"
+      detail: >
+        No Neighbor Advertisement arrived. The global address
+        2001:db8:1::5054:ff:fea1:b2c3 is confirmed unique and
+        transitions to VALID (preferred).
+
+        The host can now communicate with any destination on the Internet
+        using this global address. However, EUI-64 addresses have a privacy
+        concern: the interface ID is derived from the MAC address, which
+        is a hardware identifier. This means anyone can track the host
+        across different networks by its consistent interface ID.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 3
+            state_fields:
+              global_addr: "2001:db8:1::5054:ff:fea1:b2c3 (VALID, preferred)"
+
+  # -- Step 10: Generate tentative privacy address -----------------
+  - id: "evt_gen_privacy"
+    type: "state_change"
+    t_ns: 2700000
+    annotation:
+      text: "Host generates a privacy/temporary address (RFC 8981)"
+      detail: >
+        To address the tracking concern, RFC 8981 (Privacy Extensions)
+        specifies that hosts should also generate temporary addresses
+        with random interface IDs. The host generates:
+
+          2001:db8:1::3f8a:7e92:d4
+
+        The random IID changes periodically (default preferred lifetime
+        is typically 24 hours, but can be shorter). When the host initiates
+        outbound connections (browsing the web, etc.), it uses the privacy
+        address as the source. The stable SLAAC address is still used for
+        inbound connections (servers, SSH, etc.).
+
+        This solves a real-world privacy problem: without privacy addresses,
+        your laptop would have the same interface ID on every Wi-Fi network
+        you join -- coffee shop, airport, home, work -- making it trivial
+        to track your movements.
+
+        IPv4 does not have this problem in the same way because DHCP assigns
+        different addresses on different networks. But IPv4 also does not
+        have this level of built-in privacy control.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 3
+            state_fields:
+              privacy_addr: "2001:db8:1::3f8a:7e92:d4 (TENTATIVE)"
+
+  # -- Step 11: DAD for privacy address ----------------------------
+  - id: "evt_dad_privacy"
+    type: "frame_tx"
+    t_ns: 2800000
+    frame_id: "ns_dad_privacy"
+    annotation:
+      text: "DAD: Host sends NS to verify privacy address is unique"
+      detail: >
+        DAD for the privacy address follows the same procedure:
+        - Source = :: (unspecified)
+        - Target = 2001:db8:1::3f8a:7e92:d4
+        - Destination = solicited-node multicast ff02::1:ff7e:92d4
+
+        Because the IID is random, the solicited-node multicast address
+        is different from the one used for the link-local and global
+        DAD probes.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 3
+            state_fields:
+              privacy_addr: "2001:db8:1::3f8a:7e92:d4 (TENTATIVE, DAD in progress)"
+
+  # -- Step 12: DAD succeeds for privacy address -------------------
+  - id: "evt_dad_privacy_ok"
+    type: "state_change"
+    t_ns: 3800000
+    annotation:
+      text: "DAD succeeded -- privacy address is valid!"
+      detail: >
+        The privacy address 2001:db8:1::3f8a:7e92:d4 is confirmed
+        unique and transitions to VALID (preferred).
+
+        The host is now fully configured with three IPv6 addresses:
+        1. fe80::5054:ff:fea1:b2c3 -- link-local (always present)
+        2. 2001:db8:1::5054:ff:fea1:b2c3 -- global SLAAC (stable)
+        3. 2001:db8:1::3f8a:7e92:d4 -- privacy/temporary (rotates)
+
+        Plus: default gateway (fe80::1) and DNS (2001:db8:1::53).
+
+        All of this happened automatically with zero configuration
+        and zero servers. The only infrastructure requirement is a
+        router sending Router Advertisements.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 3
+            state_fields:
+              privacy_addr: "2001:db8:1::3f8a:7e92:d4 (VALID, preferred)"
+          - layer: 7
+            state_fields:
+              app_status: "network ready"
+
+  # -- Step 13: Host is fully configured (summary) -----------------
+  - id: "evt_fully_configured"
+    type: "annotation"
+    t_ns: 3900000
+    annotation:
+      text: "Host is fully configured -- link-local, global, privacy address, gateway, DNS"
+      detail: >
+        Summary of the host's complete IPv6 configuration:
+
+        Addresses:
+          fe80::5054:ff:fea1:b2c3/10     -- link-local (scope: link)
+          2001:db8:1::5054:ff:fea1:b2c3/64 -- global SLAAC (scope: global)
+          2001:db8:1::3f8a:7e92:d4/64    -- privacy temp (scope: global)
+
+        Default gateway: fe80::1
+        DNS server: 2001:db8:1::53
+        MTU: 1500
+
+        Source address selection (RFC 6724):
+        - Outbound to Internet: uses privacy address (prevents tracking)
+        - Inbound / server: uses stable SLAAC address
+        - Link-local communication: uses fe80:: address
+
+  # -- Step 14: Ping to verify connectivity ------------------------
+  - id: "evt_ping_req"
+    type: "frame_tx"
+    t_ns: 4000000
+    frame_id: "echo_request"
+    annotation:
+      text: "Host pings router's link-local to verify connectivity"
+      detail: >
+        The host sends an ICMPv6 Echo Request (type 128) to the router's
+        link-local address fe80::1 to verify basic connectivity. This is
+        the IPv6 equivalent of 'ping' in IPv4 (ICMP type 8).
+
+        Note: the host already knows the router's MAC address from the
+        Source Link-Layer Address option in the RA, so no Neighbor
+        Solicitation is needed here.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 3
+            state_fields:
+              ndp_table: "fe80::1 -> 00:1A:2B:3C:4D:5E (REACHABLE)"
+
+  # -- Step 15: Ping reply -----------------------------------------
+  - id: "evt_ping_reply"
+    type: "frame_tx"
+    t_ns: 4100000
+    frame_id: "echo_reply"
+    annotation:
+      text: "Router replies -- connectivity confirmed!"
+      detail: >
+        The router sends an ICMPv6 Echo Reply (type 129) back to the host.
+        Round-trip time is ~100 microseconds on this LAN. Connectivity
+        is confirmed -- the host can reach its default gateway.
+
+        From here, the host can reach any destination on the Internet
+        by sending packets to the router. The router will forward them
+        based on its routing table.
+    state_after:
+      - actor_id: "router"
+        layers:
+          - layer: 3
+            state_fields:
+              ndp_table: "fe80::5054:ff:fea1:b2c3 -> 52:54:00:A1:B2:C3 (REACHABLE)"
+
+  # -- Step 16: Periodic unsolicited RA ----------------------------
+  - id: "evt_ra_periodic"
+    type: "frame_tx"
+    t_ns: 200000000000
+    frame_id: "ra_periodic"
+    annotation:
+      text: "Router sends periodic unsolicited RA (every 200-600 seconds)"
+      detail: >
+        Routers send Router Advertisements periodically without any
+        solicitation. The interval is randomized between
+        MinRtrAdvInterval (default 200s) and MaxRtrAdvInterval (default
+        600s) to avoid synchronization with other routers.
+
+        These periodic RAs serve several purposes:
+        1. New hosts that missed the initial RA will eventually get one.
+        2. Existing hosts refresh their router lifetime and prefix timers.
+        3. If a router goes down (stops sending RAs), hosts detect this
+           when the Router Lifetime expires and remove it as default gateway.
+
+        This is fundamentally different from IPv4 DHCP, where the server
+        only communicates during lease acquisition and renewal. IPv6 RAs
+        provide a continuous "heartbeat" from the router.
+
+  # -- Step 17: IPv4 contrast annotation ---------------------------
+  - id: "evt_ipv4_contrast"
+    type: "annotation"
+    t_ns: 200100000000
+    annotation:
+      text: "Contrast: In IPv4, all of this requires a DHCP server"
+      detail: >
+        Everything this host just did automatically would require
+        significant infrastructure in IPv4:
+
+        IPv6 SLAAC (what we just saw):
+        - Requirements: a router sending RAs. That's it.
+        - Address assignment: host generates its own address.
+        - Uniqueness check: DAD (built into the protocol).
+        - Gateway discovery: learned from RA source address.
+        - DNS: RDNSS option in RA (RFC 8106).
+        - Privacy: built-in temporary addresses (RFC 8981).
+        - No server state, no lease tracking, no scope configuration.
+
+        IPv4 DHCP (the traditional approach):
+        - Requirements: a DHCP server with configured address pool.
+        - Address assignment: server allocates from pool (DORA exchange).
+        - Uniqueness check: server tracks leases (or gratuitous ARP).
+        - Gateway discovery: DHCP option 3 (Router).
+        - DNS: DHCP option 6 (DNS Servers).
+        - Privacy: not addressed by the protocol.
+        - Server must maintain state for every lease.
+        - If the DHCP server is down, new hosts get no addresses.
+
+        SLAAC is not always a complete replacement for DHCPv6 -- some
+        enterprise networks still use DHCPv6 for address logging, PXE
+        boot options, or policy enforcement. But for the common case of
+        "get on the network and start working," SLAAC is simpler and
+        more resilient.
+
+# ---------------------------------------------------------------------
+# GLOSSARY
+# ---------------------------------------------------------------------
+glossary:
+  - term: "SLAAC"
+    abbrev: "SLAAC"
+    definition: "Stateless Address Autoconfiguration (RFC 4862). Hosts generate their own IPv6 global addresses by combining the prefix from Router Advertisements with a locally-generated interface identifier. No DHCP server needed."
+    spec_refs:
+      - document: "RFC 4862"
+        section: "1"
+        title: "IPv6 Stateless Address Autoconfiguration"
+        url: "https://www.rfc-editor.org/rfc/rfc4862"
+
+  - term: "Router Solicitation"
+    abbrev: "RS"
+    definition: "ICMPv6 message (type 133) sent by hosts to the all-routers multicast address (ff02::2) requesting Router Advertisements. Sent on link-up to quickly learn network configuration."
+    spec_refs:
+      - document: "RFC 4861"
+        section: "4.1"
+        title: "Router Solicitation Message Format"
+        url: "https://www.rfc-editor.org/rfc/rfc4861#section-4.1"
+
+  - term: "Router Advertisement"
+    abbrev: "RA"
+    definition: "ICMPv6 message (type 134) sent by routers to the all-nodes multicast address (ff02::1). Contains prefix information for SLAAC, default gateway lifetime, MTU, and optionally DNS server addresses (RDNSS). Sent in response to RS and periodically."
+    spec_refs:
+      - document: "RFC 4861"
+        section: "4.2"
+        title: "Router Advertisement Message Format"
+        url: "https://www.rfc-editor.org/rfc/rfc4861#section-4.2"
+
+  - term: "DAD"
+    abbrev: "DAD"
+    definition: "Duplicate Address Detection (RFC 4862 Section 5.4). Before using a new IPv6 address, a host sends a Neighbor Solicitation from :: (unspecified) to the solicited-node multicast for the tentative address. If no NA comes back, the address is unique. Mandatory for all IPv6 addresses."
+    spec_refs:
+      - document: "RFC 4862"
+        section: "5.4"
+        title: "Duplicate Address Detection"
+        url: "https://www.rfc-editor.org/rfc/rfc4862#section-5.4"
+
+  - term: "Link-Local Address"
+    definition: "An IPv6 address with prefix fe80::/10, automatically generated on every IPv6-enabled interface. Scope is limited to the local network segment (link). Used for neighbor discovery, router communication, and as the default gateway address. Not routable."
+
+  - term: "Solicited-Node Multicast"
+    definition: "IPv6 multicast address ff02::1:ffXX:XXXX derived from the last 24 bits of a unicast address. Hosts join this group for each of their IPv6 addresses. NDP uses it to limit Neighbor Solicitations to likely targets instead of broadcasting to everyone."
+
+  - term: "EUI-64"
+    definition: "Extended Unique Identifier (64-bit). A method to generate an IPv6 interface identifier from a 48-bit MAC address by inserting FF:FE in the middle and flipping the Universal/Local (U/L) bit. Example: MAC 52:54:00:A1:B2:C3 becomes IID 5054:00ff:fea1:b2c3."
+
+  - term: "Privacy Extensions"
+    definition: "RFC 8981 (formerly RFC 4941). Generates temporary IPv6 addresses with random interface identifiers that change periodically. Prevents tracking hosts across networks by their stable EUI-64 or SLAAC addresses. Used as the default source address for outbound connections."
+    spec_refs:
+      - document: "RFC 8981"
+        section: "1"
+        title: "Temporary Address Extensions for SLAAC"
+        url: "https://www.rfc-editor.org/rfc/rfc8981"
+
+  - term: "NDP"
+    abbrev: "NDP"
+    definition: "Neighbor Discovery Protocol (RFC 4861). IPv6's replacement for ARP. Uses ICMPv6 messages (types 133-137) for router discovery, prefix advertisement, address resolution, duplicate address detection, and redirect. Built on multicast, not broadcast."
+    spec_refs:
+      - document: "RFC 4861"
+        section: "1"
+        title: "Introduction"
+        url: "https://www.rfc-editor.org/rfc/rfc4861#section-1"
+
+  - term: "RDNSS"
+    abbrev: "RDNSS"
+    definition: "Recursive DNS Server option (RFC 8106, RA option type 25). Allows routers to advertise DNS server addresses directly in Router Advertisements, eliminating the need for DHCPv6 just to provide DNS configuration."
+    spec_refs:
+      - document: "RFC 8106"
+        section: "5.1"
+        title: "Recursive DNS Server Option"
+        url: "https://www.rfc-editor.org/rfc/rfc8106#section-5.1"
+
+  - term: "Tentative Address"
+    definition: "An IPv6 address state (RFC 4862). An address is tentative from the moment it is generated until Duplicate Address Detection (DAD) completes. A tentative address cannot be used as a source address for normal traffic -- only DAD probe packets use it as the target."
+
+# ---------------------------------------------------------------------
+# WALKTHROUGHS
+# ---------------------------------------------------------------------
+walkthroughs:
+  - id: "default"
+    title: "IPv6 SLAAC: From Zero to Fully Connected"
+    description: "Walk through how an IPv6 host configures itself from scratch -- no DHCP, no manual setup"
+    steps:
+      - step: 0
+        narration: >
+          Imagine you just plugged your laptop into a network. In IPv4, your computer
+          would sit helplessly sending DHCP Discover broadcasts, hoping a DHCP server
+          is out there somewhere. If no server responds, you get nothing -- no IP, no
+          gateway, no DNS.
+
+          IPv6 works completely differently. Your host can configure itself using
+          information from a nearby router, without any server. This process is called
+          SLAAC -- Stateless Address Autoconfiguration. Let's watch it happen.
+        highlight_fields: []
+
+      - step: 1
+        narration: >
+          The physical link comes up -- Ethernet auto-negotiation completes and the
+          link LED turns green. At this point, the host has zero IPv6 addresses. It
+          cannot send or receive any IPv6 traffic yet. But unlike IPv4, the host does
+          not need to wait for an external server. It immediately starts bootstrapping
+          itself.
+        highlight_fields: []
+
+      - step: 2
+        narration: >
+          The very first thing the host does is generate a link-local address. This is
+          an address that starts with fe80:: and only works on the local network segment.
+          The host creates it by combining fe80::/64 with an interface ID derived from
+          its MAC address (called EUI-64). The result here is fe80::5054:ff:fea1:b2c3.
+
+          But the host cannot use this address yet -- it is marked TENTATIVE. What if
+          another device on the network already has this address? The host must check
+          first, using a process called Duplicate Address Detection (DAD).
+        highlight_fields: []
+
+      - step: 3
+        narration: >
+          DAD works by sending a Neighbor Solicitation (NS) for the tentative address.
+          Notice the source address is :: (the unspecified address, all zeros). The host
+          cannot use the tentative address as a source because it has not been confirmed
+          yet. The destination is a special "solicited-node multicast" address derived from
+          the tentative address -- only devices whose addresses share the same last 24 bits
+          will process this packet. This is much more efficient than IPv4's broadcast-based
+          approaches.
+        highlight_fields: ["ipv6.src", "icmpv6.ns.target", "ipv6.dst"]
+
+      - step: 4
+        narration: >
+          Silence is golden! After waiting one second (the retransmission timer), no
+          Neighbor Advertisement came back. This means nobody else on the link is using
+          fe80::5054:ff:fea1:b2c3. The address transitions from TENTATIVE to VALID.
+          The host now has its first working IPv6 address!
+
+          But link-local addresses only work on the local network. You cannot reach
+          Google or any other Internet destination with fe80::. The host needs a
+          global address -- and for that, it needs information from a router.
+        highlight_fields: []
+
+      - step: 5
+        narration: >
+          The host sends a Router Solicitation (RS) to ff02::2, the all-routers multicast
+          address. This is like shouting "Are there any routers here?" Only routers listen
+          on this address, so regular hosts ignore it. The RS includes the host's MAC
+          address as an option so the router can reply efficiently.
+
+          In IPv4, the equivalent would be a DHCP Discover broadcast. But DHCP Discover
+          needs a DHCP server to be running somewhere. RS just needs a router -- and
+          every network has a router.
+        highlight_fields: ["ipv6.dst", "icmpv6.type", "icmpv6.opt.source_linkaddr"]
+
+      - step: 6
+        narration: >
+          The router responds with a Router Advertisement (RA) packed with information.
+          Look at what is in this single message: the network prefix (2001:db8:1::/64)
+          with A=1 meaning "use this for SLAAC," the router's own link-local address
+          (fe80::1) which becomes the default gateway, the link MTU (1500), and even a
+          DNS server address (2001:db8:1::53) via the RDNSS option.
+
+          The M=0 and O=0 flags say "do NOT contact a DHCPv6 server -- everything you
+          need is right here in this RA." One message, complete configuration. In IPv4,
+          this would require a DHCP server with configured scopes, options, and leases.
+        highlight_fields: ["icmpv6.type", "icmpv6.opt.prefix", "icmpv6.ra.flag_m", "icmpv6.ra.flag_o", "icmpv6.opt.rdnss"]
+
+      - step: 7
+        narration: >
+          The host now generates its global address by combining the prefix from the RA
+          (2001:db8:1::/64) with its interface ID (5054:ff:fea1:b2c3). The result is
+          2001:db8:1::5054:ff:fea1:b2c3 -- a globally routable address.
+
+          But again, it is TENTATIVE. The host must run DAD one more time for this new
+          address. Even though the interface ID is the same as the link-local, the global
+          address is a different address and must be checked independently.
+        highlight_fields: []
+
+      - step: 8
+        narration: >
+          DAD for the global address: another NS from :: to the solicited-node multicast.
+          Same procedure, same wait. After one second with no response, the global address
+          is confirmed unique and becomes VALID. The host can now reach any destination on
+          the Internet!
+        highlight_fields: ["ipv6.src", "icmpv6.ns.target"]
+
+      - step: 9
+        narration: >
+          But wait -- there is a privacy concern. The global SLAAC address contains the
+          interface ID derived from the MAC address. This ID is the same on every network
+          the host joins. A coffee shop, an airport, your home, your office -- the same
+          suffix every time. This makes it trivially easy to track your device across
+          networks.
+
+          To solve this, RFC 8981 (Privacy Extensions) tells the host to generate an
+          additional temporary address with a random interface ID. The host creates
+          2001:db8:1::3f8a:7e92:d4 with a randomly chosen suffix.
+        highlight_fields: []
+
+      - step: 10
+        narration: >
+          One more round of DAD for the privacy address. The solicited-node multicast
+          address is different this time (ff02::1:ff7e:92d4) because the random interface
+          ID has different last 24 bits. After the timeout with no response, the privacy
+          address is valid.
+        highlight_fields: ["icmpv6.ns.target", "ipv6.dst"]
+
+      - step: 11
+        narration: >
+          The host is now fully configured with three IPv6 addresses, a default gateway,
+          and DNS. Let's verify everything works with a simple ping. The host sends an
+          ICMPv6 Echo Request (type 128) to the router's link-local address. The router
+          replies with an Echo Reply (type 129). Connectivity confirmed!
+
+          Notice the host already knows the router's MAC address from the RA -- no
+          Neighbor Solicitation needed to resolve it.
+        highlight_fields: ["icmpv6.type"]
+
+      - step: 12
+        narration: >
+          Time passes. Eventually, the router sends another Router Advertisement without
+          being asked. Routers do this every 200-600 seconds. These periodic RAs serve as
+          a "heartbeat" -- they refresh prefix lifetimes, confirm the router is still alive,
+          and help new hosts that may have joined the network since the last RA.
+
+          If the router stops sending RAs (because it crashed or was decommissioned), hosts
+          will notice when the Router Lifetime (1800 seconds) expires and remove it as their
+          default gateway. This is automatic failure detection with no extra protocol needed.
+        highlight_fields: ["icmpv6.type", "icmpv6.ra.router_lifetime"]
+
+      - step: 13
+        narration: >
+          Let's zoom out and appreciate what just happened. An IPv6 host went from "no
+          addresses, no connectivity" to "three addresses, default gateway, and DNS" in
+          about 4 seconds, with zero configuration and zero servers. The only requirement
+          was a router sending Router Advertisements.
+
+          In IPv4, this same result requires: a DHCP server with a configured address pool,
+          gateway option, DNS option, and lease tracking. If the DHCP server is down, new
+          hosts cannot join the network. With SLAAC, the host configures itself as long as
+          any router is present.
+
+          SLAAC is not a complete replacement for DHCPv6 in every scenario -- enterprise
+          networks may still need DHCPv6 for address logging, PXE boot, or policy. But for
+          the fundamental task of "get a host on the network," SLAAC is simpler, faster,
+          and more resilient than DHCP.
+        highlight_fields: []

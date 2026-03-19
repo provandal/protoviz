@@ -169,6 +169,66 @@
       "description": "NCCL Ring-AllReduce across 4 GPU nodes via RoCEv2: Reduce-Scatter phase (3 steps, accumulate partial gradient sums) then AllGather phase (3 steps, broadcast final result). All data movement via GPUDirect RDMA WRITE — GPU HBM to GPU HBM, zero CPU copies. The dominant communication pattern in data-parallel AI training.",
       "tags": ["NCCL", "AllReduce", "collective communications", "AI training", "distributed training", "RoCEv2", "RDMA", "GPUDirect", "ring algorithm", "100GbE", "education"],
       "path": "nccl/nccl-allreduce-rocev2.yaml"
+    },
+    {
+      "slug": "ipv6-slaac-autoconfiguration",
+      "title": "IPv6 SLAAC: Router Advertisement → DAD → Address Autoconfiguration",
+      "protocol": "ICMPv6 / NDP",
+      "protocol_family": "IPv6",
+      "difficulty": "beginner",
+      "description": "How IPv6 hosts configure their own addresses without a DHCP server: Router Solicitation, Router Advertisement with prefix info, EUI-64 and privacy address generation, Duplicate Address Detection via solicited-node multicast, and RDNSS for DNS. Contrasts with IPv4's DHCP dependency throughout.",
+      "tags": ["IPv6", "SLAAC", "NDP", "Router Advertisement", "DAD", "autoconfiguration", "link-local", "privacy extensions", "beginner", "education", "WIP"],
+      "path": "ipv6-slaac/ipv6-slaac-autoconfiguration.yaml"
+    },
+    {
+      "slug": "ipv6-vs-ipv4-header-comparison",
+      "title": "IPv6 vs IPv4 Header: Why IPv6 Is Faster on the Wire",
+      "protocol": "IPv6 / IPv4",
+      "protocol_family": "IPv6",
+      "difficulty": "beginner",
+      "description": "Side-by-side comparison: IPv4's 13-field variable-length header with per-hop checksum recalculation vs IPv6's 8-field fixed 40-byte header with no checksum and no router fragmentation. Covers extension header chaining (Hop-by-Hop, Fragment, Routing) and why Flow Labels matter for encrypted traffic.",
+      "tags": ["IPv6", "IPv4", "header comparison", "extension headers", "fragmentation", "Flow Label", "beginner", "education", "WIP"],
+      "path": "ipv6-header/ipv6-vs-ipv4-header-comparison.yaml"
+    },
+    {
+      "slug": "happy-eyeballs-dual-stack",
+      "title": "Happy Eyeballs: How Your Browser Chooses IPv4 vs IPv6",
+      "protocol": "TCP / DNS / IPv6 / IPv4",
+      "protocol_family": "IPv6",
+      "difficulty": "beginner",
+      "description": "The Happy Eyeballs algorithm (RFC 8305) in action: parallel DNS AAAA+A queries, IPv6-preferred connection racing with a 250ms fallback timer, and transparent IPv4 fallback when IPv6 is broken. Shows why the IPv4-to-IPv6 transition mostly works without users noticing.",
+      "tags": ["IPv6", "IPv4", "dual-stack", "Happy Eyeballs", "DNS", "TCP", "browser", "transition", "beginner", "intermediate", "education", "WIP"],
+      "path": "happy-eyeballs/happy-eyeballs-dual-stack.yaml"
+    },
+    {
+      "slug": "dhcpv6-stateful-stateless",
+      "title": "DHCPv6: Stateful vs Stateless — When RA Isn't Enough",
+      "protocol": "DHCPv6 / ICMPv6",
+      "protocol_family": "IPv6",
+      "difficulty": "intermediate",
+      "description": "Three DHCPv6 modes side by side: Stateless (O=1, M=0) for DNS/NTP info alongside SLAAC, Stateful (M=1) with full SARR 4-message exchange for managed address assignment, and Prefix Delegation where an ISP delegates a /48 to a home router — eliminating the need for NAT.",
+      "tags": ["IPv6", "DHCPv6", "SLAAC", "stateful", "stateless", "prefix delegation", "RA flags", "M-flag", "O-flag", "DUID", "intermediate", "education", "WIP"],
+      "path": "dhcpv6/dhcpv6-stateful-stateless.yaml"
+    },
+    {
+      "slug": "nat64-dns64-ipv6-only-to-ipv4",
+      "title": "NAT64/DNS64: IPv6-Only Client Talking to an IPv4-Only Server",
+      "protocol": "NAT64 / DNS64",
+      "protocol_family": "IPv6",
+      "difficulty": "intermediate",
+      "description": "The key federal IPv6 transition technology: DNS64 synthesizes AAAA records from A records using the well-known prefix 64:ff9b::/96, NAT64 translates IPv6 packets to IPv4 on the wire, and 464XLAT handles legacy apps that hardcode IPv4 addresses. How T-Mobile and federal agencies run IPv6-only networks.",
+      "tags": ["IPv6", "NAT64", "DNS64", "464XLAT", "IPv6-only", "IPv4 transition", "federal", "dual-stack", "intermediate", "education", "WIP"],
+      "path": "nat64-dns64/nat64-dns64-ipv6-only-to-ipv4.yaml"
+    },
+    {
+      "slug": "ipv6-path-mtu-discovery",
+      "title": "IPv6 Path MTU Discovery: No More Router Fragmentation",
+      "protocol": "ICMPv6 / IPv6",
+      "protocol_family": "IPv6",
+      "difficulty": "intermediate",
+      "description": "Why PMTUD is mandatory in IPv6: routers cannot fragment, so ICMPv6 Packet Too Big messages tell the source to use smaller packets. Shows PMTUD working correctly, source fragmentation via Fragment extension header, and the dreaded PMTUD black hole when firewalls block ICMPv6.",
+      "tags": ["IPv6", "PMTUD", "Path MTU Discovery", "ICMPv6", "fragmentation", "Packet Too Big", "black hole", "MTU", "intermediate", "education", "WIP"],
+      "path": "ipv6-pmtud/ipv6-path-mtu-discovery.yaml"
     }
   ]
 }
