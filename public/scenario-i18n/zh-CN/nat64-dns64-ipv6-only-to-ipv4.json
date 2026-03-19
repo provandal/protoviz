@@ -1,0 +1,128 @@
+{
+  "meta": {
+    "title": "NAT64/DNS64：纯 IPv6 客户端访问纯 IPv4 服务器",
+    "description": "展示 NAT64/DNS64 如何让纯 IPv6 客户端透明地访问纯 IPv4 服务器。包括 DNS64 合成 AAAA 记录、NAT64 协议转换、TCP 和 ICMP 翻译、以及 464XLAT/CLAT 边缘场景。",
+    "learning_objectives": [
+      "理解 DNS64 如何从 A 记录合成 AAAA 记录",
+      "观察 64:ff9b::/96 前缀如何编码 IPv4 地址",
+      "跟踪 NAT64 网关如何在 IPv6 和 IPv4 之间转换",
+      "观察 TCP 和 ICMP 的协议翻译",
+      "理解客户端和服务器都不知道对方的实际协议",
+      "了解 464XLAT/CLAT 如何处理硬编码 IPv4 地址的应用",
+      "理解 NAT64 在 IPv6 过渡中的角色"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "DNS AAAA 查询 — 客户端请求 legacy-api.example.com 的 IPv6 地址",
+      "detail": "纯 IPv6 客户端应用想要访问 legacy-api.example.com。它调用 getaddrinfo()，向配置的 DNS64 解析器 2001:db8:1::53 发送 DNS AAAA 查询。客户端只知道 IPv6——它请求 AAAA 记录并期望得到 IPv6 地址。"
+    },
+    "1": {
+      "text": "DNS64 检查：legacy-api.example.com 没有 AAAA 记录",
+      "detail": "DNS64 解析器查询权威 DNS，对 AAAA 查询得到 NODATA——服务器 legacy-api.example.com 没有 IPv6 地址。这触发 DNS64 行为：解析器现在将改为查询 A 记录。根据 RFC 6147，DNS64 仅在没有真实 AAAA 记录可用时才进行合成。"
+    },
+    "2": {
+      "text": "DNS64 查询权威 DNS 的 A 记录",
+      "detail": "由于没有 AAAA，DNS64 解析器回退到查询 A 记录。此查询通过解析器的 IPv4 接口发出，以到达权威 DNS 服务器。DNS64 解析器本身是双栈的——它需要 IPv4 连通性来访问纯 IPv4 区域的权威服务器。"
+    },
+    "3": {
+      "text": "权威 DNS 返回 A 记录：198.51.100.1",
+      "detail": "example.com 的权威 DNS 服务器返回 legacy-api.example.com 的 A 记录：198.51.100.1。这是服务器的真实 IPv4 地址。现在 DNS64 拥有合成 IPv6 地址所需的原材料。"
+    },
+    "4": {
+      "text": "DNS64 从 A 记录 198.51.100.1 合成 AAAA：64:ff9b::c633:6401",
+      "detail": "DNS64 取知名前缀 64:ff9b::/96 并将 IPv4 地址嵌入最后 32 位。198.51.100.1 的十六进制是 c6.33.64.01，因此合成的地址是 64:ff9b::c633:6401。前缀 64:ff9b::/96 由 IANA 专门为 NAT64 保留（RFC 6052 第 2.1 节）。任何路由器看到发往 64:ff9b::/96 的流量都知道它必须路由到 NAT64 网关。"
+    },
+    "5": {
+      "text": "DNS64 将合成的 AAAA 记录返回给客户端",
+      "detail": "DNS64 解析器将合成的 AAAA 记录发回客户端。从客户端角度看，这与正常的 AAAA 响应完全一样。客户端不知道地址是合成的——它只看到一个 IPv6 地址，并将使用普通的 IPv6 套接字连接它。"
+    },
+    "6": {
+      "text": "客户端认为它在与 IPv6 服务器通信。它不知道真实服务器是纯 IPv4 的。",
+      "detail": "这就是 DNS64 的优雅之处：客户端的纯 IPv6 网络栈完全不知道幕后的 IPv4 世界。应用程序收到一个 AAAA 记录，现在将像连接任何其他 IPv6 目的地一样 connect() 到它。翻译完全在网络中发生，对端点透明。"
+    },
+    "7": {
+      "text": "TCP SYN → 客户端发送 IPv6 数据包到 64:ff9b::c633:6401 端口 443",
+      "detail": "客户端应用调用 connect()，内核发送 TCP SYN 到合成地址。这是一个完全正常的 IPv6 数据包——客户端的 TCP/IP 栈对 NAT64 没有任何特殊处理。数据包被路由到 NAT64 网关，因为网络配置了将 64:ff9b::/96 路由到那里。"
+    },
+    "8": {
+      "text": "NAT64 网关接收 IPv6 数据包并识别 64:ff9b::/96 前缀",
+      "detail": "NAT64 网关拥有 64:ff9b::/96 前缀。当它收到目的地为此前缀的数据包时，它从最后 32 位提取嵌入的 IPv4 地址：64:ff9b::c633:6401 → c6336401 → 198.51.100.1。然后它创建一个 Binding Information Base（BIB）条目来跟踪此会话。"
+    },
+    "9": {
+      "text": "NAT64 创建 IPv4 SYN 数据包 — 新 IP 头部，相同 TCP 载荷",
+      "detail": "NAT64 网关构建一个新的 IPv4 数据包。它从其地址池中分配一个源 IPv4 地址（203.0.113.50），将目的地设为提取的地址（198.51.100.1），将 IPv6 hop limit 转换为 IPv4 TTL（减 1），然后转发数据包。TCP 头部和载荷保持不变——NAT64 在 IP 层翻译，而非传输层。"
+    },
+    "10": {
+      "text": "传统服务器响应 SYN-ACK — 标准 IPv4，对 IPv6 一无所知",
+      "detail": "198.51.100.1 的传统服务器收到一个来自 203.0.113.50（NAT64 池地址）的完全正常的 IPv4 TCP SYN。它以标准 SYN-ACK 响应。服务器完全不知道真正的客户端在一个纯 IPv6 网络上——从服务器角度看，这是来自看起来像单个 IPv4 主机的普通 IPv4 流量。"
+    },
+    "11": {
+      "text": "NAT64 将 SYN-ACK 翻译回 IPv6 给客户端",
+      "detail": "NAT64 网关查找其映射表：来自 198.51.100.1:443 到 203.0.113.50:49200 的流量匹配客户端 [2001:db8:1::10]:49200 的 BIB 条目。它构建一个 IPv6 数据包，源为 64:ff9b::c633:6401，目的为 2001:db8:1::10。客户端收到一个正常的 IPv6 SYN-ACK。"
+    },
+    "12": {
+      "text": "TCP 握手完成 — 客户端看到纯 IPv6，服务器看到纯 IPv4",
+      "detail": "客户端发送最终 ACK，完成三次握手。连接现在在双方都是 ESTABLISHED。协议边界清晰明了：客户端完全在 IPv6 中运作，服务器完全在 IPv4 中运作，NAT64 网关无缝桥接两个世界。两端都不知道对方的 IP 版本。"
+    },
+    "13": {
+      "text": "ACK 翻译为 IPv4 — 服务器确认 ESTABLISHED 状态",
+      "detail": "NAT64 网关将客户端的 ACK 翻译为 IPv4 并投递到服务器。双方现在都处于 ESTABLISHED 状态，数据可以通过 NAT64 翻译器双向流动。"
+    },
+    "14": {
+      "text": "客户端通过 IPv6 发送 HTTP GET → NAT64 翻译 → 服务器通过 IPv4 接收",
+      "detail": "客户端发送请求 /api/v1/status 的 HTTP GET。请求作为正常的 IPv6 数据包发往 NAT64 网关，网关将其翻译为 IPv4 并转发到传统服务器。HTTP 载荷完全未被触碰——NAT64 仅翻译 IP 和 ICMP 头部。Host 头部仍然是 legacy-api.example.com。"
+    },
+    "15": {
+      "text": "HTTP GET 作为正常 IPv4 流量到达传统服务器",
+      "detail": "传统服务器收到一个来自 203.0.113.50 的完全正常的 IPv4 HTTP GET 请求。服务器的访问日志将显示此 NAT64 池地址作为客户端 IP。如果服务器需要真实客户端地址，网络可以使用 Proxy Protocol 或 X-Forwarded-For 头部等机制（但这需要应用层感知）。"
+    },
+    "16": {
+      "text": "传统服务器通过 IPv4 响应 HTTP 200 OK",
+      "detail": "服务器处理 API 请求并通过 IPv4 发回 JSON 响应。此响应发往 203.0.113.50——NAT64 池地址。连接的服务器端自始至终都是标准 IPv4。"
+    },
+    "17": {
+      "text": "NAT64 将响应翻译回 IPv6 — 客户端无缝接收",
+      "detail": "NAT64 网关使用其映射表将 IPv4 响应数据包翻译回 IPv6 并投递给客户端。客户端收到一个正常的 IPv6 HTTP 200 OK 响应。整个事务——DNS 解析、TCP 握手、HTTP 请求/响应——都在客户端从未接触 IPv4 的情况下完成。"
+    },
+    "18": {
+      "text": "ICMPv6 Echo Request — 客户端 ping 合成地址",
+      "detail": "NAT64 不仅翻译 TCP 和 UDP。它还处理 ICMP 与 ICMPv6 之间的翻译。客户端向合成地址发送 ICMPv6 Echo Request（类型 128）。NAT64 必须将其翻译为 ICMPv4 Echo Request（类型 8），因为 ICMPv6 和 ICMPv4 使用不同的类型/代码编号。"
+    },
+    "19": {
+      "text": "NAT64 将 ICMPv6 类型 128 翻译为 ICMPv4 类型 8（Echo Request）",
+      "detail": "NAT64 网关同时翻译 IP 头部和 ICMP 头部。ICMPv6 类型 128（Echo Request）变为 ICMPv4 类型 8（Echo Request）。echo 标识符和序列号被保留用于映射回复。此翻译在 RFC 6145 第 5.2 节（IP/ICMP Translation）中定义。"
+    },
+    "20": {
+      "text": "传统服务器发送 ICMP Echo Reply（IPv4）",
+      "detail": "服务器以标准 ICMPv4 Echo Reply（类型 0）响应 NAT64 池地址。这是完全正常的 IPv4 ICMP 行为。"
+    },
+    "21": {
+      "text": "NAT64 将 ICMPv4 类型 0 翻译为 ICMPv6 类型 129（Echo Reply）— ping 成功",
+      "detail": "NAT64 网关将 ICMPv4 Echo Reply（类型 0）翻译回 ICMPv6 Echo Reply（类型 129）并投递给客户端。ping 成功完成。客户端的 ping 工具显示来自 64:ff9b::c633:6401 的响应——它从未看到 IPv4 地址 198.51.100.1。"
+    },
+    "22": {
+      "text": "某些传统应用硬编码 IPv4 地址（例如直接连接 '192.168.1.1'）",
+      "detail": "NAT64/DNS64 对于使用主机名和 DNS 的规范应用完美工作。但某些传统应用硬编码 IPv4 地址字面值——它们直接调用 connect(\"192.168.1.1\") 而不经过 DNS。由于客户端没有 IPv4 地址或 IPv4 路由，这些连接会失败。这就是 464XLAT 发挥作用的地方。"
+    },
+    "23": {
+      "text": "CLAT（客户端翻译器）在客户端提供本地 IPv4 接口",
+      "detail": "464XLAT（RFC 6877）在客户端添加了一个称为 CLAT 的无状态翻译器。CLAT 创建一个虚拟 IPv4 接口（如 v4-wlan0），使用 192.0.0.0/29 范围的本地 IPv4 地址。当传统应用发送 IPv4 数据包时，CLAT 使用 NAT64 前缀将其翻译为 IPv6。数据包然后流向 PLAT（Provider-side translator，即 NAT64 网关），PLAT 将其翻译回 IPv4 发往目的地。"
+    },
+    "24": {
+      "text": "双重翻译：应用 → IPv4 → CLAT → IPv6 → NAT64 (PLAT) → IPv4",
+      "detail": "464XLAT 的名称描述了数据的旅程：应用生成 IPv4 数据包（4），CLAT 将其翻译为 IPv6（6），PLAT/NAT64 网关将其翻译回 IPv4（4）。因此称为「464」。第一次翻译是无状态的（CLAT，使用 RFC 7915 的 SIIT），第二次是有状态的（NAT64/PLAT，使用 RFC 6146）。尽管经过双重翻译，在现代硬件上这可以以线速运行。"
+    },
+    "25": {
+      "text": "464XLAT 处理边缘场景。Android 自 2014 年起在纯 IPv6 移动网络中使用此技术。",
+      "detail": "464XLAT 不是理论概念——它今天在大规模运行。Android 自 4.3 版本起就包含 CLAT（clatd），使 T-Mobile、Reliance Jio 和数百家其他运营商的纯 IPv6 移动网络成为可能。Apple 在 iOS 12 中添加了 CLAT 支持。NAT64/DNS64 处理规范应用，464XLAT 处理其余部分，共同实现真正的纯 IPv6 运行，同时保持对 IPv4 互联网的完全可达性。"
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "NAT64/DNS64：将纯 IPv6 客户端桥接到 IPv4 互联网",
+      "description": "演示纯 IPv6 客户端如何透明地访问纯 IPv4 服务器",
+      "steps": {}
+    }
+  }
+}

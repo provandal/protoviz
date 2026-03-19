@@ -1,0 +1,101 @@
+{
+  "meta": {
+    "title": "RoCEv2 RC: אימון קישור → חיבור QP → RDMA WRITE → RDMA READ",
+    "description": "חילוף RoCEv2 Reliable Connected (RC) מלא על גבי 100GbE, החל מהקמת קישור פיזי (Auto-Negotiation, Link Training, RS-FEC), דרך הגדרת IP/ARP, הקמת QP של IB Connection Manager (CM) באמצעות MAD/CM REQ→REP→RTU, RDMA WRITE שדוחף מאגר 4KB ישירות לזיכרון מרוחק ללא מעורבות מעבד ביעד, ו-RDMA READ ששולף את אותו מאגר. מצב המארח מוצג בכל שכבות OSI, כולל verbs API, מכונת מצבי QP, כותרות תעבורת IB, כימוס IP/UDP, Ethernet תומך PFC, ושכבה פיזית עם מצב RS-FEC.",
+    "learning_objectives": [
+      "הבנה כיצד קישורי 100GbE פיזיים עולים באופן עצמאי (מארח↔מתג) דרך Auto-Negotiation ו-Link Training",
+      "מעקב אחר פענוח ARP וכתובות IP עבור RoCEv2 (הרץ על גבי UDP/IP, בניגוד ל-RoCEv1)",
+      "מעקב אחר חילוף MAD של IB Connection Manager להעברת Queue Pair ממצב RESET ל-RTS",
+      "תצפית על מעברי מכונת מצבי QP: RESET → INIT → RTR → RTS",
+      "ראיית כיצד RDMA WRITE עוקף את המעבד המרוחק — ללא צריכת WQE קבלה ביעד",
+      "ראיית כיצד RDMA READ דורש הלוך-חזור וכיצד כותרות RETH/AETH נושאות כתובות",
+      "הבנת מפתחות Memory Region (MR) (lkey/rkey) ותפקידם בהרשאת RDMA",
+      "תצפית כיצד PFC (Priority Flow Control) מונע השמטה ב-Ethernet ללא אובדן תחת גודש"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "קישור A: אות זוהה — יוזם ↔ יציאת מתג A",
+      "detail": "משדר-קולט אופטי ביוזם מזהה אור מיציאת מתג A. Auto-Negotiation (AN) מתחיל לפי IEEE 802.3cd סעיף 73. L1 הוא נקודה-לנקודה — זה בלתי תלוי בקישור מתג↔יעד."
+    },
+    "1": {
+      "text": "קישור B: אות זוהה — יציאת מתג B ↔ יעד",
+      "detail": "משדר-קולט אופטי ביעד מזהה אור מיציאת מתג B. AN מתחיל באופן עצמאי בקישור זה."
+    },
+    "2": {
+      "text": "קישור A: AN הושלם — 100GbE הוסכם, Link Training מתחיל",
+      "detail": "AN מחליף דפי יכולת טכנולוגיה בין יוזם ויציאת מתג A. שניהם מסכימים על 100GBASE-SR4. RS(544,514) FEC חובה ל-100G. Link Training מתחיל לאזן את הערוץ (pre-emphasis, post-cursor)."
+    },
+    "3": {
+      "text": "קישור B: AN הושלם — 100GbE הוסכם, Link Training מתחיל",
+      "detail": "AN הושלם ביציאת מתג B ↔ יעד. אותו משא ומתן: 100GBASE-SR4 עם RS(544,514) FEC. Link Training מתחיל באופן עצמאי בקישור זה."
+    },
+    "4": {
+      "text": "קישור A פעיל — יוזם ↔ מתג ב-100Gbps עם RS-FEC",
+      "detail": "Link Training הושלם ביוזם↔מתג. PFC (802.1Qbb) מופעל לעדיפות 3 דרך משא ומתן DCBX (לא מוצג). מסגרות Ethernet יכולות כעת לזרום בקישור זה."
+    },
+    "5": {
+      "text": "קישור B פעיל — מתג ↔ יעד ב-100Gbps עם RS-FEC",
+      "detail": "Link Training הושלם במתג↔יעד. PFC מופעל. שני הקישורים כעת פעילים — המתג יכול להעביר מסגרות L2 בין יציאותיו. קישוריות L2 מקצה לקצה הוקמה."
+    },
+    "6": {
+      "text": "בקשת ARP: למי יש 192.168.1.20?",
+      "detail": "RoCEv2 משתמש בכתובות IP. לפני כל הקמת חיבור, נגישות IP חייבת להיות מוקמת."
+    },
+    "7": {
+      "text": "תגובת ARP: 192.168.1.20 נמצא ב-00:02:c9:ab:cd:ef"
+    },
+    "8": {
+      "text": "שני הצדדים רושמים Memory Regions דרך ibv_reg_mr()",
+      "detail": "ibv_reg_mr() נועל דפי זיכרון פיזיים, בונה מיפוי DMA, ורושם את התרגום וירטואלי→פיזי בטבלת תרגום הזיכרון (MTT) של ה-RNIC. מחזיר lkey (ל-DMA מקומי) ו-rkey (לשיתוף עם הצד המרוחק לגישת RDMA). Linux: mlx5_ib_reg_user_mr() → פקודת קושחה MLX5_CMD_OP_CREATE_MKEY."
+    },
+    "9": {
+      "text": "QP נוצר — מצב: RESET",
+      "detail": "ibv_create_qp() מקצה Queue Pair (תור שליחה + תור קבלה + תור השלמות). QP מתחיל במצב RESET — לא יכול לשלוח או לקבל. mlx5: פקודת קושחה MLX5_CMD_OP_CREATE_QP מקצה QPN."
+    },
+    "10": {
+      "text": "QP עבר RESET → INIT דרך ibv_modify_qp()",
+      "detail": "modify_qp(RESET→INIT) מגדיר: אינדקס P_Key, מספר יציאה, דגלי גישה. QP יכול כעת לפרסם WQEs לקבלה (אך עדיין לא יכול לשלוח). Linux: ib_modify_qp() → mlx5_ib_modify_qp() → MLX5_CMD_OP_RST2INIT_QP. תכונות נדרשות: IB_QP_PKEY_INDEX | IB_QP_PORT | IB_QP_ACCESS_FLAGS."
+    },
+    "11": {
+      "text": "CM REQ נשלח — מציע פרמטרי QP",
+      "detail": "rdma_connect() מפעיל ib_send_cm_req(). שולח QPN של היוזם, PSN התחלתי, path MTU=4096, ספירות ניסיונות חוזרים, ונתונים פרטיים של אפליקציה ליעד. שני ה-QPs עדיין ב-INIT בנקודה זו."
+    },
+    "12": {
+      "text": "CM REP התקבל — היעד מקבל, מספק QPN ו-PSN שלו",
+      "detail": "עם קבלת REQ, היעד קורא ל-rdma_accept() → ib_send_cm_rep(). היעד מעביר את ה-QP שלו ל-RTR (Ready To Receive) לאחר שליחת REP. היוזם מעביר את ה-QP שלו ל-RTR עם קבלת REP. INIT→RTR מגדיר: QPN יעד, RQ PSN, path MTU, AV (address vector). Linux: mlx5_ib_modify_qp() → MLX5_CMD_OP_INIT2RTR_QP."
+    },
+    "13": {
+      "text": "CM RTU נשלח — שני ה-QPs עוברים ל-RTS. החיבור הוקם.",
+      "detail": "לאחר שליחת RTU, היוזם מעביר QP: RTR→RTS. עם קבלת RTU, היעד מעביר QP: RTR→RTS. RTR→RTS מגדיר: SQ PSN, ספירת ניסיונות חוזרים, RNR retry, timeout. Linux: MLX5_CMD_OP_RTR2RTS_QP. ה-QP כעת פעיל לחלוטין — פעולות RDMA יכולות להתחיל."
+    },
+    "14": {
+      "text": "האפליקציה מפרסמת RDMA WRITE Work Request לתור השליחה",
+      "detail": "ibv_post_send() עם opcode IBV_WR_RDMA_WRITE. ה-WR מציין: רשימת SG מקומית (lkey + כתובת וירטואלית של מאגר המקור), כתובת וירטואלית מרוחקת + rkey. פעימת דלת דרך כתיבת MMIO לרגיסטר BAR של RNIC (ללא קריאת מערכת אחרי ibv_post_send). Linux: mlx5_post_one_wr() → בונה WQE בן 64 בתים → פעימת דלת דרך mlx5_write64() ל-MMIO של RNIC."
+    },
+    "15": {
+      "text": "RDMA WRITE — 4KB נדחפו לזיכרון מרוחק, אפס מעבד ביעד",
+      "detail": "RNIC מבצע DMA מהמאגר המקומי, עוטף ב-BTH+RETH+UDP+IP+Eth, משדר. RNIC היעד מאמת ICRC, בודק הרשאת rkey מול טבלת MR, מבצע DMA של המטען לזיכרון הפיזי של היעד. מעבד היעד לא רואה דבר עד שהאפליקציה סוקרת CQ (מה שיקרה רק אם היעד פרסם WRITE_WITH_IMM)."
+    },
+    "16": {
+      "text": "ACK מ-RNIC היעד — WRITE הושלם, CQE פורסם ביוזם",
+      "detail": "RNIC היעד מייצר באופן אוטונומי ACK של RC. ללא מעורבות מעבד ביעד. עם קבלת ACK, RNIC היוזם מפרסם CQE (Completion Queue Entry) ל-CQ של היוזם. האפליקציה לומדת על ההשלמה דרך ibv_poll_cq(). Linux: mlx5_ib_poll_cq() קורא CQE ממאגר הטבעת של CQ."
+    },
+    "17": {
+      "text": "האפליקציה מפרסמת RDMA READ Work Request",
+      "detail": "ibv_post_send() עם opcode IBV_WR_RDMA_READ. מציין: מאגר SG מקומי לנתונים מתקבלים (lkey), כתובת וירטואלית מרוחקת + rkey. RDMA READ דורש הלוך-חזור — היוזם שולח בקשה, היעד שולח נתונים."
+    },
+    "18": {
+      "text": "RDMA READ Request — ללא נתונים בכיוון זה",
+      "detail": "היוזם שולח BTH(opcode=0x0C) + RETH המציין מה לקרוא. ללא מטען. RNIC היעד יבצע באופן אוטונומי DMA מהזיכרון שלו ויגיב."
+    },
+    "19": {
+      "text": "RDMA READ Response — RNIC היעד מבצע DMA מהזיכרון ושולח נתונים",
+      "detail": "RNIC היעד: מקבל בקשת READ → מאמת rkey → DMA קורא זיכרון פיזי → בונה חבילות תגובה → משדר. אפס מעורבות מעבד ביעד. RNIC היוזם: מקבל תגובה → DMA כותב למאגר המקומי של היוזם → מפרסם CQE של READ. האפליקציה קוראת ל-ibv_poll_cq() לשליפת התוצאה. הנתונים שהוחזרו הם בדיוק מה שנכתב ב-RDMA WRITE — מאומתים מקצה לקצה על ידי ICRC."
+    },
+    "20": {
+      "text": "התרחיש הושלם",
+      "detail": "סיכום: שני קישורי 100GbE עצמאיים עלו (מארח↔מתג כל אחד), המתג סיפק העברת L2, היוזם הקים חיבור RoCEv2 RC, ביצע RDMA WRITE של 4KB לזיכרון מרוחק (אפס מעורבות מעבד מרוחק), ואז קרא את אותם נתונים בחזרה עם RDMA READ (גם אפס מעורבות מעבד מרוחק). סה\"כ מסגרות נתונים: 2. סה\"כ מסגרות בקרה: 5 (ARP×2, CM×3). המעבד המרוחק מעולם לא הופרע עבור פעולות נתונים."
+    }
+  }
+}

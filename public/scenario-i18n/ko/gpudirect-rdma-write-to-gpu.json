@@ -1,0 +1,118 @@
+{
+  "meta": {
+    "title": "GPUDirect RDMA: RoCEv2 WRITE로 GPU 메모리에 직접 쓰기",
+    "description": "GPUDirect RDMA를 통해 원격 서버에서 AI 노드의 GPU 메모리로 직접 데이터를 전송하는 시나리오. CUDA 런타임 초기화, GPU 메모리 할당, nvidia-peermem 모듈을 통한 GPU BAR1 매핑, Memory Region 등록, QP 설정, RDMA WRITE로 GPU HBM에 직접 데이터 배치, RDMA READ로 GPU 메모리에서 데이터 가져오기를 포함합니다.",
+    "learning_objectives": [
+      "GPUDirect RDMA가 CPU 개입 없이 GPU 메모리에 직접 액세스하는 방식 이해",
+      "nvidia-peermem 모듈과 GPU BAR1 매핑의 역할 확인",
+      "GPU 메모리에 대한 RDMA WRITE 및 READ 작업 추적",
+      "AI/ML 워크로드에서 네트워크에서 GPU로의 직접 데이터 전송 이점 이해"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "링크 A: 신호 감지 — AI 노드 ↔ 스위치 포트 A",
+      "detail": "AI 노드의 광 트랜시버가 스위치 포트 A에서 빛을 감지합니다. IEEE 802.3cd 조항 73에 따라 오토네고시에이션(AN)이 시작됩니다. L1은 점대점입니다 — 스위치 ↔ 원격 서버 링크와 독립적입니다."
+    },
+    "1": {
+      "text": "링크 B: 신호 감지 — 스위치 포트 B ↔ 원격 서버",
+      "detail": "원격 서버의 광 트랜시버가 스위치 포트 B에서 빛을 감지합니다. 이 링크에서 독립적으로 AN이 시작됩니다."
+    },
+    "2": {
+      "text": "링크 A: AN 완료 — 100GbE 합의, 링크 트레이닝 시작",
+      "detail": "AN이 AI 노드와 스위치 포트 A 사이에서 기술 능력 페이지를 교환합니다. 양쪽이 100GBASE-SR4에 합의합니다. RS(544,514) FEC는 100G에서 필수입니다. 채널 이퀄라이즈를 위해 Link Training이 시작됩니다."
+    },
+    "3": {
+      "text": "링크 B: AN 완료 — 100GbE 합의, 링크 트레이닝 시작",
+      "detail": "스위치 포트 B ↔ 원격 서버에서 AN이 완료됩니다. 동일한 협상: RS(544,514) FEC가 적용된 100GBASE-SR4. 이 링크에서 독립적으로 Link Training이 시작됩니다."
+    },
+    "4": {
+      "text": "링크 A UP — AI 노드 ↔ 스위치 100Gbps, RS-FEC 적용",
+      "detail": "AI 노드 ↔ 스위치의 Link Training이 완료됩니다. DCBX 협상을 통해 우선순위 3에 PFC(802.1Qbb)가 활성화됩니다. 이제 이 링크 세그먼트에서 이더넷 프레임이 흐를 수 있습니다."
+    },
+    "5": {
+      "text": "링크 B UP — 스위치 ↔ 원격 서버 100Gbps, RS-FEC 적용",
+      "detail": "스위치 ↔ 원격 서버의 Link Training이 완료됩니다. PFC 활성화. 양쪽 링크가 모두 가동되어 스위치가 포트 간에 L2 프레임을 전달할 수 있습니다. 엔드투엔드 L2 연결이 수립되었습니다."
+    },
+    "6": {
+      "text": "ARP 요청: 192.168.1.20은 누구인가요?",
+      "detail": "RoCEv2는 IP 주소를 사용합니다. 연결 설정 전에 IP 도달 가능성이 수립되어야 합니다."
+    },
+    "7": {
+      "text": "ARP 응답: 192.168.1.20은 00:02:c9:ab:cd:ef입니다",
+      "detail": ""
+    },
+    "8": {
+      "text": "GPU / CUDA 런타임 초기화 — cuInit() 및 cuDeviceGet()",
+      "detail": "CUDA 런타임을 초기화하고 GPU 장치를 선택합니다."
+    },
+    "9": {
+      "text": "GPU 메모리 할당 — cuMemAlloc()으로 4MB GPU HBM 버퍼",
+      "detail": "cuMemAlloc()으로 GPU HBM에 4MB 버퍼를 할당합니다."
+    },
+    "10": {
+      "text": "nvidia-peermem 커널 모듈 로드 — GPU 메모리가 RDMA 서브시스템에 노출",
+      "detail": "nvidia-peermem 모듈이 GPU 메모리를 RDMA 서브시스템에 노출하여 NIC가 GPU HBM에 직접 DMA할 수 있게 합니다."
+    },
+    "11": {
+      "text": "GPU BAR1 매핑 수립 — GPU HBM이 PCIe 주소로 접근 가능",
+      "detail": "nvidia-peermem이 nvidia_p2p_get_pages()를 호출하여 cuMemAlloc된 버퍼를 뒷받침하는 GPU 물리 페이지를 고정하고 PCIe BAR1 물리 주소를 반환합니다. BAR1 어퍼처는 외부 장치(RNIC 등)가 GPU 메모리에 접근할 수 있는 PCIe 창입니다. 대형 BAR가 활성화된 최신 GPU(예: NVIDIA H100)에서는 전체 HBM을 BAR1을 통해 매핑할 수 있습니다. BAR1 주소는 RNIC DMA 엔진이 직접 대상으로 할 수 있는 PCIe 물리 주소입니다."
+    },
+    "12": {
+      "text": "GPU BAR 주소로 ibv_reg_mr() 통해 Memory Region 등록",
+      "detail": "GPU BAR1 주소를 RDMA Memory Region으로 등록합니다. lkey와 rkey가 발급됩니다."
+    },
+    "13": {
+      "text": "원격 서버가 ibv_reg_mr()로 Memory Region 등록(호스트 DRAM)",
+      "detail": "원격 서버가 표준 호스트 DRAM 기반 Memory Region을 등록합니다. ibv_reg_mr()가 호스트 물리 페이지를 고정하고, IOMMU DMA 매핑을 생성하고, RNIC의 MTT에 페이지 번역을 기록합니다. 이것은 표준 MR 등록 경로입니다 — GPU 관여 없음, nvidia-peermem 없음."
+    },
+    "14": {
+      "text": "양쪽에서 QP 생성 — 상태: RESET",
+      "detail": "ibv_create_qp()가 Queue Pair(Send Queue + Receive Queue + Completion Queue)를 할당합니다. QP는 RESET 상태에서 시작합니다 — 전송이나 수신이 불가능합니다. AI 노드의 QP는 GPU 기반 MR과 함께 사용됩니다."
+    },
+    "15": {
+      "text": "QP 전이 RESET → INIT (ibv_modify_qp())",
+      "detail": "modify_qp(RESET→INIT)가 설정합니다: P_Key 인덱스, 포트 번호, 접근 플래그(GPUDirect 타겟용 IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ). QP가 이제 Receive WQE를 게시할 수 있습니다(하지만 아직 전송은 불가능)."
+    },
+    "16": {
+      "text": "CM REQ 전송 — AI 노드가 QP 매개변수 제안, GPU MR rkey 공유",
+      "detail": "rdma_connect()가 ib_send_cm_req()를 트리거합니다. AI 노드의 QPN, 시작 PSN, 경로 MTU=4096, 재시도 횟수, GPU 기반 rkey와 GPU BAR 가상 주소를 포함하는 프라이빗 데이터를 전송합니다. 원격 서버는 이 rkey를 사용하여 GPU 메모리임을 모르는 채로 GPU 메모리에 직접 쓸 수 있습니다 — rkey는 불투명하며 GPU 기반은 원격 측에 투명합니다."
+    },
+    "17": {
+      "text": "CM REP 수신 — 원격 서버가 수락, QPN 및 PSN 제공",
+      "detail": "REQ를 수신하면 원격 서버가 rdma_accept() → ib_send_cm_rep()를 호출합니다. 원격 서버가 QP를 RTR로 전이합니다. AI 노드가 QP를 RTR로 전이합니다. INIT→RTR이 설정합니다: 목적지 QPN, RQ PSN, 경로 MTU, AV(주소 벡터). 원격 서버는 CM REQ 프라이빗 데이터에서 GPU rkey를 저장했으며 — 다가오는 RDMA WRITE의 RETH 헤더에서 이 rkey를 사용합니다."
+    },
+    "18": {
+      "text": "CM RTU 전송 — 양쪽 QP가 RTS로 전이. GPUDirect RDMA 연결 수립.",
+      "detail": "RTU를 전송한 후 AI 노드가 QP를 RTR→RTS로 전이합니다. RTU를 수신하면 원격 서버가 QP를 RTR→RTS로 전이합니다. RTR→RTS가 설정합니다: SQ PSN, 재시도 횟수, RNR 재시도, 타임아웃. QP가 이제 완전히 작동합니다. 원격 서버가 GPU 기반 rkey를 대상으로 RDMA WRITE를 발행할 수 있습니다 — 데이터가 네트워크에서 GPU HBM으로 직접 흐릅니다."
+    },
+    "19": {
+      "text": "원격 서버가 AI 노드의 GPU 메모리를 타겟으로 RDMA WRITE 게시",
+      "detail": "원격 서버가 ibv_post_send()로 RDMA WRITE WR을 게시합니다. 목적지는 AI 노드의 GPU HBM입니다."
+    },
+    "20": {
+      "text": "RDMA WRITE to GPU — 4MB가 GPU HBM에 직접 푸시, AI 노드 CPU 개입 없음",
+      "detail": "NIC가 4MB 데이터를 GPU BAR1을 통해 GPU HBM에 직접 DMA합니다. AI 노드의 CPU는 전혀 관여하지 않습니다."
+    },
+    "21": {
+      "text": "AI 노드 RNIC ACK — GPU에 WRITE 완료, 원격 서버에 CQE 게시",
+      "detail": "AI 노드의 RNIC가 GPU DMA 완료 후 자율적으로 RC ACK를 생성합니다. AI 노드의 CPU는 전혀 관여하지 않습니다 — GPU가 데이터를 수신하고, RNIC가 ACK를 생성했으며, AI 노드의 CPU는 인터럽트되지 않았습니다. 원격 서버의 RNIC가 완료된 WRITE에 대한 CQE를 게시합니다."
+    },
+    "22": {
+      "text": "원격 서버가 AI 노드의 GPU 메모리를 타겟으로 RDMA READ 게시",
+      "detail": "원격 서버에서 opcode IBV_WR_RDMA_READ로 ibv_post_send()를 호출합니다. 로컬 SG 버퍼(호스트 DRAM, lkey), 원격 vaddr = GPU BAR 주소, 원격 rkey = GPU 기반 MR 키를 지정합니다. AI 노드의 RNIC가 GPU HBM에서 PCIe 피어-투-피어 읽기를 수행하고 데이터를 돌려보냅니다 — AI 노드의 CPU는 불필요합니다."
+    },
+    "23": {
+      "text": "GPU 메모리에서 RDMA READ 요청 — 이 방향에는 데이터 없음",
+      "detail": "원격 서버가 BTH(opcode=0x0C) + RETH를 전송하여 GPU 메모리에서 읽을 내용을 지정합니다. 페이로드 없음. AI 노드의 RNIC가 자율적으로: rkey 조회 → MTT에서 GPU BAR1 페이지 검색 → PCIe P2P를 통해 GPU HBM에서 DMA 읽기 → 응답 패킷 구성 → 전송합니다."
+    },
+    "24": {
+      "text": "RDMA READ 응답 — AI 노드 RNIC가 GPU HBM에서 DMA하여 데이터 전송",
+      "detail": "AI 노드의 RNIC가: READ 요청 수신 → rkey 0xGPU01234 검증 → MTT 조회로 GPU BAR1 물리 주소 검색 → DMA 엔진이 PCIe P2P를 통해 GPU HBM에서 읽기 수행 → AETH+페이로드가 포함된 응답 패킷 구성 → 원격 서버로 전송.\nAI 노드의 CPU 관여 없음. GPU도 인터럽트되지 않음 — CUDA 커널이 중단되지 않았습니다. RNIC가 PCIe BAR1 어퍼처를 사용하여 전체 작업을 자율적으로 수행했습니다."
+    },
+    "25": {
+      "text": "⟳ 시나리오 완료 — GPUDirect RDMA 데이터 전송",
+      "detail": "요약: 두 개의 독립적인 100GbE 링크가 가동되었습니다(AI 노드 ↔ 스위치, 스위치 ↔ 원격 서버). AI 노드가 cuMemAlloc으로 GPU HBM을 할당하고, nvidia-peermem을 로드하여 GPU 메모리를 RDMA 서브시스템에 노출하고, GPU BAR1 주소에 대해 IB Memory Region을 등록하고, RC QP 연결을 수립했습니다. 원격 서버가 GPU HBM에 직접 도달하는 4MB RDMA WRITE를 수행했습니다 — AI 노드의 CPU 관여 없음, 호스트 DRAM 바운스 없음. 그런 다음 RDMA READ로 GPU HBM에서 직접 데이터를 검색했습니다 — 역시 CPU 관여 없음.\n핵심: GPUDirect RDMA는 데이터 경로에서 CPU를 완전히 제거합니다. 전통적 RDMA + cudaMemcpy에서는 모든 바이트가 PCIe 버스를 두 번 통과합니다. GPUDirect RDMA에서는 한 번만 통과합니다. 이것이 PCIe 대역폭 소비를 절반으로 줄이고 CPU 오버헤드를 제거합니다."
+    }
+  }
+}

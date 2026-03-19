@@ -1,0 +1,145 @@
+{
+  "meta": {
+    "title": "NVMe/TCP: mDNS → Discovery CDC → DIM → Conexão ao Subsistema → I/O",
+    "description": "Uma troca completa NVMe over TCP (NVMe-oF/TCP) desde a descoberta de serviço inicial até as operações de I/O. Um host Linux executando nvme-stas descobre um Controlador de Descoberta Centralizado (CDC) via mDNS, registra-se com DIM (TP8013), recupera Discovery Log Pages do CDC contendo referências ao DDC, conecta ao Controlador de Descoberta Direto (DDC) no storage array para obter detalhes do IO Controller, e então conecta ao IO Controller para realizar operações NVMe Write e Read. Demonstra a hierarquia completa de descoberta em três níveis: CDC → DDC → IOC. Cobre TP8009 (arquitetura CDC), TP8010 e TP8013 (DIM).",
+    "learning_objectives": [
+      "Entender como nvme-stas (stafd) descobre CDCs via anúncio de serviço mDNS (_nvme-disc._tcp)",
+      "Acompanhar a inicialização de conexão NVMe-oF/TCP: troca de PDUs ICReq/ICResp e negociação de parâmetros",
+      "Observar o comando Fabrics Connect estabelecendo uma fila Admin com um Discovery Controller",
+      "Ver como DIM (Discovery Information Management, TP8013) registra um host com um CDC",
+      "Entender Discovery Log Pages: como hosts aprendem quais subsistemas e controladores estão disponíveis",
+      "Rastrear a conexão completa ao IO Controller: Fabrics Connect → Identify Controller → Identify Namespace",
+      "Acompanhar comandos NVMe Write e Read fluindo sobre TCP com PDUs CapsuleCmd, R2T, H2CData e C2HData",
+      "Entender a hierarquia de controladores CDC → DDC → IOC na arquitetura de descoberta NVMe-oF"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Consulta mDNS: _nvme-disc._tcp.local",
+      "detail": "O daemon stafd do host (parte do nvme-stas) consulta mDNS por controladores de descoberta NVMe. Ele envia uma consulta DNS multicast para 224.0.0.251:5353 procurando registros PTR correspondendo ao tipo de serviço _nvme-disc._tcp. Este é o mecanismo DNS-SD (DNS-Based Service Discovery, RFC 6763) especificado no TP8009 para descoberta automatizada de CDC. O stafd usa Avahi (implementação mDNS/DNS-SD do Linux) para registrar um navegador de serviços para este tipo de serviço."
+    },
+    "1": {
+      "text": "Resposta mDNS: CDC em 192.168.100.50:8009",
+      "detail": "O CDC responde com registros mDNS anunciando seu serviço de descoberta. O registro PTR mapeia _nvme-disc._tcp.local para o nome da instância de serviço. O registro SRV fornece o hostname do alvo e a porta (8009). O registro TXT carrega pares chave-valor: p=tcp (tipo de transporte) e nqn=nqn.2014-08.org.nvmexpress.discovery (o NQN de descoberta bem conhecido). O callback Avahi do stafd analisa esses registros e monta um dicionário de controlador com transporte, traddr, trsvcid e subsysnqn."
+    },
+    "2": {
+      "text": "TCP SYN → porta 8009 do CDC",
+      "detail": "O stafd inicia uma conexão TCP ao CDC em 192.168.100.50:8009. A porta 8009 é o trsvcid padrão (Transport Service ID) para controladores de descoberta NVMe. O handshake TCP de 3 vias estabelece o transporte confiável sobre o qual o NVMe-oF/TCP rodará."
+    },
+    "3": {
+      "text": "TCP SYN-ACK ← CDC",
+      "detail": "A pilha TCP do CDC responde com SYN-ACK, confirmando o SYN do host e enviando seu próprio número de sequência."
+    },
+    "4": {
+      "text": "TCP ACK — conexão estabelecida com o CDC",
+      "detail": "Handshake TCP completo. A conexão confiável por fluxo de bytes com o CDC está pronta para PDUs NVMe-oF/TCP."
+    },
+    "5": {
+      "text": "ICReq → Inicialização de conexão NVMe/TCP",
+      "detail": "O host envia uma PDU ICReq (Initialize Connection Request) como a primeira PDU NVMe/TCP. ICReq negocia parâmetros de conexão NVMe/TCP: PDU Data Offset (CPDA/HPDA para alinhamento), digest de cabeçalho habilitado/desabilitado, digest de dados habilitado/desabilitado, e maxr2t (máximo de R2Ts pendentes). Esta camada é específica do NVMe/TCP — ela não existe no NVMe-oF/RDMA."
+    },
+    "6": {
+      "text": "ICResp ← CDC aceita parâmetros de conexão NVMe/TCP",
+      "detail": "O CDC responde com ICResp confirmando os parâmetros de conexão NVMe/TCP. Os valores efetivos são o mínimo do que cada lado propôs. A conexão NVMe/TCP está agora inicializada e pronta para comandos Fabrics."
+    },
+    "7": {
+      "text": "Fabrics Connect → Host conecta ao CDC (Fila Admin)",
+      "detail": "O host envia um comando Fabrics Connect dentro de uma PDU CapsuleCmd NVMe/TCP. Conecta ao NQN de descoberta bem conhecido (nqn.2014-08.org.nvmexpress.discovery). Isso estabelece a Fila Admin (QID 0) com o CDC. O CDC atribui um ID de controlador dinâmico."
+    },
+    "8": {
+      "text": "Fabrics Connect Response ← CDC pronto, CNTLID atribuído",
+      "detail": "O CDC aceita a conexão e retorna um ID de controlador. A Fila Admin com o CDC está agora ativa. O host pode emitir comandos Admin NVMe como Get Log Page e DIM Register."
+    },
+    "9": {
+      "text": "DIM Register → Host registra-se com CDC (TP8013)",
+      "detail": "O host envia um comando DIM (Discovery Information Management) Register ao CDC. Isso informa ao CDC sobre as capacidades e preferências de transporte do host. O CDC pode então enviar notificações assíncronas (AENs) quando novos subsistemas ficam disponíveis ou quando entradas de discovery mudam. O DIM é definido no TP8013 e é a base para a descoberta automatizada."
+    },
+    "10": {
+      "text": "DIM Register Response ← CDC confirma registro do host",
+      "detail": "O CDC confirma o registro DIM. O host agora receberá AENs de discovery. O próximo passo é recuperar a Discovery Log Page do CDC para aprender sobre os DDCs disponíveis."
+    },
+    "11": {
+      "text": "Get Log Page → Host solicita Discovery Log Page do CDC",
+      "detail": "O host envia um comando Get Log Page (LID 0x70) ao CDC. A resposta conterá entradas de log apontando para DDCs (Controladores de Descoberta Diretos) nos storage arrays. O CDC atua como uma central de informações — não expõe diretamente os IO Controllers."
+    },
+    "12": {
+      "text": "Discovery Log Page ← CDC retorna referências ao DDC",
+      "detail": "A Discovery Log Page do CDC contém entradas direcionando o host aos DDCs (Direct Discovery Controllers) nos storage arrays. Cada entrada especifica tipo de transporte (TCP), endereço (traddr), porta (trsvcid) e NQN do subsistema. Esta é a hierarquia em dois níveis: o CDC conhece os DDCs, e os DDCs conhecem os IOCs."
+    },
+    "13": {
+      "text": "Nova conexão TCP + ICReq/ICResp ao DDC no storage array",
+      "detail": "O host estabelece uma nova conexão TCP ao DDC no storage array (endereço e porta da log page do CDC). PDUs ICReq/ICResp negociam parâmetros de conexão NVMe/TCP para esta conexão ao DDC."
+    },
+    "14": {
+      "text": "Fabrics Connect → Host conecta ao DDC no storage array",
+      "detail": "O host envia Fabrics Connect ao DDC usando o NQN do subsistema da log page do CDC. Isso estabelece uma Fila Admin com o DDC."
+    },
+    "15": {
+      "text": "Get Log Page → Discovery Log Page do DDC retorna detalhes do IO Controller",
+      "detail": "A Discovery Log Page do DDC contém entradas para os IO Controllers reais que o host pode usar para I/O. Cada entrada especifica o transporte, endereço, porta e NQN do subsistema de armazenamento. É assim que o host aprende onde conectar para I/O de dados."
+    },
+    "16": {
+      "text": "Nova conexão TCP + ICReq/ICResp ao IO Controller",
+      "detail": "O host abre uma nova conexão TCP ao IO Controller no storage array. PDUs ICReq/ICResp negociam parâmetros NVMe/TCP."
+    },
+    "17": {
+      "text": "Fabrics Connect → Host conecta ao IO Controller (Fila Admin)",
+      "detail": "O host envia Fabrics Connect ao IO Controller para estabelecer a Fila Admin. O IO Controller atribui um ID de controlador persistente."
+    },
+    "18": {
+      "text": "Identify Controller → Host descobre capacidades do controlador",
+      "detail": "O host envia Identify Controller para aprender as capacidades do IO Controller: número máximo de filas, tamanho máximo de transferência, recursos suportados, etc."
+    },
+    "19": {
+      "text": "Identify Namespace → Host descobre namespace 1 (capacidade, tamanho de bloco)",
+      "detail": "O host envia Identify Namespace para o NSID 1 para aprender capacidade, tamanho de bloco LBA, e outros parâmetros do namespace. Isso permite que o host crie um dispositivo de bloco (/dev/nvmeXnY)."
+    },
+    "20": {
+      "text": "Fabrics Connect → Host cria Fila IO 1 no IO Controller",
+      "detail": "O host envia Fabrics Connect com QID=1 para criar uma Fila IO. Cada fila IO NVMe é uma conexão TCP separada no NVMe/TCP. Em produção, o host cria uma fila por núcleo de CPU para paralelismo."
+    },
+    "21": {
+      "text": "Comando NVMe Write (4KB no LBA 0x1000)",
+      "detail": "O host submete um comando NVMe Write de 4KB ao Namespace 1 no LBA 0x1000. O SQE de Write (64 bytes) é enviado como uma PDU CapsuleCmd na Fila IO 1. Sobre NVMe/TCP, os dados de escrita não são enviados inline com o comando — o controlador deve primeiro enviar uma PDU R2T (Ready to Transfer) solicitando os dados."
+    },
+    "22": {
+      "text": "R2T ← Controlador solicita 4KB de dados de escrita",
+      "detail": "O IO Controller envia uma PDU Ready-to-Transfer (R2T) solicitando os dados de escrita do host. O R2T especifica a tag de transferência, offset de dados (0 = início) e comprimento (4096 bytes). Este é o mecanismo de controle de fluxo NVMe/TCP — o controlador controla quando e quanto dado o host envia."
+    },
+    "23": {
+      "text": "H2CData → Controlador (carga de escrita de 4KB)",
+      "detail": "O host envia os 4KB de dados de escrita em uma PDU H2CData (Host-to-Controller Data). A tag de transferência corresponde ao R2T. A flag LAST indica que esta é a PDU de dados final para este comando."
+    },
+    "24": {
+      "text": "Write Completion ← Controlador (Sucesso)",
+      "detail": "O IO Controller completa a escrita e retorna uma CapsuleResp com status 0x0000 (Sucesso). Os 4KB foram escritos no LBA 0x1000 no Namespace 1."
+    },
+    "25": {
+      "text": "Comando NVMe Read (4KB do LBA 0x1000)",
+      "detail": "O host lê de volta os mesmos 4KB do LBA 0x1000. O SQE de Read é enviado como CapsuleCmd na Fila IO 1. Diferentemente do Write, o comando Read não requer R2T — o controlador envia dados diretamente via PDUs C2HData."
+    },
+    "26": {
+      "text": "C2HData ← Controlador (carga de leitura de 4KB)",
+      "detail": "O IO Controller envia os 4KB de dados de leitura em uma PDU C2HData (Controller-to-Host Data). Para leituras, os dados fluem do controlador ao host sem handshake R2T — o controlador envia dados assim que estão disponíveis da mídia."
+    },
+    "27": {
+      "text": "Read Completion ← Controlador (Sucesso)",
+      "detail": "Leitura completada com sucesso. O ciclo de vida completo do NVMe/TCP está agora demonstrado: descoberta mDNS → registro CDC → log de discovery do CDC (referências DDC) → conexão DDC → log de discovery do DDC (detalhes IOC) → conexão IOC → identificação do controlador → enumeração de namespace → configuração de fila IO → Write → Read. A hierarquia de descoberta em três níveis (CDC → DDC → IOC) está completa."
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "Discovery e I/O NVMe/TCP com Hierarquia CDC",
+      "description": "Percorra a descoberta NVMe/TCP completa em três níveis (CDC → DDC → IOC) e operações de I/O sobre TCP",
+      "steps": {
+        "0": "O NVMe/TCP transporta comandos NVMe sobre TCP padrão — sem hardware especial necessário. Este cenário demonstra a hierarquia completa de descoberta em três níveis: CDC (Controlador de Descoberta Centralizado), DDC (Controlador de Descoberta Direto) e IOC (Controlador de I/O).",
+        "1": "O daemon stafd descobre o CDC via mDNS (_nvme-disc._tcp), que anuncia serviços de descoberta NVMe na rede local. O host abre uma conexão TCP na porta 8009 e negocia parâmetros NVMe/TCP via ICReq/ICResp.",
+        "2": "O host envia Fabrics Connect ao CDC e se registra via DIM (TP8013) para receber notificações de discovery. A Discovery Log Page do CDC retorna referências aos DDCs nos storage arrays.",
+        "3": "O host conecta ao DDC no storage array, cuja Discovery Log Page revela os IO Controllers disponíveis. Então conecta ao IO Controller, identifica o controlador e o namespace, e cria uma Fila IO.",
+        "4": "NVMe Write sobre TCP: CapsuleCmd (comando) → R2T (pronto para transferir) → H2CData (dados de escrita) → CapsuleResp (completion). O R2T é o controle de fluxo NVMe/TCP — o controlador controla quando os dados são enviados.",
+        "5": "NVMe Read sobre TCP: CapsuleCmd (comando) → C2HData (dados de leitura) → CapsuleResp (completion). Leituras são mais simples — sem handshake R2T. Os dados fluem diretamente do controlador ao host.",
+        "6": "A hierarquia CDC → DDC → IOC em três níveis é a arquitetura moderna de descoberta NVMe-oF. O CDC é o ponto central de gestão, DDCs estão nos arrays de armazenamento, e IOCs tratam o I/O real. Tudo roda sobre TCP padrão — nenhum fabric especial necessário."
+      }
+    }
+  }
+}

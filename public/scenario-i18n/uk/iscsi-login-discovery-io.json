@@ -1,0 +1,77 @@
+{
+  "meta": {
+    "title": "iSCSI: Виявлення → Вхід у сесію → SCSI введення-виведення блоків через TCP",
+    "description": "Повний життєвий цикл iSCSI: виявлення цілей через SendTargets, вхід у сесію з аутентифікацією CHAP, узгодження параметрів, виконання SCSI READ(10) та WRITE(10) через TCP, та коректний вихід із сесії. iSCSI (RFC 7143) інкапсулює SCSI-команди в TCP, забезпечуючи блоковий доступ до сховища через IP-мережі без спеціалізованого обладнання.",
+    "learning_objectives": [
+      "Зрозуміти архітектуру iSCSI: ініціатор, ціль, портали, сесії та з'єднання",
+      "Простежити процес виявлення iSCSI через SendTargets",
+      "Побачити вхід у сесію iSCSI з узгодженням параметрів та аутентифікацією CHAP",
+      "Зрозуміти PDU iSCSI: Login, SCSI Command, Data-In, Data-Out, Response, Logout",
+      "Простежити SCSI READ через iSCSI: Command → Data-In → Response",
+      "Простежити SCSI WRITE через iSCSI: Command → R2T → Data-Out → Response",
+      "Порівняти iSCSI (TCP) з NVMe-oF RDMA та FC за затримкою та завантаженням CPU"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "TCP-з'єднання встановлено — порт 3260 (iSCSI)",
+      "detail": "Ініціатор встановлює TCP-з'єднання до порту 3260 на цілі iSCSI. TCP забезпечує надійну, впорядковану доставку — iSCSI покладається на це та не реалізує власної повторної передачі.\nТристороннє рукостискання TCP (SYN → SYN-ACK → ACK) завершено."
+    },
+    "1": {
+      "text": "iSCSI Login Request — фаза виявлення (SendTargets)",
+      "detail": "Ініціатор надсилає Login Request PDU для початку фази виявлення. Тип сесії: Discovery. Ініціатор ідентифікує себе за iSCSI Qualified Name (IQN): iqn.2024-01.com.example:initiator01."
+    },
+    "2": {
+      "text": "iSCSI Login Response — ціль готова до виявлення",
+      "detail": "Ціль відповідає Login Response зі статусом успіху. Фаза виявлення активна."
+    },
+    "3": {
+      "text": "SendTargets запит — ініціатор запитує список цілей",
+      "detail": "Ініціатор надсилає Text Request PDU з ключем SendTargets=All. Ціль повертає список доступних цілей iSCSI з їх IQN та адресами порталів."
+    },
+    "4": {
+      "text": "SendTargets відповідь — знайдено ціль зі сховищем",
+      "detail": "Ціль повертає: TargetName=iqn.2024-01.com.example:target01, TargetAddress=10.0.1.20:3260. Ініціатор тепер знає, куди підключатися."
+    },
+    "5": {
+      "text": "Вихід із сесії виявлення — нове з'єднання до цілі сховища",
+      "detail": "Ініціатор надсилає Logout Request, закриває сесію виявлення та встановлює нове TCP-з'єднання до цілі сховища."
+    },
+    "6": {
+      "text": "TCP-з'єднання до цілі сховища встановлено",
+      "detail": "Нове TCP-з'єднання до 10.0.1.20:3260. Тристороннє рукостискання завершено."
+    },
+    "7": {
+      "text": "iSCSI Login — фаза безпеки (аутентифікація CHAP)",
+      "detail": "Ініціатор надсилає Login Request для нормальної сесії. Тип сесії: Normal. Починається узгодження безпеки — ініціатор пропонує CHAP (Challenge-Handshake Authentication Protocol).\nCHAP: ціль надсилає виклик (challenge), ініціатор відповідає хешем (ім'я + пароль + challenge). Ціль перевіряє відповідь."
+    },
+    "8": {
+      "text": "Аутентифікація CHAP завершена — перехід до узгодження параметрів",
+      "detail": "CHAP пройдено успішно. Починається узгодження оперативних параметрів: MaxRecvDataSegmentLength, MaxBurstLength, FirstBurstLength, MaxConnections, DataPDUInOrder тощо."
+    },
+    "9": {
+      "text": "iSCSI Login завершено — повна сесія встановлена",
+      "detail": "Login Response зі статусом успіху та прапорцем FFP (Full Feature Phase). Сесія iSCSI повністю встановлена. Ініціатор може надсилати SCSI-команди."
+    },
+    "10": {
+      "text": "SCSI READ(10) — ініціатор зчитує 4 КБ з LBA 0",
+      "detail": "Ініціатор надсилає SCSI Command PDU з CDB READ(10): LBA = 0, Transfer Length = 1 блок (4 КБ). iSCSI інкапсулює CDB у PDU та надсилає через TCP."
+    },
+    "11": {
+      "text": "iSCSI Data-In — ціль надсилає 4 КБ даних блоку",
+      "detail": "Ціль зчитує 4 КБ з диска та надсилає Data-In PDU з даними. Для великих передач дані розбиваються на кілька Data-In PDU (обмежених MaxRecvDataSegmentLength).\nВажливо: CPU цілі копіює дані з буфера диска в буфер TCP — це основний недолік iSCSI порівняно з RDMA (де DMA обходить CPU)."
+    },
+    "12": {
+      "text": "SCSI Response — зчитування завершено (статус GOOD)",
+      "detail": "Ціль надсилає SCSI Response PDU зі статусом GOOD та Residual Count = 0 (всі дані передано). Зчитування завершено."
+    },
+    "13": {
+      "text": "SCSI WRITE(10) — ініціатор записує 4 КБ у LBA 1000",
+      "detail": "Ініціатор надсилає SCSI Command PDU з CDB WRITE(10): LBA = 1000, Transfer Length = 1 блок. Якщо ImmediateData=Yes та дані вміщуються у FirstBurstLength, дані можуть бути надіслані разом із командою (unsolicited data).\nІнакше ціль надсилає R2T (Ready To Transfer) PDU."
+    },
+    "14": {
+      "text": "SCSI Response — запис завершено (статус GOOD)",
+      "detail": "Ціль записує дані на диск та надсилає SCSI Response PDU зі статусом GOOD. Запис завершено.\nЗатримка iSCSI: ~100-500 мкс (залежить від TCP-стеку та кількості копій CPU).\nДля порівняння: NVMe-oF RDMA ~10-20 мкс, FC ~20-50 мкс."
+    }
+  }
+}

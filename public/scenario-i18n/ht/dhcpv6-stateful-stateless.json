@@ -1,0 +1,125 @@
+{
+  "meta": {
+    "title": "DHCPv6: San Eta (O-flag) vs Avèk Eta (M-flag) + Delegasyon Prefiks",
+    "description": "Demontre de mòd DHCPv6 ak kijan drapo M ak O nan Router Advertisement chwazi ant yo. Pati 1 montre DHCPv6 san eta (O=1, M=0) kote kliyan an jwenn yon adrès atravè SLAAC epi sèlman mande DHCPv6 pou DNS ak NTP. Pati 2 montre DHCPv6 avèk eta (M=1) ak echanj SARR konplè (Solicit → Advertise → Request → Reply). Pati 3 montre Delegasyon Prefiks (IA_PD) — kijan router lakay ou jwenn yon prefiks IPv6 nan ISP ou.",
+    "learning_objectives": [
+      "Konprann wòl drapo M ak O nan RA pou chwazi ant DHCPv6 san eta vs avèk eta",
+      "Wè kijan DHCPv6 san eta (Information-Request / Reply) delivre DNS ak NTP san swiv adrès",
+      "Swiv echanj SARR 4-mesaj DHCPv6 avèk eta (Solicit → Advertise → Request → Reply)",
+      "Idantifye tip mesaj DHCPv6, idantifyan DUID, ak opsyon kle (IA_NA, IA_Address, sèvè DNS)",
+      "Konprann Delegasyon Prefiks DHCPv6 (IA_PD) ak poukisa li elimine bezwen IPv6 NAT",
+      "Konpare DHCPv6 SARR ak DHCPv4 DORA epi konprann diferans achitektiral yo",
+      "Rekonèt ke IPv6 separe asiynasyon adrès (SLAAC) ak konfigirasyon (DHCPv6) pa konsepsyon"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "RA → Router annonse prefiks 2001:db8:1::/64 ak M=0, O=1, A=1",
+      "detail": "Router a peryodikman voye Router Advertisement bay ff02::1 (tout nè). RA sa a pote twa drapo kritik: M=0 vle di «pa itilize DHCPv6 pou adrès ou — itilize SLAAC olye.» O=1 vle di «itilize DHCPv6 pou lòt konfigirasyon tankou DNS ak NTP.» Enfòmasyon prefiks gen A=1 (otonòm — itilize pou SLAAC) ak L=1 (sou lyen)."
+    },
+    "1": {
+      "text": "SLAAC → Kliyan otokonfigire 2001:db8:1::211:22ff:fe33:4401/64",
+      "detail": "Paske RA a te gen A=1 sou prefiks la ak M=0, kliyan an itilize SLAAC (RFC 4862). Li konbine prefiks /64 la ak idantifyan entèfas li (derive nan MAC li pa EUI-64 oswa yon ID owaza estab pa RFC 7217) pou fòme yon adrès global. DAD konfime li inik."
+    },
+    "2": {
+      "text": "Kliyan wè O=1: 'Fòk mwen mande DHCPv6 pou konfigirasyon adisyonèl'",
+      "detail": "Pil rezo kliyan an trete drapo RA yo. O=1 deklanche kliyan DHCPv6 la pou voye yon mesaj Information-Request. Kontrèman ak yon Solicit (ki mande yon adrès), yon Information-Request sèlman mande paramèt konfigirasyon — sa a se DHCPv6 «san eta» paske sèvè a pa bezwen swiv ki adrès ki asiyen bay kiyès."
+    },
+    "3": {
+      "text": "DHCPv6 Information-Request → Kliyan mande DNS, lis rechèch, NTP",
+      "detail": "Kliyan an voye yon Information-Request (tip mesaj 11) bay ff02::1:2 (All_DHCP_Relay_Agents_and_Servers) lè li itilize pò sous UDP 546 ak pò destinasyon 547. Mesaj la gen yon Client Identifier (DUID) ak yon Option Request Option (ORO) ki lis opsyon li bezwen: sèvè DNS (opsyon 23), lis rechèch domèn (opsyon 24), ak sèvè SNTP (opsyon 31)."
+    },
+    "4": {
+      "text": "DHCPv6 Reply ← Sèvè bay DNS 2001:db8:1::53, domèn rechèch, SNTP",
+      "detail": "Sèvè a reponn ak yon Reply (tip 7) ki gen opsyon yo mande yo. Sèvè DNS: 2001:db8:1::53 ak 2001:4860:4860::8888. Lis rechèch DNS: example.com, lab.example.com. Sèvè SNTP: 2001:db8:1::123. Sèvè a PA anrejistre okenn afinite — li bay menm enfòmasyon bay chak kliyan ki mande. Sa a se poukisa yo rele li «san eta»."
+    },
+    "5": {
+      "text": "Kliyan fin konfigire: adrès SLAAC + DNS bay pa DHCPv6",
+      "detail": "Kliyan an kounye a gen tout sa li bezwen: yon adrès IPv6 ki ka achemine globalman (2001:db8:1::211:22ff:fe33:4401 nan SLAAC), yon pasrèl pa defo (fe80::211:22ff:fe33:44ff nan RA a), sèvè DNS ak domèn rechèch (nan DHCPv6), ak yon sèvè NTP (nan DHCPv6). Travay la separe nètman: RA bay rezo, SLAAC bay adrès, DHCPv6 bay sèvis."
+    },
+    "6": {
+      "text": "DHCPv6 san eta — sèvè a pa swiv ki moun ki gen kisa. Li jis bay enfòmasyon konfigirasyon bay nenpòt moun ki mande.",
+      "detail": "Nan IPv4, DHCP fè tout bagay — adrès, DNS, NTP, pasrèl, mask sou-rezo. Nan IPv6, travay la separe: Router Advertisement bay pasrèl ak prefiks, SLAAC jenere adrès, epi DHCPv6 ranpli DNS ak NTP. Separasyon responsablite sa a se pa konsepsyon — li pèmèt chak konpozan evolye endepandaman epi rann sistèm nan pi rezistan."
+    },
+    "7": {
+      "text": "RA → Router annonse M=1, O=1 — 'Itilize DHCPv6 pou adrès ou'",
+      "detail": "Yon segman rezo diferan (oswa router rekonfigire) voye yon RA ak M=1. Sa di machin yo: «PA otokonfigire adrès nan SLAAC — jwenn adrès ou nan yon sèvè DHCPv6 olye.» Opsyon enfòmasyon prefiks la gen A=0, sa konfime ke SLAAC pa ta dwe itilize pou adresaj."
+    },
+    "8": {
+      "text": "Kliyan wè M=1: 'Fòk mwen itilize DHCPv6 pou jwenn adrès mwen'",
+      "detail": "Drapo M deklanche yon echanj DHCPv6 konplè. Kontrèman ak ka san eta (Information-Request / Reply), kliyan an ap kounye a pase nan echanj 4-mesaj SARR: Solicit → Advertise → Request → Reply. Sa a analòg ak DORA DHCPv4 (Discover → Offer → Request → Ack)."
+    },
+    "9": {
+      "text": "DHCPv6 Solicit → Kliyan chèche sèvè DHCPv6 (tip mesaj 1)",
+      "detail": "Kliyan an voye yon Solicit bay ff02::1:2. Li gen Client Identifier li (DUID-LLT — adrès Kouch-Lyen + Tan, tip DUID ki pi komen), yon IA_NA (Identity Association for Non-temporary Addresses) ki mande yon adrès estab, yon Option Request Option pou DNS ak domèn rechèch, ak yon Elapsed Time ki endike konbyen tan kliyan an ap chèche."
+    },
+    "10": {
+      "text": "DHCPv6 Advertise ← Sèvè ofri 2001:db8:1::100 (tip mesaj 2)",
+      "detail": "Sèvè a reponn ak yon Advertise, li ofri adrès 2001:db8:1::100 ak yon dire lavi prefere de 86400s (24è) ak dire lavi valid de 172800s (48è). IA_NA a gen T1=43200s (12è) ak T2=69120s (19.2è) — T1 se lè kliyan an ta dwe kòmanse renouvle, T2 se lè li ta dwe kòmanse re-afinite si renouvèlman echwe."
+    },
+    "11": {
+      "text": "DHCPv6 Request → Kliyan aksepte: 'M ap pran 2001:db8:1::100 nan sèvè ...53' (tip mesaj 3)",
+      "detail": "Kliyan an voye yon Request bay ff02::1:2 (toujou milticast, pou lòt sèvè konnen kliyan sa a chwazi). Yon bagay kritik, Request la gen NI Client Identifier NI Server Identifier — Server ID ki kopye nan Advertise la di sèvè ki chwazi a «sa a pou ou» epi pèmèt lòt sèvè libere ofri tanporè yo."
+    },
+    "12": {
+      "text": "DHCPv6 Reply ← Sèvè konfime 2001:db8:1::100 — afinite aktif (tip mesaj 7)",
+      "detail": "Sèvè a voye yon Reply ki konfime asiynasyon adrès la. Sèvè a kounye a kreye yon afinite pèsistan: DUID Kliyan → 2001:db8:1::100, ak dire lavi ak revèy renouvèlman. Afinite sa a siviv redemare sèvè (estoke nan yon fichye bail oswa baz done). Sa a se «avèk eta» — sèvè a konnen egzakteman ki adrès ki asiyen bay ki kliyan."
+    },
+    "13": {
+      "text": "DAD → Kliyan verifye 2001:db8:1::100 pou diplika (NS soti nan ::)",
+      "detail": "Menm si adrès la soti nan DHCPv6, kliyan an DWE fè Deteksyon Adrès Dipllike anvan li itilize li. Kliyan an voye yon Solisitasyon Vwazen ak sous :: (pa espesifye) bay adrès milticast nè-solisitè ff02::1:ff00:100. Si pa gen Anons Vwazen ki retounen, adrès la konfime inik epi sòti nan antatif pou ale nan prefere."
+    },
+    "14": {
+      "text": "Kliyan konfigire: adrès asiyen pa DHCPv6 2001:db8:1::100 + DNS",
+      "detail": "Kliyan an konplètman operasyonèl ak yon adrès asiyen pa sèvè ak konfigirasyon DNS. Kontrèman ak ka san eta, sèvè a mentni yon afinite pou kliyan sa a epi ap atann renouvèlman. Modèl sa a bay administratè vizibilite konplè sou asiynasyon adrès — itil pou rezo antrepriz kote ou bezwen konnen ki aparèy gen ki adrès."
+    },
+    "15": {
+      "text": "Echanj 4-mesaj (SARR), tankou DHCP DORA nan IPv4, men sou UDP 546/547 ak milticast",
+      "detail": "DHCPv6 SARR (Solicit-Advertise-Request-Reply) koresponn ak DHCPv4 DORA (Discover-Offer-Request-Ack). Diferans kle: DHCPv6 itilize pò UDP 546 (kliyan) ak 547 (sèvè) olye de 67/68. DHCPv6 itilize milticast IPv6 (ff02::1:2) olye de difizyon IPv4 (255.255.255.255). DHCPv6 itilize DUID (idantifyan inik aparèy) olye de adrès MAC pou idantifikasyon kliyan. DHCPv6 pa bay mask sou-rezo oswa pasrèl — sa yo nan RA a."
+    },
+    "16": {
+      "text": "DHCPv6 Solicit + IA_PD → Router lakay mande ISP pou yon prefiks",
+      "detail": "Router lakay la (CPE — Customer Premises Equipment) voye yon Solicit ak yon opsyon IA_PD (Identity Association for Prefix Delegation, opsyon 25). Sa a diferan de IA_NA — router a PA mande yon sèl adrès pou tèt li, li mande yon prefiks antye ke li ka sou-rezo epi distribye bay kliyan sou rezo lokal li."
+    },
+    "17": {
+      "text": "DHCPv6 Reply ← ISP delege 2001:db8:abcd::/48 bay router lakay",
+      "detail": "Sèvè DHCPv6 ISP la reponn ak yon Reply ki gen IA_PD ak opsyon IA_Prefix 26: prefiks delege 2001:db8:abcd::/48 ak yon dire lavi prefere 7 jou ak dire lavi valid 30 jou. Router lakay kounye a «posede» prefiks /48 sa a epi ka sou-rezo li jan li vle — jiska 65,536 sou-rezo /64."
+    },
+    "18": {
+      "text": "RA → Router lakay annonse 2001:db8:abcd:1::/64 sou LAN li",
+      "detail": "Router lakay la pran prefiks /48 delege a, koupe premye sou-rezo /64 (2001:db8:abcd:1::/64), epi kòmanse annonse li atravè Router Advertisement sou entèfas LAN li. Kliyan LAN yo resevwa RA sa a, fè SLAAC, epi jwenn adrès IPv6 ki ka achemine globalman. Pa gen NAT — chak aparèy gen yon adrès globalman inik."
+    },
+    "19": {
+      "text": "Se konsa router lakay ou jwenn yon prefiks IPv6 nan ISP ou — pa bezwen NAT",
+      "detail": "Delegasyon Prefiks se mekanis ki fè konektivite bout-a-bout IPv6 mache a echèl. ISP ou delege yon /48 oswa /56 bay router lakay ou, ki sou-rezo li epi annonse /64 yo sou chak segman LAN. Chak aparèy jwenn yon adrès globalman inik ki ka achemine. Pa gen NAT — pa gen pwoblèm redirectsyon pò, pa gen pwotokòl peer-to-peer ki kase, pa gen tab eta NAT ki debòde."
+    },
+    "20": {
+      "text": "Senaryo fini — DHCPv6 san eta, avèk eta, ak delegasyon prefiks",
+      "detail": "Senaryo sa a te demontre twa mòd operasyon DHCPv6:\n1. SAN ETA (M=0, O=1) — Kliyan jwenn adrès nan SLAAC, DNS/NTP nan DHCPv6 Information-Request. Sèvè pa swiv anyen. Konfigirasyon ki pi komen.\n2. AVÈK ETA (M=1) — Kliyan jwenn adrès E konfigirasyon nan DHCPv6 SARR. Sèvè mentni afinite. Modèl antrepriz.\n3. DELEGASYON PREFIKS (IA_PD) — Router mande yon prefiks antye olye de yon sèl adrès. ISP delege /48 oswa /56. Pèmèt adresaj bout-a-bout san NAT.\nTout kontwole pa de bit nan Router Advertisement: M ak O."
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "DHCPv6: San Eta, Avèk Eta, ak Delegasyon Prefiks",
+      "description": "Travèse twa mòd DHCPv6 ak kijan drapo RA yo kontwole konpòtman kliyan an",
+      "steps": {
+        "0": "Nan IPv4, DHCP fè tout bagay — li distribye adrès, sèvè DNS, pasrèl pa defo, ak mask sou-rezo tout nan yon sèl pwotokòl. Nan IPv6, travay la separe: Router Advertisement bay pasrèl ak prefiks, SLAAC ka jenere adrès, epi DHCPv6 ranpli DNS ak NTP. Senaryo sa a montre kijan de bit nan RA a — M ak O — kontwole ki mòd kliyan an itilize.",
+        "1": "Router a voye yon Router Advertisement ak M=0 ak O=1. M=0 vle di «pa itilize DHCPv6 pou adrès ou — itilize SLAAC.» O=1 vle di «itilize DHCPv6 pou lòt konfigirasyon tankou DNS ak NTP.» RA a gen tou prefiks 2001:db8:1::/64 ak drapo A (Autonomous) = 1, sa pèmèt SLAAC.",
+        "2": "Kliyan an pran prefiks /64 nan RA a epi ajoute idantifyan entèfas li pou fòme yon adrès /128 konplè pa SLAAC. Lè li itilize EUI-64, MAC 00:11:22:33:44:01 vin idantifyan entèfas 0211:22ff:fe33:4401, sa bay kliyan an adrès 2001:db8:1::211:22ff:fe33:4401. DAD konfime li inik.",
+        "3": "Paske RA a te gen O=1, kliyan an voye yon DHCPv6 Information-Request (tip mesaj 11) bay adrès milticast ff02::1:2 sou pò UDP 547. Sa a se mesaj kle pou DHCPv6 san eta — remake pa gen opsyon IA_NA, sa vle di kliyan an PA mande yon adrès. Li mande sèlman paramèt konfigirasyon: sèvè DNS, lis rechèch domèn, ak sèvè SNTP.",
+        "4": "Sèvè DHCPv6 la reponn ak yon Reply ki gen sèvè DNS, yon lis rechèch, ak yon sèvè SNTP. Sèvè a pa anrejistre okenn afinite — li bay menm enfòmasyon bay chak kliyan ki mande. Se poutèt sa yo rele li «san eta.» Sèvè a pa konnen ki kliyan ki egziste, ki adrès yo genyen, oswa si yo toujou konekte.",
+        "5": "Kounye a ann gade DHCPv6 avèk eta. Yon RA diferan rive ak M=1, li di kliyan yo «jwenn adrès ou nan DHCPv6, pa SLAAC.» Enfòmasyon prefiks gen A=0, sa konfime SLAAC dezaktive pou adresaj. Sa a se modèl antrepriz — administratè IT vle kontwol ak vizibilite konplè sou ki aparèy gen ki adrès.",
+        "6": "Kliyan an voye yon DHCPv6 Solicit (tip mesaj 1) — «S» nan SARR, analòg ak DHCP Discover nan IPv4. Li gen DUID kliyan an (DUID-LLT, baze sou MAC + mak tan), yon opsyon IA_NA ki mande yon adrès ki pa tanporè, ak yon Option Request Option pou DNS.",
+        "7": "Sèvè a reponn ak yon Advertise (tip mesaj 2), li ofri adrès 2001:db8:1::100. IA_NA a gen T1 (tan renouvèlman, 12 èdtan) ak T2 (tan re-afinite, 19.2 èdtan). Sou-opsyon IA_Address la gen adrès aktyèl la ak dire lavi prefere (24è) ak dire lavi valid (48è).",
+        "8": "Kliyan an voye yon Request (tip mesaj 3) — «M aksepte ofri nan sèvè ...53.» Mesaj sa a ale nan ff02::1:2 (milticast), pa unicast bay sèvè a, pou lòt sèvè sou lyen an wè li epi libere nenpòt ofri tanporè. Request la gen ni Client Identifier ni Server Identifier.",
+        "9": "Sèvè a voye yon Reply (tip mesaj 7) ki konfime asiynasyon adrès la. Sèvè a kounye a kreye yon afinite pèsistan: DUID kliyan sa a apeye ak 2001:db8:1::100. Afinite a ap siviv redemare sèvè. Kliyan an dwe renouvle nan T1 (12è) sinon adrès la ap ekspire.",
+        "10": "Menm si adrès la soti nan yon sèvè, kliyan an toujou fè DAD (Deteksyon Adrès Dipllike). Li voye yon Solisitasyon Vwazen soti nan adrès pa espesifye (::) bay gwoup milticast nè-solisitè pou 2001:db8:1::100. Si pèsonn pa reponn, adrès la konfime inik epi kliyan an ka itilize li.",
+        "11": "Kounye a pou Delegasyon Prefiks — se konsa router lakay ou jwenn IPv6 nan ISP ou. Router lakay la (CPE) voye yon Solicit ak yon opsyon IA_PD olye de IA_NA. Li pa mande yon sèl adrès — li mande yon prefiks antye ke li ka sou-rezo epi distribye bay kliyan sou rezo lokal li.",
+        "12": "Sèvè DHCPv6 ISP la reponn ak yon Reply ki gen prefiks delege 2001:db8:abcd::/48. Router lakay kounye a posede prefiks sa a epi ka koupe li an sou-rezo /64 jan li vle — youn pou LAN prensipal la, youn pou rezo envite, youn pou aparèy IoT. Yon sèl /48 = 65,536 sou-rezo /64.",
+        "13": "Router lakay la imedyatman kòmanse annonse youn nan nouvo sou-rezo /64 li yo (2001:db8:abcd:1::/64) sou LAN li atravè Router Advertisement. Aparèy LAN yo resevwa RA a, fè SLAAC, epi jwenn adrès IPv6 ki ka achemine globalman. Pa gen NAT enplike — chak aparèy sou LAN lakay ou gen yon adrès IPv6 globalman inik.",
+        "14": "Delegasyon Prefiks se kijan tout Entènèt IPv6 la evite NAT. ISP ou bay router ou pwòp prefiks pa li. Pa gen NAT vle di pa gen pwoblèm redirectsyon pò, pa gen pwotokòl peer-to-peer ki kase, pa gen tab eta NAT ki debòde. Chak aparèy jwenn yon adrès ki ka achemine globalman. Sa a se vizyon orijinal Entènèt la — konektivite bout-a-bout — ke IPv4 NAT te detwi.",
+        "15": "Ann rezime. Nou te wè twa mòd DHCPv6, tout kontwole pa de bit nan Router Advertisement. O=1 sèlman vle di «jwenn DNS nan DHCPv6, adrès nan SLAAC» — konfigirasyon ki pi komen. M=1 vle di «jwenn adrès ou nan DHCPv6» — itilize nan rezo antrepriz kote vizibilite ak kontwol enpòtan. IA_PD vle di «ban mwen yon prefiks antye» — itilize pa router lakay pou jwenn espas adrès IPv6 nan ISP yo."
+      }
+    }
+  }
+}

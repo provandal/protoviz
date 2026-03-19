@@ -1,0 +1,100 @@
+{
+  "meta": {
+    "title": "[WIP] S3/RDMA: Object PUT وGET فوق RoCEv2 (بنية مكتبة NVIDIA)",
+    "description": "تبادل S3/RDMA فوق 100GbE RoCEv2، بيوضّح كيف أحمال عمل AI بتقدر تعمل S3 PUT وGET بدون تدخّل CPU بمسار البيانات. السيناريو بيبلّش بتأسيس الرابط الفيزيائي وARP، بيكمّل بتهيئة مكتبة S3/RDMA وإعداد اتصال QP عبر رسائل تحكّم UD، بعدين بيوضّح S3 PUT كامل (رفع 1GB AI checkpoint) وS3 GET (تحميل 1GB) باستخدام RDMA WRITE لنقل البيانات الكثيف.",
+    "learning_objectives": [
+      "فهم ليش S3 التقليدي فوق TCP/HTTP مكلف على CPU وكيف S3/RDMA بيلغي هالحمل",
+      "شوف كيف مكتبة NVIDIA S3/RDMA بتقعد فوق RoCEv2 transport layer وتحت S3 application API",
+      "راقب إعداد اتصال QP اللي S3/RDMA بيستعملو قبل أي نقل كائن",
+      "تتبّع عملية S3 PUT: كيف metadata الكائن بيتبادل على مسار التحكّم بينما البيانات بتتحرّك فوق RDMA WRITE",
+      "تتبّع عملية S3 GET: كيف الخادم بيستعمل RDMA WRITE ليدفع بيانات الكائن مباشرة لذاكرة العميل",
+      "قارن مسار بيانات S3/RDMA (صفر CPU على نقل البيانات) مع S3 التقليدي فوق TCP (CPU بيعالج كل بايت)"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "S3 التقليدي مقابل S3/RDMA — ليش هيدا مهم",
+      "detail": "S3 GET التقليدي: HTTP GET → TCP → TLS handshake → جواب HTTP مع بيانات الكائن → kernel بينسخ البيانات عبر TCP socket buffers → التطبيق بينسخ من socket لـ buffer. كل بايت بيلمس CPU مرتين. استعمال CPU: عالي.\nS3/RDMA GET: إعداد QP (مرة وحدة) → RDMA WRITE لبيانات الكائن مباشرة بـ buffer العميل المسجّل. صفر نسخ CPU. صفر تدخّل kernel بمسار البيانات. تأخير: ميكروثوانٍ مفردة."
+    },
+    "1": {
+      "text": "Link A: إشارة مكتشفة — Client ↔ Switch port A",
+      "detail": "transceiver بصري على العميل بيكتشف ضوء من switch port A. Auto-Negotiation بيبلّش."
+    },
+    "2": {
+      "text": "Link B: إشارة مكتشفة — Switch port B ↔ Server",
+      "detail": ""
+    },
+    "3": {
+      "text": "الرابطين: AN خلص — 100GbE + RS(544,514) FEC، الروابط طلعت",
+      "detail": "الرابطين بيتفاوضو على 100GBASE-SR4 مع RS(544,514) FEC. Link Training بيعادل القنوات. الروابط طالعة وجاهزة للحركة."
+    },
+    "4": {
+      "text": "PFC مفعّل على priority 3 — Ethernet بدون خسارة لـ RoCEv2",
+      "detail": "Priority Flow Control (IEEE 802.1Qbb) مفعّل على priority class 3. هيدا بيمنع خسارة الباكيتات تحت الازدحام، حاسم لـ RDMA."
+    },
+    "5": {
+      "text": "ARP: العميل بيحل IP الخادم 192.168.100.20",
+      "detail": ""
+    },
+    "6": {
+      "text": "ARP Reply: MAC الخادم 00:02:c9:20:00:01",
+      "detail": ""
+    },
+    "7": {
+      "text": "العميل: s3_rdma_client_init() — مكتبة S3/RDMA تهيّأت",
+      "detail": "العميل بينادي s3_rdma_client_init(). المكتبة بتسجّل Memory Region كبير بيغطّي مجمع GPU/CPU buffers (ibv_reg_mr()). بتأنشئ مجمع RC QPs مخصّصة مسبقاً لعمليات S3."
+    },
+    "8": {
+      "text": "الخادم: مكتبة S3/RDMA خادم مهيّأة مسبقاً، جاهزة للاتصالات",
+      "detail": "الخادم هيّأ مكتبة NVIDIA S3/RDMA خادم تبعو عند التشغيل. مجمع QPs جاهز لقبول اتصالات العميل. مدمج مع محرّك تخزين Dell ObjectScale."
+    },
+    "9": {
+      "text": "S3/RDMA CONNECT Request — العميل بيبعت معلومات QP، rkey، عنوان buffer",
+      "detail": "العميل بيبعت طلب اتصال عبر UD SEND لـ well-known S3/RDMA service QP على الخادم. فيه QP number العميل، GID، rkey، وعنوان buffer الافتراضي. الخادم رح يستعمل هالـ rkey/vaddr لـ RDMA WRITE مباشرة بذاكرة GPU تبع العميل."
+    },
+    "10": {
+      "text": "S3/RDMA CONNECT Response — الخادم بيعيّن RC QP، بيرجّع rkey",
+      "detail": "الخادم بيعيّن RC QP من المجمع وبيردّ بـ QP number الخادم، rkey، وconnection ID. الطرفين هلق عندهم كل المعلومات لنقل QPs من RESET لـ RTS."
+    },
+    "11": {
+      "text": "QP transitions: RESET → INIT → RTR → RTS على الطرفين",
+      "detail": "الطرفين بينادو modify_qp() لنقل RC QPs عبر آلة حالة IB العادية. بعد RTS، الـ QP pair جاهز لعمليات RDMA SEND وRDMA WRITE."
+    },
+    "12": {
+      "text": "S3 PUT REQUEST — metadata بس (bucket، key، حجم 1GB). بدون بيانات بهالرسالة.",
+      "detail": "العميل بيبعت metadata PUT عبر RDMA SEND. رسالة تحكّم صغيرة فيها تفاصيل عملية S3 (bucket، key، size، checksum algorithm) ومكان buffer العميل. بـ S3 التقليدي هيدا كان HTTP PUT مع كل 1GB body. بـ S3/RDMA، نقل البيانات بيصير بشكل منفصل عبر RDMA WRITE."
+    },
+    "13": {
+      "text": "S3 PUT READY — الخادم بيرجّع destination vaddr + rkey لـ RDMA WRITE",
+      "detail": "الخادم بيخصّص مساحة تخزين، بيسجّل Memory Region للبيانات الواصلة، وبيبعت العنوان والـ rkey. هيدا عكس PUT: بخلاف HTTP PUT وين العميل بيدفع البيانات، هون الخادم بيقول للعميل وين يكتب، والعميل بيعمل RDMA WRITE لهالمكان."
+    },
+    "14": {
+      "text": "RDMA WRITE — العميل بيدفع 64MB chunk (1 من 16) مباشرة لذاكرة الخادم",
+      "detail": "RNIC العميل بيعمل DMA-read 64MB من ذاكرة GPU وبيعمل RDMA WRITE مباشرة لذاكرة الخادم. للكائن الكامل 1GB، 16 RDMA WRITEs بتصير (16 × 64MB). CPU الخادم ما بيلمس البيانات. CPU العميل ما بينسخ البيانات."
+    },
+    "15": {
+      "text": "S3 PUT COMPLETE — 1GB اترفعت، checksum متحقّق، ETag مرجوع",
+      "detail": "الخادم بيأكّد نجاح PUT بعد التحقّق من CRC32C checksum. بيرجّع S3 ETag وversion ID. الكائن هلق مخزّن بشكل دائم بـ ObjectScale storage."
+    },
+    "16": {
+      "text": "مقارنة: S3/TCP PUT مقابل S3/RDMA PUT",
+      "detail": "S3 PUT التقليدي: HTTP PUT مع 1GB body → TLS encrypt → TCP segment → kernel copies → NIC transmits. CPU بيلمس كل بايت عدة مرات. الإنتاجية محدودة بـ single-core memory bandwidth.\nS3/RDMA PUT: رسالتين تحكّم (PUT REQUEST + PUT READY) + 16 RDMA WRITEs (16 × 64MB). CPU الخادم ما لمس البيانات. على 100GbE: ~12.5 GB/s مستدام."
+    },
+    "17": {
+      "text": "S3 GET REQUEST — العميل بيطلب الكائن، بيوفّر معلومات destination buffer",
+      "detail": "العميل بيبعت GET request مع bucket/key وعنوان destination buffer/rkey. الخادم رح يعمل RDMA WRITE لبيانات الكائن مباشرة بهالـ buffer."
+    },
+    "18": {
+      "text": "RDMA WRITE — الخادم بيدفع 64MB chunk (1 من 16) مباشرة لذاكرة GPU تبع العميل",
+      "detail": "RNIC الخادم بيعمل DMA-read لبيانات الكائن من التخزين وRDMA WRITE مباشرة لذاكرة GPU تبع العميل. CPU العميل مش مشترك. للكائن الكامل 1GB، 16 RDMA WRITEs بتصير."
+    },
+    "19": {
+      "text": "S3 GET COMPLETE — 1GB بـ GPU buffer تبع العميل، جاهزة للتدريب",
+      "detail": "الخادم بيشير للإتمام. بيانات الكائن هلق بـ GPU buffer تبع العميل، جاهزة لـ training forward pass. CPU العميل ما تدخّل بنقل البيانات."
+    },
+    "20": {
+      "text": "مقارنة: S3/TCP GET مقابل S3/RDMA GET",
+      "detail": "S3 GET التقليدي: HTTP GET → TCP → TLS decrypt → kernel socket buffer → نسخ user-space → رفع GPU عبر PCIe. كل بايت بيعبر CPU مرتين على الأقل.\nS3/RDMA GET: رسالة تحكّم 1 + 16 RDMA WRITEs. صفر CPU، صفر نسخ."
+    }
+  }
+}

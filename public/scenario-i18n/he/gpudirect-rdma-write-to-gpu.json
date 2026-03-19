@@ -1,0 +1,121 @@
+{
+  "meta": {
+    "title": "GPUDirect RDMA: כתיבת RDMA של RoCEv2 ישירות לזיכרון GPU",
+    "description": "תרחיש GPUDirect RDMA המראה כיצד RDMA WRITE נוחת ישירות בזיכרון GPU במקום ב-DRAM של המארח, באמצעות מודול הליבה nvidia-peermem. הרגע החינוכי המרכזי הוא הניגוד בין RDMA WRITE מסורתי (ל-DRAM של מארח) ל-GPUDirect RDMA WRITE (ישירות ל-GPU HBM דרך PCIe BAR, אפס מאגר ביניים של מעבד).",
+    "learning_objectives": [
+      "הבנה כיצד nvidia-peermem חושף זיכרון GPU לתת-מערכת RDMA דרך API של peer_memory_client",
+      "ראיית כיצד cuMemAlloc מקצה GPU HBM וכיצד חלון BAR1 של GPU ממפה זיכרון פיזי של GPU למרחב כתובות PCIe",
+      "מעקב אחר ibv_reg_mr() מול כתובת וירטואלית של GPU — nvidia-peermem יורט את הרישום כדי לנעול דפי GPU במקום דפי מארח",
+      "תצפית על נתיב ה-DMA: RNIC כותב ישירות ל-GPU HBM דרך PCIe peer-to-peer, ללא נגיעה ב-DRAM מארח או מטמוני מעבד",
+      "ניגוד RDMA WRITE מסורתי (RNIC → DRAM מארח) לעומת GPUDirect RDMA WRITE (RNIC → GPU HBM דרך BAR1)",
+      "מעקב אחר חילוף MAD של IB Connection Manager להעברת QP ממצב RESET ל-RTS",
+      "ראיית כיצד RDMA READ מזיכרון GPU גם עוקף את המעבד — RNIC קורא GPU HBM דרך PCIe P2P",
+      "הבנת תפקיד nvidia_peermem_get_pages() ו-nvidia_peermem_put_pages() במחזור חיי זיכרון GPU"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "קישור A: אות זוהה — צומת AI ↔ יציאת מתג A",
+      "detail": "משדר-קולט אופטי בצומת AI מזהה אור מיציאת מתג A. Auto-Negotiation (AN) מתחיל לפי IEEE 802.3cd סעיף 73. L1 הוא נקודה-לנקודה — זה בלתי תלוי בקישור מתג ↔ שרת מרוחק."
+    },
+    "1": {
+      "text": "קישור B: אות זוהה — יציאת מתג B ↔ שרת מרוחק",
+      "detail": "משדר-קולט אופטי בשרת מרוחק מזהה אור מיציאת מתג B. AN מתחיל באופן עצמאי בקישור זה."
+    },
+    "2": {
+      "text": "קישור A: AN הושלם — 100GbE הוסכם, Link Training מתחיל",
+      "detail": "AN מחליף דפי יכולת טכנולוגיה בין צומת AI ויציאת מתג A. שניהם מסכימים על 100GBASE-SR4. RS(544,514) FEC חובה ל-100G. Link Training מתחיל לאזן את הערוץ."
+    },
+    "3": {
+      "text": "קישור B: AN הושלם — 100GbE הוסכם, Link Training מתחיל",
+      "detail": "AN הושלם ביציאת מתג B ↔ שרת מרוחק. אותו משא ומתן: 100GBASE-SR4 עם RS(544,514) FEC."
+    },
+    "4": {
+      "text": "קישור A פעיל — צומת AI ↔ מתג ב-100Gbps עם RS-FEC",
+      "detail": "Link Training הושלם בצומת AI↔מתג. PFC (802.1Qbb) מופעל לעדיפות 3 דרך משא ומתן DCBX. מסגרות Ethernet יכולות כעת לזרום."
+    },
+    "5": {
+      "text": "קישור B פעיל — מתג ↔ שרת מרוחק ב-100Gbps עם RS-FEC",
+      "detail": "Link Training הושלם במתג↔שרת מרוחק. PFC מופעל. שני הקישורים פעילים — קישוריות L2 מקצה לקצה הוקמה."
+    },
+    "6": {
+      "text": "בקשת ARP: למי יש 192.168.1.20?",
+      "detail": "RoCEv2 משתמש בכתובות IP. לפני כל הקמת חיבור, נגישות IP חייבת להיות מוקמת."
+    },
+    "7": {
+      "text": "תגובת ARP: 192.168.1.20 נמצא ב-00:02:c9:ab:cd:ef"
+    },
+    "8": {
+      "text": "GPU / CUDA Runtime אותחל — cuInit() ו-cuDeviceGet()",
+      "detail": "האפליקציה מאתחלת את CUDA driver API. cuInit(0) טוען את דרייבר CUDA וסופר GPUs. cuDeviceGet() בוחר את ה-GPU היעד (למשל NVIDIA H100). cuCtxCreate() יוצר הקשר CUDA על המכשיר. בנקודה זו ה-GPU מוכן להקצאת זיכרון אבל טרם הוקצה זיכרון GPU."
+    },
+    "9": {
+      "text": "זיכרון GPU הוקצה — cuMemAlloc() מחזיר מאגר GPU HBM של 4MB",
+      "detail": "cuMemAlloc(&devPtr, 4194304) מקצה מאגר 4MB ב-GPU High Bandwidth Memory (HBM). המצביע המוחזר (devPtr) הוא כתובת וירטואלית של GPU במרחב הכתובות של ה-GPU. זיכרון זה נמצא על שבב ה-GPU, מחובר דרך HBM3 ברוחב פס ~3.35 TB/s. GPUs מודרניים (כמו NVIDIA H100) תומכים בעד 256GB של חלון BAR1 למיפוי ה-HBM המלא."
+    },
+    "10": {
+      "text": "מודול ליבה nvidia-peermem נטען — זיכרון GPU חשוף לתת-מערכת RDMA",
+      "detail": "modprobe nvidia-peermem טוען את מודול הליבה. מודול זה רושם את עצמו כ-IB peer_memory_client דרך ib_register_peer_memory_client(). כאשר ibv_reg_mr() ייקרא מאוחר יותר עם כתובת וירטואלית של GPU, הליבה של IB תקרא ל-nvidia_peermem_acquire() לבדוק אם הכתובת שייכת לזיכרון GPU. אם כן, nvidia_peermem_get_pages() קורא ל-nvidia_p2p_get_pages() לנעילת דפי GPU פיזיים והחזרת כתובות BAR1 PCIe שלהם."
+    },
+    "11": {
+      "text": "מיפוי GPU BAR1 הוקם — GPU HBM נגיש בכתובת PCIe",
+      "detail": "nvidia-peermem קורא ל-nvidia_p2p_get_pages() שנועל את דפי GPU הפיזיים ומחזיר כתובות BAR1 PCIe פיזיות. חלון BAR1 הוא חלון PCIe שדרכו מכשירים חיצוניים (כמו ה-RNIC) יכולים לגשת לזיכרון GPU. כתובת BAR1 היא כתובת PCIe פיזית שמנוע DMA של RNIC יכול לכוון אליה ישירות."
+    },
+    "12": {
+      "text": "Memory Region נרשם מול כתובת BAR של GPU דרך ibv_reg_mr()",
+      "detail": "ibv_reg_mr() נקרא עם כתובת וירטואלית של GPU. ליבת IB מזהה שזה זיכרון GPU דרך nvidia-peermem peer_memory_client. כתובות BAR1 הפיזיות נכתבות ל-MTT (Memory Translation Table) של ה-RNIC. ה-lkey וה-rkey שהוחזרו יכולים כעת לשמש לפעולות RDMA — חומרת ה-RNIC תבצע DMA ישירות מ/אל GPU HBM."
+    },
+    "13": {
+      "text": "שרת מרוחק רושם Memory Region דרך ibv_reg_mr() (DRAM מארח)",
+      "detail": "השרת המרוחק רושם Memory Region סטנדרטי מגובה DRAM מארח. ibv_reg_mr() נועל דפי מארח פיזיים, יוצר מיפוי DMA IOMMU, וכותב תרגומי דפים ל-MTT של ה-RNIC. זהו נתיב רישום MR סטנדרטי — ללא מעורבות GPU."
+    },
+    "14": {
+      "text": "QP נוצר בשני הצדדים — מצב: RESET",
+      "detail": "ibv_create_qp() מקצה Queue Pair. QP מתחיל במצב RESET. ה-QP של צומת AI ישמש עם MR מגובה GPU — כאשר ה-RNIC מעבד RDMA WRITEs נכנסים הממוענים ל-rkey של GPU, הוא יבצע DMA ישירות לזיכרון GPU דרך ערכי MTT."
+    },
+    "15": {
+      "text": "QP עבר RESET → INIT דרך ibv_modify_qp()",
+      "detail": "modify_qp(RESET→INIT) מגדיר: אינדקס P_Key, מספר יציאה, דגלי גישה (IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ ליעד GPUDirect)."
+    },
+    "16": {
+      "text": "CM REQ נשלח — צומת AI מציע פרמטרי QP, משתף rkey של MR GPU",
+      "detail": "rdma_connect() מפעיל ib_send_cm_req(). שולח QPN של צומת AI, PSN התחלתי, path MTU=4096, ונתונים פרטיים הכוללים rkey מגובה GPU וכתובת וירטואלית BAR של GPU. השרת המרוחק ישתמש ב-rkey זה לכתיבה ישירות לזיכרון GPU ללא ידיעה שמדובר בזיכרון GPU."
+    },
+    "17": {
+      "text": "CM REP התקבל — שרת מרוחק מקבל, מספק QPN ו-PSN שלו",
+      "detail": "השרת המרוחק מקבל את החיבור. שני ה-QPs עוברים ל-RTR. השרת המרוחק שמר את rkey GPU מנתוני CM REQ הפרטיים."
+    },
+    "18": {
+      "text": "CM RTU נשלח — שני ה-QPs עוברים ל-RTS. חיבור GPUDirect RDMA הוקם.",
+      "detail": "שני ה-QPs עוברים ל-RTS. ה-QP כעת פעיל לחלוטין. השרת המרוחק יכול לבצע RDMA WRITEs הממוענים ל-rkey מגובה GPU — נתונים יזרמו ישירות מהרשת ל-GPU HBM."
+    },
+    "19": {
+      "text": "שרת מרוחק מפרסם RDMA WRITE הממוען לזיכרון GPU בצומת AI",
+      "detail": "ibv_post_send() עם opcode IBV_WR_RDMA_WRITE בשרת המרוחק. ה-WR מציין: רשימת SG מקומית המצביעה למאגר מקור DRAM (נתוני אימון), כתובת וירטואלית מרוחקת = כתובת BAR GPU, rkey מרוחק = מפתח MR מגובה GPU. מנקודת המבט של השרת המרוחק, זה זהה ל-RDMA WRITE רגיל — הוא לא יודע (ולא צריך לדעת) שזיכרון היעד הוא GPU HBM."
+    },
+    "20": {
+      "text": "RDMA WRITE ל-GPU — 4MB נדחפו ישירות ל-GPU HBM, אפס מעבד בצומת AI",
+      "detail": "RNIC השרת המרוחק מבצע DMA מ-DRAM מארח, עוטף ב-BTH+RETH+UDP+IP+Eth, משדר. RNIC צומת AI: מקבל חבילה → מאמת ICRC → מחפש rkey בטבלת MR → מוצא ערכי MTT המצביעים לכתובות BAR1 GPU פיזיות → מנוע DMA כותב מטען ישירות ל-GPU HBM דרך עסקת PCIe peer-to-peer.\nהשוואת נתיב קריטית: מסורתי: רשת → RNIC → PCIe → DRAM מארח → cudaMemcpy → GPU HBM. GPUDirect: רשת → RNIC → PCIe → GPU HBM (ישיר, אפס העתקות). GPUDirect מבטל את הצורך בנתיב המסורתי לחלוטין."
+    },
+    "21": {
+      "text": "ACK מ-RNIC צומת AI — WRITE ל-GPU הושלם, CQE פורסם בשרת מרוחק",
+      "detail": "RNIC צומת AI מייצר באופן אוטונומי ACK של RC לאחר השלמת DMA ל-GPU. אפס מעורבות מעבד בצומת AI — ה-GPU קיבל את הנתונים, ה-RNIC ייצר את ה-ACK, ומעבד צומת AI מעולם לא הופרע."
+    },
+    "22": {
+      "text": "שרת מרוחק מפרסם RDMA READ הממוען לזיכרון GPU בצומת AI",
+      "detail": "ibv_post_send() עם opcode IBV_WR_RDMA_READ בשרת המרוחק. RNIC צומת AI יבצע קריאת PCIe peer-to-peer מ-GPU HBM וישלח את הנתונים בחזרה — ללא מעבד בצומת AI."
+    },
+    "23": {
+      "text": "RDMA READ Request מזיכרון GPU — ללא נתונים בכיוון זה",
+      "detail": "שרת מרוחק שולח BTH(opcode=0x0C) + RETH המציין מה לקרוא מזיכרון GPU. ללא מטען. RNIC צומת AI יבצע באופן אוטונומי: חיפוש rkey → מציאת דפי BAR1 GPU ב-MTT → קריאת DMA מ-GPU HBM דרך PCIe P2P → בניית חבילות תגובה → שידור."
+    },
+    "24": {
+      "text": "RDMA READ Response — RNIC צומת AI מבצע DMA מ-GPU HBM ושולח נתונים",
+      "detail": "RNIC צומת AI מקבל בקשת READ → מאמת rkey → חיפוש MTT מוצא כתובות BAR1 GPU → מנוע DMA מבצע קריאת PCIe P2P מ-GPU HBM → בונה חבילת תגובה → משדר. אפס מעורבות מעבד בצומת AI. ה-GPU לא הופרע — שום ליבת CUDA לא הושהתה."
+    },
+    "25": {
+      "text": "התרחיש הושלם — העברת נתוני GPUDirect RDMA לזיכרון GPU",
+      "detail": "סיכום: שני קישורי 100GbE עצמאיים עלו. צומת AI הקצה GPU HBM דרך cuMemAlloc, טען nvidia-peermem לחשיפת זיכרון GPU לתת-מערכת RDMA, רשם IB Memory Region מול כתובת BAR1 של GPU, והקים חיבור RC QP. השרת המרוחק ביצע RDMA WRITE של 4MB שנחת ישירות ב-GPU HBM — אפס מעורבות מעבד בצומת AI, אפס ביניים דרך DRAM מארח. אז השרת המרוחק ביצע RDMA READ ששלף נתונים ישירות מ-GPU HBM — שוב אפס מעורבות מעבד.\nתובנה מרכזית: GPUDirect RDMA מבטל את המעבד מנתיב הנתונים לחלוטין. בנתיב מסורתי, כל בית חוצה את אפיק PCIe פעמיים. עם GPUDirect, כל בית חוצה PCIe רק פעם אחת — זה מחצית את צריכת רוחב הפס של PCIe ומבטל תקורת מעבד."
+    }
+  }
+}

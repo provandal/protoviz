@@ -1,0 +1,102 @@
+{
+  "meta": {
+    "title": "NVMe-oF/RDMA：发现 → Fabrics Connect → 基于 RoCEv2 的 NVMe 写入和读取",
+    "description": "使用 RDMA（RoCEv2）传输的完整 NVMe over Fabrics 流程。从物理链路建立和 ARP 解析开始，经过基于 CM 的 RDMA 连接建立、到发现控制器的 NVMe-oF Fabrics Connect、发现日志页检索、IO 控制器连接、Identify Controller/Namespace，以及 NVMe 写入和读取操作。与 NVMe/TCP 场景形成对比——这里 NVMe 命令通过 RDMA SEND 传输，数据通过 RDMA WRITE（控制器→主机）和 RDMA READ（主机→控制器）传输，完成通知通过 RDMA SEND 传输。CPU 不参与数据路径。",
+    "learning_objectives": [
+      "理解 NVMe-oF 如何使用 RDMA 作为传输绑定——命令通过 SEND，数据通过 WRITE/READ",
+      "了解在 NVMe-oF Fabrics Connect 之前的 RDMA CM 连接建立过程",
+      "跟踪 Fabrics Connect 命令以通过 RDMA 建立 Admin 和 IO 队列",
+      "观察通过 RDMA 返回的发现日志页以定位 IO 控制器",
+      "追踪 NVMe 写入：主机通过 RDMA SEND 发送命令，控制器通过 RDMA READ 获取数据",
+      "追踪 NVMe 读取：主机通过 RDMA SEND 发送命令，控制器通过 RDMA WRITE 交付数据",
+      "理解用于 RDMA 数据放置的 SGL（分散-聚集列表）的使用",
+      "比较 RDMA 传输绑定与 TCP 的区别——零拷贝与内核介入的数据路径"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "物理链路建立 — 两个网段均为 100GbE，PFC 已启用",
+      "detail": "两条 100GbE 链路通过自动协商和 RS-FEC 建立。优先级 3 上启用了 PFC 以实现无损 RoCEv2 传输。这与 PFC/ECN/DCQCN 场景中描述的无损网络基础相同。"
+    },
+    "1": {
+      "text": "ARP 请求 — 主机解析存储目标的 MAC 地址",
+      "detail": "NVMe 主机在建立 RDMA 连接之前需要目标的 MAC 地址。ARP 请求被广播；交换机泛洪到所有端口。"
+    },
+    "2": {
+      "text": "ARP 应答 — 目标回复 MAC 00:02:c9:ab:cd:ef",
+      "detail": "双方的 ARP 缓存已更新。主机现在可以创建 RDMA 连接了。"
+    },
+    "3": {
+      "text": "CM REQ → 主机为 NVMe Admin 队列发起 RDMA 连接",
+      "detail": "nvme-rdma 驱动调用 rdma_connect()，触发 IB CM（连接管理器）发送 CM REQ。这通过 UD（不可靠数据报）发送到众所周知的 QP1（GSI — 通用服务接口）。\nCM REQ 携带 NVMe-oF RDMA 私有数据，指定：• HRQSIZE = 128（主机接收队列大小）• HSQSIZE = 128（主机发送队列大小）\n这是与 NVMe/TCP 的关键区别：RDMA 传输需要在任何 NVMe 命令流动之前通过 IB CM 进行显式的 QP 连接建立。NVMe/TCP 传输只需打开一个 TCP 连接。"
+    },
+    "4": {
+      "text": "CM REP ← 目标接受 RDMA 连接，分配 QP",
+      "detail": "目标的 nvme-rdma 驱动接受连接。它分配一个 QP，投递接收 WQE（用于接收 NVMe 命令胶囊），并发送 CM REP，其中 CRQSIZE = 128（控制器接收队列大小）。\nQP 转换：RESET → INIT → RTR（Ready to Receive）。"
+    },
+    "5": {
+      "text": "CM RTU → RDMA 连接已建立 — Admin 队列就绪",
+      "detail": "主机发送 CM RTU（Ready To Use），两个 QP 均转换到 RTS（Ready To Send）。RDMA 连接完全建立。\nNVMe-oF/RDMA 每个 NVMe 队列使用一个 RDMA QP：• Admin 队列（QID 0）→ QP 对 0x000080 ↔ 0x000100 • IO 队列 1（QID 1）→ 单独的 QP 对（稍后连接）\n这种按队列隔离意味着停滞的 IO 队列不会阻塞管理操作——这对控制器管理很重要。"
+    },
+    "6": {
+      "text": "Fabrics Connect → 主机连接到发现控制器",
+      "detail": "RDMA 连接建立后，主机通过 RDMA SEND（BTH 操作码 0x04）发送 NVMe Fabrics Connect 命令。命令胶囊直接落入目标上预投递的接收 WQE 中——零拷贝到目标的命令缓冲区。\n主机连接到众所周知的发现控制器 NQN：nqn.2014-08.org.nvmexpress.discovery\n这类似于 NVMe/TCP 场景的 mDNS → CDC 流程，但更简单：在 RDMA 情况下，主机通常从静态配置中知道目标的 IP 地址（nvme connect-all -t rdma -a 192.168.100.20）。"
+    },
+    "7": {
+      "text": "Fabrics Connect 响应 ← 发现控制器就绪",
+      "detail": "目标接受 Fabrics Connect 并返回动态控制器 ID（发现控制器为 0xFFFF）。主机的 Admin 队列现在与发现控制器关联。"
+    },
+    "8": {
+      "text": "Get Log Page → 主机通过 RDMA SEND 请求发现日志",
+      "detail": "主机通过 RDMA SEND 发送 Get Log Page 命令（LID 0x70）。命令包含一个 Keyed SGL 描述符，告诉目标在主机内存中 RDMA WRITE 日志页数据的确切位置：rkey=0x0000ABCD，va=0x7f8000100000，len=4096。\n这是控制器到主机数据的基本 NVMe-oF/RDMA 数据传输模式：1. 主机通过 RDMA SEND 发送命令（带有指向主机缓冲区的 SGL）2. 目标 RDMA WRITE 数据直接到主机缓冲区（使用 SGL rkey/va）3. 目标通过 RDMA SEND 发送完成通知\n主机的 CPU 不接触数据——数据通过 RDMA WRITE 从目标 NIC 直接进入主机内存。与 NVMe/TCP 相比，后者内核必须从套接字缓冲区将数据复制到目标缓冲区。"
+    },
+    "9": {
+      "text": "RDMA WRITE ← 目标将发现日志页交付到主机内存",
+      "detail": "目标从其配置中读取发现日志页，并使用命令 SGL 中的 rkey 和虚拟地址将其 RDMA WRITE 直接到主机的预注册缓冲区中。\n日志页包含一个条目：• SubNQN: nqn.2024-01.com.example:subsys-array01 • 传输：RDMA（0x01）• 地址：192.168.100.20 • 服务 ID：4420\n主机将使用此信息连接到 IO 控制器。"
+    },
+    "10": {
+      "text": "完成通知 ← 发现日志页检索成功",
+      "detail": "目标通过 RDMA SEND 发送 NVMe 完成通知。RDMA 排序保证 RDMA WRITE（数据）在此 SEND（完成通知）到达之前在主机内存中可见。主机可以立即访问发现日志页数据。"
+    },
+    "11": {
+      "text": "Fabrics Connect → 主机将 IO 队列连接到存储子系统",
+      "detail": "主机建立第二个 RDMA 连接（单独的 CM REQ/REP/RTU，为简洁起见省略），并为 IO 队列 1（QID=1）发送 Fabrics Connect 到日志页中发现的子系统 NQN。\n每个 NVMe IO 队列映射到一个单独的 RDMA QP。在生产环境中，主机通常为每个 CPU 核心创建一个 IO 队列（例如，32 个核心对应 32 个 QP），以实现最大并行度。每个队列独立运行。"
+    },
+    "12": {
+      "text": "Fabrics Connect 响应 ← IO 控制器就绪，CNTLID=0x0041",
+      "detail": "目标分配控制器 ID 0x0041，IO 队列已准备好进行 NVMe I/O 操作。主机现在可以在此队列上发出 NVMe 读写命令。\n此时完整的 NVMe-oF/RDMA 栈已建立：• Admin 队列：QP 0x000080 ↔ 0x000100（用于管理命令、发现）• IO 队列 1：QP 0x000082 ↔ 0x000102（用于 NVMe 读写 I/O）"
+    },
+    "13": {
+      "text": "NVMe Write → 主机发送 4KB 写入命令（RDMA SEND）",
+      "detail": "主机应用程序向 LBA 0 发出 4KB 写入。nvme-rdma 驱动：1. 将写入数据缓冲区注册为 MR（内存区域）2. 构建带有 Keyed SGL 的 NVMe Write 命令，指向该缓冲区 3. 通过 RDMA SEND 发送命令（ibv_post_send，使用 SEND 操作码）\nSGL 告诉目标：「我的写入数据在 va=0x7f8000200000，rkey=0x0000BCDE，length=4096。请从那里 RDMA READ。」\n这与 NVMe Read 的数据流方向相反：对于写入，目标通过 RDMA READ 从主机获取数据。对于读取，目标通过 RDMA WRITE 向主机交付数据。"
+    },
+    "14": {
+      "text": "RDMA READ ← 目标从主机内存获取写入数据",
+      "detail": "目标的 NVMe 驱动发出 RDMA READ 以从主机缓冲区获取 4KB 写入数据。目标的 RNIC 发送 RDMA READ 请求（BTH 操作码 0x0c），其中包含主机的 rkey 和虚拟地址。\n主机的 RNIC 接收此请求，从主机注册的内存区域 DMA 读取数据，并以 RDMA READ 响应的形式返回——全部在硬件中完成。主机 CPU 不被中断。\n这是 RDMA 传输相对于 TCP 的根本优势：在 NVMe/TCP 中，主机内核必须将写入数据从用户缓冲区复制到内核套接字缓冲区，然后 NIC 从内核内存 DMA。在 NVMe-oF/RDMA 中，数据直接从用户空间内存传输到线路上，无需任何 CPU 拷贝。"
+    },
+    "15": {
+      "text": "RDMA READ 响应 → 4KB 写入数据交付到目标",
+      "detail": "主机的 RNIC 返回 4KB 数据载荷。目标接收后，NVMe 目标驱动将其写入后端 NVMe SSD 的 LBA 0。"
+    },
+    "16": {
+      "text": "NVMe Write 完成 ← 4KB 成功写入 LBA 0",
+      "detail": "目标确认 NVMe Write 已完成。NVMe 完成通知通过 RDMA SEND 交付到主机的完成队列（接收 WQE）。\nNVMe Write 数据路径总结（RDMA 传输）：1. 主机 → 目标：RDMA SEND（带 SGL 的 NVMe Write 命令）2. 目标 → 主机：RDMA READ 请求（获取写入数据）3. 主机 → 目标：RDMA READ 响应（4KB 数据，零拷贝）4. 目标 → 主机：RDMA SEND（NVMe 完成通知）总计：4 次 RDMA 操作，主机上 0 次 CPU 拷贝。"
+    },
+    "17": {
+      "text": "NVMe Read → 主机发送 4KB 读取命令（RDMA SEND）",
+      "detail": "主机发送同一 LBA 0 的 NVMe Read 命令（4KB）。命令包含 Keyed SGL，告诉目标在主机内存中 RDMA WRITE 读取数据的位置：rkey=0x0000CDEF，va=0x7f8000300000，len=4096。\n对于读取操作，数据路径比写入更简单：目标从 SSD 读取并 RDMA WRITE 直接到主机缓冲区，然后发送完成通知。"
+    },
+    "18": {
+      "text": "RDMA WRITE ← 目标将 4KB 读取数据交付到主机内存",
+      "detail": "目标从 NVMe SSD 的 LBA 0 读取 4KB，并使用 SGL rkey 和虚拟地址将其 RDMA WRITE 直接到主机的注册缓冲区中。主机的 CPU 不参与——数据静默地落入用户空间内存。\n这与之前发现日志页使用的数据交付机制相同，也是 NVMe-oF/RDMA 中所有控制器到主机数据的基本模式。"
+    },
+    "19": {
+      "text": "NVMe Read 完成 ← 从 LBA 0 成功读取 4KB",
+      "detail": "目标通过 RDMA SEND 发送完成通知。RDMA 排序保证 WRITE 数据在此完成通知到达之前可见。\nNVMe Read 数据路径总结（RDMA 传输）：1. 主机 → 目标：RDMA SEND（带 SGL 的 NVMe Read 命令）2. 目标 → 主机：RDMA WRITE（4KB 数据，零拷贝到主机缓冲区）3. 目标 → 主机：RDMA SEND（NVMe 完成通知）总计：3 次 RDMA 操作，主机上 0 次 CPU 拷贝。\n与 NVMe/TCP 的比较：• NVMe/TCP Read：命令（TCP SEND）→ 数据（TCP C2HData PDU，内核拷贝）→ 完成 • NVMe-oF/RDMA Read：命令（RDMA SEND）→ 数据（RDMA WRITE，零拷贝）→ 完成\nRDMA 路径消除了所有 CPU 数据拷贝和内核转换。"
+    },
+    "20": {
+      "text": "⟳ 场景完成 — NVMe-oF/RDMA 发现和 I/O",
+      "detail": "本场景演示了使用 RDMA 传输绑定的 NVMe over Fabrics：\n1. 链路 — 100GbE 物理建立，PFC 实现无损网络 2. ARP — MAC 地址解析 3. CM — IB 连接管理器 QP 建立（REQ/REP/RTU）用于 Admin 队列 4. FABRICS CONNECT — 发现控制器连接，发现日志页检索 5. IO CONNECT — IO 控制器队列通过单独的 RDMA QP 建立 6. NVMe WRITE — 命令通过 SEND，数据通过 RDMA READ 获取（3 次操作）7. NVMe READ — 命令通过 SEND，数据通过 RDMA WRITE 交付（2 次操作）\nRDMA 传输绑定 — 数据路径总结：\n│ 操作               │ 命令方向              │ 数据方向             │\n│ NVMe Read          │ 主机→目标（SEND）     │ 目标→主机（WRITE）   │\n│ NVMe Write         │ 主机→目标（SEND）     │ 目标←主机（READ）    │\n│ Admin（Get Log Page）│ 主机→目标（SEND）    │ 目标→主机（WRITE）   │\n│ 完成通知（任何）    │ 目标→主机（SEND）     │ —                    │\n\n相对于 NVMe/TCP 的关键优势：• 零 CPU 数据拷贝——RNIC DMA 处理所有数据移动 • 更低延迟——无内核套接字缓冲区转换 • 更高吞吐量——单个 QP 可达线速 • 按队列隔离——每个 NVMe 队列在自己的 RDMA QP 上\n权衡：需要无损以太网网络（PFC + ECN/DCQCN）、RDMA 可用的 NIC 以及更复杂的配置。"
+    }
+  }
+}

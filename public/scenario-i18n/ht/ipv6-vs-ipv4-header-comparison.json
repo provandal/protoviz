@@ -1,0 +1,104 @@
+{
+  "meta": {
+    "title": "IPv6 vs IPv4: Konparezon Antèt — Pi Senp, Pi Rapid, Pi Ekstansib",
+    "description": "Yon konparezon bò-a-bò antèt IPv4 ak IPv6 ki montre poukisa IPv6 pi senp, pi rapid pou router, epi pi ekstansib. Travèse yon pakè IPv4 nan yon router (ak rekalkilasyon checksum ak desizyon fragmantasyon), answit menm done a nan IPv6 (sèlman dekremante Hop Limit). Answit eksplore mekanis chèn antèt ekstansyon IPv6 ak poukisa sèlman sous la ka fragmante.",
+    "learning_objectives": [
+      "Konpare antèt IPv4 (13 chan, longè varyab) ak antèt IPv6 (8 chan, fiks 40 oktè)",
+      "Konprann poukisa retire checksum antèt nan IPv6 akselere transmisyon router",
+      "Eksplike poukisa IPv6 entèdi fragmantasyon router epi egzije Path MTU Discovery",
+      "Dekri chan Flow Label IPv6 ak wòl li nan idantifye fliks trafik san enspeksyon pakè pwofon",
+      "Konprann mekanis chèn Next Header pou antèt ekstansyon IPv6",
+      "Idantifye antèt ekstansyon komen: Hop-by-Hop Options (0), Routing (43), Fragment (44)",
+      "Eksplike poukisa fragmantasyon sèlman-sous elimine yon klas atak ak pwoblèm pèfòmans"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Pati 1 — Pakè IPv4: Machin A voye bay Machin B atravè router a",
+      "detail": "Machin A konstwi yon pakè IPv4 ak 20 oktè chaj TCP destine pou Machin B nan 192.168.2.20. Antèt IPv4 la gen 13 chan, tankou IHL longè-varyab, chan fragmantasyon (Identification, Flags, Fragment Offset), ak Header Checksum ki dwe verifye epi rekalile nan chak sèl router."
+    },
+    "1": {
+      "text": "Detay antèt IPv4: 13 chan, longè varyab, checksum obligatwa",
+      "detail": "Antèt IPv4 (RFC 791) gen 13 chan: Version (4 bit), IHL (4 bit), DSCP (6 bit), ECN (2 bit), Total Length (16 bit), Identification (16 bit), Flags (3 bit), Fragment Offset (13 bit), TTL (8 bit), Protocol (8 bit), Header Checksum (16 bit), Source Address (32 bit), Destination Address (32 bit). Plis yon chan Options ki opsyonèl ki fè longè antèt la varyab ant 20 ak 60 oktè. IHL di ou konbyen long antèt la ye — materyèl la bezwen pase sa anvan li ka jwenn chaj la."
+    },
+    "2": {
+      "text": "Router resevwa pakè IPv4: dwe rekalile checksum (TTL chanje), ka bezwen fragmante",
+      "detail": "Router a resevwa pakè IPv4 la epi dwe fè plizyè operasyon:\n1. VERIFYE Header Checksum — kalkile sòm konpleman yon antèt la epi konfime li egal 0xFFFF. Sinon, pakè a jete an silans.\n2. DEKREMANTE TTL soti nan 64 rive nan 63. Si li rive nan 0, jete epi voye ICMPv4 Time Exceeded.\n3. REKALILE Header Checksum — paske TTL chanje, checksum an dwe rekalile. Sa a se yon kalkil sòm konpleman yon sou tout antèt la.\n4. CHEKE si fragmantasyon nesesè — si pakè a pi gran pase MTU pwochen sèl la ak DF=0, router a ka fragmante li."
+    },
+    "3": {
+      "text": "Router transmèt pakè IPv4: TTL=63, nouvo checksum 0x4e3c",
+      "detail": "Router a transmèt pakè a ak TTL dekremante (63) ak checksum antèt rekalile (0x4e3c). Adrès Kouch 2 yo re-ekri pou segman router-a-Machin B. Chak chan nan antèt IPv4 la pa chanje eksepte TTL ak checksum — men rekalkilasyon checksum an te koute sik CPU nan chak sèl router."
+    },
+    "4": {
+      "text": "13 chan, longè varyab, rekalkilasyon checksum nan chak sèl",
+      "detail": "Rezime antèt IPv4: 13 chan, 20-60 oktè (varyab akoz Options), epi Header Checksum dwe rekalile nan chak sèl paske TTL chanje. Machinri fragmantasyon (Identification, Flags, Fragment Offset) konsome 32 bit nan chak pakè, menm lè pa gen fragmantasyon ki ap rive. Sa a se gaspiyaj — majorite pakè pa janm fragmante."
+    },
+    "5": {
+      "text": "Pati 2 — Pakè IPv6: menm done, menm chemen, antèt pi senp",
+      "detail": "Machin A kounye a voye egzakteman menm chaj TCP bay Machin B, men itilize IPv6. Antèt IPv6 la frappanman pi senp: sèlman 8 chan, toujou egzakteman 40 oktè. Pa gen chan IHL (paske gwosè a pa janm varye), pa gen Header Checksum (paske TCP/UDP deja verifye chaj la), ak pa gen chan fragmantasyon nan antèt de baz la (fragmantasyon se yon antèt ekstansyon separe)."
+    },
+    "6": {
+      "text": "Detay antèt IPv6: 8 chan, fiks 40 oktè, pa gen checksum",
+      "detail": "Antèt IPv6 (RFC 8200) gen sèlman 8 chan: Version (4 bit), Traffic Class (8 bit), Flow Label (20 bit), Payload Length (16 bit), Next Header (8 bit), Hop Limit (8 bit), Source Address (128 bit), Destination Address (128 bit).\nKisa ki te RETIRE konpare ak IPv4: Pa gen IHL — antèt la toujou 40 oktè, konsa materyèl la konnen egzakteman ki kote chaj la kòmanse. Pa gen Identification/Flags/Fragment Offset — fragmantasyon se yon antèt ekstansyon separe. Pa gen Header Checksum — TCP, UDP, ak ICMPv6 gen pwòp checksum pa yo ki kouvri chaj la; verifye yon checksum kouch-IP se redondans."
+    },
+    "7": {
+      "text": "Router resevwa pakè IPv6: PA gen checksum pou rekalile, PA gen fragmantasyon — jis dekremante Hop Limit",
+      "detail": "Router a resevwa pakè IPv6 la epi travay li dramatikman pi senp:\n1. PA gen verifikasyon checksum — pa gen checksum antèt pou verifye oswa rekalile.\n2. DEKREMANTE Hop Limit soti nan 64 rive nan 63. Si li rive nan 0, jete epi voye ICMPv6 Time Exceeded.\n3. PA gen desizyon fragmantasyon — si pakè a twò gwo, jete li epi voye ICMPv6 Packet Too Big. Pa janm fragmante.\n4. Chèche wout, re-ekri adrès Kouch 2, transmèt.\nSa a se yon sèl modifikasyon chan nan antèt IP la: Hop Limit. Pa gen rekalkilasyon checksum."
+    },
+    "8": {
+      "text": "Router transmèt IPv6 — tretman pi rapid anpil pase IPv4",
+      "detail": "Router a transmèt pakè IPv6 la ak Hop Limit dekremante a 63. Pa gen checksum ki te rekalile paske pa gen checksum. Chemen transmisyon router a te touche egzakteman yon chan nan antèt IP la (Hop Limit) konpare ak de chan pou IPv4 (TTL + Checksum). Nan materyèl wo-vitès, elimine rekalkilasyon checksum an senplifye pipeline la epi redwi latans."
+    },
+    "9": {
+      "text": "8 chan, fiks 40 oktè, pa gen checksum pa-sèl — router yo pi rapid",
+      "detail": "Rezime antèt IPv6: 8 chan, toujou egzakteman 40 oktè, epi zewo kalkil checksum nan nenpòt sèl. Sèl modifikasyon obligatwa pa-pakè router a se dekremante Hop Limit pa 1. Konpare sa a ak IPv4 kote router a dwe dekremante TTL E rekalile checksum an — chak operasyon checksum egzije lekti tout antèt la, kalkile sòm konpleman yon, ak ekri rezilta a tounen."
+    },
+    "10": {
+      "text": "Pati 3 — Chèn antèt ekstansyon: Hop-by-Hop Options ak Router Alert",
+      "detail": "Antèt ekstansyon IPv6 se mekanis ki ranplase Options inline IPv4. Olye pou fose fonksyonalite opsyonèl nan yon antèt de baz longè-varyab, IPv6 chèn antèt separe lè li itilize chan Next Header.\nNan egzanp sa a, Machin A voye yon pakè ak yon antèt Hop-by-Hop Options ki gen yon opsyon Router Alert. Antèt de baz IPv6 la gen Next Header = 0 (Hop-by-Hop Options), epi antèt Hop-by-Hop la gen Next Header = 6 (TCP)."
+    },
+    "11": {
+      "text": "Chèn antèt ekstansyon: IPv6 (Next Header=0) → Hop-by-Hop (Next Header=6) → TCP",
+      "detail": "Mekanis chèn Next Header a elegan nan senplisite li:\n1. Antèt de baz IPv6: Next Header = 0 (Hop-by-Hop Options) — «Apre m se yon antèt Hop-by-Hop Options»\n2. Antèt Hop-by-Hop Options: Next Header = 6 (TCP) — «Apre m se TCP»\n3. Antèt TCP: chaj aplikasyon\n\nChak antèt nan chèn an gen pwòp chan Next Header li ki pwente sou sa ki vini apre. Ou ka ajoute nenpòt kantite antèt ekstansyon: Routing (43), Fragment (44), ESP (50), AH (51), elatriye."
+    },
+    "12": {
+      "text": "Fragmantasyon IPv6: SÈLMAN sous la ka fragmante — janm yon router",
+      "detail": "Sa a se youn nan diferans ki pi enpòtan ant IPv4 ak IPv6. Nan IPv4, nenpòt router sou chemen an ka fragmante yon pakè si li depase MTU sòti a. Nan IPv6, fragmantasyon fèt SÈLMAN pa machin sous la.\nSi yon router rankontre yon pakè ki pi gwo pase MTU pwochen sèl la, li jete pakè a epi voye yon mesaj ICMPv6 Packet Too Big tounen bay sous la. Sous la answit ka swa redwi gwosè pakè a swa fragmante nan sous itilize antèt ekstansyon Fragment (Next Header = 44)."
+    },
+    "13": {
+      "text": "Chèn fragman: IPv6 (Next Header=44) → Fragment Header (Next Header=6) → chaj TCP",
+      "detail": "Chèn antèt ekstansyon Fragment:\n1. Antèt de baz IPv6: Next Header = 44 (Fragment Header) — «Apre m se yon Fragment Header»\n2. Fragment Header: Next Header = 6 (TCP), Fragment Offset = 0 (sa a se premye fragman), M = 1 (plis fragman ap vini), Identification = 0x2b3c\n3. Premye moso chaj TCP\n\nDezyèm fragman an gen menm Identification men Fragment Offset diferan ak M = 0 (dènye fragman)."
+    },
+    "14": {
+      "text": "Nan IPv4, nenpòt router ka fragmante. Nan IPv6, sèlman sous la ka. Se poutèt sa Path MTU Discovery obligatwa.",
+      "detail": "Path MTU Discovery (PMTUD) nan IPv6 (RFC 8201) fonksyone konsa:\n1. Sous la voye pakè nan MTU lyen lokal li (tipikman 1280-1500 oktè)\n2. Si yon router sou chemen an gen yon MTU pi piti, li jete pakè a epi voye ICMPv6 Packet Too Big ak valè MTU a\n3. Sous la redwi gwosè pakè li epi retransmèt\n4. Repete jiskaske pakè yo rive nan destinasyon\nKoze a klè: sous la dekouvri MTU goulèt-detranglman an yon sèl fwa, answit optimize tout pakè ki vin apre. Pa gen gaspiyaj bann pasant sou fragmantasyon nan mitan chemen, pa gen atant pou reyasanblaj, pa gen duplikasyon ID fragman."
+    },
+    "15": {
+      "text": "Rezime: IPv6 pi senp (8 vs 13 chan), pi rapid (pa gen checksum), epi pi ekstansib (chèn antèt ekstansyon)",
+      "detail": "Konparezon Antèt IPv4 vs IPv6:\n| Pwopriyete | IPv4 | IPv6 |\n|---|---|---|\n| Chan antèt | 13 | 8 |\n| Gwosè antèt | 20-60 oktè (varyab) | 40 oktè (fiks) |\n| Checksum antèt | Wi (rekalile chak sèl) | Non |\n| Fragmantasyon router | Wi (nenpòt router) | Non (sèlman sous) |\n| Machinri fragmantasyon | Toujou nan antèt de baz | Antèt ekstansyon separe |\n| Ekstansibilite | Chan Options (rarman itilize) | Chèn antèt ekstansyon |\n| Flow Label | Pa gen | 20 bit — pèmèt ECMP/QoS san DPI |\n\nIPv6 pa jis «IPv4 ak pi gwo adrès.» Se yon redizayn fondamantal pou transmisyon wo-vitès."
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "Konparezon Antèt IPv6 vs IPv4",
+      "description": "Travèse poukisa antèt IPv6 la pi senp, pi rapid pou router, epi pi ekstansib pase IPv4",
+      "steps": {
+        "0": "Nou pral konpare antèt IPv4 ak IPv6 bò-a-bò. Toude pwotokòl transpòte datagram IP atravè rezo, men IPv6 te konseptyalize 17 ane apre IPv4 ak avantaj eksperyans. Kesyon an pa jis «pi gwo adrès» — se «kisa nou te aprann, epi kisa nou te elimine?» Ann kòmanse ak IPv4 epi wè kisa router yo dwe fè ak chak pakè.",
+        "1": "Premyèman, pakè IPv4 la. Machin A voye yon segman TCP bay Machin B atravè yon router. Gade antèt IPv4 la: li gen 13 chan. Chan IHL (Internet Header Length) di ou konbyen long antèt la ye — li ka nenpòt kote ant 20 rive 60 oktè selon si gen Options. Materyèl la dwe pase IHL anvan li ka jwenn kote chaj la kòmanse.",
+        "2": "Remake chan fragmantasyon: Identification, Flags (DF/MF), ak Fragment Offset. 32 bit sa yo prezan nan CHAK pakè IPv4, menm lè pa gen fragmantasyon ki ap fèt. Yo egziste paske nan IPv4, nenpòt router sou chemen an ka deside fragmante yon pakè si li pi gwo pase MTU sòti a. Donk chak pakè dwe pote machinri fragmantasyon — jis okazi.",
+        "3": "Router a resevwa pakè IPv4 la epi gen yon lis travay: verifye checksum antèt la, dekremante TTL soti nan 64 rive nan 63, rekalile checksum antèt la (paske TTL chanje), cheke si fragmantasyon nesesè, epi re-ekri adrès Kouch 2 yo. Rekalkilasyon checksum an se yon kalkil sòm konpleman yon sou tout antèt la — sa koute sik CPU nan chak sèl.",
+        "4": "Router a transmèt pakè a ak TTL=63 ak yon checksum tou nèf (0x4e3c). Tout lòt bagay pa chanje. Men rekalkilasyon checksum sa a? Li rive ankò nan pwochen router a. Epi sa ki apre a. Epi chak router jiskaske pakè a rive nan Machin B. Miltipliye pa milya pakè pa segond epi ou wè poukisa sa te vin yon goulèt-detranglman.",
+        "5": "Ann poze epi konte kisa IPv4 mande chak router: 13 chan pou analize, longè antèt varyab pou jere, yon checksum pou verifye E rekalile, ak posiblite bezwen fragmante nenpòt pakè. IPv4 te konseptyalize lè router yo trete pakè nan lojisyèl. Materyèl modèn vle chemen rapid senp — IPv4 jenere konpleksite ki pa nesesè.",
+        "6": "Kounye a menm done a vwayaje pa IPv6. Imedyatman remake: sèlman 8 chan olye de 13. Fiks 40 oktè — toujou. Pa gen chan IHL paske gwosè antèt la pa janm varye. Flow Label la nouvo — 20 bit ki idantifye yon fliks trafik pou router ka fè ekilibrabit pa-fliks (ECMP) san enspeksyon pakè pwofon.",
+        "7": "Gade kisa ki manke konpare ak IPv4. Pa gen IHL — antèt la toujou 40 oktè, donk materyèl la konnen egzakteman ki kote chaj la kòmanse. Pa gen Identification, Flags, oswa Fragment Offset — fragmantasyon jere pa yon antèt ekstansyon separe, sèlman lè sa nesesè. Pa gen Header Checksum — TCP, UDP, ak ICMPv6 gen pwòp checksum pa yo ki kouvri chaj la; verifye yon checksum kouch-IP se redondans.",
+        "8": "Router a resevwa pakè IPv6 la epi travay li dramatikman pi senp: dekremante Hop Limit soti nan 64 rive nan 63 — epi transmèt. Se tout. Pa gen checksum pou verifye. Pa gen checksum pou rekalile. Pa gen desizyon fragmantasyon (si pakè a twò gwo, voye ICMPv6 Packet Too Big, jete pakè a). Sa a se yon sèl modifikasyon chan olye de de, ak zewo kalkil checksum.",
+        "9": "Pakè IPv6 transmèt la rive nan Machin B ak Hop Limit=63. Konpare kisa router a te fè pou IPv4 (dekremante TTL + rekalile checksum + cheke fragmantasyon) kontra IPv6 (dekremante Hop Limit). 8 chan olye de 13 — pi senp pou analize. Fiks 40 oktè — pa gen longè varyab pou jere. Zewo kalkil checksum — pipeline materyèl la pi senp.",
+        "10": "Kounye a ann wè kijan IPv6 jere ekstansibilite. Olye pou fose fonksyonalite opsyonèl nan yon antèt de baz longè-varyab (tankou IPv4 Options), IPv6 itilize chèn antèt ekstansyon. Chak antèt gen yon chan Next Header ki pwente sou sa ki vini apre. Isit la, Machin A voye yon pakè ak yon antèt Hop-by-Hop Options ki gen Router Alert.",
+        "11": "Antèt Hop-by-Hop Options la espesyal — li se SÈL antèt ekstansyon ke chak router dwe egzamine. Tout lòt antèt ekstansyon (Routing, Fragment, ESP, AH) trete sèlman pa destinasyon an. Sa vle di router yo ka fè chemen rapid pou gran majorite pakè yo — sèlman gade antèt de baz IPv6 la, dekremante Hop Limit, epi transmèt.",
+        "12": "Finalman, fragmantasyon IPv6. Nan IPv4, nenpòt router ka fragmante yon pakè — chan Identification, Flags, ak Fragment Offset nan antèt de baz chak pakè. Nan IPv6, fragmantasyon itilize yon antèt ekstansyon Fragment dedye (Next Header=44), epi SÈLMAN sous la ka fragmante. Si yon router resevwa yon pakè IPv6 twò gwo pou pwochen sèl la, li jete li epi voye ICMPv6 Packet Too Big.",
+        "13": "Fragmantasyon sèlman-sous gen benefis pwofon. Li elimine yon klas atak baze sou fragmantasyon (atak ti fragman ki fann antèt TCP pou kontoune firewall). Li retire lojik fragmantasyon nan chemen rapid router a. Identification 32 bit la sòti nan antèt de baz la epi antre sèlman nan antèt Fragment — pa gen gaspiyaj nan pakè nòmal yo. Epi li elimine reyasanblaj nan router — sèlman pwen final yo bezwen reyasanble.",
+        "14": "Ann rezime kisa nou aprann. IPv6 pa jis «IPv4 ak pi gwo adrès.» Se yon redizayn fondamantal pou transmisyon wo-vitès. 8 chan olye de 13 — pi senp pou analize. Fiks 40 oktè — materyèl ka trete a vitès liy. Pa gen checksum antèt — zewo travay pa-sèl retire. Fragmantasyon sèlman-sous — router yo pa janm fragmante. Antèt ekstansyon — ekstansibilite san konplike antèt de baz la. Flow Label — idantifikasyon fliks san enspeksyon pwofon. IPv6 te konseptyalize ak vitès router kòm priyorite premye."
+      }
+    }
+  }
+}

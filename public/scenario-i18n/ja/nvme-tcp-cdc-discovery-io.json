@@ -1,0 +1,191 @@
+{
+  "meta": {
+    "title": "NVMe/TCP: mDNS → CDC Discovery → DIM → サブシステム接続 → I/O",
+    "description": "NVMe/TCPの完全なフロー: mDNSでCDC (Centralized Discovery Controller) を検出、NVMe/TCP接続初期化、Fabrics Connect、DIM (Discovery Information Management) 登録、Discovery Log Page取得、DDC経由でIO Controllerへ接続、Identify Controller/Namespace、NVMe WriteとReadによるデータ転送。RDMAトランスポートとの対比 — TCPではR2T/H2CData/C2HData PDUを使用します。",
+    "learning_objectives": [
+      "mDNSでCDCを検出するプロセスを理解する",
+      "NVMe/TCP接続初期化 (ICReq/ICResp) を観察する",
+      "TP8013 DIM (Discovery Information Management) 登録を追跡する",
+      "CDC → DDC → IO Controllerの階層的Discoveryフローを見る",
+      "NVMe/TCPのWrite (R2T/H2CData) とRead (C2HData) データパスを追跡する"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "mDNSクエリ: _nvme-disc._tcp.local",
+      "detail": "ホストのstafdデーモン (nvme-stasの一部) がmDNSでNVMe Discoveryコントローラを検索します。224.0.0.251:5353にマルチキャストDNSクエリを送信し、_nvme-disc._tcpサービスタイプに一致するPTRレコードを探します。これはTP8009で規定されたCDC自動検出のDNS-SD (DNS-Based Service Discovery、RFC 6763) メカニズムです。stafdはAvahi (LinuxのmDNS/DNS-SD実装) を使用してこのサービスタイプのサービスブラウザを登録します。"
+    },
+    "1": {
+      "text": "mDNS応答: CDC 192.168.100.50:8009",
+      "detail": "CDCがDiscoveryサービスを通知するmDNSレコードで応答します。PTRレコードが_nvme-disc._tcp.localをサービスインスタンス名にマッピングします。SRVレコードがターゲットホスト名とポート (8009) を提供します。TXTレコードにキーバリューペア: p=tcp (トランスポートタイプ) とnqn=nqn.2014-08.org.nvmexpress.discovery (既知のDiscovery NQN) が含まれます。stafdのAvahiコールバックがこれらのレコードを解析し、transport、traddr、trsvcid、subsysnqnを含むコントローラディクショナリを構築します。"
+    },
+    "2": {
+      "text": "TCP SYN → CDCポート8009",
+      "detail": "stafdがCDC (192.168.100.50:8009) へのTCP接続を開始します。ポート8009はNVMe Discoveryコントローラのデフォルトtrsvcid (Transport Service ID) です。TCP 3ウェイハンドシェイクがNVMe-oF/TCPが動作する信頼性のあるトランスポートを確立します。"
+    },
+    "3": {
+      "text": "TCP SYN-ACK ← CDC",
+      "detail": "CDCのTCPスタックがSYN-ACKで応答し、ホストのSYNを確認して自身のシーケンス番号を送信します。"
+    },
+    "4": {
+      "text": "TCP ACK — CDCへの接続確立",
+      "detail": "ホストが3ウェイハンドシェイクを完了します。CDCへのTCP接続が確立されました。NVMe-oF/TCPレイヤが次にICReqを送信します。"
+    },
+    "5": {
+      "text": "ICReq → CDC (NVMe/TCP接続初期化)",
+      "detail": "TCPハンドシェイク後の最初のNVMe-oF/TCP PDUです。ホストがInitialize Connection Request (ICReq) を送信し、NVMe/TCPパラメータをネゴシエーションします。主要フィールド: PDU Format Version (v0のみ定義)、要求ダイジェストタイプ (ヘッダおよび/またはデータダイジェスト)、Host PDU Data Alignment、最大未処理R2T数。128バイトのICReqはTCP接続完了後にNVMe/TCPドライバが最初に送信するもの (nvme_tcp_init_connection) です。"
+    },
+    "6": {
+      "text": "ICResp ← CDC (接続パラメータ承認)",
+      "detail": "CDCがICRespでネゴシエーション済みパラメータを確認します。コントローラのCPDA (Controller PDU Data Alignment) と受け入れたダイジェストタイプが返されます。MaxDataはR2Tあたりのコントローラが処理可能な最大データサイズを示します。ICReq/ICResp完了でNVMe/TCPトランスポートレイヤが初期化され、NVMeコマンドの受け渡しが可能になります。"
+    },
+    "7": {
+      "text": "Fabrics Connect → CDC (Admin Queue, Discovery NQN)",
+      "detail": "ホストがNVMe Fabrics Connectコマンドを送信し、CDCとのAdmin Queueアソシエーションを確立します。オペコード0x7F (Fabrics)、fctype=0x01 (Connect) を使用します。Queue ID 0はAdmin Queueを示します。Connect Data (1024バイト) にホスト識別情報が含まれます: Host ID (UUID)、Host NQN、ターゲットSubsystem NQN (nqn.2014-08.org.nvmexpress.discovery — 既知のDiscoveryサブシステムNQN)。Controller IDは0xFFFF (動的) に設定され、CDCが割り当てます。"
+    },
+    "8": {
+      "text": "Fabrics Connect応答 ← CDC (CNTLID=65)",
+      "detail": "CDCがFabrics Connectを受け入れ、コントローラID 65をこのホストに割り当てます。Admin Queueが確立され、ホストはDIMやGet Log Pageなどの管理コマンドをCDCに送信できます。"
+    },
+    "9": {
+      "text": "DIM Register → CDC (TP8013)",
+      "detail": "ホストがDiscovery Information Management (DIM) コマンドを送信してCDCに登録します。DIMはTP8013で定義され、ホストがDiscoveryコントローラに登録/登録解除できます。登録にはホストのNQN、Host ID (UUID)、ホスト名、OSバージョンが含まれます。登録後、CDCはこのホストをゾーニング計算に含め、Discovery Logが変更された場合 (例: 新しいサブシステムがオンラインになった場合) に非同期イベント通知を送信します。nvme-stasではlibnvmeのnvmf_register_ctrl()関数で処理されます。"
+    },
+    "10": {
+      "text": "DIM Register応答 ← CDC (成功)",
+      "detail": "CDCがホストの登録を確認します。ホストがCDCのデータベースに登録され、ゾーニング設定でフィルタリングされたDiscovery Log Pageを受信します — このホストがアクセス権を持つサブシステムのみが表示されます。CDCはDiscovery Logが変更された場合にAEN (非同期イベント通知) も送信します。"
+    },
+    "11": {
+      "text": "Get Log Page → CDC (Discovery Log, LID 0x70)",
+      "detail": "ホストがCDCにDiscovery Log Page (LID 0x70) を要求します。標準的なNVMe Get Log Page管理コマンドです。Discovery Logには、CDCのゾーニング設定でフィルタリングされた、このホストがアクセス可能なすべてのサブシステムのエントリが含まれます。各エントリにはトランスポートタイプ、アドレスファミリ、トランスポートアドレス (IP)、ポート、サブシステムNQN、サブシステムタイプ (NVMまたはDiscovery参照) が提供されます。ホストは前後でジェネレーションカウンタを読み取り、変更があった場合はログを再読み取りする必要があります。"
+    },
+    "12": {
+      "text": "Discovery Log Page ← CDC (2件のDDC参照)",
+      "detail": "CDCが2件のDDC参照エントリを含むDiscovery Logを返します: 1) ストレージアレイ1のDDC (subtype=1、Discoveryサブシステム) — 192.168.100.51:8009 2) ストレージアレイ2のDDC (subtype=1、Discoveryサブシステム) — 192.168.100.52:8009。これらは参照です — CDCはホストに各DDC (Direct Discovery Controller) に接続して、そのストレージアレイで利用可能なIO Controllerを確認するよう指示します。CDCはネットワーク全体のビューを提供し、DDCはアレイごとの詳細を提供します。stafdは最初の参照に従い、ストレージアレイ1のDDCに接続します。"
+    },
+    "13": {
+      "text": "TCP SYN → DDCポート8009 (ストレージアレイ)",
+      "detail": "stafdがCDCのDiscovery LogからDDC参照に従います。ストレージアレイ1のDirect Discovery Controller (DDC) (192.168.100.51:8009) へのTCP接続を開始します。DDCはストレージアレイ自体で実行されるDiscoveryコントローラです (ネットワークスイッチで実行されるCDCとは異なります)。DDCはこの特定のストレージアレイ上のIOサブシステムに固有のDiscovery Log Pageを提供します。これが3層Discovery階層の第2層です: CDC (ネットワーク全体) → DDC (アレイ単位) → IOC (サブシステム単位)。"
+    },
+    "14": {
+      "text": "TCP SYN-ACK ← DDC",
+      "detail": "ストレージアレイのDDCがTCP接続の試みに対してSYN-ACKで応答します。"
+    },
+    "15": {
+      "text": "TCP ACK — DDCへの接続確立",
+      "detail": "ストレージアレイ上のDDCへのTCPハンドシェイクが完了しました。"
+    },
+    "16": {
+      "text": "ICReq → DDC (NVMe/TCP接続初期化)",
+      "detail": "DDCとのNVMe/TCP初期化 — CDCと同じICReq/ICResp交換です。"
+    },
+    "17": {
+      "text": "ICResp ← DDC (接続パラメータ承認)",
+      "detail": "DDCがNVMe/TCPトランスポートパラメータを承認します。"
+    },
+    "18": {
+      "text": "Fabrics Connect → DDC (Admin Queue, Discovery NQN)",
+      "detail": "ホストがDDCに既知のDiscoveryサブシステムNQN (nqn.2014-08.org.nvmexpress.discovery) を使ってFabrics Connectを送信します — CDC接続と同じNQNです。CDCとDDCはどちらもDiscoveryコントローラです。スコープが異なり (CDC = 中央集権/ネットワーク全体、DDC = ストレージアレイ内) ますが、同じDiscoveryプロトコルとNQNを使用します。"
+    },
+    "19": {
+      "text": "Fabrics Connect応答 ← DDC (CNTLID=1)",
+      "detail": "DDCが接続を受け入れ、CNTLID=1を割り当てます。DDCへのAdmin Queueが確立され、ホストはDDCのDiscovery Logを要求してこのストレージアレイ上のIO Controllerを確認できます。"
+    },
+    "20": {
+      "text": "DIM Register → DDC (TP8013)",
+      "detail": "ホストがCDCの場合と同様にDIMでDDCに登録します。DDCがこのホスト固有のゾーニング設定でフィルタリングされたDiscovery Logエントリを返すことを保証します。DDCはこのストレージアレイ上のサブシステムが変更された場合にAENも送信します。"
+    },
+    "21": {
+      "text": "DIM Register応答 ← DDC (成功)",
+      "detail": "DDCがホストの登録を確認します。ホストはDDCのDiscovery Log Pageを要求して、このストレージアレイ上でアクセス可能なIO Controllerを確認できます。"
+    },
+    "22": {
+      "text": "Get Log Page → DDC (Discovery Log, LID 0x70)",
+      "detail": "ホストがDDCにDiscovery Log Pageを要求します。CDC logがDDC参照を含んでいたのとは異なり、DDC logには実際のNVMサブシステムエントリ — このストレージアレイ上でこのホストがアクセス可能なIO Controllerが含まれます。このステップでホストがIO ControllerのNQNと接続詳細を学習します。"
+    },
+    "23": {
+      "text": "DDC Discovery Log ← DDC (subsys-alphaがポート4420)",
+      "detail": "DDCが1件のエントリを含むDiscovery Logを返します: NVM Subsystem A (nqn.2024-01.com.storage:subsys-alpha) — 192.168.100.51:4420。これがstacdの接続に使うIO Controller NQNです。3層Discovery階層が完了しました: CDC (ネットワーク全体) → DDC (アレイ単位) → IOC (サブシステム単位)。stacdはサブシステムNQNと接続詳細を取得し、IO Controller接続を確立できます。"
+    },
+    "24": {
+      "text": "TCP SYN → IO Controllerポート4420",
+      "detail": "stacdがIO Controller (192.168.100.51:4420) へのTCP接続を開始します — DDCのDiscovery Logから学習したアドレスとポート (nqn.2024-01.com.storage:subsys-alpha)。ポート4420はNVMe over FabricsのIANA割り当てポートです。"
+    },
+    "25": {
+      "text": "TCP SYN-ACK ← IO Controller",
+      "detail": "IO ControllerがTCP接続の試みに対してSYN-ACKで応答します。"
+    },
+    "26": {
+      "text": "TCP ACK — IO Controllerへの接続確立",
+      "detail": "IO ControllerへのTCPハンドシェイクが完了しました。"
+    },
+    "27": {
+      "text": "ICReq → IO Controller",
+      "detail": "NVMe/TCP初期化 — CDCと同じICReq/ICResp交換です。"
+    },
+    "28": {
+      "text": "ICResp ← IO Controller",
+      "detail": "IO ControllerがNVMe/TCPトランスポートパラメータを承認します。"
+    },
+    "29": {
+      "text": "Fabrics Connect → IO Controller (subsys-alpha)",
+      "detail": "ホストがDDCのDiscovery Logから学習したサブシステムNQN (nqn.2024-01.com.storage:subsys-alpha) を使ってIO Controllerに接続します。Admin Queueアソシエーションを作成します。CDCおよびDDC接続では既知のDiscovery NQNを使用しましたが、ここでは実際のストレージサブシステムNQNを使用 — CDC → DDC → IOC階層の最終層が完了します。"
+    },
+    "30": {
+      "text": "Fabrics Connect応答 ← IO Controller (CNTLID=1)",
+      "detail": "IO Controllerが接続を受け入れ、CNTLID=1を割り当てます。Admin Queueが確立され、ホストはコントローラとネームスペースを識別できるようになります。"
+    },
+    "31": {
+      "text": "Identify Controller (CNS=0x01)",
+      "detail": "ホストがIdentify Controller (管理オペコード0x06、CNS=1) を送信し、コントローラの機能を確認します: シリアル番号、モデル、ファームウェアバージョン、最大データ転送サイズ (MDTS)、ネームスペース数、サポート機能。この4096バイトのレスポンスはホストドライバが自身を適切に設定するために不可欠です。"
+    },
+    "32": {
+      "text": "Identify Controller応答 (4ネームスペース、MDTS=256KB)",
+      "detail": "IO Controllerがアイデンティティを返します: モデル「NVMe-oF/TCP Storage Array」、ファームウェアv2.1.0、MDTS=6 (最大転送256KB)、4ネームスペース。ホストドライバはMDTSでI/Oリクエストサイズの上限を設定し、nn (ネームスペース数) で列挙するネームスペース数を把握します。"
+    },
+    "33": {
+      "text": "Identify Namespace (NSID=1, CNS=0x00)",
+      "detail": "ホストがNamespace 1を識別し、サイズ、LBAフォーマット、機能を確認します。CNS=0で特定のNSIDを指定すると、ネームスペースのアイデンティティデータが返されます: 合計サイズ (nsze)、容量 (ncap)、現在の使用量 (nuse)、LBAフォーマット (セクタサイズ、メタデータ) を含みます。"
+    },
+    "34": {
+      "text": "Identify Namespace応答 (NSID=1, 約1TB, 512B LBA)",
+      "detail": "Namespace 1の容量は約1TB (1,953,525,168 × 512バイトLBA)、25%使用済み。LBAフォーマット0: 1LBAあたり512バイト、メタデータなし、最高相対パフォーマンス。ホストのブロックレイヤがこれを/dev/nvmeXnY (例: /dev/nvme0n1) として提示します。"
+    },
+    "35": {
+      "text": "Fabrics Connect IO Queue 1",
+      "detail": "ホストがQID=1でFabrics Connect経由でIO Queue 1を作成します。IO QueueはNVMe Read/Writeコマンドに使用されます (管理コマンドはQID=0)。SQサイズは128エントリに設定されます。複数のIO Queueを作成可能です (最良のパフォーマンスのため通常CPUコアあたり1つ)。"
+    },
+    "36": {
+      "text": "IO Queue 1確立 — I/O準備完了",
+      "detail": "IO Queue 1が確立されました。ホストはNVMe ReadおよびWriteコマンドを発行できます。ブロックデバイス/dev/nvme0n1が完全に動作可能になりました。"
+    },
+    "37": {
+      "text": "NVMe Writeコマンド (LBA 0x1000に4KB)",
+      "detail": "ホストがNamespace 1のLBA 0x1000に4KBのNVMe Writeコマンドを発行します。Write SQE (64バイト) がIO Queue 1でCapsuleCmd PDUとして送信されます。コマンドは8 LBA (0ベースNLB=7) × 512バイト = 4096バイトを指定します。NVMe/TCPでは、書き込みデータはコマンドとインラインで送信されません — コントローラがまずR2T (Ready to Transfer) PDUでデータを要求する必要があります。"
+    },
+    "38": {
+      "text": "R2T ← Controller (4KB書き込みデータ要求)",
+      "detail": "IO ControllerがReady-to-Transfer (R2T) PDUを送信し、ホストに書き込みデータを要求します。R2Tにはトランスファタグ、データオフセット (0 = 先頭)、長さ (4096バイト) が指定されます。これはNVMe/TCPのフロー制御メカニズムです — コントローラがホストのデータ送信のタイミングと量を制御します。RDMA方式ではホストが直接データをプッシュできるのとは異なります。"
+    },
+    "39": {
+      "text": "H2CData → Controller (4KB書き込みペイロード)",
+      "detail": "ホストが4KBの書き込みデータをH2CData (Host-to-Controller Data) PDUで送信します。トランスファタグはR2Tと一致します。LASTフラグはこのコマンドの最終データPDUであることを示します。より大きな書き込みでは、複数のR2T/H2CData交換が発生することがあります (ICReqのmaxr2tで制御)。"
+    },
+    "40": {
+      "text": "Write完了 ← Controller (成功)",
+      "detail": "IO Controllerが書き込みを完了し、ステータス0x0000 (成功) のCapsuleRespを返します。4KBがNamespace 1のLBA 0x1000に書き込まれました。ホストドライバがブロックI/Oリクエストを完了します。"
+    },
+    "41": {
+      "text": "NVMe Readコマンド (LBA 0x1000から4KB)",
+      "detail": "ホストがLBA 0x1000から同じ4KBを読み戻します。Read SQEがIO Queue 1でCapsleCmdとして送信されます。Writeと異なり、ReadコマンドはR2Tを必要としません — コントローラがC2HData PDUで直接データを送信します。"
+    },
+    "42": {
+      "text": "C2HData ← Controller (4KB読み取りペイロード)",
+      "detail": "IO Controllerが4KBの読み取りデータをC2HData (Controller-to-Host Data) PDUで送信します。Readではデータがコントローラからホストにフロー制御なしで送信されます — コントローラはメディアからデータが利用可能になり次第送信します。LASTフラグがこれが最終データPDUであることを示します。"
+    },
+    "43": {
+      "text": "Read完了 ← Controller (成功)",
+      "detail": "Readが正常に完了しました。LBA 0x1000の4KBデータがホストに配送されました。NVMe/TCPの完全なライフサイクルが実演されました: mDNS検出 → CDC登録 → CDC Discovery Log (DDC参照) → DDC接続 → DDC Discovery Log (IOC詳細) → IOC接続 → コントローラ識別 → ネームスペース列挙 → IO Queueセットアップ → Write → Read。3層Discovery階層 (CDC → DDC → IOC) が完了です。"
+    }
+  }
+}

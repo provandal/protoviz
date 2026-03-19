@@ -1,0 +1,98 @@
+{
+  "meta": {
+    "title": "[WIP] S3/RDMA: Object PUT und GET \u00fcber RoCEv2 (NVIDIA-Bibliotheksarchitektur)",
+    "description": "Ein S3/RDMA-Austausch \u00fcber 100GbE RoCEv2, der demonstriert, wie KI-Workloads S3 PUT- und GET-Operationen mit null CPU-Beteiligung im Datenpfad durchf\u00fchren k\u00f6nnen. Das Szenario beginnt mit physischem Verbindungsaufbau und ARP, geht \u00fcber S3/RDMA-Bibliotheksinitialisierung und QP-Verbindungsaufbau via UD-Steuernachrichten, zeigt dann einen vollst\u00e4ndigen S3 PUT (1GB KI-Checkpoint-Upload) und S3 GET (1GB Download) unter Verwendung von RDMA WRITE f\u00fcr den Massendatentransfer. Kontrastannotationen vergleichen S3/RDMA mit traditionellem S3 \u00fcber TCP/HTTP in jeder Phase. Basiert auf der NVIDIA-RDMA-f\u00fcr-S3-kompatiblen-Speicher-Bibliotheksarchitektur und der Dell ObjectScale-Implementierung. Wire-Level-Feldkodierungen f\u00fcr die S3/RDMA-Anwendungsschicht sind vorstandard und k\u00f6nnen sich \u00e4ndern, bis die Spezifikation der Accelerated Object I/O TWG abgeschlossen ist.",
+    "learning_objectives": [
+      "Verstehen, warum traditionelles S3 \u00fcber TCP/HTTP CPU-intensiv ist und wie S3/RDMA diesen Overhead eliminiert",
+      "Sehen, wie die NVIDIA S3/RDMA-Bibliothek oberhalb der RoCEv2-Transportschicht und unterhalb der S3-Anwendungs-API liegt",
+      "Den QP-Verbindungsaufbau beobachten, den S3/RDMA vor jedem Objekttransfer verwendet",
+      "Eine S3-PUT-Operation nachverfolgen: wie Objektmetadaten \u00fcber den Steuerpfad ausgetauscht werden, w\u00e4hrend Daten \u00fcber RDMA WRITE flie\u00dfen",
+      "Eine S3-GET-Operation nachverfolgen: wie der Server RDMA WRITE verwendet, um Objektdaten direkt in den Client-Speicher zu pushen",
+      "S3/RDMA-Datenpfad (null CPU bei Datentransfer) mit traditionellem S3 \u00fcber TCP (CPU verarbeitet jedes Byte) kontrastieren",
+      "Die Rolle der Memory-Region-Registrierung verstehen, die den Server autorisiert, direkt in vom Client allokierte Puffer zu schreiben"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Traditionelles S3 vs. S3/RDMA \u2014 Warum das wichtig ist",
+      "detail": "Traditioneller S3 GET: HTTP GET-Anfrage \u2192 TCP-Verbindung \u2192 TLS-Handshake \u2192 HTTP-Antwort mit Objektdaten \u2192 Kernel kopiert Daten durch TCP-Socket-Buffer \u2192 Anwendung kopiert von Socket in Buffer. Jedes Byte ber\u00fchrt die CPU zweimal. CPU-Auslastung: hoch. Latenz: Hunderte Mikrosekunden bis Millisekunden.\nS3/RDMA GET: QP-Aufbau (einmalig) \u2192 RDMA WRITE der Objektdaten direkt in vorregistrierten Client-Buffer. Null CPU-Kopien. Null Kernel-Beteiligung im Datenpfad. CPU-Auslastung f\u00fcr Datentransfer: ~0%. Latenz: einstellige Mikrosekunden."
+    },
+    "1": {
+      "text": "Link A: Signal erkannt \u2014 Client \u2194 Switch-Port A",
+      "detail": "Optischer Transceiver am Client erkennt Licht von Switch-Port A. Auto-Negotiation beginnt gem\u00e4\u00df IEEE 802.3cd Clause 73."
+    },
+    "2": {
+      "text": "Link B: Signal erkannt \u2014 Switch-Port B \u2194 Server"
+    },
+    "3": {
+      "text": "Beide Links: AN abgeschlossen \u2014 100GbE + RS(544,514) FEC, Links AKTIV",
+      "detail": "Beide Links handeln 100GBASE-SR4 mit RS(544,514) FEC aus (obligatorisch f\u00fcr 100G). Link Training gleicht Kan\u00e4le aus. Links sind aktiv und bereit f\u00fcr Datenverkehr."
+    },
+    "4": {
+      "text": "PFC auf Priorit\u00e4t 3 aktiviert \u2014 verlustfreies Ethernet f\u00fcr RoCEv2",
+      "detail": "Priority Flow Control (IEEE 802.1Qbb) auf Priorit\u00e4tsklasse 3 aktiviert. Dies verhindert Paketverlust bei \u00dcberlastung, was f\u00fcr RDMA entscheidend ist. S3/RDMA verwendet das gleiche verlustfreie Fabric wie jeder RoCEv2-Workload."
+    },
+    "5": {
+      "text": "ARP: Client l\u00f6st Server-IP 192.168.100.20 auf"
+    },
+    "6": {
+      "text": "ARP-Antwort: Server-MAC 00:02:c9:20:00:01"
+    },
+    "7": {
+      "text": "Client: s3_rdma_client_init() \u2014 S3/RDMA-Bibliothek initialisiert",
+      "detail": "Client ruft s3_rdma_client_init() auf. Die Bibliothek registriert eine gro\u00dfe Memory Region, die den GPU/CPU-Buffer-Pool abdeckt (ibv_reg_mr() \u2192 MLX5_CMD_OP_CREATE_MKEY). Erstellt einen Pool von RC-QPs, die f\u00fcr S3-Operationen vorallokiert sind. Dies sind einmalige Kosten, die \u00fcber alle nachfolgenden S3-Operationen amortisiert werden."
+    },
+    "8": {
+      "text": "Server: S3/RDMA-Server-Bibliothek vorinitialisiert, bereit f\u00fcr Verbindungen",
+      "detail": "Der Server hat seine NVIDIA-S3/RDMA-Server-Bibliothek beim Start vorinitialisiert. QP-Pool bereit, Client-Verbindungen zu akzeptieren. Integriert mit Dell ObjectScale-Speicher-Engine."
+    },
+    "9": {
+      "text": "S3/RDMA CONNECT Request \u2014 Client sendet QP-Info, rkey, Buffer-Adresse",
+      "detail": "Client sendet Verbindungsanfrage via UD SEND an das bekannte S3/RDMA-Service-QP auf dem Server. Tr\u00e4gt Client-QP-Nummer, GID, rkey und Buffer-Virtualadresse. Der Server wird diesen rkey/vaddr verwenden, um Daten per RDMA WRITE direkt in den GPU-Speicher des Clients zu schreiben."
+    },
+    "10": {
+      "text": "S3/RDMA CONNECT Response \u2014 Server weist RC-QP zu, gibt rkey zur\u00fcck",
+      "detail": "Server weist ein RC-QP aus seinem Pool zu und antwortet mit Server-QP-Nummer, rkey und Verbindungs-ID. Beide Seiten haben nun alle Informationen, die f\u00fcr den QP-\u00dcbergang von RESET zu RTS ben\u00f6tigt werden."
+    },
+    "11": {
+      "text": "QP-\u00dcberg\u00e4nge: RESET \u2192 INIT \u2192 RTR \u2192 RTS auf beiden Seiten",
+      "detail": "Sowohl Client als auch Server rufen modify_qp() auf, um ihre RC-QPs durch die Standard-IB-Zustandsmaschine zu f\u00fchren: RESET \u2192 INIT \u2192 RTR \u2192 RTS. Dies ist die gleiche QP-Aufbausequenz, die von allen RoCEv2-Anwendungen verwendet wird. Nach RTS ist das QP-Paar bereit f\u00fcr RDMA SEND- und RDMA WRITE-Operationen."
+    },
+    "12": {
+      "text": "S3 PUT REQUEST \u2014 nur Metadaten (Bucket, Key, 1GB Gr\u00f6\u00dfe). Keine Daten in dieser Nachricht.",
+      "detail": "Client sendet PUT-Metadaten via RDMA SEND. Diese kleine Steuernachricht enth\u00e4lt die S3-Operationsdetails (Bucket, Key, Gr\u00f6\u00dfe, Pr\u00fcfsummenalgorithmus) und den Client-Buffer-Standort. Bei traditionellem S3 w\u00e4re dies ein HTTP PUT mit dem gesamten 1GB-Body. Bei S3/RDMA erfolgt der Datentransfer separat via RDMA WRITE."
+    },
+    "13": {
+      "text": "S3 PUT READY \u2014 Server gibt Ziel-vaddr + rkey f\u00fcr RDMA WRITE zur\u00fcck",
+      "detail": "Server allokiert Speicherplatz, registriert eine Memory Region f\u00fcr die eingehenden Daten und sendet Zieladresse und rkey zur\u00fcck. Dies ist die PUT-Inversion: Im Gegensatz zum HTTP PUT, bei dem der Client Daten pusht, teilt hier der Server dem Client mit, WOHIN er schreiben soll, und der Client f\u00fchrt RDMA WRITE an diese Stelle durch."
+    },
+    "14": {
+      "text": "RDMA WRITE \u2014 Client pusht 64MB-Chunk (1 von 16) direkt in Server-Speicher",
+      "detail": "Die Client-RNIC f\u00fchrt DMA-Read von 64MB aus GPU-Speicher durch und RDMA-WRITE direkt in Server-Speicher an die Adresse aus PUT READY. F\u00fcr das vollst\u00e4ndige 1GB-Objekt finden 16 solcher RDMA WRITEs statt (16 \u00d7 64MB). Die Server-CPU ber\u00fchrt die Daten nie. Die Client-CPU kopiert die Daten nie. Dies ist Standard-RoCEv2-RDMA-WRITE \u2014 S3/RDMA f\u00fcgt nur die Steuerungsebene hinzu, die die Adressierung arrangiert."
+    },
+    "15": {
+      "text": "S3 PUT COMPLETE \u2014 1GB hochgeladen, Pr\u00fcfsumme verifiziert, ETag zur\u00fcckgegeben",
+      "detail": "Server best\u00e4tigt PUT-Erfolg nach Verifizierung der CRC32C-Pr\u00fcfsumme. Gibt S3 ETag und Version-ID zur\u00fcck. Das Objekt ist nun dauerhaft im ObjectScale-Speicher."
+    },
+    "16": {
+      "text": "Vergleich: S3/TCP PUT vs. S3/RDMA PUT",
+      "detail": "Traditionelles S3-PUT-\u00c4quivalent: HTTP PUT mit 1GB-Body \u2192 TLS-Verschl\u00fcsselung von 1GB \u2192 TCP-Segmentierung von 1GB in ~1400B-Pakete \u2192 Kernel kopiert jedes Paket zur NIC \u2192 NIC \u00fcbertr\u00e4gt \u2192 Server-NIC empf\u00e4ngt \u2192 Kernel kopiert in Socket-Buffer \u2192 HTTP-Server liest von Socket \u2192 kopiert in Speicher-Buffer \u2192 schreibt auf Disk. CPU ber\u00fchrt jedes Byte mehrfach. Durchsatz begrenzt durch Single-Core-Speicherbandbreite (~50 GB/s). Latenz dominiert durch TCP-Staukontrolle.\nS3/RDMA PUT: 2 Steuernachrichten (PUT REQUEST + PUT READY) + 16 RDMA WRITEs (16 \u00d7 64MB). Server-CPU hat die Daten nie ber\u00fchrt. Client-CPU hat die Daten nie kopiert. Durchsatz begrenzt durch RNIC-DMA-Bandbreite und Netzwerkbandbreite, nicht CPU. Bei 100GbE: ~12,5 GB/s nachhaltig."
+    },
+    "17": {
+      "text": "S3 GET REQUEST \u2014 Client fordert Objekt an, liefert Ziel-Buffer-Info",
+      "detail": "Client sendet GET-Anfrage mit Bucket/Key und Ziel-Buffer-Adresse/rkey. Der Server wird die Objektdaten per RDMA WRITE direkt in diesen Buffer schreiben."
+    },
+    "18": {
+      "text": "RDMA WRITE \u2014 Server pusht 64MB-Chunk (1 von 16) direkt in Client-GPU-Speicher",
+      "detail": "Die Server-RNIC f\u00fchrt DMA-Read der Objektdaten aus dem Speicher durch und RDMA-WRITE direkt in Client-GPU-Speicher. Die Client-CPU ist nicht beteiligt. F\u00fcr das vollst\u00e4ndige 1GB-Objekt finden 16 solcher RDMA WRITEs statt. Dies ist der gleiche Mechanismus wie bei jedem RDMA WRITE \u2014 S3/RDMA arrangiert einfach die Adressierung, damit der Server wei\u00df, wohin er schreiben soll."
+    },
+    "19": {
+      "text": "S3 GET COMPLETE \u2014 1GB im Client-GPU-Buffer, bereit f\u00fcr Training",
+      "detail": "Server signalisiert Abschluss. Die Objektdaten befinden sich nun im Client-GPU-Buffer bei 0x7f8000000000, bereit f\u00fcr den Training-Forward-Pass. Die Client-CPU war nie an der Datenbewegung beteiligt. Keine Zwischenkopie in Host-Speicher erforderlich bei Verwendung des GPUDirect-Storage-Modus."
+    },
+    "20": {
+      "text": "Vergleich: S3/TCP GET vs. S3/RDMA GET",
+      "detail": "Die KI-Trainingsschleife des Clients hat s3_rdma_get() aufgerufen. Die Objektdaten befinden sich nun im GPU-Buffer bei 0x7f8000000000. Die Client-CPU war nie an der Datenbewegung beteiligt. Der Training-Forward-Pass kann sofort beginnen \u2014 keine Zwischenkopie in Host-Speicher erforderlich bei Verwendung des GPUDirect-Storage-Modus.\nTraditioneller S3 GET: HTTP GET \u2192 TCP \u2192 TLS-Entschl\u00fcsselung \u2192 Kernel-Socket-Buffer \u2192 User-Space-Kopie \u2192 GPU-Upload via PCIe. Jedes Byte \u00fcberquert die CPU mindestens zweimal. S3/RDMA GET: 1 Steuernachricht + 16 RDMA WRITEs. Null CPU, null Kopien."
+    }
+  }
+}

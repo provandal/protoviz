@@ -1,0 +1,53 @@
+{
+  "meta": {
+    "title": "RDMA GPU-a-GPU: Transfè Tensè ant Nè atravè RoCEv2",
+    "description": "Transfè tensè GPU-a-GPU bout-a-bout ant de nè itilize GPUDirect RDMA sou RoCEv2. Sa a se chemen done fondamantal pou antrenman IA distribye, sèvis inferans, ak grap kalkil GPU. Senaryo a trase tout sik lavi: alokasyon memwa CUDA, ekspoze BAR1 GPU nvidia-peermem, anrejistreman MR kont memwa GPU, konfigirasyon QP CM, RDMA WRITE ki pouse yon tensè dirèkteman soti nan HBM GPU 0 nan HBM GPU 1 (zewo rebondi DRAM machin), ak RDMA READ ki tire li retounen. Konpare chemen GPUDirect (1 kopi) ak chemen tradisyonèl (4 kopi).",
+    "learning_objectives": [
+      "Trase chemen done RDMA GPU-a-GPU konplè: HBM GPU → PCIe → RNIC → Rezo → RNIC → PCIe → HBM GPU",
+      "Konprann poukisa GPUDirect RDMA elimine rebondi DRAM machin ak enplikasyon CPU",
+      "Wè kijan nvidia-peermem fè pon ant sousistèm memwa GPU ak sousistèm RDMA",
+      "Konpare chemen tradisyonèl (GPU→CPU→RNIC→Rezo→RNIC→CPU→GPU, 4 kopi) vs GPUDirect (1 kopi)",
+      "Swiv DMA peer-to-peer (P2P) PCIe ant RNIC ak GPU atravè apèti BAR1",
+      "Konprann kilè GPUDirect RDMA itilize: kolektif NCCL, sèvis inferans, kalkil GPU",
+      "Wè ni RDMA WRITE (modèl pouse) ni RDMA READ (modèl tire) pou memwa GPU"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Lyen fizik monte — tisi san pèt 100GbE ant nè GPU yo",
+      "detail": "Toude nè GPU konekte nan switch la atravè 100GbE ak PFC ak ECN aktive. Tisi san pèt la esansyèl — RDMA konte sou rezo a pou pa jete pakè.\nTopoloji tipik grap GPU: chak nè gen 8 GPU ak NVLink intra-nè ak 1-8 RNIC pou RDMA inter-nè. Senaryo sa a montre yon sèl transfer tensè GPU sou yon sèl lyen RDMA."
+    },
+    "1": {
+      "text": "Memwa CUDA alwe — tanpon tensè 4MB nan HBM GPU sou toude nè",
+      "detail": "cuMemAlloc() alwe memwa nan HBM GPU (Memwa Band Pasant Wo): • Nè A: tanpon tensè 4MB nan VA GPU 0x7f0000000000 • Nè B: tanpon tensè 4MB nan VA GPU 0x7f0100000000\nMemwa sa a nan espas adrès prive GPU a — CPU pa ka aksede li dirèkteman, ni RNIC nonplis. GPUDirect RDMA baje baryè sa a."
+    },
+    "2": {
+      "text": "Mapaj BAR1 GPU — memwa GPU ekspoze nan espas adrès PCIe atravè nvidia-peermem",
+      "detail": "nvidia-peermem (modil kernel) anrejistre kòm yon peer_memory_client ak sousistèm RDMA. Lè ibv_reg_mr() rele kont yon adrès vityèl GPU, nvidia-peermem entèsepte: 1. Rele nvidia_p2p_get_pages() pou pike memwa GPU 2. Jwenn adrès fizik GPU mape nan apèti BAR1 PCIe 3. Retounen sa yo bay sousistèm RDMA pou entegrasyon MTT"
+    },
+    "3": {
+      "text": "Rejyon Memwa anrejistre kont memwa GPU — kle RDMA echanje",
+      "detail": "ibv_reg_mr() rele ak adrès vityèl GPU yo. nvidia-peermem entèsepte epi bay adrès fizik mape BAR1 nan tab paj aparèy RNIC.\nApre anrejistreman MR, toude nè echanje rkey andeyò-bann (tipikman atravè yon kanal kontwòl TCP). Rkey sa yo otorize aksè RDMA distans nan memwa GPU — nè distans la pa bezwen konnen sa a se memwa GPU."
+    },
+    "4": {
+      "text": "QP yo konekte (RTS) — kanal RDMA pare pou transfè GPU-a-GPU",
+      "detail": "QP Koneksyon Fyab (RC) mennen nan RTS atravè CM REQ/REP/RTU. Ak QP yo nan RTS ak memwa GPU anrejistre kòm MR, chemen done GPU-a-GPU a konplètman etabli."
+    },
+    "5": {
+      "text": "RDMA WRITE — tensè 4MB pouse soti nan HBM GPU A → HBM GPU B (zewo kopi CPU)",
+      "detail": "Aplikasyon Nè A rele ibv_post_send() ak yon WQE RDMA WRITE ki pwente sou tanpon GPU lokal (sous) ak tanpon GPU Nè B (destinasyon, atravè rkey + VA nan RETH).\nChemen done etap pa etap: 1. Motè DMA RNIC A li 4MB soti nan HBM GPU A atravè PCIe BAR1 P2P 2. RNIC A anvlope done yo nan BTH+RETH+UDP+IP+Eth epi transmèt 3. RNIC B resevwa pakè yo, verifye ICRC, chèche rkey 4. RNIC B ekri done yo nan HBM GPU B atravè PCIe BAR1 P2P\nZewo CPU enplike sou okenn bò. Done yo te vwayaje: HBM GPU A → PCIe → RNIC A → Rezo → RNIC B → PCIe → HBM GPU B."
+    },
+    "6": {
+      "text": "Demann RDMA READ — Nè A mande tensè 4MB nan HBM GPU B",
+      "detail": "Aplikasyon Nè A rele ibv_post_send() ak yon WQE RDMA READ. RNIC a voye yon ti Demann READ (78 oktè) bay Nè B ki espesifye adrès tanpon GPU distans ak rkey.\nRDMA READ se yon modèl «tire» — demandè a (Nè A) di repondè a (Nè B) ki done pou li epi voye retounen."
+    },
+    "7": {
+      "text": "Repons RDMA READ — tensè 4MB soti nan HBM GPU B → HBM GPU A",
+      "detail": "RNIC Nè B otonòm: 1. Li 4MB soti nan HBM GPU B atravè PCIe BAR1 (P2P DMA) 2. Transmèt kòm pakè Repons RDMA READ bay Nè A 3. RNIC Nè A ekri chak pakè nan HBM GPU A atravè BAR1\nApre konpleyon, CQ Nè A (fil atant konpleyon) siyale done yo nan memwa GPU, pare pou kalkil."
+    },
+    "8": {
+      "text": "Senaryo fini — transfè tensè RDMA GPU-a-GPU",
+      "detail": "Senaryo sa a te demontre RDMA GPU-a-GPU bout-a-bout:\nKONFIGIRASYON: cuMemAlloc → mapaj BAR1 nvidia-peermem → ibv_reg_mr (MR GPU) → konfigirasyon QP CM → echanj rkey\nRDMA WRITE (pouse — GPU A → GPU B): HBM GPU A → P2P PCIe BAR1 → RNIC A → RoCEv2 → RNIC B → P2P PCIe BAR1 → HBM GPU B\nRDMA READ (tire — GPU B → GPU A): Demann → RNIC B li HBM GPU B → Repons → RNIC A ekri HBM GPU A\nKonparezon chemen:\n• Tradisyonèl: GPU A → cudaMemcpy → DRAM machin A → RNIC A → Rezo → RNIC B → DRAM machin B → cudaMemcpy → GPU B (4 travèse PCIe, 2 kopi CPU)\n• GPUDirect: GPU A → RNIC A → Rezo → RNIC B → GPU B (2 travèse PCIe, 0 kopi CPU)\nGPUDirect RDMA se fondasyon tout kominikasyon inter-nè GPU nan antrenman IA distribye (NCCL), sèvis inferans, ak kalkil GPU."
+    }
+  }
+}

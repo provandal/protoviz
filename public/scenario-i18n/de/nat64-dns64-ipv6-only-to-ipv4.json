@@ -1,0 +1,145 @@
+{
+  "meta": {
+    "title": "NAT64/DNS64: IPv6-Only-Client erreicht einen IPv4-Only-Server",
+    "description": "Ein IPv6-only-Client muss legacy-api.example.com erreichen, das nur einen IPv4-A-Record hat. DNS64 synthetisiert einen AAAA-Record unter Verwendung des Well-Known-Prefix 64:ff9b::/96, der Client verbindet sich \u00fcber reines IPv6, und das NAT64-Gateway \u00fcbersetzt Pakete zwischen der IPv6- und IPv4-Welt. Das Szenario behandelt auch 464XLAT f\u00fcr Legacy-Anwendungen, die IPv4-Adressen hartcodieren. Dies ist die Schl\u00fcsseltechnologie, die es Beh\u00f6rden erm\u00f6glicht, gem\u00e4\u00df OMB M-21-07 reine IPv6-Netzwerke zu betreiben und gleichzeitig den Zugang zum IPv4-Internet aufrechtzuerhalten.\n",
+    "learning_objectives": [
+      "Verstehen, wie DNS64 AAAA-Records aus A-Records synthetisiert, wenn kein nativer AAAA existiert",
+      "Das Well-Known-NAT64-Pr\u00e4fix 64:ff9b::/96 kennenlernen und wie IPv4-Adressen in IPv6 eingebettet werden",
+      "Eine TCP-Verbindung von einem IPv6-only-Client durch NAT64 zu einem IPv4-only-Server nachverfolgen",
+      "Sehen, wie NAT64 zustandsbehaftete \u00dcbersetzungs-Mappings zwischen IPv6- und IPv4-Sitzungen pflegt",
+      "Die Protokollgrenze beobachten: Der Client sieht immer IPv6, der Server sieht immer IPv4",
+      "464XLAT (CLAT + PLAT) f\u00fcr Legacy-Apps verstehen, die IPv4-Adressen hartcodieren",
+      "Erkennen, warum NAT64/DNS64 die Grundlage f\u00fcr IPv6-only-Netzwerk-Deployments im gro\u00dfen Ma\u00dfstab ist"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "DNS AAAA Query \u2014 Client fragt nach der IPv6-Adresse von legacy-api.example.com",
+      "detail": "Die IPv6-only-Client-Anwendung m\u00f6chte legacy-api.example.com erreichen. Sie ruft getaddrinfo() auf, das eine DNS-AAAA-Anfrage an den konfigurierten DNS64-Resolver bei 2001:db8:1::53 sendet. Der Client kennt nur IPv6 \u2014 er fragt nach einem AAAA-Record und erwartet eine IPv6-Adresse zur\u00fcck.\n"
+    },
+    "1": {
+      "text": "DNS64 pr\u00fcft: Kein AAAA-Record f\u00fcr legacy-api.example.com vorhanden",
+      "detail": "Der DNS64-Resolver befragt das autoritative DNS und erh\u00e4lt NODATA f\u00fcr die AAAA-Anfrage \u2014 der Server legacy-api.example.com hat keine IPv6-Adresse. Dies l\u00f6st das DNS64-Verhalten aus: Der Resolver wird nun stattdessen einen A-Record abfragen. Gem\u00e4\u00df RFC 6147 synthetisiert DNS64 nur, wenn kein realer AAAA-Record verf\u00fcgbar ist.\n"
+    },
+    "2": {
+      "text": "DNS64 fragt autoritatives DNS nach dem A-Record",
+      "detail": "Da kein AAAA existiert, f\u00e4llt der DNS64-Resolver auf eine A-Record-Abfrage zur\u00fcck. Diese Anfrage geht \u00fcber das IPv4-Interface des Resolvers hinaus, um den autoritativen DNS-Server zu erreichen. Der DNS64-Resolver selbst ist Dual-Stack \u2014 er ben\u00f6tigt IPv4-Konnektivit\u00e4t, um autoritative Server f\u00fcr IPv4-only-Zonen zu erreichen.\n"
+    },
+    "3": {
+      "text": "Autoritatives DNS gibt A-Record zur\u00fcck: 198.51.100.1",
+      "detail": "Der autoritative DNS-Server f\u00fcr example.com gibt den A-Record f\u00fcr legacy-api.example.com zur\u00fcck: 198.51.100.1. Dies ist die reale IPv4-Adresse des Servers. Nun hat DNS64 das Rohmaterial, das es zur Synthese einer IPv6-Adresse ben\u00f6tigt.\n"
+    },
+    "4": {
+      "text": "DNS64 synthetisiert AAAA: 64:ff9b::c633:6401 aus A-Record 198.51.100.1",
+      "detail": "DNS64 nimmt das Well-Known-Pr\u00e4fix 64:ff9b::/96 und bettet die IPv4-Adresse in die letzten 32 Bits ein. 198.51.100.1 in hexadezimal ist c6.33.64.01, also ist die synthetisierte Adresse 64:ff9b::c633:6401. Das Pr\u00e4fix 64:ff9b::/96 ist von der IANA speziell f\u00fcr NAT64 reserviert (RFC 6052 Abschnitt 2.1). Jeder Router, der Verkehr an 64:ff9b::/96 sieht, wei\u00df, dass er an ein NAT64-Gateway geroutet werden muss.\n"
+    },
+    "5": {
+      "text": "DNS64 gibt synthetisierten AAAA-Record an den Client zur\u00fcck",
+      "detail": "Der DNS64-Resolver sendet den synthetisierten AAAA-Record an den Client zur\u00fcck. Aus Sicht des Clients sieht dies genau wie eine normale AAAA-Antwort aus. Der Client hat keine Ahnung, dass die Adresse synthetisiert wurde \u2014 er sieht einfach eine IPv6-Adresse und wird sich mit normalen IPv6-Sockets dorthin verbinden.\n"
+    },
+    "6": {
+      "text": "Der Client glaubt, mit einem IPv6-Server zu sprechen. Er hat keine Ahnung, dass der echte Server IPv4-only ist.",
+      "detail": "Das ist die Eleganz von DNS64: Der IPv6-only-Netzwerk-Stack des Clients ist sich der IPv4-Welt hinter den Kulissen v\u00f6llig unbewusst. Die Anwendung hat einen AAAA-Record erhalten und wird sich nun \u00fcber IPv6 dorthin verbinden, wie zu jedem anderen IPv6-Ziel. Die \u00dcbersetzung geschieht vollst\u00e4ndig im Netzwerk, unsichtbar f\u00fcr die Endpunkte.\n"
+    },
+    "7": {
+      "text": "TCP SYN \u2192 Client sendet IPv6-Paket an 64:ff9b::c633:6401 Port 443",
+      "detail": "Die Client-Anwendung ruft connect() auf und der Kernel sendet ein TCP SYN an die synthetisierte Adresse. Dies ist ein v\u00f6llig normales IPv6-Paket \u2014 der TCP/IP-Stack des Clients hat keine spezielle Behandlung f\u00fcr NAT64. Das Paket wird zum NAT64-Gateway geroutet, weil das Netzwerk konfiguriert ist, 64:ff9b::/96 dorthin zu routen.\n"
+    },
+    "8": {
+      "text": "NAT64-Gateway empf\u00e4ngt das IPv6-Paket und erkennt das 64:ff9b::/96-Pr\u00e4fix",
+      "detail": "Das NAT64-Gateway besitzt das 64:ff9b::/96-Pr\u00e4fix. Wenn es ein Paket mit diesem Zielpr\u00e4fix empf\u00e4ngt, extrahiert es die eingebettete IPv4-Adresse aus den letzten 32 Bits: 64:ff9b::c633:6401 \u2192 c6336401 \u2192 198.51.100.1. Es erstellt dann einen Binding Information Base (BIB)-Eintrag, um diese Sitzung zu verfolgen.\n"
+    },
+    "9": {
+      "text": "NAT64 erstellt ein IPv4-SYN-Paket \u2014 neuer IP-Header, gleiche TCP-Nutzdaten",
+      "detail": "Das NAT64-Gateway konstruiert ein neues IPv4-Paket. Es weist eine Quell-IPv4-Adresse aus seinem Pool zu (203.0.113.50), setzt das Ziel auf die extrahierte Adresse (198.51.100.1), \u00fcbersetzt das IPv6-Hop-Limit in eine IPv4-TTL (um 1 dekrementiert) und leitet das Paket weiter. Der TCP-Header und die Nutzdaten bleiben erhalten \u2014 NAT64 \u00fcbersetzt auf der IP-Ebene, nicht auf der Transportebene.\n"
+    },
+    "10": {
+      "text": "Legacy-Server antwortet mit SYN-ACK \u2014 normales IPv4, keine Ahnung von IPv6",
+      "detail": "Der Legacy-Server bei 198.51.100.1 empf\u00e4ngt ein v\u00f6llig normales IPv4-TCP-SYN von 203.0.113.50 (der NAT64-Pool-Adresse). Er antwortet mit einem Standard-SYN-ACK. Der Server ist sich nicht bewusst, dass der echte Client in einem IPv6-only-Netzwerk ist \u2014 aus Sicht des Servers ist dies gew\u00f6hnlicher IPv4-Verkehr von einem anscheinend einzelnen IPv4-Host.\n"
+    },
+    "11": {
+      "text": "NAT64 \u00fcbersetzt SYN-ACK zur\u00fcck in IPv6 f\u00fcr den Client",
+      "detail": "Das NAT64-Gateway schaut in seiner Mapping-Tabelle nach: Verkehr von 198.51.100.1:443 an 203.0.113.50:49200 passt zum BIB-Eintrag f\u00fcr Client [2001:db8:1::10]:49200. Es konstruiert ein IPv6-Paket mit Quelle 64:ff9b::c633:6401 und Ziel 2001:db8:1::10. Der Client empf\u00e4ngt ein normales IPv6-SYN-ACK.\n"
+    },
+    "12": {
+      "text": "TCP-Handshake abgeschlossen \u2014 Client sieht reines IPv6, Server sieht reines IPv4",
+      "detail": "Der Client sendet das abschlie\u00dfende ACK und vervollst\u00e4ndigt den 3-Way-Handshake. Die Verbindung ist nun auf beiden Seiten im Zustand ESTABLISHED. Die Protokollgrenze ist glasklar: Der Client operiert vollst\u00e4ndig in IPv6, der Server operiert vollst\u00e4ndig in IPv4, und das NAT64-Gateway \u00fcberbr\u00fcckt nahtlos beide Welten. Keiner der Endpunkte ist sich der IP-Version des anderen bewusst.\n"
+    },
+    "13": {
+      "text": "ACK in IPv4 \u00fcbersetzt \u2014 Server best\u00e4tigt ESTABLISHED-Zustand",
+      "detail": "Das NAT64-Gateway \u00fcbersetzt das ACK des Clients in IPv4 und liefert es an den Server. Beide Seiten befinden sich nun im Zustand ESTABLISHED und Daten k\u00f6nnen bidirektional durch den NAT64-\u00dcbersetzer flie\u00dfen.\n"
+    },
+    "14": {
+      "text": "Client sendet HTTP GET \u00fcber IPv6 \u2192 NAT64 \u00fcbersetzt \u2192 Server empf\u00e4ngt \u00fcber IPv4",
+      "detail": "Der Client sendet einen HTTP-GET-Request f\u00fcr /api/v1/status. Der Request reist als normales IPv6-Paket zum NAT64-Gateway, das ihn in IPv4 \u00fcbersetzt und an den Legacy-Server weiterleitet. Die HTTP-Nutzdaten bleiben vollst\u00e4ndig unber\u00fchrt \u2014 NAT64 \u00fcbersetzt nur IP- und ICMP-Header. Der Host-Header sagt weiterhin legacy-api.example.com.\n"
+    },
+    "15": {
+      "text": "HTTP GET trifft beim Legacy-Server als normaler IPv4-Verkehr ein",
+      "detail": "Der Legacy-Server empf\u00e4ngt einen v\u00f6llig normalen IPv4-HTTP-GET-Request von 203.0.113.50. Die Zugriffsprotokolle des Servers zeigen diese NAT64-Pool-Adresse als Client-IP. Wenn der Server die echte Client-Adresse ben\u00f6tigt, kann das Netzwerk Mechanismen wie Proxy Protocol oder X-Forwarded-For-Header verwenden (das erfordert jedoch Anwendungsschicht-Bewusstsein).\n"
+    },
+    "16": {
+      "text": "Legacy-Server antwortet mit HTTP 200 OK \u00fcber IPv4",
+      "detail": "Der Server verarbeitet den API-Request und sendet eine JSON-Antwort \u00fcber IPv4 zur\u00fcck. Diese Antwort ist an 203.0.113.50 adressiert \u2014 die NAT64-Pool-Adresse. Die Server-Seite dieser Verbindung ist durchgehend Standard-IPv4.\n"
+    },
+    "17": {
+      "text": "NAT64 \u00fcbersetzt Antwort zur\u00fcck in IPv6 \u2014 Client empf\u00e4ngt sie nahtlos",
+      "detail": "Das NAT64-Gateway \u00fcbersetzt das IPv4-Antwortpaket mittels seiner Mapping-Tabelle zur\u00fcck in IPv6 und liefert es an den Client. Der Client empf\u00e4ngt eine normale IPv6-HTTP-200-OK-Antwort. Die gesamte Transaktion \u2014 DNS-Aufl\u00f6sung, TCP-Handshake, HTTP-Request/Response \u2014 fand statt, ohne dass der Client jemals IPv4 ber\u00fchrte.\n"
+    },
+    "18": {
+      "text": "ICMPv6 Echo Request \u2014 Client pingt die synthetisierte Adresse",
+      "detail": "NAT64 \u00fcbersetzt nicht nur TCP und UDP. Es behandelt auch ICMP \u2194 ICMPv6-\u00dcbersetzung. Der Client sendet einen ICMPv6 Echo Request (Typ 128) an die synthetisierte Adresse. NAT64 muss dies in einen ICMPv4 Echo Request (Typ 8) \u00fcbersetzen, da ICMPv6 und ICMPv4 unterschiedliche Typ/Code-Nummerierungen verwenden.\n"
+    },
+    "19": {
+      "text": "NAT64 \u00fcbersetzt ICMPv6 Typ 128 \u2192 ICMPv4 Typ 8 (Echo Request)",
+      "detail": "Das NAT64-Gateway \u00fcbersetzt sowohl den IP-Header als auch den ICMP-Header. ICMPv6 Typ 128 (Echo Request) wird zu ICMPv4 Typ 8 (Echo Request). Der Echo-Identifier und die Sequenznummer bleiben f\u00fcr das Mapping der Antwort erhalten. Diese \u00dcbersetzung ist in RFC 6145 Abschnitt 5.2 (IP/ICMP Translation) definiert.\n"
+    },
+    "20": {
+      "text": "Legacy-Server sendet ICMP Echo Reply (IPv4)",
+      "detail": "Der Server antwortet mit einem Standard-ICMPv4 Echo Reply (Typ 0) an die NAT64-Pool-Adresse. Dies ist v\u00f6llig normales IPv4-ICMP-Verhalten.\n"
+    },
+    "21": {
+      "text": "NAT64 \u00fcbersetzt ICMPv4 Typ 0 \u2192 ICMPv6 Typ 129 (Echo Reply) \u2014 Ping erfolgreich",
+      "detail": "Das NAT64-Gateway \u00fcbersetzt den ICMPv4 Echo Reply (Typ 0) zur\u00fcck in einen ICMPv6 Echo Reply (Typ 129) und liefert ihn an den Client. Der Ping wird erfolgreich abgeschlossen. Das Ping-Tool des Clients zeigt eine Antwort von 64:ff9b::c633:6401 \u2014 es sieht nie die IPv4-Adresse 198.51.100.1.\n"
+    },
+    "22": {
+      "text": "Manche Legacy-Apps codieren IPv4-Adressen hart (z.B. connect zu '192.168.1.1' direkt)",
+      "detail": "NAT64/DNS64 funktioniert perfekt f\u00fcr wohlerzogene Anwendungen, die Hostnamen und DNS verwenden. Aber manche Legacy-Anwendungen codieren IPv4-Adress-Literale hart \u2014 sie rufen connect(\"192.168.1.1\") direkt ohne DNS auf. Da der Client keine IPv4-Adresse oder IPv4-Routing hat, scheitern diese Verbindungen. Hier kommt 464XLAT ins Spiel.\n"
+    },
+    "23": {
+      "text": "CLAT (Client-seitiger \u00dcbersetzer) auf dem Client stellt ein lokales IPv4-Interface bereit",
+      "detail": "464XLAT (RFC 6877) f\u00fcgt einen zustandslosen \u00dcbersetzer namens CLAT auf dem Client hinzu. CLAT erstellt ein virtuelles IPv4-Interface (z.B. v4-wlan0) mit einer lokalen IPv4-Adresse aus dem Bereich 192.0.0.0/29. Wenn eine Legacy-App ein IPv4-Paket sendet, \u00fcbersetzt CLAT es in IPv6 unter Verwendung des NAT64-Pr\u00e4fix. Das Paket flie\u00dft dann zum PLAT (Provider-seitiger \u00dcbersetzer, also das NAT64-Gateway), der es zur\u00fcck in IPv4 f\u00fcr das Ziel \u00fcbersetzt.\n"
+    },
+    "24": {
+      "text": "Doppelte \u00dcbersetzung: App \u2192 IPv4 \u2192 CLAT \u2192 IPv6 \u2192 NAT64 (PLAT) \u2192 IPv4",
+      "detail": "Der Name 464XLAT beschreibt den Weg: Die App generiert ein IPv4-Paket (4), CLAT \u00fcbersetzt es in IPv6 (6), und der PLAT/NAT64-Gateway \u00fcbersetzt es zur\u00fcck in IPv4 (4). Daher \u201e464\u201c. Die erste \u00dcbersetzung ist zustandslos (CLAT, unter Verwendung von SIIT aus RFC 7915), und die zweite ist zustandsbehaftet (NAT64/PLAT, unter Verwendung von RFC 6146). Trotz der doppelten \u00dcbersetzung funktioniert dies auf moderner Hardware mit Line-Rate.\n"
+    },
+    "25": {
+      "text": "464XLAT deckt die Sonderf\u00e4lle ab. Android nutzt dies seit 2014 f\u00fcr IPv6-only-Mobilfunknetze.",
+      "detail": "464XLAT ist nicht theoretisch \u2014 es l\u00e4uft heute im gro\u00dfen Ma\u00dfstab. Android enth\u00e4lt CLAT (clatd) seit Version 4.3 und erm\u00f6glicht IPv6-only-Mobilfunknetze bei T-Mobile, Reliance Jio und Hunderten anderer Carrier. Apple f\u00fcgte CLAT-Unterst\u00fctzung in iOS 12 hinzu. Zusammen deckt NAT64/DNS64 wohlerzogene Anwendungen ab und 464XLAT den Rest, was einen echten IPv6-only-Betrieb bei voller IPv4-Internet-Erreichbarkeit erm\u00f6glicht.\n"
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "NAT64/DNS64: IPv6-Only-Clients mit dem IPv4-Internet verbinden",
+      "description": "Eine gef\u00fchrte Tour durch DNS64-Adresssynthese, zustandsbehaftete NAT64-\u00dcbersetzung, ICMP-Mapping und 464XLAT f\u00fcr Legacy-Anwendungen",
+      "steps": {
+        "0": "OMB M-21-07 verpflichtet US-Bundesbeh\u00f6rden, bis 2025 reine IPv6-Netzwerke zu betreiben. Aber das IPv4-Internet verschwindet nicht so bald \u2014 es gibt immer noch Millionen von IPv4-only-Servern. Wie erreicht ein IPv6-only-Client diese? Die Antwort sind NAT64 und DNS64, die zusammenarbeiten, um die IPv4-Welt von IPv6-only-Netzwerken aus zug\u00e4nglich zu machen, ohne dass der Client jemals eine IPv4-Adresse ben\u00f6tigt.\n",
+        "1": "Unser IPv6-only-Client m\u00f6chte legacy-api.example.com erreichen. Die Anwendung ruft getaddrinfo() auf, das eine DNS-AAAA-Anfrage an den DNS64-Resolver sendet. Der Client fragt nach einer IPv6-Adresse \u2014 er spricht nur IPv6 und hat keine Ahnung, ob der Server IPv4 oder IPv6 ist. Beachten Sie den Anfragetyp AAAA (28), der eine 128-Bit-IPv6-Adresse anfordert.\n",
+        "2": "Der DNS64-Resolver pr\u00fcft das autoritative DNS und findet keinen AAAA-Record f\u00fcr legacy-api.example.com. Dies ist der Ausl\u00f6ser f\u00fcr das DNS64-Verhalten: Da keine native IPv6-Adresse existiert, fragt der Resolver stattdessen nach einem A-Record. Er erh\u00e4lt 198.51.100.1 zur\u00fcck \u2014 was best\u00e4tigt, dass dies ein IPv4-only-Server ist. Gem\u00e4\u00df RFC 6147 synthetisiert DNS64 nur, wenn kein realer AAAA existiert, sodass Dual-Stack-Server mit nativen AAAA-Records nicht betroffen sind.\n",
+        "3": "Nun die Magie von DNS64: Es nimmt das Well-Known-Pr\u00e4fix 64:ff9b::/96 (RFC 6052) und bettet die IPv4-Adresse in die letzten 32 Bits ein. 198.51.100.1 in hexadezimal ist c6.33.64.01, also ist die synthetisierte Adresse 64:ff9b::c633:6401. Der Client empf\u00e4ngt dies als normale AAAA-Antwort und speichert es als IPv6-Adresse des Servers. Der Client hat keine Ahnung, dass diese Adresse vor Sekunden aus einer IPv4-Adresse hergestellt wurde.\n",
+        "4": "Der Client verbindet sich mit der synthetisierten Adresse wie mit jedem normalen IPv6-Ziel. Er sendet ein TCP SYN an 64:ff9b::c633:6401 Port 443. Dies ist ein Standard-IPv6-Paket \u2014 der TCP/IP-Stack des Clients hat keinerlei Sonderbehandlung f\u00fcr NAT64. Das Netzwerk routet Pakete mit Ziel 64:ff9b::/96 zum NAT64-Gateway, genau wie jede andere Pr\u00e4fix-Route.\n",
+        "5": "Das NAT64-Gateway empf\u00e4ngt das IPv6-SYN und erkennt das 64:ff9b::/96-Pr\u00e4fix. Es extrahiert die eingebettete IPv4-Adresse (198.51.100.1) aus den letzten 32 Bits, weist eine Quell-IPv4-Adresse aus seinem Pool zu (203.0.113.50) und erstellt einen Binding Information Base (BIB)-Eintrag, um diese Sitzung zu verfolgen. Dann konstruiert es ein brandneues IPv4-SYN-Paket \u2014 gleiche TCP-Nutzdaten, aber mit IPv4-Headern anstelle der IPv6-Header.\n",
+        "6": "Der Legacy-Server bei 198.51.100.1 empf\u00e4ngt ein v\u00f6llig normales IPv4-TCP-SYN von 203.0.113.50. Er hat keine Ahnung, dass der echte Client in einem IPv6-only-Netzwerk ist. Er antwortet mit einem Standard-SYN-ACK, wie er es f\u00fcr jeden IPv4-Client tun w\u00fcrde. Das ist die Eleganz von NAT64 \u2014 der Server ben\u00f6tigt keinerlei Modifikationen. Es k\u00f6nnte eine 20 Jahre alte Anwendung sein, die noch nie von IPv6 geh\u00f6rt hat.\n",
+        "7": "Das NAT64-Gateway \u00fcbersetzt das SYN-ACK mittels seiner Mapping-Tabelle zur\u00fcck in IPv6. Die Quelle wird zu 64:ff9b::c633:6401 (die synthetisierte Adresse), und das Ziel ist die reale IPv6-Adresse des Clients 2001:db8:1::10. Der Client empf\u00e4ngt, was wie ein v\u00f6llig normales IPv6-SYN-ACK aussieht. Der TCP-Handshake wird abgeschlossen mit dem Client in reinem IPv6 und dem Server in reinem IPv4 \u2014 die Protokollgrenze ist f\u00fcr beide v\u00f6llig unsichtbar.\n",
+        "8": "Mit der hergestellten Verbindung flie\u00dfen Daten frei. Der Client sendet ein HTTP GET \u00fcber IPv6 an das NAT64-Gateway, das es in IPv4 \u00fcbersetzt und an den Legacy-Server weiterleitet. Die HTTP-Nutzdaten \u2014 Header, Body, alles \u2014 passieren v\u00f6llig unber\u00fchrt. NAT64 \u00fcbersetzt nur IP-Header und ICMP; Anwendungsdaten bleiben Bit f\u00fcr Bit erhalten.\n",
+        "9": "Der Legacy-Server verarbeitet den Request und gibt ein HTTP 200 OK \u00fcber IPv4 zur\u00fcck. Die Antwort flie\u00dft durch das NAT64-Gateway zur\u00fcck, das sie in IPv6 \u00fcbersetzt und an den Client liefert. Ende zu Ende hat der Client einen Standard-IPv6-HTTPS-Request gestellt und eine Standard-IPv6-HTTPS-Antwort erhalten. Die Tatsache, dass der Server IPv4-only war, wird vollst\u00e4ndig durch das Netzwerk verborgen.\n",
+        "10": "NAT64 behandelt auch ICMP. Wenn der Client die synthetisierte Adresse pingt, sendet er einen ICMPv6 Echo Request (Typ 128). Das NAT64-Gateway muss nicht nur den IP-Header \u00fcbersetzen, sondern auch die ICMP-Typ- und Code-Werte, da ICMPv6 und ICMPv4 unterschiedliche Nummerierungen verwenden. Typ 128 (ICMPv6 Echo Request) wird zu Typ 8 (ICMPv4 Echo Request).\n",
+        "11": "Der ICMP Echo Reply flie\u00dft durch dieselbe \u00dcbersetzung zur\u00fcck: ICMPv4 Typ 0 (Echo Reply) wird zu ICMPv6 Typ 129 (Echo Reply). Das Ping-Tool des Clients zeigt eine Antwort von 64:ff9b::c633:6401 \u2014 es sieht nie die echte IPv4-Adresse. Diese ICMP-\u00dcbersetzung ist entscheidend, damit Netzwerk-Diagnosetools und Path MTU Discovery \u00fcber die NAT64-Grenze hinweg funktionieren.\n",
+        "12": "NAT64/DNS64 deckt etwa 95% des realen Verkehrs ab. Aber manche Legacy-Anwendungen codieren IPv4-Adress-Literale hart \u2014 sie rufen connect(\"192.168.1.1\") direkt ohne DNS auf. Diese brechen in IPv6-only-Netzwerken, weil es keinen DNS-Schritt gibt, den DNS64 abfangen k\u00f6nnte. Hier kommt 464XLAT (RFC 6877) ins Spiel.\n",
+        "13": "464XLAT f\u00fcgt einen CLAT (Client-seitiger \u00dcbersetzer) auf dem Client-Ger\u00e4t hinzu. CLAT erstellt ein virtuelles IPv4-Interface und f\u00fchrt zustandslose \u00dcbersetzung durch: Die Legacy-App sendet IPv4, CLAT konvertiert es in IPv6 unter Verwendung des NAT64-Pr\u00e4fix, das Paket durchquert das IPv6-only-Netzwerk zum NAT64-Gateway (PLAT), das es zur\u00fcck in IPv4 konvertiert. Der Name \u201e464\u201c beschreibt diesen Weg: IPv4 \u2192 IPv6 \u2192 IPv4.\n",
+        "14": "464XLAT ist keine Nischenl\u00f6sung \u2014 es l\u00e4uft heute in enormem Ma\u00dfstab. Android enth\u00e4lt CLAT (clatd) seit Version 4.3 (2013), und Apple f\u00fcgte CLAT in iOS 12 hinzu. T-Mobile, Reliance Jio und Hunderte anderer Mobilfunk-Carrier betreiben IPv6-only-Netzwerke mit NAT64 und 464XLAT und bedienen Milliarden von Ger\u00e4ten. Dies ist produktionserprobte Technologie.\n",
+        "15": "Fassen wir das Gesamtbild zusammen. NAT64/DNS64 ist, wie man ein IPv6-only-Netzwerk betreibt, ohne den Zugang zum IPv4-Internet zu unterbrechen. Der Client ben\u00f6tigt nie eine IPv4-Adresse \u2014 das ist echter IPv6-only-Betrieb. DNS64 l\u00e4sst IPv4-only-Server als IPv6-Ziele erscheinen. NAT64 \u00fcbersetzt Pakete an der Netzwerkgrenze. 464XLAT deckt die letzten 5% der Apps ab, die sich weigern, mit DNS zu arbeiten. 64:ff9b::/96 ist das Well-Known-Pr\u00e4fix, das f\u00fcr NAT64 reserviert ist (RFC 6052). Zusammen bilden diese Technologien die Grundlage f\u00fcr das IPv6-only-Mandat der US-Bundesbeh\u00f6rden und die Zukunft der Internet-Adressierung.\n"
+      }
+    }
+  }
+}

@@ -1,0 +1,114 @@
+{
+  "meta": {
+    "title": "[WIP] GPUDirect Storage : lecture/ecriture NVMe-oF distante vers la memoire GPU sur RoCEv2",
+    "description": "Un scenario GPUDirect Storage montrant comment un GPU lit et ecrit des donnees sur une cible de stockage NVMe-oF/RDMA distante avec les donnees atterrissant directement dans la HBM GPU — en contournant entierement la DRAM hote. Le chemin traditionnel de stockage distant necessite que les donnees rebondissent par la DRAM hote (stockage → DRAM → GPU). GDS elimine ce rebond : les donnees de lecture circulent directement du stockage vers le GPU via RDMA WRITE, et les donnees d'ecriture sont tirees directement du GPU via RDMA READ.",
+    "learning_objectives": [
+      "Comprendre comment GPUDirect Storage (GDS) elimine le tampon de rebond DRAM hote pour les E/S de stockage distant",
+      "Voir comment cuFileRead declenche un NVMe-oF READ dont le RDMA WRITE fait atterrir les donnees directement dans la HBM GPU via BAR1",
+      "Voir comment cuFileWrite declenche un NVMe-oF WRITE dont les donnees sont tirees de la HBM GPU via RDMA READ",
+      "Suivre la liaison de transport NVMe-oF/RDMA : commandes NVMe via RDMA SEND, donnees via RDMA WRITE/READ",
+      "Suivre le Fabrics Connect NVMe-oF pour etablir les paires de files Admin et E/S sur RDMA",
+      "Observer comment nvidia-fs et nvidia-peermem cooperent pour enregistrer la memoire GPU pour RDMA",
+      "Comparer le chemin traditionnel (stockage → DRAM → GPU) avec le chemin GDS (stockage → GPU directement)",
+      "Suivre l'echange MAD du gestionnaire de connexion IB pour amener un Queue Pair de RESET a RTS"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Liaison A : signal detecte — noeud GPU ↔ commutateur",
+      "detail": "L'emetteur-recepteur optique du noeud GPU detecte la lumiere du port A du commutateur. L'auto-negociation commence selon la clause 73 de IEEE 802.3cd."
+    },
+    "1": {
+      "text": "Liaison B : signal detecte — commutateur ↔ cible de stockage",
+      "detail": "L'emetteur-recepteur optique de la cible de stockage detecte la lumiere du port B du commutateur."
+    },
+    "2": {
+      "text": "Liaison A ACTIVE — noeud GPU ↔ commutateur a 100 Gbit/s avec RS-FEC",
+      "detail": "AN et entrainement de liaison termines. PFC active sur la priorite 3 pour RoCEv2."
+    },
+    "3": {
+      "text": "Liaison B ACTIVE — commutateur ↔ cible de stockage a 100 Gbit/s avec RS-FEC",
+      "detail": "Les deux liaisons sont actives. La connectivite L2 de bout en bout est etablie."
+    },
+    "4": {
+      "text": "Requete ARP : qui a 192.168.1.20 ?",
+      "detail": "Le noeud GPU resout l'IP de la cible de stockage en MAC pour la correspondance GID-vers-MAC RoCEv2."
+    },
+    "5": {
+      "text": "Reponse ARP : 192.168.1.20 est a 00:02:c9:ab:cd:ef",
+      "detail": "La cible de stockage repond. Le noeud GPU a maintenant l'accessibilite L2 vers le stockage."
+    },
+    "6": {
+      "text": "CM REQ — le noeud GPU propose un QP pour le transport NVMe-oF/RDMA",
+      "detail": "Requete du gestionnaire de connexion IB. Le noeud GPU propose des parametres QP RC pour la connexion NVMe-oF/RDMA. Les donnees privees transportent le format de requete CM RDMA NVMe-oF selon TP8010 (ID de file, tailles SQ/RQ)."
+    },
+    "7": {
+      "text": "CM REP — la cible de stockage accepte, fournit QPN et PSN",
+      "detail": "La cible de stockage accepte la connexion et fournit son numero de QP (0x00B002) et le PSN de depart (8765432)."
+    },
+    "8": {
+      "text": "CM RTU — les deux QP transitent a RTS, transport RDMA pret",
+      "detail": "Les deux QP passent a RTS. La couche de transport NVMe-oF/RDMA peut maintenant envoyer des capsules de commande NVMe via RDMA SEND et transferer des donnees via RDMA WRITE/READ."
+    },
+    "9": {
+      "text": "Fabrics Connect — file Admin (QID=0)",
+      "detail": "Commande NVMe-oF Fabrics Connect envoyee via RDMA SEND pour etablir l'association de la file Admin. Les donnees Connect (envoyees via SGL) contiennent hostnqn, subnqn et hostid. La cible de stockage attribue un identifiant de controleur."
+    },
+    "10": {
+      "text": "Reponse Fabrics Connect — Controller ID=1 attribue",
+      "detail": "La cible de stockage accepte le Fabrics Connect et attribue le controller ID 1. La file Admin est maintenant etablie — les commandes Identify, Get Log Page et autres commandes admin peuvent circuler."
+    },
+    "11": {
+      "text": "Fabrics Connect — file E/S (QID=1)",
+      "detail": "Fabrics Connect pour la file E/S 1. Apres cela, les commandes NVMe Read/Write peuvent etre soumises. La file E/S est l'endroit ou les commandes cuFileRead/cuFileWrite seront expediees."
+    },
+    "12": {
+      "text": "cuFileDriverOpen() — pilote GDS initialise, nvidia-fs charge",
+      "detail": "L'application appelle cuFileDriverOpen() pour initialiser GPUDirect Storage. Cela charge le module noyau nvidia-fs qui intercepte les chemins d'E/S NVMe et redirige le DMA vers la memoire GPU au lieu de la DRAM hote. nvidia-fs coopere avec nvidia-peermem pour enregistrer la memoire GPU pour l'acces RDMA."
+    },
+    "13": {
+      "text": "cuFileHandleRegister() — namespace NVMe-oF distant enregistre avec GDS",
+      "detail": "L'application enregistre le handle de fichier (supporte par le namespace NVMe-oF distant) avec GDS. Cela indique a nvidia-fs d'intercepter les E/S sur ce descripteur de fichier et d'utiliser le chemin GPUDirect."
+    },
+    "14": {
+      "text": "cuFileBufRegister() — tampon GPU enregistre pour RDMA, tampon de rebond contourne",
+      "detail": "L'application enregistre un tampon memoire GPU avec GDS. nvidia-peermem verrouille les pages GPU via BAR1 et cree une region memoire RDMA supportee par la HBM GPU. Le RNIC peut maintenant faire du DMA directement vers/depuis ce tampon GPU, contournant entierement les tampons de rebond DRAM hote."
+    },
+    "15": {
+      "text": "cuFileRead() appele — GDS emet un NVMe READ avec la memoire GPU comme cible RDMA",
+      "detail": "L'application appelle cuFileRead(). GDS construit une commande NVMe Read avec un descripteur SGL pointant vers la region memoire GPU (rkey=0xGPU01234). Quand la cible de stockage lit les donnees du disque, elle ecrira via RDMA WRITE directement dans la HBM GPU."
+    },
+    "16": {
+      "text": "cuFileRead → commande NVMe Read envoyee au stockage (SGL → memoire GPU)",
+      "detail": "La capsule de commande NVMe Read est envoyee via RDMA SEND. Le descripteur SGL transporte le rkey et l'adresse virtuelle de la region memoire GPU. La cible de stockage les utilisera pour ecrire les donnees de lecture directement dans la HBM GPU via RDMA WRITE."
+    },
+    "17": {
+      "text": "Le stockage ecrit les donnees de lecture directement dans la HBM GPU via RDMA WRITE — zero rebond DRAM hote",
+      "detail": "C'EST LE MOMENT CLE : la cible de stockage lit les donnees depuis son SSD NVMe, puis effectue un RDMA WRITE ciblant la region memoire GPU. L'en-tete RETH transporte l'adresse virtuelle BAR1 GPU et le rkey. Le RNIC du noeud GPU ecrit les donnees directement dans la HBM GPU via le DMA P2P PCIe BAR1. Le CPU de l'hote ne touche jamais les donnees."
+    },
+    "18": {
+      "text": "Completion NVMe Read — cuFileRead() retourne, les donnees sont dans la HBM GPU",
+      "detail": "La completion NVMe confirme que la lecture est terminee. Les donnees sont maintenant dans la HBM GPU et disponibles immediatement pour les noyaux CUDA — aucune copie supplementaire necessaire."
+    },
+    "19": {
+      "text": "cuFileWrite() appele — GDS emet un NVMe WRITE, donnees provenant de la HBM GPU",
+      "detail": "L'application appelle cuFileWrite(). GDS construit une commande NVMe Write avec un descripteur SGL pointant vers la memoire GPU. La cible de stockage fera un RDMA READ des donnees d'ecriture directement depuis la HBM GPU — les donnees ne touchent jamais la DRAM hote."
+    },
+    "20": {
+      "text": "cuFileWrite → commande NVMe Write envoyee (SGL → memoire GPU pour RDMA READ)",
+      "detail": "La capsule de commande NVMe Write est envoyee via RDMA SEND. Le SGL fournit le rkey et l'adresse virtuelle du tampon GPU. La cible de stockage fera un RDMA READ depuis cette adresse pour recuperer les donnees d'ecriture."
+    },
+    "21": {
+      "text": "Reponse RDMA READ — donnees GPU envoyees directement depuis la HBM vers le stockage",
+      "detail": "La cible de stockage a emis une requete RDMA READ ciblant la region memoire GPU. Le RNIC du noeud GPU lit de maniere autonome depuis la HBM GPU via le DMA P2P PCIe BAR1 et envoie cette reponse RDMA READ contenant les donnees d'ecriture."
+    },
+    "22": {
+      "text": "Completion NVMe Write — cuFileWrite() retourne, donnees persistees sur le stockage",
+      "detail": "La completion NVMe confirme que l'ecriture est terminee. Les donnees de la HBM GPU ont ete persistees sur le stockage NVMe distant sans jamais toucher la DRAM hote."
+    },
+    "23": {
+      "text": "Scenario termine — GPUDirect Storage sur RoCEv2",
+      "detail": "Resume : deux liaisons 100GbE se sont activees. QP RDMA etabli via le CM IB. Fabrics Connect NVMe-oF a cree les files Admin et E/S sur RDMA. GDS initialise avec cuFileDriverOpen, cuFileHandleRegister et cuFileBufRegister. cuFileRead a livre des donnees du stockage distant directement dans la HBM GPU via RDMA WRITE (zero rebond DRAM hote). cuFileWrite a envoye des donnees depuis la HBM GPU directement vers le stockage via RDMA READ (zero rebond DRAM hote). L'ensemble du chemin de donnees a contourne la DRAM hote et le CPU."
+    }
+  }
+}

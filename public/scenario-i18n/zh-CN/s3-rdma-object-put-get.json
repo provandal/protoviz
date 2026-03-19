@@ -1,0 +1,101 @@
+{
+  "meta": {
+    "title": "[WIP] S3/RDMA：基于 RoCEv2 的对象 PUT 和 GET（NVIDIA 库架构）",
+    "description": "展示 S3 对象存储如何通过 RDMA 传输实现高性能 PUT 和 GET 操作。对比传统 S3/TCP 和 S3/RDMA 的性能差异。",
+    "learning_objectives": [
+      "理解传统 S3/TCP 与 S3/RDMA 的性能差异",
+      "了解 S3/RDMA 连接建立流程",
+      "观察 S3 PUT 如何通过 RDMA WRITE 直接将数据推送到服务器内存",
+      "观察 S3 GET 如何通过 RDMA WRITE 直接将数据推送到客户端 GPU 内存",
+      "理解元数据和数据平面的分离",
+      "将 S3/RDMA 与传统 S3/TCP 的 CPU 开销、延迟和吐吐量进行对比",
+      "理解分块传输如何处理大对象"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "传统 S3 vs S3/RDMA — 为什么这很重要",
+      "detail": "传统 S3 GET：HTTP GET 请求 -> TCP 连接 -> TLS 握手 -> HTTP 响应携带对象数据 -> 内核将数据通过 TCP 套接字缓冲区拷贝 -> 应用从套接字拷贝到缓冲区。每个字节都经过 CPU 两次。CPU 利用率：高。延迟：数百微秒到毫秒级。\nS3/RDMA GET：QP 建立（一次性）-> RDMA WRITE 将对象数据直接写入预注册的客户端缓冲区。零 CPU 拷贝。零内核参与数据路径。数据传输的 CPU 利用率：约 0%。延迟：个位数微秒。"
+    },
+    "1": {
+      "text": "链路 A：检测到信号 — 客户端 ↔ 交换机端口 A",
+      "detail": "客户端上的光收发器检测到来自交换机端口 A 的光信号。自动协商按照 IEEE 802.3cd 第 73 条款开始。"
+    },
+    "2": {
+      "text": "链路 B：检测到信号 — 交换机端口 B ↔ 服务器",
+      "detail": ""
+    },
+    "3": {
+      "text": "两条链路：AN 完成 — 100GbE + RS(544,514) FEC，链路 UP",
+      "detail": "两条链路协商 100GBASE-SR4，使用 RS(544,514) FEC（100G 强制要求）。链路训练均衡通道。链路已 UP，准备好传输流量。"
+    },
+    "4": {
+      "text": "在优先级 3 上启用 PFC — 用于 RoCEv2 的无损以太网",
+      "detail": "优先级流控制（IEEE 802.1Qbb）在优先级类 3 上启用。这防止拥塞时的丢包，对 RDMA 至关重要。S3/RDMA 使用与任何 RoCEv2 工作负载相同的无损网络架构。"
+    },
+    "5": {
+      "text": "ARP：客户端解析服务器 IP 192.168.100.20",
+      "detail": ""
+    },
+    "6": {
+      "text": "ARP 应答：服务器 MAC 00:02:c9:20:00:01",
+      "detail": ""
+    },
+    "7": {
+      "text": "客户端：s3_rdma_client_init() — S3/RDMA 库已初始化",
+      "detail": "客户端调用 s3_rdma_client_init()。库注册一个覆盖 GPU/CPU 缓冲池的大型 Memory Region（ibv_reg_mr() -> MLX5_CMD_OP_CREATE_MKEY）。创建一个预分配的 RC QP 池用于 S3 操作。这是一次性成本，分摊到所有后续 S3 操作中。"
+    },
+    "8": {
+      "text": "服务器：S3/RDMA 服务器库已预初始化，准备好接受连接",
+      "detail": "服务器在启动时已预初始化其 NVIDIA S3/RDMA 服务器库。QP 池已准备好接受客户端连接。已与 Dell ObjectScale 存储引擎集成。"
+    },
+    "9": {
+      "text": "S3/RDMA CONNECT 请求 — 客户端发送 QP 信息、rkey、缓冲区地址",
+      "detail": "客户端通过 UD SEND 向服务器上已知的 S3/RDMA 服务 QP 发送连接请求。携带客户端 QP 号、GID、rkey 和缓冲区虚拟地址。服务器将使用此 rkey/vaddr 通过 RDMA WRITE 直接将数据写入客户端的 GPU 内存。"
+    },
+    "10": {
+      "text": "S3/RDMA CONNECT 响应 — 服务器分配 RC QP，返回 rkey",
+      "detail": "服务器从其池中分配一个 RC QP，并以服务器 QP 号、rkey 和连接 ID 响应。双方现在拥有将 QP 从 RESET 转换到 RTS 所需的所有信息。"
+    },
+    "11": {
+      "text": "QP 转换：RESET -> INIT -> RTR -> RTS（两端）",
+      "detail": "客户端和服务器都调用 modify_qp() 将其 RC QP 通过标准 IB 状态机转换：RESET -> INIT -> RTR -> RTS。这与所有 RoCEv2 应用使用的 QP 启动序列相同。RTS 之后，QP 对已准备好进行 RDMA SEND 和 RDMA WRITE 操作。"
+    },
+    "12": {
+      "text": "S3 PUT REQUEST — 仅元数据（桶、键、 1GB 大小）。此消息无数据。",
+      "detail": "客户端通过 RDMA SEND 发送 PUT 元数据。此小型控制消息包含 S3 操作详情（桶、键、大小、校验和算法）和客户端缓冲区位置。在传统 S3 中，这将是一个携带整个 1GB 正文的 HTTP PUT。在 S3/RDMA 中，数据传输通过 RDMA WRITE 单独进行。"
+    },
+    "13": {
+      "text": "S3 PUT READY — 服务器返回目标 vaddr + rkey 用于 RDMA WRITE",
+      "detail": "服务器分配存储空间，为传入数据注册 Memory Region，并返回目标地址和 rkey。这是 PUT 的反转模式：与 HTTP PUT 中客户端推送数据不同，这里是服务器告诉客户端写到哪里，客户端 RDMA WRITE 到该位置。"
+    },
+    "14": {
+      "text": "RDMA WRITE — 客户端将 64MB 块（1/16）直接推送到服务器内存",
+      "detail": "客户端 RNIC 从 GPU 内存 DMA 读取 64MB 并 RDMA WRITE 直接到 PUT READY 中指定的服务器内存地址。对于完整的 1GB 对象，进行 16 次这样的 RDMA WRITE（16 x 64MB）。服务器 CPU 从不触碰数据。客户端 CPU 从不拷贝数据。这是标准的 RoCEv2 RDMA WRITE——S3/RDMA 添加的只是安排寻址的控制平面。"
+    },
+    "15": {
+      "text": "S3 PUT COMPLETE — 1GB 已上传，校验和已验证，ETag 已返回",
+      "detail": "服务器在验证 CRC32C 校验和后确认 PUT 成功。返回 S3 ETag 和版本 ID。对象现在已持久存储在 ObjectScale 存储中。"
+    },
+    "16": {
+      "text": "对比：S3/TCP PUT vs S3/RDMA PUT",
+      "detail": "传统 S3 PUT 等效操作：HTTP PUT 携带 1GB 正文 -> TLS 加密 1GB -> TCP 将 1GB 分段为约 1400B 的数据包 -> 内核将每个包拷贝到 NIC -> NIC 发送 -> 服务器 NIC 接收 -> 内核拷贝到套接字缓冲区 -> HTTP 服务器从套接字读取 -> 拷贝到存储缓冲区 -> 写入磁盘。CPU 多次触碰每个字节。吞吐量受单核内存带宽限制（约 50 GB/s）。延迟由 TCP 拥塞控制主导。\nS3/RDMA PUT：2 条控制消息（PUT REQUEST + PUT READY）+ 16 次 RDMA WRITE（16 x 64MB）。服务器 CPU 从未触碰数据。客户端 CPU 从未拷贝数据。吞吐量受 RNIC DMA 带宽和网络带宽限制，而非 CPU。在 100GbE 下：约 12.5 GB/s 持续吞吐。"
+    },
+    "17": {
+      "text": "S3 GET REQUEST — 客户端请求对象，提供目标缓冲区信息",
+      "detail": "客户端发送携带桶/键和目标缓冲区地址/rkey 的 GET 请求。服务器将 RDMA WRITE 对象数据直接到此缓冲区。"
+    },
+    "18": {
+      "text": "RDMA WRITE — 服务器将 64MB 块（1/16）直接推送到客户端 GPU 内存",
+      "detail": "服务器 RNIC 从存储 DMA 读取对象数据并 RDMA WRITE 直接到客户端 GPU 内存。客户端 CPU 不参与。对于完整的 1GB 对象，进行 16 次这样的 RDMA WRITE。这与任何 RDMA WRITE 的机制相同——S3/RDMA 只是安排寻址，使服务器知道写到哪里。"
+    },
+    "19": {
+      "text": "S3 GET COMPLETE — 1GB 已在客户端 GPU 缓冲区，准备好进行训练",
+      "detail": "服务器发出完成信号。对象数据现在在客户端 GPU 缓冲区 0x7f8000000000 中，准备好进行训练前向传播。客户端 CPU 从未参与数据移动。如果使用 GPUDirect Storage 模式，无需中间拷贝到主机内存。"
+    },
+    "20": {
+      "text": "对比：S3/TCP GET vs S3/RDMA GET",
+      "detail": "客户端的 AI 训练循环调用了 s3_rdma_get()。对象数据现在在 GPU 缓冲区 0x7f8000000000 中。客户端 CPU 从未参与数据移动。训练前向传播可以立即开始——如果使用 GPUDirect Storage 模式，无需中间拷贝到主机内存。\n传统 S3 GET：HTTP GET -> TCP -> TLS 解密 -> 内核套接字缓冲区 -> 用户空间拷贝 -> 通过 PCIe 上传到 GPU。每个字节至少经过 CPU 两次。\nS3/RDMA GET：1 条控制消息 + 16 次 RDMA WRITE。零 CPU，零拷贝。"
+    }
+  }
+}

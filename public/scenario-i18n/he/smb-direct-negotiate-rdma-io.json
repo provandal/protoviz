@@ -1,0 +1,34 @@
+{
+  "meta": {
+    "title": "SMB Direct: משא ומתן → RDMA → קריאה/כתיבה של קובץ",
+    "description": "חיבור SMB Direct (SMB על גבי RDMA) מלא על 100GbE RoCEv2. SMB3 מנהל משא ומתן על יכולות RDMA במהלך לחיצת יד SMB הסטנדרטית, ואז עובר לשימוש ב-RDMA WRITE/READ להעברת נתוני קובץ עם אפס העתקות מעבד. מדגים כיצד פרוטוקול קבצים של Windows ממנף חומרת RDMA לביצועי אחסון ברמת מרכז נתונים.",
+    "learning_objectives": [
+      "הבנה כיצד SMB3 מנהל משא ומתן על יכולות RDMA דרך SMB Negotiate ו-Session Setup",
+      "ראיית כיצד SMB Direct Transform Header מכיל metadata של RDMA",
+      "מעקב אחר פעולות קריאה/כתיבה SMB המשתמשות ב-RDMA WRITE/READ לנתונים",
+      "ניגוד SMB Direct (RDMA) עם SMB רגיל (TCP) מבחינת ביצועים ותקורת מעבד",
+      "הבנת רישום Memory Region ומנגנון הרשאות ב-SMB Direct",
+      "ראיית כיצד SMB Direct מאפשר אפס-העתקות I/O לשרתי קבצים Windows",
+      "תצפית על זרימת בקרה SMB נפרדת מזרימת נתוני RDMA"
+    ]
+  },
+  "timeline": {
+    "0": { "text": "קישור פיזי פעיל — 100GbE עם PFC מופעל", "detail": "קישורי 100GbE עם PFC על עדיפות 3 ל-RoCEv2 ללא אובדן." },
+    "1": { "text": "בקשת ARP — הלקוח מפענח כתובת MAC של שרת הקבצים", "detail": "הלקוח שואל \"למי יש 192.168.1.20?\" לפני יצירת חיבור RDMA." },
+    "2": { "text": "תגובת ARP — שרת קבצים ב-00:02:c9:ab:cd:ef", "detail": "מטמון ARP עודכן. הלקוח יכול להתחיל חיבור RDMA." },
+    "3": { "text": "חיבור RDMA RC הוקם (CM REQ → REP → RTU)", "detail": "חיבור RDMA RC הוקם דרך IB Connection Manager. QPs בשני הצדדים ב-RTS." },
+    "4": { "text": "SMB Negotiate Request → הלקוח מציע SMB 3.1.1 עם יכולות RDMA", "detail": "הלקוח שולח SMB NEGOTIATE דרך RDMA SEND. שדה Capabilities כולל דגל SMB2_GLOBAL_CAP_MULTI_CHANNEL ו-Negotiate Contexts כוללים SMB2_RDMA_TRANSFORM_CAPABILITIES." },
+    "5": { "text": "SMB Negotiate Response ← השרת מקבל SMB 3.1.1 + RDMA", "detail": "השרת מאשר SMB 3.1.1 עם RDMA מופעל. MaxReadSize ו-MaxWriteSize מוגדלים ל-8MB (לעומת 1MB ללא RDMA) כי RDMA מאפשר העברות גדולות ביעילות." },
+    "6": { "text": "SMB Session Setup → אימות Kerberos/NTLM", "detail": "הלקוח מאמת עם שרת הקבצים. SMB Session Setup משתמש ב-SPNEGO/Kerberos. מועבר דרך RDMA SEND." },
+    "7": { "text": "SMB Session Setup Response ← שיחה מאומתת", "detail": "השרת מאשר אימות. Session ID מוקצה. SMB Direct מופעל כעת לשיחה זו." },
+    "8": { "text": "SMB Tree Connect → חיבור לשיתוף \\\\server\\data", "detail": "הלקוח מתחבר לשיתוף הקבצים. Tree Connect דרך RDMA SEND." },
+    "9": { "text": "SMB Tree Connect Response ← גישה מוענקת", "detail": "השרת מעניק גישה לשיתוף. Tree ID מוקצה." },
+    "10": { "text": "SMB Create → פתיחת training_data.bin", "detail": "הלקוח פותח קובץ לקריאה/כתיבה. SMB CREATE דרך RDMA SEND." },
+    "11": { "text": "SMB Create Response ← handle קובץ מוקצה", "detail": "השרת מחזיר file handle. הלקוח יכול כעת לקרוא/לכתוב." },
+    "12": { "text": "SMB Read Request עם RDMA Buffer Descriptor", "detail": "הלקוח שולח בקשת קריאה SMB הכוללת RDMA buffer descriptor — rkey, כתובת וירטואלית ואורך מאגר. השרת ישתמש במידע זה לביצוע RDMA WRITE ישירות לזיכרון הלקוח." },
+    "13": { "text": "RDMA WRITE ← השרת כותב נתוני קובץ ישירות לזיכרון הלקוח", "detail": "השרת קורא נתונים מדיסק ומבצע RDMA WRITE ישירות למאגר הלקוח. אפס העתקות מעבד בצד הלקוח — הנתונים נוחתים ישירות בזיכרון שהאפליקציה רשמה." },
+    "14": { "text": "SMB Read Response ← הקריאה הושלמה", "detail": "השרת שולח תגובת קריאה SMB דרך RDMA SEND מאשרת שהנתונים נכתבו למאגר RDMA של הלקוח." },
+    "15": { "text": "SMB Write Request + RDMA READ ← השרת שולף נתוני כתיבה", "detail": "לכתיבה, הלקוח שולח בקשת כתיבה SMB עם RDMA buffer descriptor. השרת מבצע RDMA READ לשליפת נתונים ישירות מזיכרון הלקוח — אפס העתקות מעבד בצד הלקוח." },
+    "16": { "text": "⟳ התרחיש הושלם — I/O קבצים של SMB Direct על גבי RDMA", "detail": "תרחיש זה הדגים SMB Direct: קריאות וכתיבות קבצים באמצעות RDMA WRITE/READ להעברת נתונים עם אפס מעורבות מעבד. בהשוואה ל-SMB על TCP שבו הליבה חייבת להעתיק נתונים דרך מאגרי שקעים, SMB Direct מעביר נתוני קובץ ישירות בין אפליקציה לאחסון. זה מספק תפוקה גבוהה יותר, השהייה נמוכה יותר, ושימוש נמוך יותר במעבד — קריטי לעומסי Hyper-V Live Migration ו-SQL Server." }
+  }
+}

@@ -1,0 +1,88 @@
+{
+  "meta": {
+    "title": "IPv6 vs IPv4 头部对比：更简单、更快、更可扩展",
+    "description": "并排比较 IPv4 和 IPv6 头部格式：IPv4 的 13 个字段、可变长度、校验和 vs IPv6 的 8 个字段、固定 40 字节、无校验和。还展示了 IPv6 扩展头链和分片机制。",
+    "learning_objectives": [
+      "比较 IPv4（13 个字段）和 IPv6（8 个字段）头部结构",
+      "理解为什么 IPv6 去掉了头部校验和",
+      "观察路由器处理 IPv6 比 IPv4 更快",
+      "了解 IPv6 扩展头链机制",
+      "理解 IPv6 中只有源端可以分片",
+      "将 IPv4 的任意路由器分片与 IPv6 的源端分片进行对比",
+      "理解为什么路径 MTU 发现在 IPv6 中是强制性的"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "第 1 部分 — IPv4 数据包：主机 A 通过路由器发送到主机 B",
+      "detail": "主机 A 构建一个带有 20 字节 TCP 载荷的 IPv4 数据包，目的地是主机 B（192.168.2.20）。IPv4 头部包含 13 个字段，包括可变长度的 IHL、分片字段（Identification、Flags、Fragment Offset）和 Header Checksum。尽管我们设置了 DF（Don't Fragment），分片字段仍然存在于每个数据包中——它们无法从固定格式中移除。头部在无选项时为 20 字节，但如果存在选项可达 60 字节。"
+    },
+    "1": {
+      "text": "IPv4 头部详情：13 个字段，可变长度，需要校验和",
+      "detail": "IPv4 头部（RFC 791）有 13 个字段：Version（4 位）、IHL（4 位）、DSCP（6 位）、ECN（2 位）、Total Length（16 位）、Identification（16 位）、Flags（3 位）、Fragment Offset（13 位）、TTL（8 位）、Protocol（8 位）、Header Checksum（16 位）、Source IP（32 位）、Destination IP（32 位），加上可变长度的 Options。\n高速转发的关键问题：\n1. 可变头部长度（必须先读取 IHL 才知道载荷从哪里开始）\n2. Header Checksum 在接收时必须验证，在转发时必须重新计算\n3. 分片字段始终存在，即使不分片\n4. Options 使硬件实现困难——每个数据包可能不同"
+    },
+    "2": {
+      "text": "路由器接收 IPv4 数据包：必须重新计算校验和（TTL 已改变），可能需要分片",
+      "detail": "路由器接收 IPv4 数据包后必须执行多项操作：\n1. 验证 Header Checksum——计算头部的一补数和并确认等于 0xFFFF。如果不等，数据包被静默丢弃。\n2. 将 TTL 从 64 递减到 63。如果 TTL 到达 0，丢弃并发送 ICMP Time Exceeded。\n3. 重新计算 Header Checksum——因为 TTL 改变了，校验和现在无效。路由器必须在转发前重新计算。这是纯粹的开销，IPv6 完全消除了它。\n4. 检查 MTU——如果出站接口的 MTU 小于数据包大小且 DF 未设置，路由器对数据包进行分片。设置了 DF 则发送 ICMP Fragmentation Needed。\n5. 重写二层——新的源/目的 MAC 用于下一跳。\n在 10 Gbps 最小尺寸数据包（64 字节）下，路由器可能每秒处理约 1488 万个数据包。校验和重新计算增加了可测量的延迟。"
+    },
+    "3": {
+      "text": "路由器转发 IPv4 数据包：TTL=63，新校验和 0x4e3c",
+      "detail": "路由器以递减后的 TTL（63）和重新计算的头部校验和（0x4e3c）转发数据包。二层地址被重写为路由器到主机 B 段的地址。IPv4 头部中除 TTL 和校验和外的所有字段都未改变——但校验和必须完全重新计算，因为标准中没有增量校验和机制。某些路由器实现使用增量更新（RFC 1141），但这仍然是 IPv6 完全避免的工作。"
+    },
+    "4": {
+      "text": "13 个字段，可变长度，每一跳都要重新计算校验和",
+      "detail": "IPv4 头部总结：13 个字段，20-60 字节（因 Options 而可变），且 Header Checksum 必须在每一跳重新计算，因为 TTL 在变化。分片机制（Identification、Flags、Fragment Offset）在每个数据包中消耗 32 位，即使未使用分片。可变长度的 Options 字段意味着硬件不能假设载荷的固定偏移量。这些设计选择在 1981 年（RFC 791）路由器还是慢速软件实现时是合理的。在现代线速（100 Gbps+）下，它们成为了性能负担。"
+    },
+    "5": {
+      "text": "第 2 部分 — IPv6 数据包：相同数据、相同路径、更简单的头部",
+      "detail": "主机 A 现在使用 IPv6 向主机 B 发送完全相同的 TCP 载荷。IPv6 头部显著更简单：仅 8 个字段，始终恰好 40 字节。没有 IHL 字段（因为大小永远不变），没有 Header Checksum（因为 TCP/UDP 已经对其数据做校验和），没有分片字段（因为 IPv6 中只有源端可以分片）。\n注意 EtherType 从 0x0800（IPv4）变为 0x86DD（IPv6），地址从 32 位变为 128 位。尽管地址更大，头部设计为追求速度：每个字段都在已知的固定偏移量处。"
+    },
+    "6": {
+      "text": "IPv6 头部详情：8 个字段，固定 40 字节，无校验和",
+      "detail": "IPv6 头部（RFC 8200）仅有 8 个字段：Version（4 位）、Traffic Class（8 位）、Flow Label（20 位）、Payload Length（16 位）、Next Header（8 位）、Hop Limit（8 位）、Source Address（128 位）、Destination Address（128 位）。\n相比 IPv4 移除了什么：\n- IHL——因为头部始终是 40 字节所以去掉了\n- Identification、Flags、Fragment Offset——移到 Fragment 扩展头中\n- Header Checksum——完全消除（TCP/UDP 已有校验和）\n- Options——替换为扩展头链机制\n新增了什么：\n- Flow Label（20 位）——让路由器无需检查传输层头部即可识别流，对加密流量至关重要\n重命名了什么：\n- TTL -> Hop Limit（诚实的名称——它一直是跳数计数器，而非计时器）\n- Protocol -> Next Header（现在支持扩展头链）"
+    },
+    "7": {
+      "text": "路由器接收 IPv6 数据包：无需重新计算校验和，无分片 — 只需递减 Hop Limit",
+      "detail": "路由器接收 IPv6 数据包后，其工作大幅简化：\n1. 无校验和验证——没有头部校验和需要验证或重新计算。\n2. 将 Hop Limit 从 64 递减到 63。如果到达 0，丢弃并发送 ICMPv6 Time Exceeded。\n3. 无分片决策——如果数据包对出站 MTU 太大，路由器发送 ICMPv6 Packet Too Big（带 MTU 值）并丢弃数据包。源端必须通过路径 MTU 发现处理分片。\n4. 重写二层——新的源/目的 MAC 用于下一跳。\n就这些。没有校验和计算。没有分片逻辑。路由器可以以线速转发，每数据包处理最少。这就是为什么 IPv6 设计了固定大小、无校验和的头部——它使硬件实现更简单、更快。"
+    },
+    "8": {
+      "text": "路由器转发 IPv6 — 处理比 IPv4 快得多",
+      "detail": "路由器以递减到 63 的 Hop Limit 转发 IPv6 数据包。没有重新计算校验和，因为没有校验和。路由器的转发路径只触碰了 IP 头部中的一个字段（Hop Limit），而 IPv4 需要两个字段（TTL 和 Header Checksum），而且校验和计算本身比简单递减昂贵得多。\n在规模化时，这种差异是显著的。一台每秒转发 1 亿个数据包的路由器，在转发 IPv6 而非 IPv4 时，每秒节省 1 亿次校验和运算。"
+    },
+    "9": {
+      "text": "8 个字段，固定 40 字节，无每跳校验和 — 路由器更快",
+      "detail": "IPv6 头部总结：8 个字段，始终恰好 40 字节，任何跳上零校验和计算。路由器唯一必须的每数据包修改是将 Hop Limit 减 1。对比 IPv4，路由器必须为每个转发的数据包递减 TTL 并重新计算头部校验和。\n固定的头部大小意味着硬件可以使用常量偏移量访问任何字段。无需解析可变长度的 Options 字段。扩展头在存在时链接在基础头部之后，通常只由目的端检查（Hop-by-Hop Options 除外）。"
+    },
+    "10": {
+      "text": "第 3 部分 — 扩展头链：带路由器警报的逐跳选项",
+      "detail": "IPv6 扩展头是替代 IPv4 内联 Options 的机制。IPv6 不将可选功能塞入可变长度的基础头部，而是使用 Next Header 字段链接独立的头部。\n在此示例中，主机 A 发送一个带有 Hop-by-Hop Options 头部的数据包，其中携带用于 MLD 组播组管理的 Router Alert 选项。链式结构为：\nIPv6 头部（Next Header = 0）-> Hop-by-Hop Options（Next Header = 6）-> TCP\n每个头部的 Next Header 字段指向后续内容。Hop-by-Hop Options 头部是特殊的：它是唯一一个路径上每个路由器都必须检查的扩展头。所有其他扩展头仅由目的端处理。\nRouter Alert 选项（类型 5）告诉每个路由器：「更仔细地查看这个数据包——它包含控制平面信息。」没有它，路由器会不加检查地快速转发数据包。"
+    },
+    "11": {
+      "text": "扩展头链：IPv6 (Next Header=0) -> 逐跳选项 (Next Header=6) -> TCP",
+      "detail": "Next Header 链式机制的简洁优雅：\n1. IPv6 基础头部：Next Header = 0（Hop-by-Hop Options）\n   「我之后是 Hop-by-Hop Options 头部」\n2. Hop-by-Hop Options 头部：Next Header = 6（TCP）\n   「我之后是 TCP」\n3. TCP 头部：这是最终的上层协议\n\n此链可以无限扩展。常见的 Next Header 值：\n- 0：Hop-by-Hop Options（如存在必须在最前面）\n- 6：TCP\n- 17：UDP\n- 43：Routing Header\n- 44：Fragment Header\n- 50：ESP（Encapsulating Security Payload）\n- 51：AH（Authentication Header）\n- 58：ICMPv6\n- 59：No Next Header（后面没有内容）\n\n扩展头的顺序由 RFC 8200 第 4.1 节规定：Hop-by-Hop -> Destination Options -> Routing -> Fragment -> AH -> ESP -> Destination Options（用于最终目的地）-> 上层头部。"
+    },
+    "12": {
+      "text": "IPv6 分片：只有源端可以分片 — 路由器绝不分片",
+      "detail": "这是 IPv4 和 IPv6 之间最重要的区别之一。在 IPv4 中，路径上的任何路由器都可以在数据包超过出站 MTU 时对其分片。在 IPv6 中，分片只能由源主机执行。\n如果路由器遇到对其出站链路太大的数据包，它：\n1. 丢弃数据包\n2. 发送 ICMPv6 Packet Too Big（类型 2）并带上链路的 MTU\n3. 源端收到后减小其数据包大小并重新发送\n这就是路径 MTU 发现（RFC 8201），在 IPv6 中是强制性的。\nFragment Header 是一个独立的扩展头（Next Header = 44），包含：\n- Fragment Offset（13 位）：此分片在原始数据报中的位置\n- M 标志（1 位）：1 = 后续还有更多分片\n- Identification（32 位）：用于重组的唯一 ID（32 位 vs IPv4 的 16 位）\n此处的链式结构为：IPv6（Next Header=44）-> Fragment Header（Next Header=6）-> TCP"
+    },
+    "13": {
+      "text": "分片链：IPv6 (Next Header=44) -> 分片头 (Next Header=6) -> TCP 载荷",
+      "detail": "Fragment 扩展头链：\n1. IPv6 基础头部：Next Header = 44（Fragment Header）\n   「我之后是 Fragment Header」\n2. Fragment Header：Next Header = 6（TCP）\n   Fragment Offset = 0（这是第一个分片）\n   M = 1（后续还有更多分片）\n   Identification = 0x0000abcd\n3. TCP 头部 + 载荷（分片内容）\n\n目的端收集所有具有相同 Source Address + Destination Address + Identification 的分片，按 Fragment Offset 排序，然后重组原始数据报。之后才解析 TCP 头部。\n源端独占分片的好处：\n- 路由器的快速路径永远不需要分片逻辑\n- 消除了基于分片的攻击（如微小分片攻击，将 TCP 头部跨分片拆分以绕过防火墙）\n- 32 位 Identification 字段（vs IPv4 的 16 位）减少了高速链路上的 ID 冲突\n- 强制使用路径 MTU 发现，这比依赖路由器分片更高效"
+    },
+    "14": {
+      "text": "在 IPv4 中，任何路由器都可以分片。在 IPv6 中，只有源端可以。这就是为什么路径 MTU 发现是强制性的",
+      "detail": "IPv6 路径 MTU 发现（PMTUD，RFC 8201）的工作流程：\n1. 源端以其本地链路 MTU 发送数据包（通常 1280-1500 字节）\n2. 如果路径上的路由器有更小的 MTU，它丢弃数据包并发送带有更小 MTU 值的 ICMPv6 Packet Too Big\n3. 源端缓存此路径 MTU 并调整后续数据包大小\n4. 源端定期用更大的数据包探测以检测 MTU 增加\nIPv6 最小 MTU 是 1280 字节（vs IPv4 的 68 字节）。这意味着 IPv6 分片从不小于 1280 字节，简化了缓冲区管理。\n在实践中，大多数 IPv6 路径支持 1500 字节（标准以太网 MTU），巨帧（9000+ 字节）在数据中心网络中很常见。PMTUD 确保源端始终使用路径的最优数据包大小。"
+    },
+    "15": {
+      "text": "总结：IPv6 更简单（8 vs 13 个字段）、更快（无校验和）、更可扩展（扩展头）",
+      "detail": "IPv4 vs IPv6 头部对比：\n| 属性            | IPv4                        | IPv6                          |\n|----------------|-----------------------------|---------------------------------|\n| 头部字段        | 13                          | 8                               |\n| 头部大小        | 20-60 字节（可变）            | 40 字节（固定）                  |\n| 头部校验和      | 有（每跳重新计算）             | 无                              |\n| 分片           | 任何路由器可以分片             | 仅源端（PMTUD 强制）             |\n| 地址大小        | 32 位（43 亿）               | 128 位（3.4 x 10^38）           |\n| 流识别         | 5 元组深度检查                | Flow Label（20 位）              |\n| 选项/扩展      | 内联（可变头部）               | 扩展头链                         |\n| 最小 MTU       | 68 字节                      | 1280 字节                        |\n\nIPv6 不仅仅是「带更大地址的 IPv4」。它是对 IP 头部的根本性重新设计，面向高速硬件转发、可扩展性和安全性。仅消除每跳校验和重新计算一项就是路由器性能的重大胜利。扩展头机制允许协议演进而无需改变基础头部格式。"
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "IPv6 vs IPv4 头部对比",
+      "description": "并排比较 IPv4 和 IPv6 头部格式、路由器处理和扩展机制",
+      "steps": {}
+    }
+  }
+}

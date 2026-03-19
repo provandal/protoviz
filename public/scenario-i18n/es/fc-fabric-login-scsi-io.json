@@ -1,0 +1,125 @@
+{
+  "meta": {
+    "title": "FC Fabric Login → Descubrimiento Name Server → SCSI Write y Read",
+    "description": "Una secuencia completa de login en SAN Fibre Channel sobre 64GFC, desde el establecimiento del enlace físico hasta Fabric Login (FLOGI), descubrimiento Name Server, Port Login (PLOGI), Process Login (PRLI) para FCP, descubrimiento de LUN SCSI vía INQUIRY y READ CAPACITY, seguido de SCSI WRITE(10) y READ(10) para verificar la escritura. El host se conecta a un switch FC ejecutando Name Server embebido y servicios de fabric, que enruta tramas al array de almacenamiento.",
+    "learning_objectives": [
+      "Comprender cómo los enlaces físicos FC se activan independientemente (host↔switch, switch↔almacenamiento)",
+      "Rastrear el intercambio FLOGI: el host solicita login a la fabric, el switch asigna un N_Port ID (FCID)",
+      "Seguir consultas al Name Server para descubrir destinos disponibles vía GID_FT",
+      "Observar login a nivel de puerto (PLOGI) y login a nivel de proceso (PRLI) para FCP",
+      "Ver cómo los comandos SCSI se encapsulan en tramas FCP (FCP_CMND, FCP_DATA, FCP_RSP)",
+      "Comprender la negociación FCP_XFER_RDY requerida para operaciones SCSI WRITE",
+      "Comparar el modelo de capas propio de FC (FC-0 a FC-4) con la pila OSI"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Enlace A: señal detectada — HBA del Host ↔ Switch",
+      "detail": "El transceptor óptico del HBA del host detecta luz del puerto del switch FC. La inicialización del enlace FC comienza. El enlace físico es punto a punto."
+    },
+    "1": {
+      "text": "Enlace B: señal detectada — Switch ↔ Array de Almacenamiento",
+      "detail": "El puerto del array de almacenamiento detecta luz del switch. Enlace físico independiente."
+    },
+    "2": {
+      "text": "Enlace A ACTIVO — Host ↔ Switch a 64GFC",
+      "detail": "Negociación de velocidad completa: 64GFC (64.0 Gbps). Codificación 64b/66b activa. Las primitivas FC ahora pueden intercambiarse. Control de flujo BB_Credit inicializado."
+    },
+    "3": {
+      "text": "Enlace B ACTIVO — Switch ↔ Almacenamiento a 64GFC",
+      "detail": "Ambos enlaces físicos están ahora activos. El switch puede reenviar tramas FC entre puertos. El array de almacenamiento previamente hizo login en la fabric (FCID 0x010200 pre-asignado)."
+    },
+    "4": {
+      "text": "FLOGI — El host solicita login a la fabric (S_ID=0x000000 → D_ID=0xFFFFFE)",
+      "detail": "El host no tiene FCID aún (S_ID=0x000000). Envía FLOGI a la dirección bien conocida del Fabric Controller (0xFFFFFE). El FLOGI lleva el WWPN del host, BB_Credit y características soportadas. Este es siempre el primer ELS después de la activación del enlace."
+    },
+    "5": {
+      "text": "FLOGI ACC — La fabric asigna FCID 0x010100 al host",
+      "detail": "La fabric acepta el login y asigna N_Port ID 0x010100. Este FCID será el S_ID del host en todas las tramas subsiguientes. La fabric también devuelve sus propios parámetros de servicio y BB_Credit."
+    },
+    "6": {
+      "text": "PLOGI al Name Server (0xFFFFFC)",
+      "detail": "Antes de consultar al Name Server, el host primero debe hacer PLOGI con él. Esto establece parámetros de comunicación a nivel de puerto."
+    },
+    "7": {
+      "text": "Name Server acepta PLOGI — consultas CT ahora permitidas",
+      "detail": "Login al Name Server completo. El host ahora puede enviar solicitudes Common Transport (CT)."
+    },
+    "8": {
+      "text": "Consulta GID_FT — encontrar todos los destinos FCP (SCSI) en la fabric",
+      "detail": "El host envía una solicitud Common Transport (CT) al Name Server solicitando todos los identificadores de puerto (FCIDs) registrados como tipo FC-4 0x08 (FCP/SCSI). Así es como el host descubre qué arrays de almacenamiento están disponibles."
+    },
+    "9": {
+      "text": "Name Server responde: almacenamiento en FCID 0x010200",
+      "detail": "El Name Server devuelve una lista de FCIDs que soportan FCP. En esta fabric, hay un destino: el array de almacenamiento en 0x010200. El host ahora hará PLOGI a este FCID para establecer comunicación a nivel de puerto."
+    },
+    "10": {
+      "text": "PLOGI al almacenamiento (0x010200) — login a nivel de puerto",
+      "detail": "El host envía PLOGI al array de almacenamiento. Esta trama atraviesa el switch (enrutamiento basado en D_ID). PLOGI negocia parámetros de puerto: BB_Credit, tamaño máximo de trama y clase de servicio."
+    },
+    "11": {
+      "text": "El almacenamiento acepta PLOGI — login a nivel de puerto establecido",
+      "detail": "El almacenamiento acepta el login de puerto. Host y almacenamiento ahora pueden intercambiar tramas FC directamente. Pero el I/O FCP (SCSI) requiere un paso más: Process Login (PRLI)."
+    },
+    "12": {
+      "text": "PRLI — establecer protocolo de capa superior FCP (SCSI)",
+      "detail": "Process Login establece la asociación FC-4 (FCP). La página de parámetros de servicio PRLI declara este host como iniciador y negocia características FCP como el comportamiento XFER_RDY. Este es el paso final de login antes de que puedan fluir comandos SCSI."
+    },
+    "13": {
+      "text": "PRLI ACC — FCP establecido. El I/O SCSI puede comenzar.",
+      "detail": "El almacenamiento acepta PRLI y se declara como destino. La asociación de proceso FCP está ahora establecida. Los comandos SCSI pueden enviarse como tramas FCP_CMND."
+    },
+    "14": {
+      "text": "SCSI INQUIRY — descubrir tipo de dispositivo",
+      "detail": "El host envía SCSI INQUIRY (opcode 0x12) para identificar el dispositivo en LUN 0. INQUIRY devuelve tipo de dispositivo, fabricante, producto y características soportadas."
+    },
+    "15": {
+      "text": "Datos INQUIRY — el dispositivo es un disco de bloque (tipo 0x00)",
+      "detail": "El almacenamiento devuelve respuesta INQUIRY identificándose como un dispositivo de bloque de acceso directo (tipo 0x00, SBC). Fabricante: DellEMC, Producto: PowerStore."
+    },
+    "16": {
+      "text": "FCP_RSP — INQUIRY GOOD, LUN 0 descubierto",
+      "detail": "Estado SCSI GOOD. La capa intermedia SCSI del host ahora sabe que es un dispositivo de bloque. scsi_add_lun() crea un dispositivo SCSI y sd_mod adjunta un dispositivo de bloque /dev/sdX."
+    },
+    "17": {
+      "text": "WRITE(10) — escribir 4KB en LBA 0",
+      "detail": "La aplicación escribe 4KB (8 × bloques de 512 bytes) comenzando en LBA 0. FCP_CMND lleva el CDB SCSI. El host debe esperar FCP_XFER_RDY antes de enviar datos — esto es control de flujo de escritura FC."
+    },
+    "18": {
+      "text": "FCP_XFER_RDY — el almacenamiento listo para recibir datos de escritura",
+      "detail": "El almacenamiento envía Transfer Ready, otorgando al host permiso para enviar hasta 4096 bytes de datos de escritura. Este mecanismo de control de flujo es exclusivo de escrituras FC — previene que el host envíe datos antes de que el destino haya asignado espacio de buffer. Las lecturas no requieren este paso."
+    },
+    "19": {
+      "text": "FCP_DATA (1/2) — primeros 2048 bytes de escritura en offset 0",
+      "detail": "El Recv_Size FC negociado durante FLOGI es 2112 bytes, por lo que la escritura de 4KB debe dividirse en dos tramas FCP_DATA. SEQ_CNT=0, offset relativo 0."
+    },
+    "20": {
+      "text": "FCP_DATA (2/2) — últimos 2048 bytes de escritura en offset 2048",
+      "detail": "Segunda trama FCP_DATA completa la transferencia de 4KB. SEQ_CNT=1, offset relativo 0x800 (2048). Bit de fin de secuencia establecido en F_CTL."
+    },
+    "21": {
+      "text": "FCP_RSP — escritura GOOD, datos confirmados",
+      "detail": "El almacenamiento confirma que la escritura se completó con estado SCSI GOOD. Los datos han sido confirmados en almacenamiento no volátil. El intercambio está completo: OX_ID 0x0020 liberado."
+    },
+    "22": {
+      "text": "READ(10) — leer de vuelta 4KB del LBA 0 para verificar la escritura",
+      "detail": "El host lee de vuelta los mismos 4KB para verificar la escritura. No se necesita XFER_RDY para lecturas — el destino envía FCP_DATA inmediatamente después de recibir el comando."
+    },
+    "23": {
+      "text": "FCP_DATA (1/2) — primeros 2048 bytes de lectura en offset 0",
+      "detail": "El almacenamiento envía datos de lectura inmediatamente — a diferencia de escrituras, las lecturas no requieren negociación XFER_RDY. La misma restricción de Recv_Size aplica: 4KB divididos en dos tramas."
+    },
+    "24": {
+      "text": "FCP_DATA (2/2) — últimos 2048 bytes de lectura en offset 2048",
+      "detail": "Segunda trama FCP_DATA completa la lectura de 4KB. SEQ_CNT=1, offset relativo 0x800 (2048). Los datos deberían coincidir con lo escrito."
+    },
+    "25": {
+      "text": "FCP_RSP — lectura GOOD, datos verificados",
+      "detail": "Estado SCSI GOOD. Los datos de lectura coinciden con los datos de escritura, confirmando integridad de datos de extremo a extremo a través de la fabric FC."
+    },
+    "26": {
+      "text": "Escenario completo",
+      "detail": "Resumen: El host estableció enlaces físicos 64GFC, realizó Fabric Login (FLOGI, FCID asignado), descubrió almacenamiento vía Name Server (GID_FT), completó Port Login (PLOGI) y Process Login (PRLI) para FCP, descubrió LUN 0 vía SCSI INQUIRY, escribió 4KB en LBA 0, y los leyó de vuelta para verificar. Total de tramas de login: 10 (FLOGI×2, PLOGI×4, GID_FT×2, PRLI×2). Total de tramas de I/O: 9 (INQUIRY×3, WRITE×4, READ×3 incluyendo XFER_RDY)."
+    }
+  }
+}

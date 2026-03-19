@@ -1,0 +1,98 @@
+{
+  "meta": {
+    "title": "[WIP] S3/RDMA: PUT y GET de objetos sobre RoCEv2 (Arquitectura de Biblioteca NVIDIA)",
+    "description": "Un intercambio S3/RDMA sobre 100GbE RoCEv2, demostrando cómo las cargas de trabajo de IA pueden realizar operaciones S3 PUT y GET con cero involucramiento de CPU en la ruta de datos. El escenario muestra un S3 PUT completo (subida de checkpoint de IA de 1GB) y S3 GET (descarga de 1GB) usando RDMA WRITE para transferencia masiva de datos.",
+    "learning_objectives": [
+      "Comprender por qué S3 tradicional sobre TCP/HTTP es intensivo en CPU y cómo S3/RDMA elimina esa sobrecarga",
+      "Ver cómo la biblioteca NVIDIA S3/RDMA se sitúa sobre la capa de transporte RoCEv2 y debajo de la API de aplicación S3",
+      "Observar la configuración de conexión QP que S3/RDMA usa antes de cualquier transferencia de objetos",
+      "Rastrear una operación S3 PUT: cómo los metadatos del objeto se intercambian por la ruta de control mientras los datos se mueven vía RDMA WRITE",
+      "Rastrear una operación S3 GET: cómo el servidor usa RDMA WRITE para empujar datos del objeto directamente a la memoria del cliente",
+      "Contrastar la ruta de datos S3/RDMA (cero CPU en transferencia de datos) con S3 tradicional sobre TCP (la CPU maneja cada byte)",
+      "Comprender el rol del registro de Memory Region en autorizar al servidor a escribir directamente en buffers asignados por el cliente"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "S3 tradicional vs S3/RDMA — Por qué esto importa",
+      "detail": "S3 GET tradicional: solicitud HTTP GET → conexión TCP → negociación TLS → respuesta HTTP con datos del objeto → el kernel copia datos a través de buffers del socket TCP → la aplicación copia del socket al buffer. Cada byte toca la CPU dos veces.\nS3/RDMA GET: configuración de QP (una vez) → RDMA WRITE de datos del objeto directamente al buffer pre-registrado del cliente. Cero copias de CPU. Cero involucramiento del kernel en la ruta de datos."
+    },
+    "1": {
+      "text": "Enlace A: señal detectada — Cliente ↔ Puerto A del Switch",
+      "detail": "El transceptor óptico del cliente detecta luz del puerto A del switch."
+    },
+    "2": {
+      "text": "Enlace B: señal detectada — Puerto B del Switch ↔ Servidor"
+    },
+    "3": {
+      "text": "Ambos enlaces: AN completa — 100GbE + RS(544,514) FEC, enlaces ACTIVOS",
+      "detail": "Ambos enlaces negocian 100GBASE-SR4 con RS(544,514) FEC (obligatorio para 100G). El Entrenamiento de Enlace ecualiza los canales. Los enlaces están ACTIVOS y listos para tráfico."
+    },
+    "4": {
+      "text": "PFC habilitado en prioridad 3 — Ethernet sin pérdidas para RoCEv2",
+      "detail": "Control de Flujo por Prioridad (IEEE 802.1Qbb) habilitado en clase de prioridad 3. S3/RDMA usa la misma fabric sin pérdidas que cualquier carga de trabajo RoCEv2."
+    },
+    "5": {
+      "text": "ARP: El cliente resuelve la IP del servidor 192.168.100.20"
+    },
+    "6": {
+      "text": "Respuesta ARP: MAC del servidor 00:02:c9:20:00:01"
+    },
+    "7": {
+      "text": "Cliente: s3_rdma_client_init() — Biblioteca S3/RDMA inicializada",
+      "detail": "El cliente llama a s3_rdma_client_init(). La biblioteca registra una Memory Region grande cubriendo el pool de buffers GPU/CPU (ibv_reg_mr()). Crea un pool de QPs RC pre-asignados para operaciones S3."
+    },
+    "8": {
+      "text": "Servidor: Biblioteca del servidor S3/RDMA pre-inicializada, lista para conexiones",
+      "detail": "El servidor ha pre-inicializado su biblioteca del servidor NVIDIA S3/RDMA al arrancar. Pool de QPs listos para aceptar conexiones de clientes. Integrado con el motor de almacenamiento Dell ObjectScale."
+    },
+    "9": {
+      "text": "Solicitud S3/RDMA CONNECT — el cliente envía info de QP, rkey, dirección de buffer",
+      "detail": "El cliente envía solicitud de conexión vía UD SEND al QP de servicio S3/RDMA bien conocido en el servidor. Lleva número de QP del cliente, GID, rkey y dirección virtual del buffer."
+    },
+    "10": {
+      "text": "Respuesta S3/RDMA CONNECT — el servidor asigna RC QP, devuelve rkey",
+      "detail": "El servidor asigna un RC QP de su pool y responde con número de QP del servidor, rkey e ID de conexión."
+    },
+    "11": {
+      "text": "Transiciones de QP: RESET → INIT → RTR → RTS en ambos lados",
+      "detail": "Tanto cliente como servidor llaman a modify_qp() para llevar sus RC QPs a través de la máquina de estados IB estándar: RESET → INIT → RTR → RTS."
+    },
+    "12": {
+      "text": "S3 PUT REQUEST — solo metadatos (bucket, clave, tamaño 1GB). Sin datos en este mensaje.",
+      "detail": "El cliente envía metadatos PUT vía RDMA SEND. Este pequeño mensaje de control contiene los detalles de la operación S3 (bucket, clave, tamaño, algoritmo de checksum) y la ubicación del buffer del cliente. En S3 tradicional esto sería un HTTP PUT con el cuerpo completo de 1GB. En S3/RDMA, la transferencia de datos ocurre por separado vía RDMA WRITE."
+    },
+    "13": {
+      "text": "S3 PUT READY — el servidor devuelve vaddr destino + rkey para RDMA WRITE",
+      "detail": "El servidor asigna espacio de almacenamiento, registra una Memory Region para los datos entrantes, y envía de vuelta la dirección destino y rkey."
+    },
+    "14": {
+      "text": "RDMA WRITE — el cliente empuja fragmento de 64MB (1 de 16) directamente a memoria del servidor",
+      "detail": "La RNIC del cliente hace DMA-lectura de 64MB de memoria GPU y RDMA WRITE directamente a memoria del servidor. Para el objeto completo de 1GB, ocurren 16 RDMA WRITEs de este tipo (16 x 64MB). La CPU del servidor nunca toca los datos. La CPU del cliente nunca copia los datos."
+    },
+    "15": {
+      "text": "S3 PUT COMPLETE — 1GB subido, checksum verificado, ETag devuelto",
+      "detail": "El servidor confirma éxito del PUT después de verificar el checksum CRC32C. Devuelve S3 ETag e ID de versión. El objeto está ahora duradero en almacenamiento ObjectScale."
+    },
+    "16": {
+      "text": "Contraste: S3/TCP PUT vs S3/RDMA PUT",
+      "detail": "S3 PUT tradicional equivalente: HTTP PUT con cuerpo de 1GB → cifrar TLS 1GB → TCP segmenta 1GB en paquetes de ~1400B → el kernel copia cada paquete al NIC → el NIC transmite → el NIC del servidor recibe → el kernel copia al buffer del socket → el servidor HTTP lee del socket → copia al buffer de almacenamiento. La CPU toca cada byte múltiples veces.\nS3/RDMA PUT: 2 mensajes de control (PUT REQUEST + PUT READY) + 16 RDMA WRITEs (16 x 64MB). La CPU del servidor nunca tocó los datos. A 100GbE: ~12.5 GB/s sostenidos."
+    },
+    "17": {
+      "text": "S3 GET REQUEST — el cliente solicita objeto, proporciona info de buffer destino",
+      "detail": "El cliente envía solicitud GET con bucket/clave y dirección/rkey del buffer destino. El servidor hará RDMA WRITE de los datos del objeto directamente a este buffer."
+    },
+    "18": {
+      "text": "RDMA WRITE — el servidor empuja fragmento de 64MB (1 de 16) directamente a memoria GPU del cliente",
+      "detail": "La RNIC del servidor hace DMA-lectura de datos del objeto desde almacenamiento y RDMA WRITE directamente a memoria GPU del cliente. La CPU del cliente no participa."
+    },
+    "19": {
+      "text": "S3 GET COMPLETE — 1GB en buffer GPU del cliente, listo para entrenamiento",
+      "detail": "El servidor señala finalización. Los datos del objeto están ahora en el buffer GPU del cliente, listos para el pase forward de entrenamiento. La CPU del cliente nunca participó en el movimiento de datos."
+    },
+    "20": {
+      "text": "Contraste: S3/TCP GET vs S3/RDMA GET",
+      "detail": "S3 GET tradicional: HTTP GET → TCP → descifrar TLS → buffer del socket del kernel → copia a espacio de usuario → subida a GPU vía PCIe. Cada byte cruza la CPU dos veces mínimo.\nS3/RDMA GET: 1 mensaje de control + 16 RDMA WRITEs. Cero CPU, cero copias."
+    }
+  }
+}

@@ -1,0 +1,108 @@
+{
+  "meta": {
+    "title": "IPv6 SLAAC: Stateless Address Autoconfiguration",
+    "description": "كيف هوست IPv6 بيضبّط حاله بدون DHCP server؟ هال scenario بيمشّيك على كامل عملية SLAAC: Router Solicitation، Router Advertisement مع prefix information، توليد عنوان link-local و global، Duplicate Address Detection (DAD)، و privacy/temporary addresses (RFC 8981). بالنهاية، الهوست بيكون عنده عنوان link-local، عنوان global SLAAC، عنوان privacy، default gateway، و DNS — كلّه بدون أي ضبط يدوي أو DHCP server. هيدا ال #1 شي يلّي بيلخبط الناس الجايين من IPv4، وين العناوين دايماً بتحتاج ضبط ثابت أو DHCP.",
+    "learning_objectives": [
+      "فهم ليش هوستات IPv6 بيقدروا يضبّطوا حالهم بدون DHCP server",
+      "تابع تبادل Router Solicitation / Router Advertisement",
+      "شوف كيف الهوست بيولّد عنوان link-local (fe80::) من ال interface ID تبعه",
+      "فهم Duplicate Address Detection (DAD) وليش بيستعمل العنوان غير المحدد (::)",
+      "تابع توليد العنوان العالمي بدمج ال RA prefix مع interface ID",
+      "تعلّم شو هي privacy/temporary addresses وليش موجودة (RFC 8981)",
+      "شوف كامل address state machine: tentative → valid → preferred",
+      "قارن كل خطوة مع مقابلها بـ IPv4 — DHCP, ARP, ضبط ثابت"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "ال physical link طلع على الطرفين",
+      "detail": "كابل ال Ethernet تبع الهوست انوصل (أو ال Wi-Fi عمل associate). ال physical layer (1000BASE-T) كمّل auto-negotiation وال link طلع. ال link تبع ال router كان شغّال من قبل.\nبهالنقطة، الهوست ما عنده ولا عنوان IPv6. ما بيقدر يتواصل مع أي حدا على الشبكة. بـ IPv4، الهوست كان يكون عالق بالكامل لحد ما ينضبط IP ثابت أو يرد DHCP server. بـ IPv6، الهوست بيقدر يبدأ لحاله."
+    },
+    "1": {
+      "text": "الهوست بيولّد عنوان link-local مؤقت (fe80::)",
+      "detail": "أول شي هوست IPv6 بيعمله لما يطلع ال link هو يولّد عنوان link-local. هالعنوان بيتكوّن من دمج ال prefix المعروف fe80::/10 مع interface identifier (IID). ال IID ممكن يكون:\n1. EUI-64: مشتق من MAC address (52:54:00:A1:B2:C3) بإدخال FF:FE بالنص وقلب ال Universal/Local bit. هيدا بيعطي fe80::5054:ff:fea1:b2c3.\n2. عشوائي (RFC 8981): قيمة 64-bit عشوائية cryptographically.\nهالعنوان TENTATIVE — الهوست ما بيقدر يستعمله بعد. لازم أولاً يتأكّد إنو ما حدا تاني على ال link عنده نفس هالعنوان.\nبـ IPv4، ما في مكافئ أوتوماتيكي لل link-local بأكتر ال deployments. (169.254.x.x APIPA موجودة بس نادراً بتُستعمل عن قصد.)"
+    },
+    "2": {
+      "text": "DAD: الهوست بيبعت NS ليتأكّد إنو عنوان ال link-local فريد",
+      "detail": "Duplicate Address Detection (DAD) — الهوست بيبعت Neighbor Solicitation (NS) لعنوانه المؤقت. تفاصيل أساسية:\n- Source IP = :: (غير محدد) — الهوست ما بيقدر يستعمل العنوان المؤقت كـ source لأنه ما تأكّد بعد.\n- Destination = solicited-node multicast (ff02::1:ffa1:b2c3).\n- Target = عنوان ال link-local المؤقت.\n- ما في Source Link-Layer Address option (لأن ال source هو ::).\nإذا أي هوست على ال link عنده هالعنوان، بيرد بـ Neighbor Advertisement (NA)، وال DAD تبع الهوست بيفشل. الهوست لازم يجرّب عنوان مختلف.\nالهوست بيستنّى RetransTimer (ثانية وحدة، من RFC 4862 default DupAddrDetectTransmits=1) قبل ما يقرّر إنو DAD نجح.\nبـ IPv4، ما في شي متل هيدا مبني بالبروتوكول. ARP-based duplicate detection (RFC 5227) موجود بس اختياري ونادراً بيُستعمل برّا DHCP."
+    },
+    "3": {
+      "text": "DAD نجح — عنوان ال link-local صار صالح!",
+      "detail": "ما رجعت Neighbor Advertisement خلال فترة إعادة الإرسال. هيدا يعني ما حدا تاني على ال link عم يستعمل fe80::5054:ff:fea1:b2c3. العنوان بينتقل من TENTATIVE لـ VALID (preferred).\nالهوست هلّق عنده أول عنوان IPv6 صالح! بيقدر يتواصل مع هوستات تانية على نفس ال link باستعمال هالعنوان link-local. بس عناوين link-local مش routable — بتشتغل بس على هال network segment. الهوست لسا بيحتاج عنوان global ليوصل للإنترنت."
+    },
+    "4": {
+      "text": "الهوست بيبعت Router Solicitation — 'في روترات هون?'",
+      "detail": "هلّق بعد ما الهوست صار عنده عنوان link-local صالح، بيبعت Router Solicitation (RS) لعنوان all-routers multicast (ff02::2). هيدا الهوست عم يسأل: \"في IPv6 routers على هال link? إذا هيك، ابعتولي Router Advertisement تيقدر أضبّط حالي.\"\nبس ال routers بيسمعوا على ff02::2، فالهوستات العادية بتتجاهل هالرسالة. الهوست كمان كان يقدر يستنّى periodic unsolicited RA، بس بعت RS بيجيب جواب أسرع بكتير (خلال ميلي ثوانيات بدل انتظار لحد 600 ثانية).\nبـ IPv4، المقابل هو DHCP Discover broadcast — بس هيدا بيحتاج DHCP server يكون شغّال. إذا ما في DHCP server، هوست IPv4 ما بياخد شي. بـ IPv6، SLAAC بيشتغل بس بوجود router."
+    },
+    "5": {
+      "text": "ال Router بيرد بـ RA: prefix 2001:db8:1::/64, A=1, L=1, M=0, O=0",
+      "detail": "ال router بيستلم ال RS وبيرد بـ Router Advertisement فيه كل شي الهوست بيحتاجه:\n1. PREFIX INFORMATION: 2001:db8:1::/64 مع A=1 (autonomous — استعمل لل SLAAC) و L=1 (on-link — الوجهات بهال prefix وصولها مباشر). Valid lifetime = 24 ساعة، preferred = 4 ساعات.\n2. FLAGS: M=0 (بلا DHCPv6 لعناوين)، O=0 (بلا DHCPv6 لإعدادات تانية). هيدا SLAAC صافي — ما في DHCP server بالموضوع.\n3. DEFAULT GATEWAY: عنوان ال source تبع ال router (fe80::1) بيصير ال default gateway تبع الهوست. الهوستات دايماً بيستعملوا عنوان link-local تبع ال router كـ gateway، مش عنوانه العالمي.\n4. MTU: 1500 bytes.\n5. RDNSS: DNS server على 2001:db8:1::53. هيدا بيلغي الحاجة لـ DHCPv6 بس تتعلّم عناوين DNS server.\nمن هالرسالة الوحدة، الهوست عنده كل شي يلزم ليضبّط حاله بالكامل. بـ IPv4، هيدا كان يحتاج DHCP server شغّال على الشبكة مع configured scope، lease time، gateway option، و DNS option."
+    },
+    "6": {
+      "text": "الهوست بيولّد عنوان global: prefix + interface ID",
+      "detail": "الهوست بياخد ال prefix من ال RA (2001:db8:1::/64) وبيدمجه مع نفس ال interface ID المستعمل لعنوان ال link-local (5054:ff:fea1:b2c3 من EUI-64). النتيجة:\n  2001:db8:1::5054:ff:fea1:b2c3\nهيدا عنوان global مؤقت (TENTATIVE). قبل ما يستعمله، الهوست لازم يعمل DAD مرة تانية — بس لأنه ال link-local كان فريد ما بيعني ال global address فريد (بس عملياً، إذا ال IID نفسه، ال collision نادر جداً).\nبـ IPv4، الهوست كان يستلم عنوانه من DHCP بال DHCP Offer/ACK. ال DHCP server بيتابع أي عناوين مستعملة. بـ IPv6 SLAAC، ما في server بيتابع — الهوست بيختار عنوانه وبيتحقّق من فرادته عبر DAD."
+    },
+    "7": {
+      "text": "DAD: الهوست بيبعت NS ليتأكّد إنو العنوان العالمي فريد",
+      "detail": "نفس إجراء DAD متل عنوان ال link-local:\n- Source = :: (غير محدد)\n- Target = 2001:db8:1::5054:ff:fea1:b2c3\n- Destination = solicited-node multicast ff02::1:ffa1:b2c3\nالهوست بيستنّى جواب. ما في جواب يعني العنوان فريد."
+    },
+    "8": {
+      "text": "DAD نجح — عنوان SLAAC العالمي صار صالح!",
+      "detail": "ما وصلت Neighbor Advertisement. العنوان العالمي 2001:db8:1::5054:ff:fea1:b2c3 تأكّد إنه فريد وانتقل لحالة VALID (preferred).\nالهوست هلّق بيقدر يتواصل مع أي وجهة على الإنترنت باستعمال هالعنوان العالمي. بس عناوين EUI-64 عندها مشكلة خصوصية: ال interface ID مشتق من MAC address، يلّي هو hardware identifier. هيدا يعني أي حدا بيقدر يتتبّع الهوست عبر شبكات مختلفة من خلال ال interface ID الثابت تبعه."
+    },
+    "9": {
+      "text": "الهوست بيولّد privacy/temporary address (RFC 8981)",
+      "detail": "لتعالج مشكلة التتبّع، RFC 8981 (Privacy Extensions) بيحدّد إنو الهوستات لازم كمان يولّدوا temporary addresses مع interface IDs عشوائية. الهوست بيولّد:\n  2001:db8:1::3f8a:7e92:d4\nال random IID بيتغيّر بشكل دوري (ال default preferred lifetime عادةً 24 ساعة، بس ممكن أقصر). لما الهوست يبدأ اتصالات طالعة (browsing, الخ)، بيستعمل عنوان ال privacy كـ source. عنوان SLAAC الثابت بيضل مستعمل للاتصالات الداخلة (servers, SSH, الخ).\nهيدا بيحل مشكلة خصوصية حقيقية: بدون privacy addresses، اللابتوب تبعك كان يكون عنده نفس ال interface ID على كل شبكة Wi-Fi بتتصل فيها — مقهى، مطار، بيت، شغل — فبيصير سهل يتتبّعوا تنقلاتك.\nIPv4 ما عنده هالمشكلة بنفس الطريقة لأنه DHCP بيعيّن عناوين مختلفة على شبكات مختلفة. بس IPv4 كمان ما عنده هالمستوى من التحكّم بالخصوصية المبني بالبروتوكول."
+    },
+    "10": {
+      "text": "DAD: الهوست بيبعت NS ليتأكّد إنو عنوان ال privacy فريد",
+      "detail": "DAD لعنوان ال privacy بيتبع نفس الإجراء:\n- Source = :: (غير محدد)\n- Target = 2001:db8:1::3f8a:7e92:d4\n- Destination = solicited-node multicast ff02::1:ff7e:92d4\nلأنه ال IID عشوائي، عنوان solicited-node multicast مختلف عن يلّي استُعمل لل DAD تبع ال link-local وال global."
+    },
+    "11": {
+      "text": "DAD نجح — عنوان ال privacy صار صالح!",
+      "detail": "عنوان ال privacy 2001:db8:1::3f8a:7e92:d4 تأكّد إنه فريد وانتقل لحالة VALID (preferred).\nالهوست هلّق مضبوط بالكامل مع تلات عناوين IPv6:\n1. fe80::5054:ff:fea1:b2c3 — link-local (دايماً موجود)\n2. 2001:db8:1::5054:ff:fea1:b2c3 — global SLAAC (ثابت)\n3. 2001:db8:1::3f8a:7e92:d4 — privacy/temporary (بيتبدّل)\nزائد: default gateway (fe80::1) و DNS (2001:db8:1::53).\nكل هيدا صار أوتوماتيكياً بلا أي ضبط وبلا أي servers. المتطلّب الوحيد هو router عم يبعت Router Advertisements."
+    },
+    "12": {
+      "text": "الهوست مضبوط بالكامل — link-local, global, privacy address, gateway, DNS",
+      "detail": "ملخّص إعدادات IPv6 الكاملة تبع الهوست:\nعناوين:\n  fe80::5054:ff:fea1:b2c3/10     — link-local (scope: link)\n  2001:db8:1::5054:ff:fea1:b2c3/64 — global SLAAC (scope: global)\n  2001:db8:1::3f8a:7e92:d4/64    — privacy temp (scope: global)\n\nDefault gateway: fe80::1\nDNS server: 2001:db8:1::53\nMTU: 1500\nSource address selection (RFC 6724):\n- طالع للإنترنت: يستعمل عنوان privacy (بيمنع التتبّع)\n- داخل / server: يستعمل عنوان SLAAC الثابت\n- اتصال link-local: يستعمل عنوان fe80::"
+    },
+    "13": {
+      "text": "الهوست بيعمل ping لل link-local تبع ال router ليتأكّد من الاتصال",
+      "detail": "الهوست بيبعت ICMPv6 Echo Request (type 128) لعنوان link-local تبع ال router fe80::1 ليتأكّد من الاتصال الأساسي. هيدا مكافئ IPv6 لل 'ping' بـ IPv4 (ICMP type 8).\nملاحظة: الهوست من قبل بيعرف MAC address تبع ال router من Source Link-Layer Address option بال RA، فما بيحتاج Neighbor Solicitation هون."
+    },
+    "14": {
+      "text": "ال Router بيرد — تأكّد الاتصال!",
+      "detail": "ال router بيبعت ICMPv6 Echo Reply (type 129) رجوعاً للهوست. ال Round-trip time حوالي ~100 microseconds على هال LAN. تأكّد الاتصال — الهوست بيقدر يوصل لل default gateway تبعه.\nمن هون، الهوست بيقدر يوصل لأي وجهة على الإنترنت ببعت packets لل router. ال router رح يبعتهم بناءً على routing table تبعه."
+    },
+    "15": {
+      "text": "ال Router بيبعت periodic unsolicited RA (كل 200-600 ثانية)",
+      "detail": "ال routers بيبعتوا Router Advertisements بشكل دوري بدون أي solicitation. الفاصل عشوائي بين MinRtrAdvInterval (default 200s) و MaxRtrAdvInterval (default 600s) لتفادي ال synchronization مع routers تانية.\nهال periodic RAs بيخدموا عدة أغراض:\n1. هوستات جداد يلّي فاتوهم ال RA الأولاني رح ياخدوا واحد بالنهاية.\n2. الهوستات الموجودة بيجدّدوا router lifetime و prefix timers تبعهم.\n3. إذا router وقع (وقف يبعت RAs)، الهوستات بيكتشفوا لما يخلص Router Lifetime وبيشيلوه من ال default gateway تبعهم.\nهيدا مختلف جوهرياً عن IPv4 DHCP، وين ال server بس بيتواصل وقت lease acquisition و renewal. IPv6 RAs بيعطوا \"heartbeat\" مستمر من ال router."
+    },
+    "16": {
+      "text": "مقارنة: بـ IPv4، كل هيدا بيحتاج DHCP server",
+      "detail": "كل شي هالهوست عمله أوتوماتيكياً كان بيحتاج بنية تحتية كبيرة بـ IPv4:\nIPv6 SLAAC (يلّي شفناه):\n- المتطلبات: router بيبعت RAs. بس هيك.\n- تعيين العنوان: الهوست بيولّد عنوانه.\n- فحص الفرادة: DAD (مبني بالبروتوكول).\n- اكتشاف ال gateway: بيتعلّمه من عنوان source تبع ال RA.\n- DNS: RDNSS option بال RA (RFC 8106).\n- الخصوصية: temporary addresses مبنية (RFC 8981).\n- ما في server state، ما في lease tracking، ما في scope configuration.\n\nIPv4 DHCP (الطريقة التقليدية):\n- المتطلبات: DHCP server مع configured address pool.\n- تعيين العنوان: السيرفر بيوزّع من ال pool (DORA exchange).\n- فحص الفرادة: السيرفر بيتابع leases (أو gratuitous ARP).\n- اكتشاف ال gateway: DHCP option 3 (Router).\n- DNS: DHCP option 6 (DNS Servers).\n- الخصوصية: مش معالجة بالبروتوكول.\n- السيرفر لازم يحافظ على state لكل lease.\n- إذا ال DHCP server واقع، هوستات جداد ما بياخدوا عناوين.\n\nSLAAC مش دايماً بديل كامل لـ DHCPv6 — بعض شبكات enterprise لسا بيستعملوا DHCPv6 لتسجيل العناوين، PXE boot options، أو policy enforcement. بس للحالة العادية \"ادخل عالشبكة وابدأ اشتغل\"، SLAAC أبسط وأقوى."
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "IPv6 SLAAC: من صفر لمتّصل بالكامل",
+      "description": "تابع كيف هوست IPv6 بيضبّط حاله من الصفر — بلا DHCP، بلا ضبط يدوي",
+      "steps": {
+        "0": "تخيّل لسا وصّلت اللابتوب تبعك بشبكة. بـ IPv4، الكمبيوتر كان يقعد عاجز يبعت DHCP Discover broadcasts، يتأمّل إنو في DHCP server بمحل ما. إذا ما حدا رد، ما بتاخد شي — ما في IP، ما في gateway، ما في DNS.\nIPv6 بيشتغل بطريقة مختلفة تماماً. الهوست بيقدر يضبّط حاله باستعمال معلومات من router قريب، بدون أي server. هالعملية اسمها SLAAC — Stateless Address Autoconfiguration. خلّينا نشوفها عم تصير.",
+        "1": "ال physical link بيطلع — Ethernet auto-negotiation بيخلص وال link LED بيصير أخضر. بهالنقطة، الهوست ما عنده ولا عنوان IPv6. ما بيقدر يبعت أو يستلم أي IPv6 traffic بعد. بس بعكس IPv4، الهوست ما بيحتاج يستنّى server خارجي. بيبدأ فوراً يبني حاله.",
+        "2": "أول شي الهوست بيعمله هو يولّد عنوان link-local. هيدا عنوان بيبدأ بـ fe80:: وبس بيشتغل على ال network segment المحلي. الهوست بيعمله بدمج fe80::/64 مع interface ID مشتق من MAC address تبعه (اسمه EUI-64). النتيجة هون fe80::5054:ff:fea1:b2c3.\nبس الهوست ما بيقدر يستعمل هالعنوان بعد — محطوط TENTATIVE. شو إذا جهاز تاني على الشبكة من قبل عنده هالعنوان؟ الهوست لازم يتأكّد أولاً، بعملية اسمها Duplicate Address Detection (DAD).",
+        "3": "DAD بيشتغل ببعت Neighbor Solicitation (NS) للعنوان المؤقت. لاحظ ال source address هو :: (العنوان غير المحدد، كلّه أصفار). الهوست ما بيقدر يستعمل العنوان المؤقت كـ source لأنه ما تأكّد بعد. ال destination هو عنوان \"solicited-node multicast\" خاص مشتق من العنوان المؤقت — بس الأجهزة يلّي عناوينها بتشارك آخر 24 bits رح تعالج هال packet. هيدا أكتر كفاءة من الطرق المبنية على broadcast بـ IPv4.",
+        "4": "الصمت ذهب! بعد ما استنّى ثانية وحدة (ال retransmission timer)، ما رجعت Neighbor Advertisement. هيدا يعني ما حدا تاني على ال link عم يستعمل fe80::5054:ff:fea1:b2c3. العنوان بينتقل من TENTATIVE لـ VALID. الهوست هلّق عنده أول عنوان IPv6 شغّال!\nبس عناوين link-local بس بتشتغل على الشبكة المحلية. ما بتقدر توصل لـ Google أو أي وجهة إنترنت تانية بـ fe80::. الهوست بيحتاج عنوان global — ولهيدا بيحتاج معلومات من router.",
+        "5": "الهوست بيبعت Router Solicitation (RS) لـ ff02::2، عنوان all-routers multicast. هيدا متل ما تصرخ \"في روترات هون?\" بس ال routers بيسمعوا على هالعنوان، فالهوستات العادية بتتجاهله. ال RS بيشمل MAC address تبع الهوست كـ option فال router يقدر يرد بكفاءة.\nبـ IPv4، المقابل كان DHCP Discover broadcast. بس DHCP Discover بيحتاج DHCP server يكون شغّال بمحل. RS بس بيحتاج router — وكل شبكة عندها router.",
+        "6": "ال router بيرد بـ Router Advertisement (RA) معبّأ بمعلومات. طلّع شو في بهالرسالة الوحدة: ال network prefix (2001:db8:1::/64) مع A=1 يعني \"استعمل هيدا لل SLAAC\"، عنوان link-local تبع ال router (fe80::1) يلّي بيصير ال default gateway، ال link MTU (1500)، وحتى عنوان DNS server (2001:db8:1::53) عبر RDNSS option.\nال M=0 و O=0 flags بيقولوا \"ما تتواصل مع DHCPv6 server — كل شي بتحتاجه هون بهال RA.\" رسالة وحدة، ضبط كامل. بـ IPv4، هيدا كان يحتاج DHCP server مع configured scopes, options, و leases.",
+        "7": "الهوست هلّق بيولّد عنوانه العالمي بدمج ال prefix من ال RA (2001:db8:1::/64) مع ال interface ID تبعه (5054:ff:fea1:b2c3). النتيجة 2001:db8:1::5054:ff:fea1:b2c3 — عنوان routable عالمياً.\nبس مرة تانية، هو TENTATIVE. الهوست لازم يعمل DAD مرة كمان لهالعنوان الجديد. حتى لو ال interface ID نفسه متل ال link-local، العنوان العالمي عنوان مختلف ولازم يتفحّص لحاله.",
+        "8": "DAD للعنوان العالمي: NS تاني من :: لل solicited-node multicast. نفس الإجراء، نفس الانتظار. بعد ثانية بدون جواب، العنوان العالمي تأكّد إنه فريد وصار VALID. الهوست هلّق بيقدر يوصل لأي وجهة على الإنترنت!",
+        "9": "بس استنّى — في مشكلة خصوصية. عنوان SLAAC العالمي فيه ال interface ID المشتق من MAC address. هال ID نفسه على كل شبكة الهوست بيتّصل فيها. مقهى، مطار، بيتك، شغلك — نفس ال suffix كل مرة. هيدا بيخلّي تتبّع جهازك عبر الشبكات سهل جداً.\nلحل هيدا، RFC 8981 (Privacy Extensions) بيخبّر الهوست يولّد كمان temporary address مع interface ID عشوائي. الهوست بيعمل 2001:db8:1::3f8a:7e92:d4 مع suffix عشوائي.",
+        "10": "جولة DAD تانية لعنوان ال privacy. عنوان solicited-node multicast هالمرة مختلف (ff02::1:ff7e:92d4) لأنه ال random interface ID عنده آخر 24 bits مختلفة. بعد ال timeout بدون جواب، عنوان ال privacy صار صالح.",
+        "11": "الهوست هلّق مضبوط بالكامل مع تلات عناوين IPv6، default gateway، و DNS. خلّينا نتأكّد كل شي شغّال بـ ping بسيط. الهوست بيبعت ICMPv6 Echo Request (type 128) لعنوان link-local تبع ال router. ال router بيرد بـ Echo Reply (type 129). تأكّد الاتصال!\nلاحظ الهوست من قبل بيعرف MAC address تبع ال router من ال RA — ما بيحتاج Neighbor Solicitation ليحلّه.",
+        "12": "بيمرّ الوقت. بالنهاية، ال router بيبعت Router Advertisement تاني بدون ما حدا يسأله. ال routers بيعملوا هيك كل 200-600 ثانية. هال periodic RAs بيخدموا كـ \"heartbeat\" — بيجدّدوا prefix lifetimes، بيأكّدوا إنو ال router لسا شغّال، وبيساعدوا هوستات جداد يلّي ممكن دخلوا عالشبكة من آخر RA.\nإذا ال router وقف يبعت RAs (لأنه crash أو انشال)، الهوستات بيلاحظوا لما يخلص ال Router Lifetime (1800 ثانية) وبيشيلوه من ال default gateway تبعهم. هيدا اكتشاف فشل أوتوماتيكي بلا بروتوكول إضافي.",
+        "13": "خلّينا نبعّد ونقدّر شو صار. هوست IPv6 راح من \"ما في عناوين، ما في اتصال\" لـ \"تلات عناوين، default gateway، و DNS\" بحوالي 4 ثواني، بلا أي ضبط وبلا أي servers. المتطلّب الوحيد كان router بيبعت Router Advertisements.\nبـ IPv4، نفس النتيجة كانت بتحتاج: DHCP server مع configured address pool, gateway option, DNS option, و lease tracking. إذا ال DHCP server واقع، هوستات جداد ما بيقدروا يدخلوا على الشبكة. مع SLAAC، الهوست بيضبّط حاله طالما في أي router موجود.\nSLAAC مش بديل كامل لـ DHCPv6 بكل سيناريو — شبكات enterprise ممكن تحتاج DHCPv6 لتسجيل العناوين، PXE boot، أو سياسات. بس للمهمة الأساسية \"وصّل هوست عالشبكة\"، SLAAC أبسط، أسرع، وأقوى من DHCP."
+      }
+    }
+  }
+}

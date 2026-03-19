@@ -1,0 +1,121 @@
+{
+  "meta": {
+    "title": "GPUDirect RDMA：RoCEv2 WRITE 直接到 GPU 内存",
+    "description": "完整的 GPUDirect RDMA 场景：通过 RoCEv2 将数据直接写入 GPU HBM 内存，CPU 零参与。展示从物理链路建立、GPU/CUDA 初始化、nvidia-peermem 内核模块、MR 注册、QP 连接建立，到 RDMA WRITE 和 READ 直接操作 GPU 内存的完整流程。",
+    "learning_objectives": [
+      "理解 GPUDirect RDMA 如何绕过主机 DRAM，实现网络到 GPU 内存的直接路径",
+      "了解 nvidia-peermem 内核模块如何将 GPU 内存暴露给 RDMA 子系统",
+      "观察 GPU BAR1 映射如何使 GPU HBM 可通过 PCIe 地址访问",
+      "跟踪对 GPU BAR 地址的内存区域注册（ibv_reg_mr）",
+      "观察 RDMA WRITE 直接到 GPU HBM —— AI 节点上 CPU 零参与",
+      "观察 RDMA READ 从 GPU HBM 读取数据",
+      "理解 GPUDirect RDMA 在 AI 训练和推理中的性能优势",
+      "将 GPUDirect RDMA 与传统的 CPU 中转数据路径进行对比"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "链路 A：检测到信号 — AI 节点 ↔ 交换机端口 A",
+      "detail": "AI 节点上的光收发器检测到来自交换机端口 A 的光信号。按照 IEEE 802.3cd 第 73 条款开始自动协商（AN）。一层是点对点的——这与交换机↔远程服务器链路是独立的。"
+    },
+    "1": {
+      "text": "链路 B：检测到信号 — 交换机端口 B ↔ 远程服务器",
+      "detail": "远程服务器上的光收发器检测到来自交换机端口 B 的光信号。AN 在此链路上独立开始。"
+    },
+    "2": {
+      "text": "链路 A：AN 完成 — 协商为 100GbE，链路训练开始",
+      "detail": "AN 在 AI 节点和交换机端口 A 之间交换技术能力页面。双方商定 100GBASE-SR4。RS(544,514) FEC 对 100G 是强制性的。链路训练开始以均衡信道（预加重、后游标）。"
+    },
+    "3": {
+      "text": "链路 B：AN 完成 — 协商为 100GbE，链路训练开始",
+      "detail": "交换机端口 B ↔ 远程服务器的 AN 完成。相同的协商：100GBASE-SR4 带 RS(544,514) FEC。链路训练在此链路上独立开始。"
+    },
+    "4": {
+      "text": "链路 A UP — AI 节点 ↔ 交换机 100Gbps，带 RS-FEC",
+      "detail": "AI 节点↔交换机的链路训练完成。通过 DCBX 协商（未展示）在优先级 3 上启用了 PFC（802.1Qbb）。以太网帧现在可以在此链路段上流动。"
+    },
+    "5": {
+      "text": "链路 B UP — 交换机 ↔ 远程服务器 100Gbps，带 RS-FEC",
+      "detail": "交换机↔远程服务器的链路训练完成。PFC 已启用。两条链路现在都已 UP——交换机可以在其端口之间转发二层帧。端到端的二层连通性已建立。"
+    },
+    "6": {
+      "text": "ARP 请求：谁拥有 192.168.1.20？",
+      "detail": "RoCEv2 使用 IP 寻址。在任何连接建立之前，必须先建立 IP 可达性。"
+    },
+    "7": {
+      "text": "ARP 应答：192.168.1.20 的 MAC 地址是 00:02:c9:ab:cd:ef"
+    },
+    "8": {
+      "text": "GPU / CUDA 运行时已初始化 — cuInit() 和 cuDeviceGet()",
+      "detail": "应用程序初始化 CUDA 驱动 API。cuInit(0) 加载 CUDA 驱动并枚举 GPU。cuDeviceGet() 选择目标 GPU（例如 NVIDIA H100）。cuCtxCreate() 在设备上创建 CUDA 上下文。此时 GPU 已准备好进行内存分配，但尚未分配 GPU 内存。"
+    },
+    "9": {
+      "text": "GPU 内存已分配 — cuMemAlloc() 返回 4MB GPU HBM 缓冲区",
+      "detail": "cuMemAlloc(&devPtr, 4194304) 在 GPU 高带宽内存（HBM）中分配 4MB 缓冲区。返回的设备指针（devPtr）是 GPU 自身地址空间中的 GPU 虚拟地址。此内存位于 GPU 芯片上，通过 HBM3 以约 3.35 TB/s 带宽连接。该指针对 CPU 或 RNIC 不可直接访问——必须通过 GPU 的 PCIe BAR1 映射窗口进行点对点访问。现代 GPU（如 NVIDIA H100）支持最高 256GB 的 BAR1 映射窗口（可调 BAR / 大 BAR 模式）以映射完整的 HBM。"
+    },
+    "10": {
+      "text": "nvidia-peermem 内核模块已加载 — GPU 内存暴露给 RDMA 子系统",
+      "detail": "modprobe nvidia-peermem 加载 nvidia-peermem 内核模块。该模块通过 ib_register_peer_memory_client() 将自身注册为 IB peer_memory_client。当后续对 GPU 虚拟地址调用 ibv_reg_mr() 时，IB 核心的 ib_umem_get() 将调用 nvidia_peermem_acquire() 检查该地址是否属于 GPU 内存。如果是，nvidia_peermem_get_pages() 调用 nvidia_p2p_get_pages() 锁定 GPU 物理页面并返回其 PCIe BAR1 地址。这些 BAR1 地址随后存储在 RNIC 的内存转换表（MTT）中，使 RNIC DMA 引擎能够通过 PCIe 点对点直接对 GPU 内存进行读写，完全无需 CPU 参与。"
+    },
+    "11": {
+      "text": "GPU BAR1 映射已建立 — GPU HBM 可通过 PCIe 地址访问",
+      "detail": "nvidia-peermem 调用 nvidia_p2p_get_pages()，锁定 cuMemAlloc 所分配缓冲区对应的 GPU 物理页面并返回其 PCIe BAR1 物理地址。BAR1 映射窗口是外部设备（如 RNIC）访问 GPU 内存的 PCIe 窗口。在启用大 BAR 的现代 GPU（如 NVIDIA H100）上，整个 HBM 都可以通过 BAR1 映射。BAR1 地址是 RNIC DMA 引擎可以直接定位的 PCIe 物理地址——无需 CPU TLB，P2P 也无需 IOMMU。这是基础硬件使能器：PCIe 允许端点（RNIC 和 GPU）之间的点对点事务，无需经过 CPU 根复合体的内存控制器。"
+    },
+    "12": {
+      "text": "通过 ibv_reg_mr() 对 GPU BAR 地址注册内存区域",
+      "detail": "以 GPU 虚拟地址调用 ibv_reg_mr(pd, gpu_va, 4194304, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ)。IB 核心的 ib_umem_get() 通过 nvidia-peermem peer_memory_client 检测到这是 GPU 内存：\n1. nvidia_peermem_acquire() 确认该地址属于 NVIDIA GPU 内存\n2. nvidia_peermem_get_pages() 调用 nvidia_p2p_get_pages() 获取 BAR1 物理页面\n3. 这些 BAR1 物理地址被写入 RNIC 的 MTT（内存转换表）\n4. MLX5_CMD_OP_CREATE_MKEY 创建一个页表指向 GPU BAR1 地址的 MR\n返回的 lkey 和 rkey 现在可用于 RDMA 操作——RNIC 硬件将通过 MTT 中的 BAR1 物理地址直接对 GPU HBM 进行 DMA。这对远程服务器是透明的——它只看到一个普通的 rkey。"
+    },
+    "13": {
+      "text": "远程服务器通过 ibv_reg_mr() 注册内存区域（主机 DRAM）",
+      "detail": "远程服务器注册一个标准的主机 DRAM 支持的内存区域。ibv_reg_mr() 锁定主机物理页面，创建 IOMMU DMA 映射，并将页面转换写入 RNIC 的 MTT。这是标准的 MR 注册路径——无 GPU 参与，无 nvidia-peermem。lkey 用于本地散列-聚集，rkey 在此处不需要，因为远程服务器是 WRITE 的源端，而非目标端。"
+    },
+    "14": {
+      "text": "两端均已创建 QP — 状态：RESET",
+      "detail": "ibv_create_qp() 分配一个队列对（发送队列 + 接收队列 + 完成队列）。QP 起始状态为 RESET——无法发送或接收。AI 节点的 QP 将与 GPU 支持的 MR 一起使用——当 RNIC 处理目标为 GPU rkey 的入站 RDMA WRITE 时，它将通过 MTT 页表直接 DMA 到 GPU 内存。mlx5：MLX5_CMD_OP_CREATE_QP 固件命令分配 QPN。"
+    },
+    "15": {
+      "text": "QP 通过 ibv_modify_qp() 从 RESET 转换到 INIT",
+      "detail": "modify_qp(RESET→INIT) 设置：P_Key 索引、端口号、访问标志（IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ 用于 GPUDirect 目标）。QP 现在可以投递接收 WQE（但还不能发送）。Linux：ib_modify_qp() → mlx5_ib_modify_qp() → MLX5_CMD_OP_RST2INIT_QP。"
+    },
+    "16": {
+      "text": "CM REQ 已发送 — AI 节点提议 QP 参数，共享 GPU MR rkey",
+      "detail": "rdma_connect() 触发 ib_send_cm_req()。发送 AI 节点的 QPN、起始 PSN、路径 MTU=4096、重试次数，以及包含 GPU 支持的 rkey 和 GPU BAR 虚拟地址的私有数据。远程服务器将使用此 rkey 直接写入 GPU 内存，而无需知道它是 GPU 内存——rkey 是不透明的，GPU 支持对远程端是透明的。"
+    },
+    "17": {
+      "text": "CM REP 已接收 — 远程服务器接受，提供其 QPN 和 PSN",
+      "detail": "收到 REQ 后，远程服务器调用 rdma_accept() → ib_send_cm_rep()。远程服务器将其 QP 转换到 RTR。AI 节点将其 QP 转换到 RTR。INIT→RTR 设置：目标 QPN、RQ PSN、路径 MTU、AV（地址向量）。远程服务器已从 CM REQ 私有数据中存储了 GPU rkey——它将在即将到来的 RDMA WRITE 的 RETH 头中使用此 rkey。"
+    },
+    "18": {
+      "text": "CM RTU 已发送 — 两个 QP 均转换到 RTS。GPUDirect RDMA 连接已建立。",
+      "detail": "发送 RTU 后，AI 节点将 QP 转换：RTR→RTS。收到 RTU 后，远程服务器将 QP 转换：RTR→RTS。RTR→RTS 设置：SQ PSN、重试次数、RNR 重试、超时。Linux：MLX5_CMD_OP_RTR2RTS_QP。QP 现在完全可操作。远程服务器可以发出目标为 GPU 支持的 rkey 的 RDMA WRITE——数据将直接从网络流入 GPU HBM。"
+    },
+    "19": {
+      "text": "远程服务器发布目标为 AI 节点 GPU 内存的 RDMA WRITE",
+      "detail": "远程服务器上使用操作码 IBV_WR_RDMA_WRITE 调用 ibv_post_send()。WR 指定：指向主机 DRAM 源缓冲区（训练数据）的本地 SG 列表、远程 vaddr = GPU BAR 地址、远程 rkey = GPU 支持的 MR 密钥。从远程服务器的角度看，这与普通的 RDMA WRITE 完全相同——远程服务器不知道（也不需要知道）目标内存是 GPU HBM。GPU 支持完全透明：rkey 是不透明的，AI 节点端的 RNIC 根据其 MTT 条目处理到 GPU 内存的 DMA 路由。"
+    },
+    "20": {
+      "text": "RDMA WRITE 到 GPU — 4MB 直接推送到 GPU HBM，AI 节点 CPU 零参与",
+      "detail": "远程服务器的 RNIC 从主机 DRAM DMA 读取，封装为 BTH+RETH+UDP+IP+Eth，传输。AI 节点的 RNIC：接收数据包 → 验证 ICRC → 在 MR 表中查找 rkey 0xGPU01234 → 找到指向 GPU BAR1 物理地址的 MTT 条目 → DMA 引擎通过 PCIe 点对点事务将载荷直接写入 GPU HBM。\n关键路径对比：\n传统 RDMA WRITE：网络 → RNIC → PCIe → 主机 DRAM → cudaMemcpy → GPU HBM\nGPUDirect RDMA WRITE：网络 → RNIC → PCIe → GPU HBM（直接，零拷贝）\n传统路径需要：(1) RNIC DMA 到主机 DRAM，(2) CPU 中断或轮询，(3) cudaMemcpy() H2D 传输再次消耗 PCIe 带宽，(4) GPU 从主机 DRAM DMA。GPUDirect 完全消除了步骤 2-4。对于大型 AI 训练数据传输，这将 PCIe 带宽消耗减半并消除了 CPU 参与。"
+    },
+    "21": {
+      "text": "来自 AI 节点 RNIC 的 ACK — WRITE 到 GPU 完成，CQE 已在远程服务器投递",
+      "detail": "AI 节点的 RNIC 在 GPU DMA 完成后自主生成 RC ACK。AI 节点上无 CPU 参与——GPU 接收了数据，RNIC 生成了 ACK，AI 节点的 CPU 从未被中断。远程服务器的 RNIC 为已完成的 WRITE 投递 CQE。远程服务器上的应用程序调用 ibv_poll_cq() 获知完成。"
+    },
+    "22": {
+      "text": "远程服务器发布目标为 AI 节点 GPU 内存的 RDMA READ",
+      "detail": "远程服务器上使用操作码 IBV_WR_RDMA_READ 调用 ibv_post_send()。指定：用于接收数据的本地 SG 缓冲区（主机 DRAM，lkey），远程 vaddr = GPU BAR 地址，远程 rkey = GPU 支持的 MR 密钥。AI 节点的 RNIC 将从 GPU HBM 执行 PCIe 点对点读取并发回数据——AI 节点上无 CPU 参与。"
+    },
+    "23": {
+      "text": "RDMA READ 请求（从 GPU 内存）— 此方向无数据",
+      "detail": "远程服务器发送 BTH(opcode=0x0C) + RETH 指定要从 GPU 内存读取什么。无载荷。AI 节点的 RNIC 将自主：查找 rkey → 在 MTT 中找到 GPU BAR1 页面 → 通过 PCIe P2P 从 GPU HBM DMA 读取 → 构建响应数据包 → 传输。"
+    },
+    "24": {
+      "text": "RDMA READ 响应 — AI 节点的 RNIC 从 GPU HBM DMA 读取并发送数据",
+      "detail": "AI 节点的 RNIC：接收 READ 请求 → 验证 rkey 0xGPU01234 → MTT 查找找到 GPU BAR1 物理地址 → DMA 引擎通过 PCIe P2P 从 GPU HBM 读取 → 构建带 AETH+载荷的响应数据包 → 传输到远程服务器。\nAI 节点上 CPU 零参与。GPU 未被中断——没有 CUDA 内核被暂停。RNIC 使用 PCIe BAR1 映射窗口完全自主地完成了整个操作。这就是分布式 AI 训练框架（NCCL、Gloo）如何在不产生 CPU 瓶颈的情况下实现高吞吐量节点间 GPU 通信。"
+    },
+    "25": {
+      "text": "场景完成 — GPUDirect RDMA 数据传输到 GPU 内存",
+      "detail": "总结：两条独立的 100GbE 链路启动（AI 节点↔交换机，交换机↔远程服务器）。AI 节点通过 cuMemAlloc 分配 GPU HBM，加载 nvidia-peermem 将 GPU 内存暴露给 RDMA 子系统，对 GPU BAR1 地址注册了 IB 内存区域，并建立了 RC QP 连接。远程服务器执行了 4MB RDMA WRITE，数据直接落入 GPU HBM——AI 节点上 CPU 零参与，未经过主机 DRAM 弹跳。然后远程服务器执行了 RDMA READ，直接从 GPU HBM 检索数据——同样 CPU 零参与。\n关键要点：GPUDirect RDMA 将 CPU 从数据路径中完全消除。在传统 RDMA + cudaMemcpy 中，每个字节经过 PCIe 总线两次（网络→主机 DRAM，然后主机 DRAM→GPU）。使用 GPUDirect RDMA，每个字节仅经过 PCIe 一次（网络→GPU 直接）。这将 PCIe 带宽消耗减半并消除了 CPU 开销——对于在数百个 GPU 上扩展分布式 AI 训练至关重要。"
+    }
+  }
+}

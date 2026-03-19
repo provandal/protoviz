@@ -1,0 +1,81 @@
+{
+  "meta": {
+    "title": "[WIP] GPUDirect Storage: NVMe에서 GPU 메모리로 직접 읽기(로컬 PCIe)",
+    "description": "GPUDirect Storage(GDS)를 통해 NVMe SSD와 GPU 메모리 간에 CPU 복사 없이 직접 데이터를 전송하는 시나리오. 기존 경로(NVMe → 페이지 캐시 → 사용자 버퍼 → cudaMemcpy → GPU)와 비교하여 GDS가 PCIe 버스 통과를 1회로 줄이는 방법을 보여줍니다.",
+    "learning_objectives": [
+      "기존 I/O 경로와 GDS P2P DMA 경로의 차이 이해",
+      "cuFile API를 통한 GPU 다이렉트 스토리지 작업 확인",
+      "P2P DMA를 통한 NVMe ↔ GPU 제로카피 데이터 전송 추적"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "기존 경로(GDS 없이): NVMe → 페이지 캐시 → 사용자 버퍼 → cudaMemcpy → GPU",
+      "detail": "기존 경로에서는 데이터가 여러 번 복사됩니다: NVMe에서 커널 페이지 캐시로, 사용자 공간 버퍼로, 그리고 cudaMemcpy로 GPU로."
+    },
+    "1": {
+      "text": "기존 경로 대역폭 페널티: 데이터가 PCIe 버스를 두 번 통과",
+      "detail": "전통적 경로에서 NVMe 읽기 데이터는 PCIe 버스를 두 번 통과합니다: (1) NVMe SSD → 호스트 DRAM(PCIe x4 Gen5 = 32 GB/s), (2) 호스트 DRAM → GPU via cudaMemcpy(PCIe x16 Gen5 = 64 GB/s). GDS에서는 데이터가 PCIe를 한 번만 통과합니다: NVMe SSD → GPU 직접. GDS는 또한 커널→사용자 복사와 cudaMemcpy 스케줄링 오버헤드를 제거하여 지연을 줄입니다."
+    },
+    "2": {
+      "text": "cuFileDriverOpen() — GPUDirect Storage 서브시스템 초기화",
+      "detail": "애플리케이션(또는 DALI/kvikio 프레임워크)이 cuFileDriverOpen()을 호출하여 GDS 서브시스템을 초기화합니다. nvidia-fs 커널 모듈의 로딩을 트리거합니다. nvidia-fs가 NVMe 호스트 드라이버에 DMA 작업 콜백을 등록합니다. PCIe 토폴로지를 쿼리하여 GPU와 NVMe SSD가 P2P 가능한지 확인합니다."
+    },
+    "3": {
+      "text": "open(\"/data/training/imagenet_shard_0042.bin\", O_RDONLY | O_DIRECT)",
+      "detail": "O_DIRECT 플래그가 있는 표준 POSIX open(). O_DIRECT는 GDS에 필수입니다 — Linux 페이지 캐시를 우회하며, GDS가 데이터를 GPU 메모리로 직접 보내기 때문에 정확히 원하는 바입니다. O_DIRECT 없이는 커널이 호스트 DRAM에 페이지 캐시 버퍼를 할당하여 GDS의 목적을 무력화합니다."
+    },
+    "4": {
+      "text": "cuFileHandleRegister() — 파일 디스크립터를 GDS에 등록",
+      "detail": "POSIX fd를 cuFile 핸들로 래핑합니다. nvidia-fs가 파일이 지원되는 파일시스템(ext4, XFS, 또는 raw 블록 장치)에 있는지 검증하고 파일을 기반 NVMe 블록 장치로 해석합니다. 이 매핑을 통해 cuFileRead/cuFileWrite가 최대 성능을 위해 일반 블록 레이어 I/O 스케줄러를 우회하고 올바른 NVMe 컨트롤러에 직접 NVMe 명령을 제출할 수 있습니다."
+    },
+    "5": {
+      "text": "cuFileBufRegister() — GPU 메모리 고정 및 BAR1 DMA 매핑 생성",
+      "detail": "핵심 설정 단계입니다. cuFileBufRegister()가 GPU 메모리 페이지를 고정(GPU 드라이버가 마이그레이션하거나 퇴거시키는 것을 방지)하고 BAR1 어퍼처 매핑을 생성합니다. GPU의 BAR1은 시스템 물리 주소 공간에 GPU 메모리(HBM)의 창을 노출하는 PCIe 기본 주소 레지스터입니다. 이 호출 후 NVMe 컨트롤러를 포함한 모든 PCIe 장치가 이 주소로 DMA할 수 있습니다."
+    },
+    "6": {
+      "text": "cuFileRead() — NVMe → GPU 직접 읽기 시작(4MiB)",
+      "detail": "cuFileRead()가 NVMe에서 GPU 메모리로의 직접 P2P DMA 읽기를 시작합니다."
+    },
+    "7": {
+      "text": "NVMe Read SQE 제출 — 도어벨 링",
+      "detail": "NVMe 호스트 드라이버가 64바이트 SQE를 호스트 DRAM의 Submission Queue에 기록하고 NVMe 컨트롤러의 도어벨 레지스터에 새 SQ 테일 포인터를 기록합니다(PCIe를 통한 MMIO 쓰기). SQE에는 opcode=0x02(Read), NSID=1, SLBA=0, NLB=8191(4MiB), 그리고 결정적으로: PRP1 = GPU BAR1 물리 주소가 포함됩니다. NVMe 컨트롤러는 PRP1이 GPU 메모리를 가리키는지 알지 못하며 관심도 없습니다 — 해당 주소로 데이터를 DMA합니다."
+    },
+    "8": {
+      "text": "NVMe SSD가 호스트 메모리에서 SQE 가져오기",
+      "detail": "NVMe 컨트롤러가 도어벨 쓰기(새 SQ 테일)를 감지하고 호스트 DRAM의 Submission Queue에서 64바이트 SQE를 가져오기 위해 PCIe Memory Read를 발행합니다. 컨트롤러가 SQE를 파싱하고 Read opcode, NSID, SLBA, NLB, PRP 주소를 추출합니다. 그런 다음 요청된 LBA 범위에 대한 NAND 플래시 읽기를 시작합니다."
+    },
+    "9": {
+      "text": "P2P DMA: 4MiB가 NVMe SSD → GPU BAR1로 흐름(CPU 복사 없음)",
+      "detail": "NVMe SSD가 P2P DMA를 통해 데이터를 GPU BAR1 주소로 직접 전송합니다. CPU 복사가 전혀 없습니다."
+    },
+    "10": {
+      "text": "NVMe 완료 — CQE 게시, MSI-X 발생",
+      "detail": "모든 데이터가 GPU BAR1로 DMA된 후, NVMe 컨트롤러가 호스트 DRAM의 CQ에 16바이트 Completion Queue Entry(CQE)를 게시하고 MSI-X 인터럽트를 발생시킵니다. CQE에는 CID=0x0042(Read 명령과 일치), status=0(성공), 업데이트된 SQ 헤드 포인터가 포함됩니다."
+    },
+    "11": {
+      "text": "cuFileRead() 반환 — 4MiB 학습 데이터가 GPU 메모리에 있음",
+      "detail": "cuFileRead()가 4194304(성공적으로 읽은 바이트)를 반환합니다. 학습 데이터가 이제 등록된 버퍼 주소의 GPU HBM3에 있으며, CUDA 커널에서 즉시 접근 가능합니다. 총 CPU 관여: 64바이트 NVMe SQE 작성 + 도어벨 1회 + 16바이트 CQE 처리 1회. CPU는 4MiB 페이로드의 단일 바이트도 접근하지 않았습니다. 이것이 GPUDirect Storage의 힘입니다."
+    },
+    "12": {
+      "text": "cuFileWrite() — GPU 메모리에서 NVMe로 체크포인트 저장(4MiB)",
+      "detail": "학습 계산이 완료된 후 애플리케이션이 cuFileWrite()를 호출하여 체크포인트를 저장합니다. 호스트 DRAM을 경유하지 않고 GPU 메모리 내용을 NVMe SSD에 직접 씁니다. 쓰기 경로는 읽기 경로의 미러입니다: nvidia-fs가 GPU BAR1 주소를 가리키는 PRP 항목이 있는 NVMe Write SQE를 구성하지만, 이제 NVMe 컨트롤러가 해당 주소에서 DMA-읽기합니다(GPU → SSD)."
+    },
+    "13": {
+      "text": "NVMe Write SQE 제출 — PRP1 = GPU BAR1",
+      "detail": "NVMe Write 명령 SQE는 Read 명령과 구조가 동일하지만 opcode 0x01(Write)입니다. PRP1은 여전히 GPU BAR1 주소를 가리킵니다 — 하지만 이제 NVMe 컨트롤러가 이 주소에 PCIe Memory READ TLP를 발행합니다(GPU 메모리 읽기). PCIe 루트 컴플렉스가 읽기를 GPU로 라우팅하고, GPU가 데이터를 반환합니다."
+    },
+    "14": {
+      "text": "P2P DMA: 4MiB가 GPU BAR1 → NVMe SSD로 흐름(체크포인트 저장)",
+      "detail": "NVMe 컨트롤러가 PCIe P2P Memory Read TLP를 통해 GPU BAR1 메모리에서 4MiB를 읽습니다. PCIe 읽기는 분할 트랜잭션입니다 — NVMe 컨트롤러가 MRd 요청 TLP를 보내고, PCIe 패브릭이 GPU로 라우팅하고, GPU가 CplD(Completion with Data) TLP를 반환합니다. NVMe 컨트롤러가 데이터를 축적하고 NAND 플래시를 프로그래밍합니다. 다시 한번, 호스트 DRAM과 CPU는 데이터 경로에 없습니다."
+    },
+    "15": {
+      "text": "NVMe Write 완료 — 체크포인트가 NAND에 영구 저장됨",
+      "detail": "NVMe 컨트롤러가 NAND 플래시에 쓰기를 완료하고 status=success인 CQE를 게시합니다. cuFileWrite()가 4194304(기록된 바이트)를 반환합니다. 체크포인트가 이제 SSD에 안전하게 저장되었습니다. 전체 저장 작업에 CPU 복사가 제로였습니다."
+    },
+    "16": {
+      "text": "⟳ GDS 요약: 전체 PCIe 대역폭으로 NVMe와 GPU 간 제로카피 I/O",
+      "detail": "GPUDirect Storage는 스토리지 데이터 경로에서 CPU를 완전히 제거합니다. CPU의 유일한 역할은 컨트롤 플레인: 64바이트 NVMe 명령 디스크립터 제출과 16바이트 완료 항목 처리입니다. 모든 대량 데이터 이동은 NVMe SSD와 GPU 간의 PCIe 피어-투-피어 DMA를 통해 발생합니다.\nAI 학습 워크로드의 경우: GDS는 NVMe 전체 대역폭(SSD당 7+ GB/s)으로 학습 데이터를 GPU 메모리에 직접 읽고, 같은 속도로 체크포인트를 저장할 수 있습니다. 핵심 구성요소: cuFile API(사용자 공간), nvidia-fs 커널 모듈(커널 공간), NVMe 드라이버(수정 없음), PCIe P2P 라우팅(하드웨어)."
+    }
+  }
+}

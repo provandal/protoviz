@@ -1,0 +1,85 @@
+{
+  "meta": {
+    "title": "[WIP] GPUDirect Storage: NVMe Read مباشرة لذاكرة GPU (PCIe محلي)",
+    "description": "تبادل GPUDirect Storage (GDS) كامل بيوضّح كيف البيانات بتنقرا من NVMe SSD مباشرة لذاكرة GPU (BAR1) بيتجاوز page cache تبع CPU بالكامل. هيدا سيناريو محلي — كل 3 الممثلين (GPU، Host CPU/OS، NVMe SSD) مكوّنات ضمن جهاز واحد متصلة عبر PCIe. السيناريو بيقارن مسار القراءة التقليدي (NVMe SSD → page cache → user buffer → cudaMemcpy → GPU = عدة نسخ بتدخّل CPU) مع مسار GDS (NVMe SSD → GPU BAR memory = صفر نسخ CPU).",
+    "learning_objectives": [
+      "فهم ليش مسار I/O التخزين التقليدي (NVMe → page cache → cudaMemcpy) غير كفوء لأحمال عمل GPU",
+      "تعلّم كيف GPUDirect Storage بيلغي CPU bounce buffers عبر توجيه NVMe DMA مباشرة لـ GPU BAR1",
+      "تتبّع دورة حياة cuFile API: cuFileDriverOpen → cuFileHandleRegister → cuFileBufRegister → cuFileRead/cuFileWrite",
+      "فهم دور nvidia-fs kernel module كوسيط بين درايفر NVMe وإدارة ذاكرة GPU",
+      "شوف كيف PCIe peer-to-peer (P2P) DMA بيمكّن NVMe controllers من الكتابة مباشرة لـ GPU BAR1",
+      "راقب إرسال أمر NVMe مع PRP/SGL entries بيشيرو لعناوين GPU الفيزيائية",
+      "شوف كيف cuFileWrite بيعكس المسار: ذاكرة GPU → NVMe SSD لحفظ checkpoints AI"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "المسار التقليدي (بدون GDS): NVMe → Page Cache → User Buffer → cudaMemcpy → GPU",
+      "detail": "بدون GPUDirect Storage، قراءة بيانات NVMe لذاكرة GPU بتتطلّب عدة نسخ بتدخّل CPU:\n(1) التطبيق بينادي read(). (2) درايفر NVMe بيعمل submit لأمر NVMe Read مع PRP entries بيشيرو لصفحات host DRAM. (3) NVMe SSD بيعمل DMA لـ host DRAM (page cache). (4) الـ kernel بينسخ من page cache لـ user-space buffer. (5) التطبيق بينادي cudaMemcpyHostToDevice(). (6) CUDA runtime بيعمل DMA من host DRAM لـ GPU عبر PCIe.\nكل نسخة بتستهلك CPU cycles وmemory bandwidth وبتضيف تأخير."
+    },
+    "1": {
+      "text": "عقوبة bandwidth المسار التقليدي: البيانات بتعبر PCIe bus مرتين",
+      "detail": "بالمسار التقليدي، بيانات NVMe read بتعبر PCIe bus مرتين: (1) NVMe SSD → Host DRAM، (2) Host DRAM → GPU عبر cudaMemcpy. مع GDS، البيانات بتعبر PCIe مرة وحدة بس: NVMe SSD → GPU مباشرة."
+    },
+    "2": {
+      "text": "cuFileDriverOpen() — تهيئة نظام GPUDirect Storage",
+      "detail": "التطبيق بينادي cuFileDriverOpen() لتهيئة نظام GDS. هيدا بيشغّل تحميل nvidia-fs kernel module. nvidia-fs بيسجّل callbacks لعمليات DMA مع درايفر NVMe host وبيتحقّق من بنية PCIe للتأكّد إنو GPU وNVMe SSD قادرين على P2P."
+    },
+    "3": {
+      "text": "open(\"/data/training/imagenet_shard_0042.bin\", O_RDONLY | O_DIRECT)",
+      "detail": "POSIX open() عادي مع علم O_DIRECT. O_DIRECT مطلوب لـ GDS — بيتجاوز page cache تبع Linux، وهيدا بالضبط اللي منريدو بما إنو GDS بيبعت البيانات مباشرة لذاكرة GPU."
+    },
+    "4": {
+      "text": "cuFileHandleRegister() — تسجيل file descriptor مع GDS",
+      "detail": "بيغلّف POSIX fd بـ cuFile handle. nvidia-fs بيتحقّق إنو الملف على filesystem مدعوم (ext4، XFS، أو raw block device) وبيربط الملف بالـ NVMe block device اللي تحتو."
+    },
+    "5": {
+      "text": "cuFileBufRegister() — تثبيت ذاكرة GPU وإنشاء BAR1 DMA mapping",
+      "detail": "خطوة التهيئة الحاسمة. cuFileBufRegister() بيثبّت صفحات ذاكرة GPU (بيمنع GPU driver من نقلها) وبيأنشئ BAR1 aperture mapping. بعد هالنداء، GPU buffer قابل للوصول على عنوان فيزيائي عبر PCIe — أي جهاز PCIe (بما فيه NVMe controller) بيقدر يعمل DMA لهالعنوان."
+    },
+    "6": {
+      "text": "cuFileRead() — بدء قراءة NVMe → GPU مباشرة (4 MiB)",
+      "detail": "التطبيق بينادي cuFileRead(). nvidia-fs بيترجم file offset لـ NVMe LBAs، بيبني NVMe Read SQE(s) مع PRP entries بيشيرو لعناوين GPU BAR1 الفيزيائية، وبيعملهم submit لدرايفر NVMe.\nالابتكار الأساسي: nvidia-fs بيعترض مسار DMA mapping تبع درايفر NVMe (dma_map_sg) وبيستبدل مدخلات scatter-gather تبع host DRAM بعناوين GPU BAR1 الفيزيائية. درايفر NVMe نفسو ما اتعدّل."
+    },
+    "7": {
+      "text": "NVMe Read SQE مبعوت — doorbell رنّ",
+      "detail": "درايفر NVMe host بيكتب 64-byte SQE بالـ Submission Queue ويكتب SQ tail pointer الجديد لـ doorbell register تبع NVMe controller (MMIO write عبر PCIe). الـ SQE فيه opcode=0x02 (Read)، والأهم: PRP1 = عنوان GPU BAR1 الفيزيائي. NVMe controller ما بيعرف ولا يهمّو إنو PRP1 بيشير لذاكرة GPU — رح يعمل DMA للبيانات على هالعنوان."
+    },
+    "8": {
+      "text": "NVMe SSD بيجيب SQE من ذاكرة host",
+      "detail": "NVMe controller بيكتشف doorbell write (SQ tail جديد) وبيعمل PCIe Memory Read ليجيب 64-byte SQE. بيعالج SQE وبيبلّش NAND flash read للـ LBA range المطلوب."
+    },
+    "9": {
+      "text": "P2P DMA: 4 MiB عم تمشي NVMe SSD → GPU BAR1 (صفر نسخ CPU)",
+      "detail": "اللحظة التعليمية الأساسية. NVMe controller بيقرا البيانات من NAND flash لـ internal DRAM buffer تبعو، بعدين بيعمل PCIe Memory Write TLPs بيستهدف عنوان GPU BAR1 من PRP1/PRP list. PCIe root complex بيوجّه الـ TLPs مباشرة لـ GPU — البيانات ما بتدخل host DRAM وCPU ما بيشوف بايتات الحمولة أبداً.\nعلى PCIe Gen5 x4 (32 GB/s link bandwidth)، نقل 4 MiB بيخلص بحوالي 125 ميكروثانية. المسار التقليدي كان ياخد ~250 μs (عبورين PCIe زائد حمل CPU memcpy)."
+    },
+    "10": {
+      "text": "NVMe completion — CQE محطوط، MSI-X شغّل",
+      "detail": "بعد كل البيانات ما اتعملت DMA لـ GPU BAR1، NVMe controller بيحط 16-byte CQE بالـ CQ بـ host DRAM وبيشغّل MSI-X interrupt. الـ CQE فيه CID=0x0042، status=0 (نجاح)."
+    },
+    "11": {
+      "text": "cuFileRead() رجع — 4 MiB بيانات تدريب بذاكرة GPU",
+      "detail": "cuFileRead() بيرجّع 4194304 (بايتات مقروءة بنجاح). بيانات التدريب هلق بـ GPU HBM3 على عنوان buffer المسجّل، فوراً قابلة لـ CUDA kernels.\nمجموع تدخّل CPU: كتابة 64-byte NVMe SQE + رنّ doorbell واحد + معالجة 16-byte CQE واحد. CPU ما لمس ولا بايت واحد من حمولة 4 MiB."
+    },
+    "12": {
+      "text": "cuFileWrite() — حفظ checkpoint من ذاكرة GPU لـ NVMe (4 MiB)",
+      "detail": "بعد حساب التدريب، التطبيق بيحفظ checkpoint عبر cuFileWrite(). هيدا بيكتب محتويات ذاكرة GPU مباشرة لـ NVMe SSD بدون staging عبر host DRAM. مسار الكتابة مرآة لمسار القراءة: nvidia-fs بيبني NVMe Write SQE مع PRP entries بيشيرو لعناوين GPU BAR1، بس هلق NVMe controller رح يعمل DMA-read من هالعناوين (GPU → SSD)."
+    },
+    "13": {
+      "text": "NVMe Write SQE مبعوت — PRP1 = GPU BAR1",
+      "detail": "أمر NVMe Write SQE مطابق بالهيكل لأمر Read بس مع opcode 0x01 (Write). PRP1 بعدو بيشير لعنوان GPU BAR1 — بس هلق NVMe controller رح يعمل PCIe Memory READ TLPs لهالعنوان (يقرا ذاكرة GPU) بدل Memory Write TLPs."
+    },
+    "14": {
+      "text": "P2P DMA: 4 MiB عم تمشي GPU BAR1 → NVMe SSD (حفظ checkpoint)",
+      "detail": "NVMe controller بيقرا 4 MiB من ذاكرة GPU BAR1 عبر PCIe P2P Memory Read TLPs. GPU بيرجّع CplD (Completion with Data) TLPs. NVMe controller بيجمّع البيانات وبيبرمج NAND flash. مجدداً، host DRAM وCPU مش بمسار البيانات."
+    },
+    "15": {
+      "text": "NVMe Write completion — الـ checkpoint محفوظ على NAND",
+      "detail": "NVMe controller بيكمّل الكتابة على NAND flash. cuFileWrite() بيرجّع 4194304. الـ checkpoint هلق محفوظ بأمان على SSD بدون ولا نسخة CPU."
+    },
+    "16": {
+      "text": "ملخص GDS: Zero-copy I/O بين NVMe وGPU بكامل PCIe bandwidth",
+      "detail": "GPUDirect Storage بيلغي CPU من مسار بيانات التخزين بالكامل. دور CPU الوحيد هو control plane: إرسال 64-byte NVMe command descriptors ومعالجة 16-byte completion entries. كل نقل البيانات الكثيف بيصير عبر PCIe peer-to-peer DMA بين NVMe SSD وGPU.\n\nلأحمال عمل تدريب AI: GDS بيمكّن قراءة بيانات التدريب بكامل NVMe bandwidth (7+ GB/s لكل SSD) مباشرة لذاكرة GPU، وحفظ checkpoints بنفس السرعة. مع 8 NVMe SSDs بتغذّي H100 GPU واحد، GDS بيقدر يوصّل 50+ GB/s من bandwidth بيانات تدريب بدون حمل CPU.\n\nالمكوّنات الأساسية: cuFile API (user space)، nvidia-fs kernel module (kernel space)، درايفر NVMe (بدون تعديل)، PCIe P2P routing (hardware)."
+    }
+  }
+}

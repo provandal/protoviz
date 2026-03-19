@@ -1,0 +1,125 @@
+{
+  "meta": {
+    "title": "FC Fabric Login → decouverte via Name Server → ecriture et lecture SCSI",
+    "description": "Sequence complete de connexion a un SAN Fibre Channel sur 64GFC, de l'etablissement de la liaison physique au Fabric Login (FLOGI), la decouverte via le Name Server, le Port Login (PLOGI), le Process Login (PRLI) pour FCP, la decouverte de LUN SCSI via INQUIRY et READ CAPACITY, suivis d'un SCSI WRITE(10) et READ(10) pour verifier l'ecriture. L'hote se connecte a un commutateur FC executant un Name Server integre et des services de fabrique, qui achemine les trames vers une baie de stockage. Les champs de trame sont annotes avec les references aux specifications T11/INCITS (FC-FS, FC-LS, FC-GS, FCP-4) et des renvois au code source du noyau Linux (drivers/scsi/lpfc, drivers/scsi/qla2xxx).",
+    "learning_objectives": [
+      "Comprendre comment les liaisons physiques FC s'activent independamment (hote↔commutateur, commutateur↔stockage)",
+      "Suivre l'echange FLOGI : l'hote demande la connexion au fabrique, le commutateur attribue un N_Port ID (FCID)",
+      "Suivre les requetes au Name Server pour decouvrir les cibles disponibles via GID_FT",
+      "Observer le login au niveau du port (PLOGI) et le login au niveau du processus (PRLI) pour FCP",
+      "Voir comment les commandes SCSI sont encapsulees dans les trames FCP (FCP_CMND, FCP_DATA, FCP_RSP)",
+      "Comprendre la poignee de main FCP_XFER_RDY requise pour les operations SCSI WRITE",
+      "Comparer le modele de couches propre a FC (FC-0 a FC-4) avec la pile OSI"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Liaison A : signal detecte — HBA hote ↔ commutateur",
+      "detail": "L'emetteur-recepteur optique du HBA hote detecte la lumiere du port du commutateur FC. L'initialisation de la liaison FC commence. La liaison physique est point a point."
+    },
+    "1": {
+      "text": "Liaison B : signal detecte — commutateur ↔ baie de stockage",
+      "detail": "Le port de la baie de stockage detecte la lumiere du commutateur. Liaison physique independante."
+    },
+    "2": {
+      "text": "Liaison A ACTIVE — hote ↔ commutateur a 64GFC",
+      "detail": "Negociation de vitesse terminee : 64GFC (64,0 Gbit/s). Encodage 64b/66b actif. Les primitives FC peuvent maintenant etre echangees. Controle de flux BB_Credit initialise."
+    },
+    "3": {
+      "text": "Liaison B ACTIVE — commutateur ↔ stockage a 64GFC",
+      "detail": "Les deux liaisons physiques sont maintenant actives. Le commutateur peut transmettre des trames FC entre ses ports. La baie de stockage etait precedemment connectee au fabrique (FCID 0x010200 pre-attribue)."
+    },
+    "4": {
+      "text": "FLOGI — l'hote demande la connexion au fabrique (S_ID=0x000000 → D_ID=0xFFFFFE)",
+      "detail": "L'hote n'a pas encore de FCID (S_ID=0x000000). Il envoie FLOGI a l'adresse bien connue du Fabric Controller (0xFFFFFE). Le FLOGI transporte le WWPN de l'hote, le BB_Credit et les fonctionnalites supportees. C'est toujours le premier ELS apres l'activation de la liaison. Linux : lpfc_els.c lpfc_issue_els_flogi() → lpfc_cmpl_els_flogi()"
+    },
+    "5": {
+      "text": "FLOGI ACC — le fabrique attribue le FCID 0x010100 a l'hote",
+      "detail": "Le fabrique accepte la connexion et attribue le N_Port ID 0x010100. Ce FCID sera le S_ID de l'hote dans toutes les trames suivantes. Le fabrique retourne aussi ses propres parametres de service et le BB_Credit. Le pilote HBA de l'hote stocke le FCID attribue et configure le materiel. Linux : lpfc_cmpl_els_flogi() → lpfc_vport_set_state(FC_VPORT_ACTIVE)"
+    },
+    "6": {
+      "text": "PLOGI vers le Name Server (0xFFFFFC)",
+      "detail": "Avant d'interroger le Name Server, l'hote doit d'abord effectuer un PLOGI vers celui-ci. Cela etablit les parametres de communication au niveau du port. Linux : lpfc_ct.c lpfc_ns_cmd() appelle lpfc_issue_els_plogi() vers 0xFFFFFC en premier."
+    },
+    "7": {
+      "text": "Le Name Server accepte le PLOGI — les requetes CT sont maintenant autorisees",
+      "detail": "La connexion au Name Server est terminee. L'hote peut maintenant envoyer des requetes Common Transport (CT)."
+    },
+    "8": {
+      "text": "Requete GID_FT — rechercher toutes les cibles FCP (SCSI) dans le fabrique",
+      "detail": "L'hote envoie une requete Common Transport (CT) au Name Server demandant tous les identifiants de port (FCID) enregistres comme type FC-4 0x08 (FCP/SCSI). C'est ainsi que l'hote decouvre quelles baies de stockage sont disponibles. Linux : lpfc_ct.c lpfc_ns_cmd(SLI_CTNS_GID_FT) → SLI_CTNS_GID_FT=0x0171"
+    },
+    "9": {
+      "text": "Le Name Server repond : stockage au FCID 0x010200",
+      "detail": "Le Name Server retourne une liste de FCID supportant FCP. Dans ce fabrique, il y a une cible : la baie de stockage au 0x010200. L'hote va maintenant effectuer un PLOGI vers ce FCID pour etablir la communication au niveau du port. Linux : lpfc_cmpl_ct_cmd_gid_ft() traite la reponse et initie le PLOGI."
+    },
+    "10": {
+      "text": "PLOGI vers le stockage (0x010200) — login au niveau du port",
+      "detail": "L'hote envoie un PLOGI a la baie de stockage. Cette trame traverse le commutateur (routage base sur D_ID). PLOGI negocie les parametres de port : BB_Credit, taille maximale de trame et classe de service. Linux : lpfc_issue_els_plogi() → lpfc_cmpl_els_plogi()"
+    },
+    "11": {
+      "text": "Le stockage accepte le PLOGI — login au niveau du port etabli",
+      "detail": "Le stockage accepte le login du port. L'hote et le stockage peuvent maintenant echanger des trames FC directement. Mais les E/S FCP (SCSI) necessitent une etape supplementaire : le Process Login (PRLI)."
+    },
+    "12": {
+      "text": "PRLI — etablir le protocole de couche superieure FCP (SCSI)",
+      "detail": "Le Process Login etablit l'association FC-4 (FCP). La page de parametre de service PRLI declare cet hote comme initiateur et negocie les fonctionnalites FCP comme le comportement XFER_RDY. C'est la derniere etape de login avant que les commandes SCSI puissent circuler. Linux : lpfc_issue_els_prli() — envoie PRLI avec le bit initiateur active."
+    },
+    "13": {
+      "text": "PRLI ACC — FCP etabli. Les E/S SCSI peuvent commencer.",
+      "detail": "Le stockage accepte le PRLI et se declare comme cible. L'association de processus FCP est maintenant etablie. Les commandes SCSI peuvent etre envoyees sous forme de trames FCP_CMND. Linux : lpfc_cmpl_els_prli() → lpfc_issue_disc_scsi() declenche la decouverte de LUN SCSI."
+    },
+    "14": {
+      "text": "SCSI INQUIRY — decouvrir le type de peripherique",
+      "detail": "L'hote envoie un SCSI INQUIRY (opcode 0x12) pour identifier le peripherique au LUN 0. INQUIRY retourne le type de peripherique, le fabricant, le produit et les fonctionnalites supportees. Linux : scsi_scan.c scsi_probe_lun() → scsi_execute_cmd(INQUIRY)"
+    },
+    "15": {
+      "text": "Donnees INQUIRY — le peripherique est un disque bloc (type 0x00)",
+      "detail": "Le stockage retourne la reponse INQUIRY identifiant le peripherique comme un peripherique bloc a acces direct (type 0x00, SBC). Fabricant : DellEMC, Produit : PowerStore."
+    },
+    "16": {
+      "text": "FCP_RSP — INQUIRY GOOD, LUN 0 decouvert",
+      "detail": "Etat SCSI GOOD. La couche intermediaire SCSI de l'hote sait maintenant que c'est un peripherique bloc. scsi_add_lun() cree un peripherique SCSI et sd_mod attache un peripherique bloc /dev/sdX."
+    },
+    "17": {
+      "text": "WRITE(10) — ecrire 4 Ko au LBA 0",
+      "detail": "L'application ecrit 4 Ko (8 blocs de 512 octets) a partir du LBA 0. FCP_CMND transporte le CDB SCSI. L'hote doit attendre FCP_XFER_RDY avant d'envoyer les donnees — c'est le controle de flux d'ecriture FC."
+    },
+    "18": {
+      "text": "FCP_XFER_RDY — le stockage est pret a recevoir les donnees d'ecriture",
+      "detail": "Le stockage envoie Transfer Ready, accordant a l'hote la permission d'envoyer jusqu'a 4096 octets de donnees d'ecriture. Ce mecanisme de controle de flux est propre aux ecritures FC — il empeche l'hote d'envoyer des donnees avant que la cible n'ait alloue l'espace tampon. Les lectures ne necessitent pas cette etape."
+    },
+    "19": {
+      "text": "FCP_DATA (1/2) — premiers 2048 octets de l'ecriture a l'offset 0",
+      "detail": "La taille Recv_Size FC negociee pendant FLOGI est de 2112 octets, donc l'ecriture de 4 Ko doit etre repartie sur deux trames FCP_DATA. SEQ_CNT=0, offset relatif 0."
+    },
+    "20": {
+      "text": "FCP_DATA (2/2) — derniers 2048 octets de l'ecriture a l'offset 2048",
+      "detail": "La seconde trame FCP_DATA complete le transfert de 4 Ko. SEQ_CNT=1, offset relatif 0x800 (2048). Le bit fin de sequence est active dans F_CTL."
+    },
+    "21": {
+      "text": "FCP_RSP — ecriture GOOD, donnees validees",
+      "detail": "Le stockage confirme que l'ecriture s'est terminee avec l'etat SCSI GOOD. Les donnees ont ete validees sur le stockage non volatile. L'echange est termine : OX_ID 0x0020 est libere."
+    },
+    "22": {
+      "text": "READ(10) — relire 4 Ko au LBA 0 pour verifier l'ecriture",
+      "detail": "L'hote relit les memes 4 Ko pour verifier l'ecriture. Aucun XFER_RDY n'est necessaire pour les lectures — la cible envoie les FCP_DATA immediatement apres reception de la commande."
+    },
+    "23": {
+      "text": "FCP_DATA (1/2) — premiers 2048 octets de la lecture a l'offset 0",
+      "detail": "Le stockage envoie les donnees de lecture immediatement — contrairement aux ecritures, les lectures ne necessitent pas de poignee de main XFER_RDY. La meme contrainte de Recv_Size s'applique : 4 Ko repartis sur deux trames. SEQ_CNT=0, offset relatif 0."
+    },
+    "24": {
+      "text": "FCP_DATA (2/2) — derniers 2048 octets de la lecture a l'offset 2048",
+      "detail": "La seconde trame FCP_DATA complete la lecture de 4 Ko. SEQ_CNT=1, offset relatif 0x800 (2048). Les donnees devraient correspondre a ce qui a ete ecrit."
+    },
+    "25": {
+      "text": "FCP_RSP — lecture GOOD, donnees verifiees",
+      "detail": "Etat SCSI GOOD. Les donnees lues correspondent aux donnees ecrites, confirmant l'integrite des donnees de bout en bout a travers le fabrique FC."
+    },
+    "26": {
+      "text": "Scenario termine",
+      "detail": "Resume : l'hote a etabli des liaisons physiques 64GFC, effectue le Fabric Login (FLOGI, FCID attribue), decouvert le stockage via le Name Server (GID_FT), complete le Port Login (PLOGI) et le Process Login (PRLI) pour FCP, decouvert le LUN 0 via SCSI INQUIRY, ecrit 4 Ko au LBA 0, et relu pour verifier. Total de trames de login : 10 (FLOGI×2, PLOGI×4, GID_FT×2, PRLI×2). Total de trames d'E/S : 9 (INQUIRY×3, WRITE×4, READ×3 incluant XFER_RDY)."
+    }
+  }
+}

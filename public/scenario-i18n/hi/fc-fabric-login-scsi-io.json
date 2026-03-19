@@ -1,0 +1,44 @@
+{
+  "meta": {
+    "title": "FC Fabric Login → Name Server Discovery → SCSI Write & Read",
+    "description": "Fibre Channel SAN फैब्रिक में एक पूर्ण I/O जीवनचक्र: 64GFC भौतिक लिंक स्थापना, FLOGI (फैब्रिक लॉगिन और FCID असाइनमेंट), Name Server GID_FT के माध्यम से टारगेट discovery, PLOGI (पोर्ट-स्तरीय लॉगिन), PRLI (FCP प्रक्रिया लॉगिन), SCSI INQUIRY, FCP_XFER_RDY फ्लो कंट्रोल के साथ WRITE(10), और READ(10)।",
+    "learning_objectives": [
+      "समझें कि FC भौतिक लिंक कैसे स्वतंत्र रूप से ऊपर आते हैं (होस्ट↔स्विच, स्विच↔स्टोरेज)",
+      "FLOGI एक्सचेंज ट्रेस करें: होस्ट फैब्रिक लॉगिन का अनुरोध करता है, स्विच N_Port ID (FCID) असाइन करता है",
+      "GID_FT के माध्यम से उपलब्ध टारगेट खोजने के लिए Name Server queries फॉलो करें",
+      "FCP के लिए पोर्ट-स्तरीय लॉगिन (PLOGI) और प्रक्रिया-स्तरीय लॉगिन (PRLI) देखें",
+      "FCP फ्रेम (FCP_CMND, FCP_DATA, FCP_RSP) में SCSI कमांड कैसे एनकैप्सुलेट होते हैं, यह देखें",
+      "SCSI WRITE ऑपरेशन के लिए आवश्यक FCP_XFER_RDY handshake समझें",
+      "FC के अपने लेयर मॉडल (FC-0 से FC-4) की OSI स्टैक से तुलना करें"
+    ]
+  },
+  "timeline": {
+    "0": { "text": "Link A: सिग्नल डिटेक्ट — Host HBA ↔ Switch", "detail": "होस्ट HBA पर ऑप्टिकल ट्रांसीवर FC स्विच पोर्ट से प्रकाश डिटेक्ट करता है। FC लिंक इनिशियलाइज़ेशन शुरू होता है। भौतिक लिंक पॉइंट-टू-पॉइंट है।" },
+    "1": { "text": "Link B: सिग्नल डिटेक्ट — Switch ↔ Storage Array", "detail": "स्टोरेज एरे पोर्ट स्विच से प्रकाश डिटेक्ट करता है। स्वतंत्र भौतिक लिंक।" },
+    "2": { "text": "Link A UP — 64GFC पर Host ↔ Switch", "detail": "स्पीड नेगोशिएशन पूर्ण: 64GFC (64.0 Gbps)। 64b/66b एन्कोडिंग सक्रिय। FC primitives अब एक्सचेंज किए जा सकते हैं। BB_Credit फ्लो कंट्रोल इनिशियलाइज़।" },
+    "3": { "text": "Link B UP — 64GFC पर Switch ↔ Storage", "detail": "दोनों भौतिक लिंक अब ऊपर हैं। स्विच पोर्ट के बीच FC फ्रेम फॉरवर्ड कर सकता है। स्टोरेज एरे पहले से फैब्रिक में लॉगिन था (FCID 0x010200 प्री-असाइन्ड)।" },
+    "4": { "text": "FLOGI — होस्ट फैब्रिक लॉगिन का अनुरोध करता है (S_ID=0x000000 → D_ID=0xFFFFFE)", "detail": "होस्ट के पास अभी कोई FCID नहीं (S_ID=0x000000)। यह well-known Fabric Controller एड्रेस (0xFFFFFE) को FLOGI भेजता है। FLOGI होस्ट का WWPN, BB_Credit, और समर्थित फीचर ले जाता है। लिंक अप के बाद यह हमेशा पहला ELS होता है।" },
+    "5": { "text": "FLOGI ACC — फैब्रिक होस्ट को FCID 0x010100 असाइन करता है", "detail": "फैब्रिक लॉगिन स्वीकार करता है और N_Port ID 0x010100 असाइन करता है। यह FCID सभी बाद के फ्रेम में होस्ट का S_ID होगा। फैब्रिक अपने सर्विस पैरामीटर और BB_Credit भी लौटाता है। होस्ट का HBA ड्राइवर असाइन्ड FCID स्टोर करता है और उसके अनुसार कॉन्फ़िगर करता है।" },
+    "6": { "text": "Name Server (0xFFFFFC) को PLOGI", "detail": "Name Server से query करने से पहले, होस्ट को पहले उसे PLOGI करना होगा। यह पोर्ट-स्तरीय संचार पैरामीटर स्थापित करता है।" },
+    "7": { "text": "Name Server PLOGI स्वीकार — CT queries अब अनुमत", "detail": "Name Server लॉगिन पूर्ण। होस्ट अब Common Transport (CT) requests भेज सकता है।" },
+    "8": { "text": "GID_FT query — फैब्रिक में सभी FCP (SCSI) targets खोजें", "detail": "होस्ट Name Server को Common Transport (CT) request भेजता है जो FC-4 प्रकार 0x08 (FCP/SCSI) के रूप में रजिस्टर्ड सभी पोर्ट identifiers (FCIDs) माँगता है। होस्ट इस तरह खोजता है कि कौन से स्टोरेज एरे उपलब्ध हैं।" },
+    "9": { "text": "Name Server जवाब: स्टोरेज FCID 0x010200 पर", "detail": "Name Server FCP सपोर्ट करने वाले FCIDs की सूची लौटाता है। इस फैब्रिक में एक टारगेट है: FCID 0x010200 पर स्टोरेज एरे। होस्ट अब पोर्ट-स्तरीय संचार स्थापित करने के लिए इस FCID को PLOGI करेगा।" },
+    "10": { "text": "स्टोरेज (0x010200) को PLOGI — पोर्ट-स्तरीय लॉगिन", "detail": "होस्ट स्टोरेज एरे को PLOGI भेजता है। यह फ्रेम स्विच से गुज़रता है (D_ID-आधारित रूटिंग)। PLOGI पोर्ट पैरामीटर negotiate करता है: BB_Credit, अधिकतम फ्रेम साइज़, और सर्विस की क्लास।" },
+    "11": { "text": "स्टोरेज PLOGI स्वीकार — पोर्ट-स्तरीय लॉगिन स्थापित", "detail": "स्टोरेज पोर्ट लॉगिन स्वीकार करता है। होस्ट और स्टोरेज अब सीधे FC फ्रेम एक्सचेंज कर सकते हैं। लेकिन FCP (SCSI) I/O के लिए एक और चरण चाहिए: Process Login (PRLI)।" },
+    "12": { "text": "PRLI — FCP (SCSI) ऊपरी-परत प्रोटोकॉल स्थापित करें", "detail": "Process Login FC-4 (FCP) एसोसिएशन स्थापित करता है। PRLI सर्विस पैरामीटर पेज इस होस्ट को initiator घोषित करता है और XFER_RDY व्यवहार जैसे FCP फीचर negotiate करता है। SCSI कमांड बहने से पहले यह अंतिम लॉगिन चरण है।" },
+    "13": { "text": "PRLI ACC — FCP स्थापित। SCSI I/O शुरू हो सकता है।", "detail": "स्टोरेज PRLI स्वीकार करता है और स्वयं को टारगेट घोषित करता है। FCP प्रक्रिया एसोसिएशन अब स्थापित है। SCSI कमांड FCP_CMND फ्रेम के रूप में भेजे जा सकते हैं।" },
+    "14": { "text": "SCSI INQUIRY — डिवाइस प्रकार खोजें", "detail": "होस्ट LUN 0 पर डिवाइस पहचानने के लिए SCSI INQUIRY (opcode 0x12) भेजता है। INQUIRY डिवाइस प्रकार, वेंडर, प्रोडक्ट, और समर्थित फीचर लौटाता है।" },
+    "15": { "text": "INQUIRY डेटा — डिवाइस ब्लॉक डिस्क है (प्रकार 0x00)", "detail": "स्टोरेज INQUIRY response लौटाता है जो स्वयं को direct-access block device (प्रकार 0x00, SBC) के रूप में पहचानता है।" },
+    "16": { "text": "FCP_RSP — INQUIRY GOOD, LUN 0 खोजा गया", "detail": "SCSI स्थिति GOOD। होस्ट की SCSI मिडलेयर अब जानती है कि यह ब्लॉक डिवाइस है। scsi_add_lun() SCSI डिवाइस बनाता है और sd_mod /dev/sdX ब्लॉक डिवाइस अटैच करता है।" },
+    "17": { "text": "WRITE(10) — LBA 0 पर 4KB लिखें", "detail": "एप्लिकेशन LBA 0 से शुरू होकर 4KB (8 × 512-बाइट ब्लॉक) लिखता है। FCP_CMND SCSI CDB ले जाता है। डेटा भेजने से पहले होस्ट को FCP_XFER_RDY की प्रतीक्षा करनी चाहिए — यह FC write फ्लो कंट्रोल है।" },
+    "18": { "text": "FCP_XFER_RDY — स्टोरेज write डेटा प्राप्त करने के लिए तैयार", "detail": "स्टोरेज Transfer Ready भेजता है, होस्ट को 4096 बाइट तक write डेटा भेजने की अनुमति देता है। यह फ्लो कंट्रोल मैकेनिज़्म FC writes के लिए विशिष्ट है — यह होस्ट को टारगेट द्वारा बफर स्पेस एलोकेट करने से पहले डेटा भेजने से रोकता है। Reads को XFER_RDY की आवश्यकता नहीं।" },
+    "19": { "text": "FCP_DATA (1/2) — offset 0 पर write के पहले 2048 बाइट", "detail": "FLOGI के दौरान negotiate किया गया FC Recv_Size 2112 बाइट है, इसलिए 4KB write को दो FCP_DATA फ्रेम में विभाजित करना होगा। SEQ_CNT=0, relative offset 0।" },
+    "20": { "text": "FCP_DATA (2/2) — offset 2048 पर write के अंतिम 2048 बाइट", "detail": "दूसरा FCP_DATA फ्रेम 4KB ट्रांसफर पूरा करता है। SEQ_CNT=1, relative offset 0x800 (2048)। F_CTL में end-of-sequence बिट सेट।" },
+    "21": { "text": "FCP_RSP — write GOOD, डेटा कमिट", "detail": "स्टोरेज SCSI स्थिति GOOD के साथ write पूर्ण होने की पुष्टि करता है। डेटा non-volatile स्टोरेज में कमिट हो गया है। Exchange पूर्ण: OX_ID 0x0020 फ्री।" },
+    "22": { "text": "READ(10) — write वेरिफाई करने के लिए LBA 0 से 4KB वापस पढ़ें", "detail": "होस्ट write वेरिफाई करने के लिए वही 4KB वापस पढ़ता है। Reads के लिए XFER_RDY आवश्यक नहीं — कमांड प्राप्त करने के बाद टारगेट तुरंत FCP_DATA भेजता है।" },
+    "23": { "text": "FCP_DATA (1/2) — offset 0 पर read के पहले 2048 बाइट", "detail": "स्टोरेज तुरंत read डेटा भेजता है — writes के विपरीत, reads को XFER_RDY handshake की आवश्यकता नहीं। वही Recv_Size बाधा लागू: 4KB दो फ्रेम में विभाजित। SEQ_CNT=0, relative offset 0।" },
+    "24": { "text": "FCP_DATA (2/2) — offset 2048 पर read के अंतिम 2048 बाइट", "detail": "दूसरा FCP_DATA फ्रेम 4KB read पूरा करता है। SEQ_CNT=1, relative offset 0x800 (2048)। डेटा लिखे गए डेटा से मिलना चाहिए।" },
+    "25": { "text": "FCP_RSP — read GOOD, डेटा वेरिफाइड", "detail": "SCSI स्थिति GOOD। Read डेटा write डेटा से मिलता है, FC फैब्रिक के माध्यम से एंड-टू-एंड डेटा अखंडता की पुष्टि करता है।" },
+    "26": { "text": "⟳ परिदृश्य पूर्ण", "detail": "सारांश: होस्ट ने 64GFC भौतिक लिंक स्थापित किए, Fabric Login (FLOGI, FCID असाइन्ड) किया, Name Server (GID_FT) के माध्यम से स्टोरेज खोजा, FCP के लिए Port Login (PLOGI) और Process Login (PRLI) पूरा किया, SCSI INQUIRY से LUN 0 खोजा, LBA 0 पर 4KB लिखा (XFER_RDY फ्लो कंट्रोल के साथ), और वेरिफिकेशन के लिए वही डेटा वापस पढ़ा।" }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "meta": {
+    "title": "GPU-to-GPU RDMA: RoCEv2 के माध्यम से नोड्स के बीच Tensor Transfer",
+    "description": "GPUDirect RDMA के माध्यम से दो GPU नोड्स के बीच tensor transfer का पूर्ण डेटा पथ: GPU HBM → PCIe → RNIC → नेटवर्क → RNIC → PCIe → GPU HBM। होस्ट DRAM बाउंसिंग और CPU इन्वॉल्वमेंट हटाता है। nvidia-peermem GPU मेमोरी सबसिस्टम को RDMA सबसिस्टम से जोड़ता है। RDMA WRITE (push) और RDMA READ (pull) दोनों मॉडल दिखाए गए हैं।",
+    "learning_objectives": [
+      "पूर्ण GPU-to-GPU RDMA डेटा पथ ट्रेस करें: GPU HBM → PCIe → RNIC → नेटवर्क → RNIC → PCIe → GPU HBM",
+      "समझें कि GPUDirect RDMA होस्ट DRAM बाउंसिंग और CPU इन्वॉल्वमेंट क्यों हटाता है",
+      "देखें कि nvidia-peermem GPU मेमोरी सबसिस्टम को RDMA सबसिस्टम से कैसे जोड़ता है",
+      "पारंपरिक पथ (GPU→CPU→RNIC→नेटवर्क→RNIC→CPU→GPU, 4 कॉपी) बनाम GPUDirect (1 कॉपी) की तुलना करें",
+      "BAR1 aperture के माध्यम से RNIC और GPU के बीच PCIe peer-to-peer (P2P) DMA फॉलो करें",
+      "समझें कि GPUDirect RDMA कब उपयोग होता है: NCCL collectives, inference serving, GPU computing",
+      "GPU मेमोरी के लिए RDMA WRITE (push मॉडल) और RDMA READ (pull मॉडल) दोनों देखें"
+    ]
+  },
+  "timeline": {
+    "0": { "text": "भौतिक लिंक अप — GPU नोड्स के बीच 100GbE लॉसलेस फैब्रिक", "detail": "दोनों GPU नोड PFC और ECN सक्षम 100GbE के माध्यम से स्विच से जुड़ते हैं। लॉसलेस फैब्रिक आवश्यक है — RDMA नेटवर्क पर निर्भर करता है कि पैकेट न गिराए जाएँ।\nविशिष्ट GPU क्लस्टर टोपोलॉजी: प्रत्येक नोड में GPU (NVIDIA A100/H100), RNIC (ConnectX-7), और दोनों PCIe Gen5 से जुड़े होते हैं।" },
+    "1": { "text": "CUDA मेमोरी एलोकेट — दोनों नोड्स पर GPU HBM में 4MB tensor बफर", "detail": "cuMemAlloc() GPU HBM (High Bandwidth Memory) में मेमोरी एलोकेट करता है: • नोड A: GPU VA 0x7f0000000000 पर 4MB tensor बफर • नोड B: GPU VA 0x7f0100000000 पर 4MB tensor बफर\nयह मेमोरी GPU के अपने एड्रेस स्पेस में है — होस्ट CPU इसे सीधे एक्सेस नहीं कर सकता बिना विशेष मैपिंग के।" },
+    "2": { "text": "GPU BAR1 मैपिंग — nvidia-peermem के माध्यम से GPU मेमोरी PCIe एड्रेस स्पेस में एक्सपोज़", "detail": "nvidia-peermem (कर्नेल मॉड्यूल) RDMA सबसिस्टम के साथ peer_memory_client के रूप में रजिस्टर करता है। जब GPU वर्चुअल एड्रेस पर ibv_reg_mr() कॉल होता है, nvidia-peermem इंटरसेप्ट करता है:\n1. GPU भौतिक पेज प्राप्त करने के लिए nvidia_p2p_get_pages() कॉल करता है\n2. GPU पेज को BAR1 aperture में मैप करता है (PCIe-एड्रेसेबल)\n3. BAR1 भौतिक एड्रेस RNIC हार्डवेयर पेज टेबल को प्रदान करता है\nRNIC अब GPU HBM को सीधे DMA कर सकता है — होस्ट DRAM को बायपास करते हुए।" },
+    "3": { "text": "GPU मेमोरी पर Memory Regions रजिस्टर — RDMA keys एक्सचेंज", "detail": "GPU वर्चुअल एड्रेस के साथ ibv_reg_mr() कॉल होता है। nvidia-peermem इंटरसेप्ट करता है और BAR1-मैप्ड भौतिक एड्रेस RNIC के हार्डवेयर पेज टेबल को प्रदान करता है।\nMR रजिस्ट्रेशन के बाद, दोनों नोड (OOB चैनल जैसे TCP या CM private data के माध्यम से) एक्सचेंज करते हैं: • rkeys (remote access authorization) • GPU बफर virtual addresses • QP numbers" },
+    "4": { "text": "QPs कनेक्ट (RTS) — GPU-to-GPU ट्रांसफर के लिए RDMA चैनल तैयार", "detail": "Reliable Connected (RC) QPs CM REQ/REP/RTU के माध्यम से RTS में लाए जाते हैं। QPs RTS में और GPU मेमोरी MRs के रूप में रजिस्टर होने पर, GPU-to-GPU डेटा पथ पूरी तरह स्थापित है।" },
+    "5": { "text": "RDMA WRITE — 4MB tensor GPU A HBM → GPU B HBM में पुश (ज़ीरो CPU कॉपी)", "detail": "नोड A का एप्लिकेशन ibv_post_send() कॉल करता है RDMA WRITE WQE के साथ जो लोकल GPU बफर (सोर्स) और नोड B का GPU बफर (डेस्टिनेशन, RETH से rkey + VA के माध्यम से) की ओर इंगित करता है।\nडेटा पथ चरणबद्ध: 1. नोड A का RNIC GPU A का HBM PCIe BAR1 P2P DMA के माध्यम से पढ़ता है 2. RoCEv2 पैकेट में एनकैप्सुलेट (BTH+RETH+UDP+IP+Eth) 3. 100GbE लॉसलेस फैब्रिक पर ट्रांसमिट 4. नोड B का RNIC प्राप्त, rkey वैलिडेट 5. PCIe BAR1 P2P DMA के माध्यम से GPU B के HBM में पेलोड लिखता है\nCPU कॉपी: शून्य। डेटा GPU→GPU बिना होस्ट DRAM छुए जाता है।" },
+    "6": { "text": "RDMA READ Request — नोड A GPU B के HBM से 4MB tensor अनुरोध करता है", "detail": "नोड A का एप्लिकेशन RDMA READ WQE के साथ ibv_post_send() कॉल करता है। RNIC छोटा READ Request (78 बाइट) नोड B को भेजता है जो remote GPU बफर एड्रेस और rkey निर्दिष्ट करता है।\nRDMA READ \"pull\" मॉडल है — initiator रिमोट नोड से मेमोरी अनुरोध करता है। RDMA WRITE (\"push\") से मुख्य अंतर: READ को राउंड ट्रिप लेटेंसी लगती है, WRITE को नहीं।" },
+    "7": { "text": "RDMA READ Response — 4MB tensor GPU B HBM → GPU A HBM", "detail": "नोड B का RNIC स्वायत्त रूप से: 1. PCIe BAR1 (P2P DMA) के माध्यम से GPU B के HBM से 4MB पढ़ता है 2. RDMA READ Response पैकेट के रूप में नोड A को ट्रांसमिट 3. नोड A का RNIC प्रत्येक पैकेट BAR1 के माध्यम से GPU A के HBM में लिखता है\nपूरा होने के बाद, नोड A के CQ पर CQE दिखता है। GPU A का 4MB बफर अब GPU B के tensor की सटीक कॉपी रखता है।" },
+    "8": { "text": "⟳ परिदृश्य पूर्ण — GPU-to-GPU RDMA tensor transfer", "detail": "इस परिदृश्य ने एंड-टू-एंड GPU-to-GPU RDMA प्रदर्शित किया:\nSETUP: cuMemAlloc → nvidia-peermem BAR1 मैपिंग → ibv_reg_mr (GPU MR) → CM QP bring-up → rkey एक्सचेंज\nRDMA WRITE (push — GPU A → GPU B): GPU A HBM →[PCIe P2P]→ RNIC A →[100GbE]→ RNIC B →[PCIe P2P]→ GPU B HBM\nRDMA READ (pull — GPU B → GPU A): RNIC A request →[100GbE]→ RNIC B reads GPU B HBM →[100GbE]→ RNIC A →[PCIe P2P]→ GPU A HBM\nCPU copies: 0। होस्ट DRAM: बायपास्ड। यही GPUDirect RDMA का मूल मूल्य है।" }
+  }
+}

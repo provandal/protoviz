@@ -1,0 +1,125 @@
+{
+  "meta": {
+    "title": "FC Fabric Login → اكتشاف Name Server → SCSI Write و Read",
+    "description": "تسلسل تسجيل دخول Fibre Channel SAN كامل فوق 64GFC، من تأسيس الرابط الفيزيائي عبر Fabric Login (FLOGI)، اكتشاف عبر Name Server، Port Login (PLOGI)، Process Login (PRLI) لـ FCP، اكتشاف LUN عبر SCSI INQUIRY وREAD CAPACITY، يتبعو SCSI WRITE(10) وREAD(10) للتحقّق من الكتابة. الـ host بيتصل بسويتش FC بيشغّل Name Server مدمج وخدمات fabric، واللي بيوجّه الإطارات لمصفوفة تخزين.",
+    "learning_objectives": [
+      "فهم كيف روابط FC الفيزيائية بتطلع بشكل مستقل (host↔switch، switch↔storage)",
+      "تتبّع تبادل FLOGI: الـ host بيطلب fabric login، السويتش بيعيّن N_Port ID (FCID)",
+      "تابع استعلامات Name Server لاكتشاف الأهداف المتاحة عبر GID_FT",
+      "راقب تسجيل دخول على مستوى المنفذ (PLOGI) والعملية (PRLI) لـ FCP",
+      "شوف كيف أوامر SCSI مغلّفة بإطارات FCP (FCP_CMND، FCP_DATA، FCP_RSP)",
+      "فهم FCP_XFER_RDY handshake المطلوب لعمليات SCSI WRITE",
+      "قارن نموذج طبقات FC (FC-0 لـ FC-4) مع مكدّس OSI"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Link A: إشارة مكتشفة — Host HBA ↔ Switch",
+      "detail": "transceiver بصري على HBA الـ host بيكتشف ضوء من منفذ سويتش FC. تهيئة رابط FC بتبلّش. الرابط الفيزيائي نقطة لنقطة."
+    },
+    "1": {
+      "text": "Link B: إشارة مكتشفة — Switch ↔ Storage Array",
+      "detail": "منفذ مصفوفة التخزين بيكتشف ضوء من السويتش. رابط فيزيائي مستقل."
+    },
+    "2": {
+      "text": "Link A طلع — Host ↔ Switch على 64GFC",
+      "detail": "تفاوض السرعة خلص: 64GFC (64.0 Gbps). ترميز 64b/66b نشط. FC primitives هلق ممكن تتبادل. BB_Credit flow control تهيّأ."
+    },
+    "3": {
+      "text": "Link B طلع — Switch ↔ Storage على 64GFC",
+      "detail": "الرابطين الفيزيائيين هلق طالعين. السويتش بيقدر يمرّر إطارات FC بين منافذو. مصفوفة التخزين كانت مسجّلة سابقاً بالـ fabric (FCID 0x010200 معيّن مسبقاً)."
+    },
+    "4": {
+      "text": "FLOGI — الـ host بيطلب fabric login (S_ID=0x000000 → D_ID=0xFFFFFE)",
+      "detail": "الـ host ما عندو FCID بعد (S_ID=0x000000). بيبعت FLOGI لعنوان Fabric Controller المعروف (0xFFFFFE). الـ FLOGI فيه WWPN تبع الـ host، BB_Credit، والميزات المدعومة. هيدا دائماً أول ELS بعد طلوع الرابط."
+    },
+    "5": {
+      "text": "FLOGI ACC — الـ Fabric بيعيّن FCID 0x010100 للـ host",
+      "detail": "الـ fabric بيقبل التسجيل وبيعيّن N_Port ID 0x010100. هالـ FCID رح يكون S_ID تبع الـ host بكل الإطارات اللاحقة."
+    },
+    "6": {
+      "text": "PLOGI لـ Name Server (0xFFFFFC)",
+      "detail": "قبل ما يستعلم من Name Server، الـ host لازم أولاً يعمل PLOGI إلو. هيدا بيأسّس معطيات اتصال على مستوى المنفذ."
+    },
+    "7": {
+      "text": "Name Server بيقبل PLOGI — استعلامات CT هلق مسموحة",
+      "detail": "تسجيل دخول Name Server خلص. الـ host بيقدر يبعت طلبات Common Transport (CT)."
+    },
+    "8": {
+      "text": "GID_FT query — إيجاد كل أهداف FCP (SCSI) بالـ fabric",
+      "detail": "الـ host بيبعت طلب CT لـ Name Server بيسأل عن كل port identifiers (FCIDs) مسجّلة كـ FC-4 type 0x08 (FCP/SCSI). هيك الـ host بيكتشف مصفوفات التخزين المتاحة."
+    },
+    "9": {
+      "text": "Name Server بيردّ: التخزين على FCID 0x010200",
+      "detail": "Name Server بيرجّع قائمة FCIDs بتدعم FCP. بهالـ fabric، في هدف واحد: مصفوفة التخزين على 0x010200."
+    },
+    "10": {
+      "text": "PLOGI للتخزين (0x010200) — تسجيل دخول على مستوى المنفذ",
+      "detail": "الـ host بيبعت PLOGI لمصفوفة التخزين. هالإطار بيعبر السويتش (توجيه مبني على D_ID). PLOGI بيتفاوض على معطيات المنفذ: BB_Credit، حجم إطار أقصى، وclass of service."
+    },
+    "11": {
+      "text": "التخزين بيقبل PLOGI — تسجيل دخول مستوى المنفذ تأسّس",
+      "detail": "التخزين بيقبل تسجيل دخول المنفذ. الـ host والتخزين هلق بيقدرو يتبادلو إطارات FC مباشرة. بس FCP (SCSI) I/O بيتطلّب خطوة إضافية: Process Login (PRLI)."
+    },
+    "12": {
+      "text": "PRLI — تأسيس بروتوكول الطبقة العليا FCP (SCSI)",
+      "detail": "Process Login بيأسّس ارتباط FC-4 (FCP). صفحة معطيات خدمة PRLI بتعلن هالـ host كـ initiator وبتتفاوض على ميزات FCP. هيدي آخر خطوة تسجيل دخول قبل ما أوامر SCSI تقدر تمشي."
+    },
+    "13": {
+      "text": "PRLI ACC — FCP تأسّس. SCSI I/O بيقدر يبلّش.",
+      "detail": "التخزين بيقبل PRLI وبيعلن حالو كهدف. ارتباط عملية FCP هلق مؤسّس. أوامر SCSI بتقدر تنبعت كإطارات FCP_CMND."
+    },
+    "14": {
+      "text": "SCSI INQUIRY — اكتشاف نوع الجهاز",
+      "detail": "الـ host بيبعت SCSI INQUIRY (opcode 0x12) لتعريف الجهاز على LUN 0. INQUIRY بترجّع نوع الجهاز والشركة والمنتج والميزات المدعومة."
+    },
+    "15": {
+      "text": "بيانات INQUIRY — الجهاز قرص كتلي (type 0x00)",
+      "detail": "التخزين بيرجّع جواب INQUIRY بيعرّف حالو كجهاز كتلي وصول مباشر (type 0x00، SBC). الشركة: DellEMC، المنتج: PowerStore."
+    },
+    "16": {
+      "text": "FCP_RSP — INQUIRY GOOD، LUN 0 مكتشف",
+      "detail": "حالة SCSI GOOD. طبقة SCSI midlayer تبع الـ host هلق بتعرف إنو هيدا جهاز كتلي. scsi_add_lun() بتأنشئ SCSI device وsd_mod بتربط /dev/sdX block device."
+    },
+    "17": {
+      "text": "WRITE(10) — كتابة 4KB على LBA 0",
+      "detail": "التطبيق بيكتب 4KB (8 × 512 بايت blocks) بدءاً من LBA 0. FCP_CMND فيه SCSI CDB. الـ host لازم يستنّى FCP_XFER_RDY قبل ما يبعت بيانات — هيدا التحكّم بتدفّق كتابة FC."
+    },
+    "18": {
+      "text": "FCP_XFER_RDY — التخزين جاهز يستقبل بيانات الكتابة",
+      "detail": "التخزين بيبعت Transfer Ready، بيعطي الـ host إذن يبعت لحد 4096 بايت من بيانات الكتابة. آلية التحكّم بالتدفّق هيدي خاصة بكتابات FC — بتمنع الـ host من إرسال بيانات قبل ما الهدف يخصّص buffer space. القراءة ما بتتطلّب هالخطوة."
+    },
+    "19": {
+      "text": "FCP_DATA (1/2) — أول 2048 بايت من الكتابة على offset 0",
+      "detail": "FC Recv_Size المتفاوض عليه خلال FLOGI هو 2112 بايت، فكتابة 4KB لازم تنقسم على إطارين FCP_DATA. SEQ_CNT=0، relative offset 0."
+    },
+    "20": {
+      "text": "FCP_DATA (2/2) — آخر 2048 بايت من الكتابة على offset 2048",
+      "detail": "تاني إطار FCP_DATA بيكمّل نقل 4KB. SEQ_CNT=1، relative offset 0x800 (2048). bit end-of-sequence محطوط بـ F_CTL."
+    },
+    "21": {
+      "text": "FCP_RSP — كتابة GOOD، البيانات محفوظة",
+      "detail": "التخزين بيأكّد إنو الكتابة اكتملت بحالة SCSI GOOD. البيانات تم حفظها بالتخزين الثابت. التبادل خلص: OX_ID 0x0020 تحرّر."
+    },
+    "22": {
+      "text": "READ(10) — قراءة 4KB من LBA 0 للتحقّق من الكتابة",
+      "detail": "الـ host بيقرا نفس 4KB للتحقّق من الكتابة. ما في حاجة لـ XFER_RDY للقراءة — الهدف بيبعت FCP_DATA فوراً بعد استلام الأمر."
+    },
+    "23": {
+      "text": "FCP_DATA (1/2) — أول 2048 بايت من القراءة على offset 0",
+      "detail": "التخزين بيبعت بيانات القراءة فوراً — بخلاف الكتابة، القراءة ما بتتطلّب XFER_RDY handshake. نفس قيد Recv_Size: 4KB منقسمة على إطارين."
+    },
+    "24": {
+      "text": "FCP_DATA (2/2) — آخر 2048 بايت من القراءة على offset 2048",
+      "detail": "تاني إطار FCP_DATA بيكمّل قراءة 4KB. البيانات لازم تطابق اللي انكتبت."
+    },
+    "25": {
+      "text": "FCP_RSP — قراءة GOOD، البيانات متحقّقة",
+      "detail": "حالة SCSI GOOD. بيانات القراءة بتطابق بيانات الكتابة، بتأكّد سلامة البيانات end-to-end عبر FC fabric."
+    },
+    "26": {
+      "text": "السيناريو خلص",
+      "detail": "ملخص: الـ host أسّس روابط فيزيائية 64GFC، عمل Fabric Login (FLOGI، FCID معيّن)، اكتشف التخزين عبر Name Server (GID_FT)، أكمل Port Login (PLOGI) وProcess Login (PRLI) لـ FCP، اكتشف LUN 0 عبر SCSI INQUIRY، كتب 4KB على LBA 0، وقراها رجوعاً للتحقّق.\nمجموع إطارات التسجيل: 10 (FLOGI×2, PLOGI×4, GID_FT×2, PRLI×2).\nمجموع إطارات I/O: 9 (INQUIRY×3, WRITE×4, READ×3 مع XFER_RDY)."
+    }
+  }
+}

@@ -1,0 +1,102 @@
+{
+  "meta": {
+    "title": "NVMe-oF/RDMA: Dekouvèt → Fabrics Connect → Ekriti ak Lekti NVMe sou RoCEv2",
+    "description": "NVMe sou Fabrics konplè ki itilize transpò RDMA (RoCEv2). Depi etablisman lyen fizik ak rezolisyon ARP, pase nan konfigirasyon koneksyon RDMA ak CM, Fabrics Connect ak Kontwolè Dekouvèt, rekiperasyon paj jounal dekouvèt, koneksyon Kontwolè IO, Identifye Kontwolè/Espas Non, ak operasyon Ekriti ak Lekti NVMe. Konpare ak senaryo NVMe/TCP — isit la, kòmand NVMe vwayaje atravè RDMA SEND, done atravè RDMA WRITE (kontwolè→ machin) ak RDMA READ (machin→kontwolè), epi konpleyon atravè RDMA SEND. CPU a pa enplike nan chemen done yo.",
+    "learning_objectives": [
+      "Konprann kijan NVMe-oF itilize RDMA kòm yon lyen transpò — kòmand atravè SEND, done atravè WRITE/READ",
+      "Wè konfigirasyon koneksyon RDMA CM ki presede NVMe-oF Fabrics Connect",
+      "Swiv kòmand Fabrics Connect pou etabli fil atant Admin ak IO sou RDMA",
+      "Obsève Paj Jounal Dekouvèt retounen atravè RDMA pou lokalize Kontwolè IO",
+      "Trase Ekriti NVMe: machin voye kòmand atravè RDMA SEND, kontwolè chèche done atravè RDMA READ",
+      "Trase Lekti NVMe: machin voye kòmand atravè RDMA SEND, kontwolè livre done atravè RDMA WRITE",
+      "Konprann itilizasyon SGL (Lis Dispersyon-Rasanblaj) pou plasman done RDMA",
+      "Konpare lyen transpò RDMA ak TCP — zewo-kopi vs chemen done nan mitan kernel"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Lyen fizik monte — 100GbE ak PFC aktive sou toude segman",
+      "detail": "Toude lyen 100GbE yo monte atravè Oto-Negosyasyon ak RS-FEC. PFC aktive sou priyorite 3 pou transpò RoCEv2 san pèt. Sa a se menm fondasyon tisi san pèt ki dekri nan senaryo PFC/ECN/DCQCN nan."
+    },
+    "1": {
+      "text": "Demann ARP — Machin rezoud adrès MAC sib depo",
+      "detail": "Machin NVMe a bezwen adrès MAC sib la anvan li ka etabli yon koneksyon RDMA. Demann ARP difize; switch flode sou tout pò yo."
+    },
+    "2": {
+      "text": "Repons ARP — Sib reponn ak MAC 00:02:c9:ab:cd:ef",
+      "detail": "Kach ARP mete ajou sou toude bò. Machin nan ka kounye a kreye koneksyon RDMA."
+    },
+    "3": {
+      "text": "CM REQ → Machin kòmanse koneksyon RDMA pou Fil Atant Admin NVMe",
+      "detail": "Drivè nvme-rdma a rele rdma_connect() ki deklanche IB CM (Jesyonè Koneksyon) pou voye yon CM REQ. Sa a voye atravè UD (Datagwam san Garanti) bay QP1 byen koni (GSI — Entèfas Sèvis Jeneral).\nCM REQ a pote done prive RDMA NVMe-oF ki espesifye: • HRQSIZE = 128 (gwosè fil atant resepsyon machin) • HSQSIZE = 128 (gwosè fil atant ekspedisyon machin)\nSa a se yon diferans kle ak NVMe/TCP: transpò RDMA a egzije konfigirasyon koneksyon QP eksplisit atravè IB CM anvan nenpòt kòmand NVMe ka sikile. Transpò NVMe/TCP a senplman ouvri yon koneksyon TCP."
+    },
+    "4": {
+      "text": "CM REP ← Sib aksepte koneksyon RDMA, alwe QP",
+      "detail": "Drivè nvme-rdma sib la aksepte koneksyon an. Li alwe yon QP, poste WQE resepsyon (pou kapsil kòmand NVMe ki antre), epi voye CM REP ak CRQSIZE = 128 (gwosè fil atant resepsyon kontwolè).\nQP a fè tranzisyon: RESET → INIT → RTR (Pare pou Resevwa)."
+    },
+    "5": {
+      "text": "CM RTU → Koneksyon RDMA etabli — Fil Atant Admin pare",
+      "detail": "Machin nan voye CM RTU (Pare pou Itilize), toude QP yo fè tranzisyon nan RTS (Pare pou Voye). Koneksyon RDMA a fin etabli nèt.\nNVMe-oF/RDMA itilize yon QP RDMA pou chak fil atant NVMe: • Fil Atant Admin (QID 0) → pè QP 0x000080 ↔ 0x000100 • Fil Atant IO 1 (QID 1) → pè QP separe (konekte pita)\nIzolasyon pa fil atant sa a vle di yon fil atant IO ki bloke pa bloke operasyon admin — sa enpòtan pou jesyon kontwolè."
+    },
+    "6": {
+      "text": "Fabrics Connect → Machin konekte ak Kontwolè Dekouvèt",
+      "detail": "Ak koneksyon RDMA a etabli, machin nan voye yon kòmand NVMe Fabrics Connect atravè RDMA SEND (BTH opcode 0x04). Kapsil kòmand lan ateri dirèkteman nan yon WQE resepsyon ki pre-poste sou sib la — zewo-kopi nan tanpon kòmand sib la.\nMachin nan konekte ak NQN Kontwolè Dekouvèt byen koni: nqn.2014-08.org.nvmexpress.discovery\nSa a analòg ak fliks mDNS → CDC senaryo NVMe/TCP a, men pi senp: nan ka RDMA a, machin nan tipikman konnen adrès IP sib la nan konfigirasyon estatik (nvme connect-all -t rdma -a 192.168.100.20)."
+    },
+    "7": {
+      "text": "Repons Fabrics Connect ← Kontwolè Dekouvèt pare",
+      "detail": "Sib la aksepte Fabrics Connect epi retounen yon ID kontwolè dinamik (0xFFFF pou Kontwolè Dekouvèt). Fil Atant Admin machin nan kounye a asosye ak Kontwolè Dekouvèt la."
+    },
+    "8": {
+      "text": "Get Log Page → Machin mande Jounal Dekouvèt atravè RDMA SEND",
+      "detail": "Machin nan voye yon kòmand Get Log Page (LID 0x70) atravè RDMA SEND. Kòmand lan gen yon deskriptè SGL ki di sib la egzakteman ki kote pou RDMA WRITE done paj jounal nan memwa machin: rkey=0x0000ABCD, va=0x7f8000100000, len=4096.\nSa a se modèl fondamantal transfè done NVMe-oF/RDMA pou done kontwolè-a-machin: 1. Machin voye kòmand atravè RDMA SEND (ak SGL ki pwente sou tanpon machin) 2. Sib RDMA WRITE done dirèkteman nan tanpon machin (itilize SGL rkey/va) 3. Sib voye konpleyon atravè RDMA SEND\nCPU machin nan pa touche done yo — yo ale soti nan NIC sib dirèkteman nan memwa machin atravè RDMA WRITE. Konpare ak NVMe/TCP kote kernel la dwe kopye done soti nan tanpon socket nan tanpon sib."
+    },
+    "9": {
+      "text": "RDMA WRITE ← Sib livre Paj Jounal Dekouvèt nan memwa machin",
+      "detail": "Sib la li Paj Jounal Dekouvèt la nan konfigirasyon li epi RDMA WRITE li dirèkteman nan tanpon pre-anrejistre machin nan itilize rkey ak adrès vityèl nan SGL kòmand lan.\nPaj jounal la gen yon antre: • SubNQN: nqn.2024-01.com.example:subsys-array01 • Transpò: RDMA (0x01) • Adrès: 192.168.100.20 • ID Sèvis: 4420\nMachin nan ap itilize enfòmasyon sa a pou konekte ak Kontwolè IO a."
+    },
+    "10": {
+      "text": "Konpleyon ← Paj Jounal Dekouvèt rekipere ak siksè",
+      "detail": "Sib la voye konpleyon NVMe a atravè RDMA SEND. Garanti lòd RDMA asire RDMA WRITE (done) vizib nan memwa machin ANVAN SEND sa a (konpleyon) rive. Machin nan ka imedyatman aksede done Paj Jounal Dekouvèt la."
+    },
+    "11": {
+      "text": "Fabrics Connect → Machin konekte Fil Atant IO ak sousistèm depo",
+      "detail": "Machin nan etabli yon dezyèm koneksyon RDMA (CM REQ/REP/RTU separe, omis pou brèvte) epi voye Fabrics Connect pou Fil Atant IO 1 (QID=1) ak NQN sousistèm ki dekouvri nan paj jounal la.\nChak fil atant IO NVMe mape nan yon QP RDMA separe. Nan pwodiksyon, yon machin tipikman kreye yon fil atant IO pa kè CPU (pa egz., 32 QP pou 32 kè) pou paralelism maksimòm. Chak fil atant opere endepandaman."
+    },
+    "12": {
+      "text": "Repons Fabrics Connect ← Kontwolè IO pare, CNTLID=0x0041",
+      "detail": "Sib la asiyen ID kontwolè 0x0041 epi fil atant IO a pare pou operasyon IO NVMe. Machin nan ka kounye a emèt kòmand Lekti ak Ekriti NVMe sou fil atant sa a.\nNan pwen sa a, tout pil NVMe-oF/RDMA a etabli: • Fil Atant Admin: QP 0x000080 ↔ 0x000100 (pou kòmand admin, dekouvèt) • Fil Atant IO 1: QP 0x000082 ↔ 0x000102 (pou Lekti/Ekriti NVMe IO)"
+    },
+    "13": {
+      "text": "Ekriti NVMe → Machin voye kòmand ekriti 4KB (RDMA SEND)",
+      "detail": "Aplikasyon machin nan emèt yon ekriti 4KB nan LBA 0. Drivè nvme-rdma a: 1. Anrejistre tanpon done ekriti kòm yon MR (Rejyon Memwa) 2. Bati yon kòmand Ekriti NVMe ak yon SGL ki pwente sou tanpon an 3. Voye kòmand lan atravè RDMA SEND (ibv_post_send ak opcode SEND)\nSGL a di sib la: «Done ekriti mwen yo nan va=0x7f8000200000, rkey=0x0000BCDE, longè=4096. Fè RDMA READ soti la.»\nSa a se ENVÈS Lekti NVMe fliks done: pou Ekriti, SIB la chèche done NAN machin atravè RDMA READ. Pou Lekti, sib la livre done BA machin atravè RDMA WRITE."
+    },
+    "14": {
+      "text": "RDMA READ ← Sib chèche done ekriti nan memwa machin",
+      "detail": "Drivè NVMe sib la emèt yon RDMA READ pou chèche done ekriti 4KB nan tanpon machin nan. RNIC sib la voye yon Demann RDMA READ (BTH opcode 0x0c) ak rkey ak adrès vityèl machin nan.\nRNIC machin nan resevwa demann sa a, DMA-li done yo nan rejyon memwa anrejistre machin nan, epi retounen li kòm yon Repons RDMA READ — TOUT NAN APARÈY. CPU machin nan pa entèronp.\nSa a se yon avantaj fondamantal transpò RDMA sou TCP: nan NVMe/TCP, kernel machin nan dwe kopye done ekriti soti nan tanpon itilizatè nan tanpon socket kernel, answit NIC a DMA soti nan memwa kernel. Nan NVMe-oF/RDMA, done yo ale dirèkteman soti nan memwa espas-itilizatè sou fil la san okenn kopi CPU."
+    },
+    "15": {
+      "text": "Repons RDMA READ → Done ekriti 4KB livre nan sib",
+      "detail": "RNIC machin nan retounen chaj itil done 4KB. Sib la resevwa li, epi drivè sib NVMe a ekri li nan SSD NVMe dèyè a nan LBA 0."
+    },
+    "16": {
+      "text": "Konpleyon Ekriti NVMe ← 4KB ekri nan LBA 0 ak siksè",
+      "detail": "Sib la konfime Ekriti NVMe a fini. Konpleyon NVMe a livre atravè RDMA SEND nan fil atant konpleyon machin nan (WQE resepsyon).\nRezime chemen done Ekriti NVMe (transpò RDMA): 1. Machin → Sib: RDMA SEND (kòmand Ekriti NVMe ak SGL) 2. Sib → Machin: Demann RDMA READ (chèche done ekriti) 3. Machin → Sib: Repons RDMA READ (done 4KB, zewo-kopi) 4. Sib → Machin: RDMA SEND (konpleyon NVMe) Total: 4 operasyon RDMA, 0 kopi CPU sou machin."
+    },
+    "17": {
+      "text": "Lekti NVMe → Machin voye kòmand lekti 4KB (RDMA SEND)",
+      "detail": "Machin nan voye yon kòmand Lekti NVMe pou menm LBA 0 (4KB). Kòmand lan gen yon SGL ki di sib la ki kote pou RDMA WRITE done lekti nan memwa machin: rkey=0x0000CDEF, va=0x7f8000300000, len=4096.\nPou operasyon Lekti, chemen done a pi senp pase Ekriti: sib la li soti nan SSD epi RDMA WRITE dirèkteman nan tanpon machin nan, answit voye konpleyon an."
+    },
+    "18": {
+      "text": "RDMA WRITE ← Sib livre done lekti 4KB nan memwa machin",
+      "detail": "Sib la li 4KB nan SSD NVMe a nan LBA 0 epi RDMA WRITE li dirèkteman nan tanpon anrejistre machin nan itilize SGL rkey ak adrès vityèl. CPU machin nan pa enplike — done ateri an silans nan memwa espas-itilizatè.\nSa a se menm mekanis livrezon done ki itilize pou Paj Jounal Dekouvèt pi bonè, epi li se modèl fondamantal pou tout done kontwolè-a-machin nan NVMe-oF/RDMA."
+    },
+    "19": {
+      "text": "Konpleyon Lekti NVMe ← 4KB li soti nan LBA 0 ak siksè",
+      "detail": "Sib la voye konpleyon an atravè RDMA SEND. Garanti lòd RDMA asire done WRITE vizib anvan konpleyon sa a rive.\nRezime chemen done Lekti NVMe (transpò RDMA): 1. Machin → Sib: RDMA SEND (kòmand Lekti NVMe ak SGL) 2. Sib → Machin: RDMA WRITE (done 4KB, zewo-kopi nan tanpon machin) 3. Sib → Machin: RDMA SEND (konpleyon NVMe) Total: 3 operasyon RDMA, 0 kopi CPU sou machin.\nKonparezon ak NVMe/TCP: • Lekti NVMe/TCP: kòmand (TCP SEND) → done (C2HData PDU TCP, kopi kernel) → konpleyon • Lekti NVMe-oF/RDMA: kòmand (RDMA SEND) → done (RDMA WRITE, zewo-kopi) → konpleyon Chemen RDMA a elimine tout kopi done CPU ak tranzisyon kernel."
+    },
+    "20": {
+      "text": "⟳ Senaryo fini — dekouvèt ak IO NVMe-oF/RDMA",
+      "detail": "Senaryo sa a te demontre NVMe sou Fabrics ki itilize lyen transpò RDMA:\n1. LYEN — Etablisman fizik 100GbE ak PFC pou tisi san pèt 2. ARP — Rezolisyon adrès MAC 3. CM — Konfigirasyon QP Jesyonè Koneksyon IB (REQ/REP/RTU) pou Fil Atant Admin 4. FABRICS CONNECT — Koneksyon Kontwolè Dekouvèt, rekiperasyon Paj Jounal Dekouvèt 5. KONEKSYON IO — Konfigirasyon fil atant Kontwolè IO sou QP RDMA separe 6. EKRITI NVMe — kòmand atravè SEND, done chèche atravè RDMA READ (3 operasyon) 7. LEKTI NVMe — kòmand atravè SEND, done livre atravè RDMA WRITE (2 operasyon)\nAvantaj kle sou NVMe/TCP: • Zewo kopi done CPU — DMA RNIC jere tout mouvman done • Latans pi ba — pa gen tranzisyon tanpon socket kernel • Debi pi wo — debi liy aksesib ak yon sèl QP • Izolasyon pa fil atant — chak fil atant NVMe sou pwòp QP RDMA li\nKonpwomi: egzije tisi Ethernet san pèt (PFC + ECN/DCQCN), NIC ki kapab RDMA, ak konfigirasyon pi konplèks."
+    }
+  }
+}

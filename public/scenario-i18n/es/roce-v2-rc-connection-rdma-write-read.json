@@ -1,0 +1,101 @@
+{
+  "meta": {
+    "title": "RoCEv2 RC: Entrenamiento de Enlace → Conexión QP → RDMA WRITE → RDMA READ",
+    "description": "Un intercambio completo RoCEv2 Reliable Connected (RC) sobre 100GbE, comenzando con el establecimiento del enlace físico (Auto-Negociación, Entrenamiento de Enlace, RS-FEC), procediendo a través de la configuración IP/ARP, activación del QP del IB Connection Manager (CM) vía MAD/CM REQ→REP→RTU, un RDMA WRITE que empuja un buffer de 4KB directamente a memoria remota sin involucramiento de CPU en el destino, y un RDMA READ que recupera ese mismo buffer.",
+    "learning_objectives": [
+      "Comprender cómo los enlaces físicos 100GbE se activan independientemente (host↔switch) vía Auto-Negociación y Entrenamiento de Enlace",
+      "Rastrear la resolución ARP y el direccionamiento IP para RoCEv2 (que corre sobre UDP/IP, a diferencia de RoCEv1)",
+      "Seguir el intercambio MAD del IB Connection Manager para llevar un Queue Pair de RESET a RTS",
+      "Observar las transiciones de la máquina de estados del QP: RESET → INIT → RTR → RTS",
+      "Ver cómo RDMA WRITE evita la CPU remota — no se consume ningún WQE de recepción en el destino",
+      "Ver cómo RDMA READ requiere un viaje de ida y vuelta y cómo las cabeceras RETH/AETH llevan el direccionamiento",
+      "Comprender las claves de Memory Region (MR) (lkey/rkey) y su rol en la autorización RDMA",
+      "Observar cómo PFC (Control de Flujo por Prioridad) previene descartes en Ethernet sin pérdidas bajo congestión"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Enlace A: señal detectada — Iniciador ↔ Puerto A del Switch",
+      "detail": "El transceptor óptico del iniciador detecta luz del puerto A del switch. Comienza la Auto-Negociación (AN) según IEEE 802.3cd cláusula 73. L1 es punto a punto — esto es independiente del enlace switch↔destino."
+    },
+    "1": {
+      "text": "Enlace B: señal detectada — Puerto B del Switch ↔ Destino",
+      "detail": "El transceptor óptico del destino detecta luz del puerto B del switch. AN comienza independientemente en este enlace."
+    },
+    "2": {
+      "text": "Enlace A: AN completa — 100GbE acordado, comienza Entrenamiento de Enlace",
+      "detail": "AN intercambia páginas de capacidad tecnológica entre el iniciador y el puerto A del switch. Ambos acuerdan 100GBASE-SR4. RS(544,514) FEC es obligatorio para 100G. El Entrenamiento de Enlace comienza para ecualizar el canal (pre-énfasis, post-cursor)."
+    },
+    "3": {
+      "text": "Enlace B: AN completa — 100GbE acordado, comienza Entrenamiento de Enlace",
+      "detail": "AN completa en puerto B del switch ↔ destino. Misma negociación: 100GBASE-SR4 con RS(544,514) FEC. El Entrenamiento de Enlace comienza independientemente en este enlace."
+    },
+    "4": {
+      "text": "Enlace A ACTIVO — Iniciador ↔ Switch a 100Gbps con RS-FEC",
+      "detail": "Entrenamiento de Enlace completo en iniciador↔switch. PFC (802.1Qbb) habilitado para prioridad 3 vía negociación DCBX (no mostrada). Las tramas Ethernet ahora pueden fluir en este segmento de enlace."
+    },
+    "5": {
+      "text": "Enlace B ACTIVO — Switch ↔ Destino a 100Gbps con RS-FEC",
+      "detail": "Entrenamiento de Enlace completo en switch↔destino. PFC habilitado. Ambos enlaces están ahora activos — el switch puede reenviar tramas L2 entre sus puertos. Conectividad L2 de extremo a extremo establecida."
+    },
+    "6": {
+      "text": "Solicitud ARP: ¿Quién tiene 192.168.1.20?",
+      "detail": "RoCEv2 usa direccionamiento IP. Antes de cualquier configuración de conexión, debe establecerse la alcanzabilidad IP."
+    },
+    "7": {
+      "text": "Respuesta ARP: 192.168.1.20 está en 00:02:c9:ab:cd:ef"
+    },
+    "8": {
+      "text": "Ambos lados registran Memory Regions vía ibv_reg_mr()",
+      "detail": "ibv_reg_mr() fija páginas físicas, construye un mapeo DMA, y registra la traducción virtual→física en la Tabla de Traducción de Memoria (MTT) de la RNIC. Devuelve lkey (para DMA local) y rkey (para compartir con el remoto para acceso RDMA). Linux: mlx5_ib_reg_user_mr() → comando firmware MLX5_CMD_OP_CREATE_MKEY."
+    },
+    "9": {
+      "text": "QP creado — estado: RESET",
+      "detail": "ibv_create_qp() asigna un Queue Pair (Cola de Envío + Cola de Recepción + Cola de Finalización). El QP comienza en estado RESET — no puede enviar ni recibir. mlx5: el comando firmware MLX5_CMD_OP_CREATE_QP asigna el QPN."
+    },
+    "10": {
+      "text": "QP transicionado RESET → INIT vía ibv_modify_qp()",
+      "detail": "modify_qp(RESET→INIT) establece: índice de P_Key, número de puerto, flags de acceso. El QP ahora puede publicar WQEs de Recepción (pero aún no puede enviar). Linux: ib_modify_qp() → mlx5_ib_modify_qp() → MLX5_CMD_OP_RST2INIT_QP."
+    },
+    "11": {
+      "text": "CM REQ enviado — proponiendo parámetros del QP",
+      "detail": "rdma_connect() activa ib_send_cm_req(). Envía QPN del iniciador, PSN inicial, MTU de ruta=4096, contadores de reintentos y datos privados de la aplicación al destino. Ambos QPs aún en INIT en este punto."
+    },
+    "12": {
+      "text": "CM REP recibido — el destino acepta, proporciona su QPN y PSN",
+      "detail": "Al recibir REQ, el destino llama a rdma_accept() → ib_send_cm_rep(). El destino transiciona su QP a RTR (Listo para Recibir) después de enviar REP. El iniciador transiciona su QP a RTR al recibir REP. INIT→RTR establece: QPN destino, RQ PSN, MTU de ruta, AV (vector de dirección)."
+    },
+    "13": {
+      "text": "CM RTU enviado — ambos QPs transicionan a RTS. Conexión establecida.",
+      "detail": "Después de enviar RTU, el iniciador transiciona QP: RTR→RTS. Al recibir RTU, el destino transiciona QP: RTR→RTS. RTR→RTS establece: SQ PSN, contador de reintentos, reintento RNR, timeout. El QP está ahora completamente operacional — las operaciones RDMA pueden comenzar."
+    },
+    "14": {
+      "text": "La aplicación publica Work Request RDMA WRITE en la Cola de Envío",
+      "detail": "ibv_post_send() con opcode IBV_WR_RDMA_WRITE. El WR especifica: lista SG local (lkey + vaddr del buffer fuente), vaddr remota + rkey. Ring del doorbell vía escritura mmio al registro BAR de la RNIC (sin llamada al sistema después de ibv_post_send)."
+    },
+    "15": {
+      "text": "RDMA WRITE — 4KB empujados a memoria remota, cero CPU en el destino",
+      "detail": "La RNIC hace DMA del buffer local, encapsula en BTH+RETH+UDP+IP+Eth, transmite. La RNIC del destino verifica ICRC, comprueba autorización de rkey contra la tabla MR, hace DMA de la carga útil a la memoria física del destino. La CPU del destino no ve nada hasta que la aplicación consulte el CQ."
+    },
+    "16": {
+      "text": "ACK de la RNIC del destino — WRITE completo, CQE publicado en el iniciador",
+      "detail": "La RNIC del destino genera autónomamente un ACK RC. Sin involucramiento de CPU en el destino. Al recibir el ACK, la RNIC del iniciador publica un CQE (Entrada de Cola de Finalización) en el CQ del iniciador. La aplicación se entera de la finalización vía ibv_poll_cq()."
+    },
+    "17": {
+      "text": "La aplicación publica Work Request RDMA READ",
+      "detail": "ibv_post_send() con opcode IBV_WR_RDMA_READ. Especifica: buffer SG local para datos recibidos (lkey), vaddr remota + rkey. RDMA READ requiere un viaje de ida y vuelta — el iniciador envía solicitud, el destino envía datos."
+    },
+    "18": {
+      "text": "RDMA READ Request — sin datos en esta dirección",
+      "detail": "El iniciador envía BTH(opcode=0x0C) + RETH especificando qué leer. Sin carga útil. La RNIC del destino hará DMA de su propia memoria autónomamente y responderá."
+    },
+    "19": {
+      "text": "RDMA READ Response — la RNIC del destino hace DMA de memoria y envía datos",
+      "detail": "RNIC del destino: recibe solicitud READ → valida rkey → DMA lee memoria física → construye paquete(s) de respuesta → transmite. Cero involucramiento de CPU en el destino. RNIC del iniciador: recibe respuesta → DMA escribe al buffer local del iniciador → publica CQE de READ. Los datos devueltos son exactamente lo que se escribió en el RDMA WRITE — verificado de extremo a extremo por ICRC."
+    },
+    "20": {
+      "text": "Escenario completo",
+      "detail": "Resumen: Dos enlaces 100GbE independientes se activaron (host↔switch cada uno), el switch proporcionó reenvío L2, el iniciador estableció una conexión RoCEv2 RC, realizó un RDMA WRITE de 4KB a memoria remota (cero involucramiento de CPU remota), luego leyó esos mismos datos con un RDMA READ (también cero involucramiento de CPU remota). Total de tramas de datos: 2. Total de tramas de control: 5 (ARP×2, CM×3). La CPU remota nunca fue interrumpida para operaciones de datos."
+    }
+  }
+}

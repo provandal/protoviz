@@ -1,0 +1,102 @@
+{
+  "meta": {
+    "title": "NVMe-oF/RDMA: Descubrimiento → Fabrics Connect → NVMe Write y Read sobre RoCEv2",
+    "description": "NVMe over Fabrics completo usando transporte RDMA (RoCEv2). Desde el establecimiento del enlace físico y la resolución ARP, pasando por la configuración de la conexión RDMA basada en CM, Fabrics Connect al Controlador de Descubrimiento, recuperación del Discovery Log Page, conexión al Controlador de I/O, Identify Controller/Namespace, y operaciones NVMe Write y Read. Contrasta con el escenario NVMe/TCP — aquí, los comandos NVMe viajan vía RDMA SEND, los datos vía RDMA WRITE (controlador→host) y RDMA READ (host→controlador), y las finalizaciones vía RDMA SEND. La CPU no participa en la ruta de datos.",
+    "learning_objectives": [
+      "Comprender cómo NVMe-oF usa RDMA como enlace de transporte — comandos vía SEND, datos vía WRITE/READ",
+      "Ver la configuración de conexión RDMA CM que precede al Fabrics Connect de NVMe-oF",
+      "Seguir el comando Fabrics Connect para establecer colas Admin e I/O sobre RDMA",
+      "Observar los Discovery Log Pages devueltos vía RDMA para localizar Controladores de I/O",
+      "Rastrear NVMe Write: el host envía comando vía RDMA SEND, el controlador obtiene datos vía RDMA READ",
+      "Rastrear NVMe Read: el host envía comando vía RDMA SEND, el controlador entrega datos vía RDMA WRITE",
+      "Comprender el uso de SGL (Lista de Dispersión-Recolección) para la colocación de datos RDMA",
+      "Comparar el enlace de transporte RDMA con TCP — copia cero vs ruta de datos mediada por el kernel"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Enlace físico activo — 100GbE con PFC habilitado en ambos segmentos",
+      "detail": "Ambos enlaces 100GbE se activan vía Auto-Negociación con RS-FEC. PFC está habilitado en prioridad 3 para transporte RoCEv2 sin pérdidas. Esta es la misma base de fabric sin pérdidas descrita en el escenario PFC/ECN/DCQCN."
+    },
+    "1": {
+      "text": "Solicitud ARP — El host resuelve la dirección MAC del destino de almacenamiento",
+      "detail": "El host NVMe necesita la dirección MAC del destino antes de poder establecer una conexión RDMA. La solicitud ARP se difunde; el switch la inunda por todos los puertos."
+    },
+    "2": {
+      "text": "Respuesta ARP — El destino responde con MAC 00:02:c9:ab:cd:ef",
+      "detail": "Caché ARP actualizada en ambos lados. El host ahora puede crear conexiones RDMA."
+    },
+    "3": {
+      "text": "CM REQ → El host inicia conexión RDMA para la Cola Admin de NVMe",
+      "detail": "El controlador nvme-rdma llama a rdma_connect() que activa el IB CM (Connection Manager) para enviar un CM REQ. Se envía vía UD (Datagrama No Fiable) al QP1 bien conocido (GSI).\nEl CM REQ lleva datos privados de NVMe-oF RDMA especificando: • HRQSIZE = 128 (tamaño de cola de recepción del host) • HSQSIZE = 128 (tamaño de cola de envío del host)\nEsta es una diferencia clave con NVMe/TCP: el transporte RDMA requiere configuración explícita de QP vía el IB CM antes de que puedan fluir comandos NVMe. El transporte NVMe/TCP simplemente abre una conexión TCP."
+    },
+    "4": {
+      "text": "CM REP ← El destino acepta la conexión RDMA, asigna QP",
+      "detail": "El controlador nvme-rdma del destino acepta la conexión. Asigna un QP, publica WQEs de recepción (para cápsulas de comandos NVMe entrantes), y envía CM REP con CRQSIZE = 128 (tamaño de cola de recepción del controlador).\nEl QP transiciona: RESET → INIT → RTR (Listo para Recibir)."
+    },
+    "5": {
+      "text": "CM RTU → Conexión RDMA establecida — Cola Admin lista",
+      "detail": "El host envía CM RTU (Listo Para Usar), ambos QPs transicionan a RTS (Listo Para Enviar). La conexión RDMA está completamente establecida.\nNVMe-oF/RDMA usa un QP RDMA por cola NVMe: • Cola Admin (QID 0) → par de QP 0x000080 ↔ 0x000100 • Cola I/O 1 (QID 1) → par de QP separado (conectado después)\nEste aislamiento por cola significa que una cola de I/O detenida no bloquea las operaciones de administración — importante para la gestión del controlador."
+    },
+    "6": {
+      "text": "Fabrics Connect → El host se conecta al Controlador de Descubrimiento",
+      "detail": "Con la conexión RDMA establecida, el host envía un comando NVMe Fabrics Connect vía RDMA SEND (opcode BTH 0x04). La cápsula del comando aterriza directamente en un WQE de recepción pre-publicado en el destino — copia cero al buffer de comandos del destino.\nEl host se conecta al NQN del Controlador de Descubrimiento bien conocido: nqn.2014-08.org.nvmexpress.discovery\nEsto es análogo al flujo mDNS → CDC del escenario NVMe/TCP, pero más simple: en el caso RDMA, el host típicamente conoce la dirección IP del destino por configuración estática (nvme connect-all -t rdma -a 192.168.100.20)."
+    },
+    "7": {
+      "text": "Respuesta Fabrics Connect ← Controlador de Descubrimiento listo",
+      "detail": "El destino acepta el Fabrics Connect y devuelve un ID de controlador dinámico (0xFFFF para Controladores de Descubrimiento). La Cola Admin del host está ahora asociada con el Controlador de Descubrimiento."
+    },
+    "8": {
+      "text": "Get Log Page → El host solicita Discovery Log vía RDMA SEND",
+      "detail": "El host envía un comando Get Log Page (LID 0x70) vía RDMA SEND. El comando incluye un descriptor Keyed SGL que le dice al destino exactamente dónde hacer RDMA WRITE de los datos del log page en memoria del host: rkey=0x0000ABCD, va=0x7f8000100000, len=4096.\nEste es el patrón fundamental de transferencia de datos NVMe-oF/RDMA para datos controlador-a-host: 1. El host envía comando vía RDMA SEND (con SGL apuntando al buffer del host) 2. El destino hace RDMA WRITE de los datos directamente al buffer del host (usando rkey/va del SGL) 3. El destino envía finalización vía RDMA SEND\nLa CPU del host no toca los datos — van del NIC del destino directamente a la memoria del host vía RDMA WRITE. Compare con NVMe/TCP donde el kernel debe copiar datos de los buffers del socket al buffer destino."
+    },
+    "9": {
+      "text": "RDMA WRITE ← El destino entrega el Discovery Log Page a la memoria del host",
+      "detail": "El destino lee el Discovery Log Page de su configuración y hace RDMA WRITE directamente al buffer pre-registrado del host usando la rkey y dirección virtual del SGL del comando.\nEl log page contiene una entrada: • SubNQN: nqn.2024-01.com.example:subsys-array01 • Transporte: RDMA (0x01) • Dirección: 192.168.100.20 • Service ID: 4420\nEl host usará esta información para conectarse al Controlador de I/O."
+    },
+    "10": {
+      "text": "Finalización ← Discovery Log Page recuperado exitosamente",
+      "detail": "El destino envía la finalización NVMe vía RDMA SEND. El ordenamiento RDMA garantiza que el RDMA WRITE (datos) es visible en la memoria del host ANTES de que llegue este SEND (finalización). El host puede acceder inmediatamente a los datos del Discovery Log Page."
+    },
+    "11": {
+      "text": "Fabrics Connect → El host conecta Cola I/O al subsistema de almacenamiento",
+      "detail": "El host establece una segunda conexión RDMA (CM REQ/REP/RTU separado, omitido por brevedad) y envía Fabrics Connect para Cola I/O 1 (QID=1) al NQN del subsistema descubierto en el log page.\nCada cola NVMe I/O se mapea a un QP RDMA separado. En producción, un host típicamente crea una cola I/O por núcleo de CPU (ej., 32 QPs para 32 núcleos) para máximo paralelismo. Cada cola opera independientemente."
+    },
+    "12": {
+      "text": "Respuesta Fabrics Connect ← Controlador I/O listo, CNTLID=0x0041",
+      "detail": "El destino asigna ID de controlador 0x0041 y la cola I/O está lista para operaciones NVMe I/O. El host ahora puede emitir comandos NVMe Read y Write en esta cola.\nEn este punto la pila completa NVMe-oF/RDMA está establecida: • Cola Admin: QP 0x000080 ↔ 0x000100 (para comandos admin, descubrimiento) • Cola I/O 1: QP 0x000082 ↔ 0x000102 (para I/O NVMe Read/Write)"
+    },
+    "13": {
+      "text": "NVMe Write → El host envía comando de escritura de 4KB (RDMA SEND)",
+      "detail": "La aplicación del host emite una escritura de 4KB al LBA 0. El controlador nvme-rdma: 1. Registra el buffer de datos de escritura como un MR (Memory Region) 2. Construye un comando NVMe Write con un Keyed SGL apuntando al buffer 3. Envía el comando vía RDMA SEND (ibv_post_send con opcode SEND)\nEl SGL le dice al destino: \"Mis datos de escritura están en va=0x7f8000200000, rkey=0x0000BCDE, length=4096. Haz RDMA READ desde ahí.\"\nEsto es lo OPUESTO al flujo de datos de NVMe Read: para Writes, el DESTINO obtiene los datos DEL host vía RDMA READ. Para Reads, el destino entrega datos AL host vía RDMA WRITE."
+    },
+    "14": {
+      "text": "RDMA READ ← El destino obtiene datos de escritura de la memoria del host",
+      "detail": "El controlador NVMe del destino emite un RDMA READ para obtener los 4KB de datos de escritura del buffer del host. La RNIC del destino envía una RDMA READ Request (opcode BTH 0x0c) con la rkey y dirección virtual del host.\nLa RNIC del host recibe esta solicitud, lee los datos por DMA de la región de memoria registrada del host, y los devuelve como una RDMA READ Response — TODO EN HARDWARE. La CPU del host no es interrumpida.\nEsta es una ventaja fundamental del transporte RDMA sobre TCP: en NVMe/TCP, el kernel del host debe copiar los datos de escritura de los buffers de espacio de usuario a los buffers del socket del kernel, luego el NIC hace DMA desde la memoria del kernel. En NVMe-oF/RDMA, los datos van directamente de la memoria de espacio de usuario al cable sin ninguna copia de CPU."
+    },
+    "15": {
+      "text": "RDMA READ Response → 4KB de datos de escritura entregados al destino",
+      "detail": "La RNIC del host devuelve la carga útil de 4KB de datos. El destino los recibe, y el controlador NVMe del destino los escribe en el SSD NVMe backend en el LBA 0."
+    },
+    "16": {
+      "text": "Finalización NVMe Write ← 4KB escritos en LBA 0 exitosamente",
+      "detail": "El destino confirma que el NVMe Write se completó. La finalización NVMe se entrega vía RDMA SEND a la cola de finalización del host (WQE de recepción).\nResumen de la ruta de datos NVMe Write (transporte RDMA): 1. Host → Destino: RDMA SEND (comando NVMe Write con SGL) 2. Destino → Host: RDMA READ Request (obtener datos de escritura) 3. Host → Destino: RDMA READ Response (4KB datos, copia cero) 4. Destino → Host: RDMA SEND (finalización NVMe) Total: 4 operaciones RDMA, 0 copias de CPU en el host."
+    },
+    "17": {
+      "text": "NVMe Read → El host envía comando de lectura de 4KB (RDMA SEND)",
+      "detail": "El host envía un comando NVMe Read para el mismo LBA 0 (4KB). El comando incluye un Keyed SGL que le dice al destino dónde hacer RDMA WRITE de los datos de lectura en la memoria del host: rkey=0x0000CDEF, va=0x7f8000300000, len=4096.\nPara operaciones Read, la ruta de datos es más simple que Write: el destino lee del SSD y hace RDMA WRITE directamente al buffer del host, luego envía la finalización."
+    },
+    "18": {
+      "text": "RDMA WRITE ← El destino entrega 4KB de datos de lectura a la memoria del host",
+      "detail": "El destino lee 4KB del SSD NVMe en el LBA 0 y hace RDMA WRITE directamente al buffer registrado del host usando la rkey y dirección virtual del SGL. La CPU del host no participa — los datos aterrizan silenciosamente en la memoria de espacio de usuario.\nEste es el mismo mecanismo de entrega de datos usado para el Discovery Log Page anteriormente, y es el patrón fundamental para todos los datos controlador-a-host en NVMe-oF/RDMA."
+    },
+    "19": {
+      "text": "Finalización NVMe Read ← 4KB leídos del LBA 0 exitosamente",
+      "detail": "El destino envía la finalización vía RDMA SEND. El ordenamiento RDMA garantiza que los datos del WRITE son visibles antes de que llegue esta finalización.\nResumen de la ruta de datos NVMe Read (transporte RDMA): 1. Host → Destino: RDMA SEND (comando NVMe Read con SGL) 2. Destino → Host: RDMA WRITE (4KB datos, copia cero al buffer del host) 3. Destino → Host: RDMA SEND (finalización NVMe) Total: 3 operaciones RDMA, 0 copias de CPU en el host.\nComparación con NVMe/TCP: • NVMe/TCP Read: comando (TCP SEND) → datos (TCP C2HData PDU, copia del kernel) → finalización • NVMe-oF/RDMA Read: comando (RDMA SEND) → datos (RDMA WRITE, copia cero) → finalización\nLa ruta RDMA elimina todas las copias de datos de CPU y las transiciones del kernel."
+    },
+    "20": {
+      "text": "⟳ Escenario completo — Descubrimiento e I/O de NVMe-oF/RDMA",
+      "detail": "Este escenario demostró NVMe over Fabrics usando el enlace de transporte RDMA:\n1. ENLACE — Establecimiento físico 100GbE con PFC para fabric sin pérdidas 2. ARP — Resolución de dirección MAC 3. CM — Configuración de QP del IB Connection Manager (REQ/REP/RTU) para Cola Admin 4. FABRICS CONNECT — Conexión al Controlador de Descubrimiento, recuperación del Discovery Log Page 5. IO CONNECT — Configuración de cola del Controlador I/O sobre QP RDMA separado 6. NVMe WRITE — comando vía SEND, datos obtenidos vía RDMA READ (3 operaciones) 7. NVMe READ — comando vía SEND, datos entregados vía RDMA WRITE (2 operaciones)\nVentajas clave sobre NVMe/TCP: • Cero copias de datos de CPU — el DMA de la RNIC maneja todo el movimiento de datos • Menor latencia — sin transiciones de buffer del socket del kernel • Mayor rendimiento — velocidad de línea alcanzable con un solo QP • Aislamiento por cola — cada cola NVMe en su propio QP RDMA\nCompromiso: requiere fabric Ethernet sin pérdidas (PFC + ECN/DCQCN), NICs con capacidad RDMA, y configuración más compleja."
+    }
+  }
+}

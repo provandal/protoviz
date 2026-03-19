@@ -1,0 +1,78 @@
+{
+  "meta": {
+    "title": "iSCSI: Login → Dekouvèt → SCSI INQUIRY → WRITE(10) → READ(10)",
+    "description": "Tout sik lavi sesyon iSCSI sou 10GbE TCP/IP: salitasyon TCP 3 etap, faz Login iSCSI (otantifikasyon ak negosyasyon paramèt), dekouvèt SendTargets, login sib, SCSI INQUIRY pou idantifye LUN, SCSI WRITE(10) ak READ(10) pou IO done. iSCSI se pwotokòl SAN ki pi deplwaye, li pote kòmand SCSI sou rezo TCP/IP estanda — pa bezwen aparèy espesyal. Senaryo sa a montre kijan depo blòk SCSI fonksyone sou Ethernet, konpare ak Fibre Channel (tisi SAN dedye) ak NVMe-oF (pwochen jenerasyon).",
+    "learning_objectives": [
+      "Konprann kijan iSCSI mape kòmand SCSI sou koneksyon TCP ak kadraj PDU",
+      "Swiv faz Login iSCSI: negosyasyon sekirite, echanj paramèt operasyonèl",
+      "Wè dekouvèt SendTargets — kijan yon inisyatè aprann sib ak LUN disponib",
+      "Obsève idantifyan sesyon ak koneksyon iSCSI (ISID, TSIH, CID)",
+      "Trase SCSI INQUIRY pou dekouvri tip aparèy, vandè, ak kapasite",
+      "Swiv yon SCSI WRITE(10) atravè iSCSI: PDU kòmand, PDU Data-Out, PDU Repons",
+      "Swiv yon SCSI READ(10): PDU kòmand, PDU Data-In, PDU Repons",
+      "Konprann dijès antèt/done iSCSI (CRC32C) pou entegrite done"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Lyen fizik monte — 10GbE sou toude segman",
+      "detail": "Lyen Ethernet 10GbE estanda monte. Kontrèman ak FC (tisi SAN dedye) oswa RoCEv2 (ki egzije PFC/Ethernet san pèt), iSCSI mache sou nenpòt rezo IP estanda. Pa bezwen konfigirasyon switch espesyal — TCP jere fyabilite ak kontwòl fliks."
+    },
+    "1": {
+      "text": "Salitasyon TCP 3 etap → Koneksyon nan pò 3260 etabli",
+      "detail": "Demon iscsid inisyatè a ouvri yon koneksyon TCP nan pò iSCSI byen koni sib la 3260 (asiyen IANA). Salitasyon TCP estanda SYN → SYN-ACK → ACK etabli yon fliks oktè fyab.\niSCSI kadre PDU li yo sou koneksyon TCP sa a. Kontrèman ak pwotokòl ki itilize UDP (RoCEv2) oswa kadraj dedye (FC), iSCSI konte sou TCP pou fyabilite, lòd, ak kontwòl fliks. Sa vle di: • Pa bezwen NIC espesyal (nenpòt pil TCP/IP mache) • Mache atravè rezo ki achemine (pa limite nan L2) • Kontwòl konjesyon TCP limite debi anba chaj • Tretman TCP konsome sik CPU\nGade senaryo TCP a pou detay sou salitasyon 3 etap la."
+    },
+    "2": {
+      "text": "Login iSCSI → Negosyasyon sekirite (AuthMethod=None)",
+      "detail": "Inisyatè a voye premye PDU Login. Login iSCSI gen de etap: 1. Negosyasyon Sekirite (CSG=0) — seleksyon metòd otantifikasyon 2. Negosyasyon Operasyonèl (CSG=1) — ajisteman paramèt sesyon\nPDU sa a pote pè kle-valè: • InitiatorName=iqn.2024-01.com.example:host01 (IQN inisyatè) • AuthMethod=None (pa gen otantifikasyon — CHAP komen nan pwodiksyon)\nISID (ID Sesyon Inisyatè) se yon valè 6 oktè ki, konbine ak TSIH sib la, idantifye sesyon iSCSI sa a inikman. Si inisyatè a rekonekte ak menm ISID, sib la ka reprann sesyon an olye kreye yon nouvo."
+    },
+    "3": {
+      "text": "Repons Login ← Sekirite aksepte, TSIH=0x0001 asiyen",
+      "detail": "Sib la aksepte AuthMethod=None epi asiyen TSIH (Manch Idantifikasyon Sesyon Sib) = 0x0001. Bit T (Tranzit) la fikse, sa deplase nan etap Negosyasyon Operasyonèl."
+    },
+    "4": {
+      "text": "Login → Negosyasyon paramèt operasyonèl",
+      "detail": "Inisyatè a pwopoze paramèt operasyonèl ki gouvène transfè done:\n• MaxRecvDataSegmentLength = 262144 (256KB) — done maks pa PDU • FirstBurstLength = 262144 — done san demann pèmèt anvan R2T • MaxBurstLength = 524288 — done total maks pa sekans R2T • InitialR2T = Yes — sib la dwe voye R2T anvan done ekriti • ImmediateData = Yes — ti done ekriti ka vwayaje ak PDU kòmand • HeaderDigest = None — pa gen CRC sou antèt iSCSI (komen sou LAN fyab) • DataDigest = None — pa gen CRC sou segman done\nParamèt sa yo negosye — valè aktyèl yo se minimòm oswa maksimòm sa chak bò pwopoze, depann de paramèt la."
+    },
+    "5": {
+      "text": "Login Konplè ← Faz Fonksyonalite Konplè — sesyon etabli",
+      "detail": "Sib la aksepte paramèt operasyonèl yo epi fè sesyon an fè tranzisyon nan Faz Fonksyonalite Konplè (NSG=3). Sesyon iSCSI a kounye a fin etabli nèt epi pare pou kòmand SCSI.\nIdantifyan sesyon: • ISID = 0x00023d000001 (asiyen pa inisyatè) • TSIH = 0x0001 (asiyen pa sib) • (ISID + TSIH) idantifye sesyon sa a globalman\nParamèt negosye: • MaxRecvDataSegmentLength = 256KB • FirstBurstLength = 256KB • MaxBurstLength = 512KB • InitialR2T = Yes, ImmediateData = Yes"
+    },
+    "6": {
+      "text": "SCSI INQUIRY → Inisyatè dekouvri karakteristik aparèy LUN 0",
+      "detail": "Kouch mitan SCSI Linux voye INQUIRY bay chak LUN otomatikman pou dekouvri tip aparèy, vandè, ak kapasite. Se menm kòmand SCSI INQUIRY ki itilize nan senaryo Fibre Channel la — iSCSI senplman transpòte li sou TCP olye FCP.\nKòmand INQUIRY a anvlope nan yon PDU Kòmand SCSI iSCSI (opcode 0x01) ak CDB 16 oktè a entegre nan antèt PDU a."
+    },
+    "7": {
+      "text": "Repons INQUIRY ← Aparèy blòk aksè-dirèk (LIO-ORG IBLOCK)",
+      "detail": "Sib la retounen done INQUIRY ki idantifye aparèy la kòm yon aparèy blòk aksè-dirèk (tip 0x00). Inisyatè Linux nan kreye aparèy /dev/sdX pou LUN sa a.\nRepons lan livre kòm yon PDU Data-In SCSI iSCSI ak bit Estati a fikse — konbine livrezon done ak estati SCSI nan yon sèl PDU (optimize pou ti repons)."
+    },
+    "8": {
+      "text": "SCSI WRITE(10) → Ekriti 4KB nan LBA 0",
+      "detail": "Aplikasyon an ekri 4KB nan aparèy blòk la. Inisyatè iSCSI a voye CDB SCSI WRITE(10) anvlope nan yon PDU Kòmand SCSI iSCSI.\nPaske InitialR2T=Yes te negosye, inisyatè a pa voye done ekriti toujou — li tann sib la siyale li pare atravè R2T. (Si ImmediateData te itilize, ti done ekriti ta ka vwayaje ak PDU kòmand lan li menm.)"
+    },
+    "9": {
+      "text": "R2T ← Sib pare pou resevwa done ekriti 4KB",
+      "detail": "Sib la voye yon PDU R2T (Pare pou Transfere), ki bay inisyatè a pèmisyon pou voye done ekriti. R2T a espesifye: • Offsèt Tanpon = 0 (kòmansman transfè) • Longè Transfè Done Dezire = 4096 (voye tout 4KB) • Etikèt Transfè Sib = 0x00000001 (inisyatè repete li nan Data-Out)\nR2T bay kontwòl fliks — sib la pap debòde ak done ekriti li pa pare pou resevwa. Sa enpòtan pou sib ki gen espas tanpon limite. Konpare ak NVMe-oF/RDMA kote sib la fè RDMA READ done nan pwòp vitès li."
+    },
+    "10": {
+      "text": "Data-Out → Inisyatè voye done ekriti 4KB",
+      "detail": "Inisyatè a voye done ekriti nan yon PDU Data-Out SCSI iSCSI (opcode 0x05). Tout 4KB a rantre nan yon sèl PDU piske MaxRecvDataSegmentLength = 256KB.\nPou ekriti pi gwo (> MaxRecvDataSegmentLength), done yo ta divize sou plizyè PDU Data-Out, chak referanse menm Etikèt Transfè Sib nan R2T a.\nKonparezon chemen done pou yon ekriti 4KB: • iSCSI: app → kernel SCSI → PDU iSCSI → pil TCP/IP → NIC DMA (2 kopi) • NVMe-oF/RDMA: app → MR anrejistre → RDMA READ pa sib (0 kopi CPU machin) • FC: app → kernel SCSI → FCP → drivè FC → HBA DMA (1 kopi)"
+    },
+    "11": {
+      "text": "Repons WRITE ← BON — 4KB ekri nan LBA 0",
+      "detail": "Sib la konfime SCSI WRITE(10) fini ak estati BON. Done yo ekri nan aparèy blòk dèyè a.\nRezime fliks Ekriti iSCSI: 1. Inisyatè → Sib: PDU Kòmand SCSI (CDB WRITE) 2. Sib → Inisyatè: PDU R2T (pare pou done) 3. Inisyatè → Sib: PDU Data-Out (done ekriti 4KB) 4. Sib → Inisyatè: PDU Repons SCSI (estati BON)"
+    },
+    "12": {
+      "text": "SCSI READ(10) → Lekti 4KB nan LBA 0",
+      "detail": "Inisyatè a voye yon READ(10) pou menm blòk 4KB. Pa bezwen R2T pou lekti — sib la voye PDU Data-In dirèkteman."
+    },
+    "13": {
+      "text": "Data-In ← Done lekti 4KB ak estati BON",
+      "detail": "Sib la li 4KB nan LBA 0 epi retounen li nan yon PDU Data-In SCSI iSCSI. Bit Estati a fikse (S=1), sa mete estati SCSI BON sou do dènye PDU done a — sa evite yon PDU Repons separe.\nRezime fliks Lekti iSCSI: 1. Inisyatè → Sib: PDU Kòmand SCSI (CDB READ) 2. Sib → Inisyatè: PDU Data-In (4KB + estati BON)\nLekti pi senp pase ekriti paske pa gen salitasyon R2T. Pou gwo lekti, done yo ta divize sou plizyè PDU Data-In."
+    },
+    "14": {
+      "text": "⟳ Senaryo fini — sik lavi sesyon iSCSI",
+      "detail": "Senaryo sa a te demontre yon sesyon iSCSI konplè:\n1. LYEN — Ethernet 10GbE estanda, pa gen konfigirasyon espesyal 2. TCP — Salitasyon 3 etap nan pò 3260 3. LOGIN — Negosyasyon de etap (sekirite → operasyonèl → Faz Fonksyonalite Konplè) 4. DEKOUVÈT — SCSI INQUIRY pou idantifye LUN 0 (disk) 5. EKRITI — Kòmand → R2T → Data-Out → Repons (echanj 4 PDU) 6. LEKTI — Kòmand → Data-In+Estati (echanj 2 PDU)\niSCSI vs lòt pwotokòl SAN:\niSCSI: Transpò TCP/IP, nenpòt Ethernet, pa bezwen aparèy espesyal, depans CPU wo, latans ~100-500μs, konpleksite ba, pri ba, debi maks ~40 Gbps\nFC: Tisi FC, FC dedye, FC HBA, depans CPU ba, latans ~10-50μs, konpleksite wo, pri wo, debi maks 64 Gbps\nNVMe-oF/RDMA: RoCEv2/RDMA, Ethernet san pèt, NIC RDMA, depans CPU prèske zewo, latans ~5-20μs, konpleksite mwayèn, pri mwayèn, debi maks 100+ Gbps\nFòs iSCSI se senplisite — li mache sou rezo IP ki egziste deja san aparèy espesyal, sa fè li pwotokòl SAN ki pi aksesib epi ki pi deplwaye."
+    }
+  }
+}

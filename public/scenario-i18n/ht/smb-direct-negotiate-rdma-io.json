@@ -1,0 +1,85 @@
+{
+  "meta": {
+    "title": "SMB Direct: Negosyasyon → Kanal RDMA → Lekti ak Ekriti Fichye sou RoCEv2",
+    "description": "SMB Direct (MS-SMBD) pèmèt pataj fichye SMB 3.x sou transpò RDMA (RoCEv2, iWARP). Apre negosyasyon SMB sou TCP dekouvri kapasite RDMA, koneksyon an migre nan yon kanal RDMA. Lekti fichye itilize RDMA READ (sèvè tire soti nan tanpon kliyan) epi ekriti fichye itilize RDMA WRITE (sèvè pouse done nan tanpon kliyan), toude kontounen chemen done CPU.",
+    "learning_objectives": [
+      "Konprann kijan SMB3 dekouvri kapasite RDMA pandan NEGOTIATE",
+      "Wè negosyasyon SMB Direct (MS-SMBD) ki etabli kanal RDMA a",
+      "Swiv kijan done fichye kontounen TCP antyèman yon fwa kanal RDMA a aktif",
+      "Trase SMB2 WRITE ak RDMA: kliyan ofri deskriptè tanpon, sèvè fè RDMA READ done",
+      "Trase SMB2 READ ak RDMA: sèvè RDMA WRITE done nan tanpon anrejistre kliyan",
+      "Konprann jesyon kredi SMB Direct pou kontwòl fliks",
+      "Apresye benefis delestaj CPU: chemen done sèvè fichye se zewo-kopi"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Lyen fizik monte — tisi san pèt 100GbE pou SMB Direct",
+      "detail": "Toude machin konekte atravè 100GbE ak PFC aktive (obligatwa pou transpò san pèt RoCEv2). SMB Direct sou Windows detekte NIC kapab RDMA atravè founisè NetworkDirect (ND) anrejistre nan sistèm nan."
+    },
+    "1": {
+      "text": "QP RDMA konekte — SMB Direct etabli kanal RDMA a",
+      "detail": "Anvan negosyasyon SMB Direct, koneksyon RDMA anba a dwe etabli. Kliyan an konekte nan ekoutè RDMA sèvè a (pò 5445) atravè CM REQ/REP/RTU.\nYon fwa QP a rive nan eta RTS, negosyasyon SMB Direct ka kòmanse sou RDMA SEND/RECV."
+    },
+    "2": {
+      "text": "Demann Negosyasyon SMB Direct — kliyan pwopoze paramèt RDMA",
+      "detail": "Kliyan an voye yon mesaj Negosyasyon SMB Direct sou RDMA SEND ki pwopoze: • Kredi: 255 (kontwòl fliks pou mesaj baze sou SEND) • Gwosè Ekspedisyon Prefere: 1364 oktè • Gwosè Fragmante Maks: 1 MB (pou gwo mesaj SMB divize sou SEND) • Gwosè Lekti/Ekriti Maks: 1 MB (pou transfè an kantite RDMA READ/WRITE)\nJesyon kredi kritik: chak RDMA SEND konsome yon kredi nan reseptè a. San kredi, ekspedisyon an dwe tann — sa anpeche debòdman fil atant resepsyon."
+    },
+    "3": {
+      "text": "Repons Negosyasyon SMB Direct — kanal RDMA etabli",
+      "detail": "Sèvè aksepte paramèt SMB Direct yo. Kanal RDMA a kounye a aktif — tout mesaj SMB2 ki vin apre ap pote sou RDMA SEND/RECV olye TCP.\nValè negosye kle: • Kredi: 255 (bidireksyonèl) • RDMA Lekti/Ekriti Maks: 1 MB"
+    },
+    "4": {
+      "text": "SMB2 NEGOTIATE — dyalèk 3.1.1 ak kapasite transfòm RDMA",
+      "detail": "Echanj SMB2 NEGOTIATE estanda, men kounye a pote sou kanal RDMA SMB Direct (atravè RDMA SEND). Kliyan pwopoze SMB 3.1.1 epi enkli kontèks negosyasyon Transfòm RDMA, ki pèmèt chifreman chaj itil RDMA nan SMB 3.1.1."
+    },
+    "5": {
+      "text": "Repons SMB2 NEGOTIATE — SMB 3.1.1 konfime",
+      "detail": "Sèvè chwazi dyalèk SMB 3.1.1. Kapasite MULTI_CHANNEL ak LARGE_MTU konfime."
+    },
+    "6": {
+      "text": "SMB2 SESSION_SETUP + TREE_CONNECT — otantifye epi mape pataj",
+      "detail": "Sesyon SMB2 estanda ak tree connect, pote sou RDMA. SESSION_SETUP otantifye atravè Kerberos (domèn) oswa NTLM. TREE_CONNECT mape \\\\server\\share$ pou aksè fichye.\nNan yon senaryo Hyper-V sou SMB, pataj la eberje fichye disk vityèl VHDx. SMB Direct se transpò rekòmande pou depo VM vivan — li bay latans pi ba ak debi pi wo pase TCP."
+    },
+    "7": {
+      "text": "Sesyon etabli, pataj konekte",
+      "detail": "Sesyon ak tree connect siksè. Kliyan ka kounye a ouvri fichye."
+    },
+    "8": {
+      "text": "SMB2 CREATE — ouvri vm01.vhdx pou lekti/ekriti",
+      "detail": "Kliyan ouvri fichye disk vityèl Hyper-V. Sa a se yon travay SMB Direct tipik: Hyper-V estoke imaj disk VM sou pataj SMB distans, epi tout IO VM sikile sou SMB Direct."
+    },
+    "9": {
+      "text": "Repons CREATE — manch fichye pou vm01.vhdx (100 GB)",
+      "detail": "Sèvè retounen yon manch fichye pèsistan."
+    },
+    "10": {
+      "text": "SMB2 WRITE ak deskriptè tanpon RDMA — 1 MB nan vm01.vhdx",
+      "detail": "Kliyan voye yon kòmand SMB2 WRITE atravè RDMA SEND, men olye done anliy, li gen yon SMB_DIRECT_BUFFER_DESCRIPTOR_V1 ki gen: • Offsèt memwa (adrès vityèl) tanpon anrejistre a • R_Key (kle distans) pou aksè RDMA • Longè done\nChan Channel = SMB2_CHANNEL_RDMA_V1 di sèvè a pou fè RDMA READ done nan deskriptè tanpon sa a olye atann done anliy.\nSa a se modèl «envèse»: kliyan ekspoze memwa li epi sèvè tire done — envès yon ekriti fichye tradisyonèl kote kliyan pouse done."
+    },
+    "11": {
+      "text": "RDMA READ — sèvè chèche done ekriti 1 MB nan memwa kliyan",
+      "detail": "RNIC sèvè a emèt yon RDMA READ pou chèche 1 MB done ekriti dirèkteman nan tanpon memwa anrejistre kliyan an. Okenn CPU pa enplike nan transfè done a — se motè DMA a motè DMA sou tisi RoCEv2 san pèt la."
+    },
+    "12": {
+      "text": "Repons SMB2 WRITE — 1 MB ekri ak siksè",
+      "detail": "Sèvè konfime 1 MB ekri. Tout chemen done a te zewo-kopi."
+    },
+    "13": {
+      "text": "SMB2 READ ak deskriptè tanpon RDMA — 1 MB soti nan vm01.vhdx",
+      "detail": "Kliyan voye SMB2 READ ak Channel = SMB2_CHANNEL_RDMA_V1 ak yon deskriptè tanpon. Sèvè a ap RDMA WRITE done fichye dirèkteman nan tanpon memwa anrejistre kliyan an.\nPou Hyper-V sou SMB, se konsa lekti VM mache: ipèvizè a emèt yon lekti VHDx, ki vin yon SMB READ sou RDMA. Done fichye ateri nan memwa VM atravè RDMA WRITE san okenn kopi CPU sou sèvè fichye a."
+    },
+    "14": {
+      "text": "RDMA WRITE — sèvè pouse done lekti 1 MB nan memwa kliyan",
+      "detail": "RNIC sèvè a RDMA WRITE 1 MB done fichye dirèkteman nan tanpon anrejistre kliyan an. CPU sèvè sèlman kòmanse RDMA WRITE a (poste yon WQE); mouvman done aktyèl la antyèman jere pa aparèy."
+    },
+    "15": {
+      "text": "Repons SMB2 READ — done deja nan tanpon kliyan (zewo done anliy)",
+      "detail": "Repons READ gen sèlman estati — done fichye yo te deja livre atravè RDMA WRITE. Done Restant = 0 nan repons lan konfime tout done te transfere.\nKonpare sa ak SMB sou TCP: tout 1 MB done fichye ta anliy nan repons SMB2 READ, ki egzije CPU sèvè kopye done nan tanpon ekspedisyon TCP ak CPU kliyan kopye soti nan tanpon resepsyon TCP."
+    },
+    "16": {
+      "text": "Senaryo fini — IO fichye SMB Direct sou RoCEv2",
+      "detail": "Senaryo sa a te demontre SMB Direct (MS-SMBD):\nKONFIGIRASYON: Koneksyon RDMA QP → Negosyasyon SMB Direct (kredi, gwosè L/E maks) → SMB2 NEGOTIATE (3.1.1) → SESSION_SETUP → TREE_CONNECT → CREATE\nEKRITI FICHYE (SMB2_CHANNEL_RDMA_V1): Kliyan: kòmand WRITE + deskriptè tanpon (atravè RDMA SEND) Sèvè: RDMA READ chèche 1 MB soti nan tanpon kliyan (zewo-kopi) Sèvè: repons WRITE (atravè RDMA SEND)\nLEKTI FICHYE (SMB2_CHANNEL_RDMA_V1): Kliyan: kòmand READ + deskriptè tanpon (atravè RDMA SEND) Sèvè: RDMA WRITE pouse 1 MB nan tanpon kliyan (zewo-kopi) Sèvè: repons READ — pa gen done anliy (atravè RDMA SEND)\nPwen kle: • Mesaj kontwòl (kòmand, repons) → RDMA SEND/RECV • Done an kantite (kontni fichye) → RDMA READ/WRITE (zewo-kopi) • WRITE itilize RDMA READ (sèvè tire nan kliyan) • READ itilize RDMA WRITE (sèvè pouse nan kliyan) • Kontwòl fliks baze sou kredi anpeche debòdman fil atant resepsyon"
+    }
+  }
+}

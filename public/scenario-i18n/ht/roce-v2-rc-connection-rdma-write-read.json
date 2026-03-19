@@ -1,0 +1,101 @@
+{
+  "meta": {
+    "title": "RoCEv2 RC: Fòmasyon Lyen → Koneksyon QP → RDMA WRITE → RDMA READ",
+    "description": "Yon echanj RoCEv2 Koneksyon Fyab (RC) konplè sou 100GbE, depi etablisman lyen fizik (Oto-Negosyasyon, Fòmasyon Lyen, RS-FEC), pase nan konfigirasyon IP/ARP, konfigirasyon QP Jesyonè Koneksyon IB (CM) atravè MAD/CM REQ→REP→RTU, yon RDMA WRITE ki pouse yon tanpon 4KB dirèkteman nan memwa distans san enplikasyon CPU sou sib la, ak yon RDMA READ ki rekipere menm tanpon an. Eta machin montre sou tout kouch OSI, enkli API verbs, machin eta QP, antèt transpò IB, ankadreman IP/UDP, Ethernet kapab PFC, ak eta RS-FEC kouch fizik la.",
+    "learning_objectives": [
+      "Konprann kijan lyen fizik 100GbE monte endepandaman (machin↔switch) atravè Oto-Negosyasyon ak Fòmasyon Lyen",
+      "Trase rezolisyon ARP ak adresaj IP pou RoCEv2 (ki mache sou UDP/IP, kontrèman ak RoCEv1)",
+      "Swiv echanj MAD Jesyonè Koneksyon IB pou mennen yon Pè Fil Atant soti nan RESET rive nan RTS",
+      "Obsève tranzisyon machin eta QP: RESET → INIT → RTR → RTS",
+      "Wè kijan RDMA WRITE kontounen CPU distans la — pa gen WQE resepsyon ki konsome sou sib",
+      "Wè kijan RDMA READ egzije yon ale-retou ak kijan antèt RETH/AETH pote adresaj",
+      "Konprann kle Rejyon Memwa (MR) (lkey/rkey) ak wòl yo nan otorizasyon RDMA",
+      "Obsève kijan PFC (Kontwòl Fliks Priyorite) anpeche Ethernet san pèt jete anba konjesyon"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Lyen A: siyal detekte — Inisyatè ↔ Switch pò A",
+      "detail": "Transeptè optik sou inisyatè a detekte limyè soti nan switch pò A. Oto-Negosyasyon (AN) kòmanse dapre IEEE 802.3cd klòz 73. L1 se pwen-a-pwen — sa a endepandan de lyen switch↔sib la."
+    },
+    "1": {
+      "text": "Lyen B: siyal detekte — Switch pò B ↔ Sib",
+      "detail": "Transeptè optik sou sib la detekte limyè soti nan switch pò B. AN kòmanse endepandaman sou lyen sa a."
+    },
+    "2": {
+      "text": "Lyen A: AN fini — 100GbE dakò, Fòmasyon Lyen kòmanse",
+      "detail": "AN echanje paj kapasite teknoloji ant inisyatè ak switch pò A. Toude dakò sou 100GBASE-SR4. RS(544,514) FEC obligatwa pou 100G. Fòmasyon Lyen kòmanse pou egalise kanal la (pre-enpaz, pòs-kursè)."
+    },
+    "3": {
+      "text": "Lyen B: AN fini — 100GbE dakò, Fòmasyon Lyen kòmanse",
+      "detail": "AN fini sou switch pò B ↔ sib. Menm negosyasyon: 100GBASE-SR4 ak RS(544,514) FEC. Fòmasyon Lyen kòmanse endepandaman sou lyen sa a."
+    },
+    "4": {
+      "text": "Lyen A MONTE — Inisyatè ↔ Switch nan 100Gbps ak RS-FEC",
+      "detail": "Fòmasyon Lyen fini sou inisyatè↔switch. PFC (802.1Qbb) aktive pou priyorite 3 atravè negosyasyon DCBX (pa montre). Fram Ethernet ka kounye a sikile sou segman lyen sa a."
+    },
+    "5": {
+      "text": "Lyen B MONTE — Switch ↔ Sib nan 100Gbps ak RS-FEC",
+      "detail": "Fòmasyon Lyen fini sou switch↔sib. PFC aktive. Toude lyen yo kounye a monte — switch la ka transmèt fram L2 ant pò li yo. Konektivite L2 bout-a-bout etabli."
+    },
+    "6": {
+      "text": "Demann ARP: kiyès ki gen 192.168.1.20?",
+      "detail": "RoCEv2 itilize adresaj IP. Anvan nenpòt konfigirasyon koneksyon, aksesibilite IP dwe etabli."
+    },
+    "7": {
+      "text": "Repons ARP: 192.168.1.20 se nan 00:02:c9:ab:cd:ef"
+    },
+    "8": {
+      "text": "Toude bò anrejistre Rejyon Memwa atravè ibv_reg_mr()",
+      "detail": "ibv_reg_mr() pike paj fizik, bati yon mapaj DMA, epi anrejistre tradiksyon vityèl→fizik nan Tab Tradiksyon Memwa (MTT) RNIC a. Li retounen lkey (pou DMA lokal) ak rkey (pou pataje ak distans pou aksè RDMA). Linux: mlx5_ib_reg_user_mr() → kòmand firmware MLX5_CMD_OP_CREATE_MKEY."
+    },
+    "9": {
+      "text": "QP kreye — eta: RESET",
+      "detail": "ibv_create_qp() alwe yon Pè Fil Atant (Fil Atant Ekspedisyon + Fil Atant Resepsyon + Fil Atant Konpleyon). QP kòmanse nan eta RESET — pa ka voye oswa resevwa. mlx5: kòmand firmware MLX5_CMD_OP_CREATE_QP asiyen QPN."
+    },
+    "10": {
+      "text": "QP fè tranzisyon RESET → INIT atravè ibv_modify_qp()",
+      "detail": "modify_qp(RESET→INIT) fikse: endèks P_Key, nimewo pò, drapo aksè. QP ka kounye a poste WQE Resepsyon (men pa ka voye ankò). Linux: ib_modify_qp() → mlx5_ib_modify_qp() → MLX5_CMD_OP_RST2INIT_QP. Atribi obligatwa: IB_QP_PKEY_INDEX | IB_QP_PORT | IB_QP_ACCESS_FLAGS."
+    },
+    "11": {
+      "text": "CM REQ voye — pwopoze paramèt QP",
+      "detail": "rdma_connect() deklanche ib_send_cm_req(). Voye QPN inisyatè, PSN kòmanse, MTU chemen=4096, kantite reesèy, ak done prive aplikasyon bay sib. Toude QP yo toujou nan INIT nan pwen sa a."
+    },
+    "12": {
+      "text": "CM REP resevwa — sib aksepte, bay QPN ak PSN pa li",
+      "detail": "Lè li resevwa REQ, sib la rele rdma_accept() → ib_send_cm_rep(). Sib fè QP li fè tranzisyon nan RTR (Pare pou Resevwa) apre li voye REP. Inisyatè fè QP li fè tranzisyon nan RTR lè li resevwa REP. INIT→RTR fikse: QPN destinasyon, PSN RQ, MTU chemen, AV (vektè adrès). Linux: mlx5_ib_modify_qp() → MLX5_CMD_OP_INIT2RTR_QP."
+    },
+    "13": {
+      "text": "CM RTU voye — toude QP yo fè tranzisyon nan RTS. Koneksyon etabli.",
+      "detail": "Apre li voye RTU, inisyatè fè QP li fè tranzisyon: RTR→RTS. Lè li resevwa RTU, sib fè QP li fè tranzisyon: RTR→RTS. RTR→RTS fikse: PSN SQ, kantite reesèy, reesèy RNR, delè. Linux: MLX5_CMD_OP_RTR2RTS_QP. QP a kounye a konplètman operasyonèl — operasyon RDMA ka kòmanse."
+    },
+    "14": {
+      "text": "Aplikasyon poste Demann Travay RDMA WRITE nan Fil Atant Ekspedisyon",
+      "detail": "ibv_post_send() ak opcode IBV_WR_RDMA_WRITE. WR espesifye: lis SG lokal (lkey + adrès vityèl tanpon sous), adrès vityèl distans + rkey. Sonèt pat MMIO ekri nan rejis BAR RNIC (pa gen apèl sistèm apre ibv_post_send). Linux: mlx5_post_one_wr() → bati WQE 64 oktè → sonnen sonèt atravè mlx5_write64() nan MMIO RNIC."
+    },
+    "15": {
+      "text": "RDMA WRITE — 4KB pouse nan memwa distans, zewo CPU sou sib",
+      "detail": "RNIC DMA tanpon lokal, anvlope nan BTH+RETH+UDP+IP+Eth, transmèt. RNIC sib la verifye ICRC, tcheke otorizasyon rkey kont tab MR, DMA chaj itil nan memwa fizik sib. CPU sib pa wè anyen jiskaske aplikasyon an sonde CQ (ki ta sèlman rive si sib te poste yon WRITE_WITH_IMM)."
+    },
+    "16": {
+      "text": "ACK soti nan RNIC sib — WRITE fini, CQE poste sou inisyatè",
+      "detail": "RNIC sib la jenere ACK RC otonòm. Pa gen enplikasyon CPU sou sib. Lè li resevwa ACK, RNIC inisyatè a poste yon CQE (Antre Fil Atant Konpleyon) nan CQ inisyatè a. Aplikasyon an aprann konpleyon atravè ibv_poll_cq(). Linux: mlx5_ib_poll_cq() li CQE soti nan tanpon anò CQ."
+    },
+    "17": {
+      "text": "Aplikasyon poste Demann Travay RDMA READ",
+      "detail": "ibv_post_send() ak opcode IBV_WR_RDMA_READ. Espesifye: tanpon SG lokal pou done resevwa (lkey), adrès vityèl distans + rkey. RDMA READ egzije yon ale-retou — inisyatè voye demann, sib voye done."
+    },
+    "18": {
+      "text": "Demann RDMA READ — pa gen done nan direksyon sa a",
+      "detail": "Inisyatè voye BTH(opcode=0x0C) + RETH ki espesifye kisa pou li. Pa gen chaj itil. RNIC sib la ap otonòm DMA pwòp memwa li epi reponn."
+    },
+    "19": {
+      "text": "Repons RDMA READ — RNIC sib la DMA memwa epi voye done",
+      "detail": "RNIC sib: resevwa demann READ → valide rkey → DMA li memwa fizik → bati pakè repons → transmèt. Zewo enplikasyon CPU sou sib. RNIC inisyatè: resevwa repons → DMA ekri nan tanpon lokal inisyatè → poste CQE READ. Aplikasyon rele ibv_poll_cq() pou rekipere rezilta. Done retounen se egzakteman sa ki te ekri nan RDMA WRITE a — verifye bout-a-bout pa ICRC."
+    },
+    "20": {
+      "text": "Senaryo fini",
+      "detail": "Rezime: De lyen 100GbE endepandan te monte (machin↔switch chak), switch la te bay transmisyon L2, inisyatè a te etabli yon koneksyon RoCEv2 RC, te fè yon RDMA WRITE 4KB nan memwa distans (zewo enplikasyon CPU distans), answit li te li menm done sa yo ak yon RDMA READ (zewo enplikasyon CPU distans tou). Total fram done: 2. Total fram kontwòl: 5 (ARP×2, CM×3). CPU distans la pa te janm entèronp pou operasyon done."
+    }
+  }
+}

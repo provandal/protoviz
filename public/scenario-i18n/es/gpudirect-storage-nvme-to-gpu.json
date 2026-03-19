@@ -1,0 +1,86 @@
+{
+  "meta": {
+    "title": "[WIP] GPUDirect Storage: Lectura NVMe directa a memoria GPU (PCIe local)",
+    "description": "Un intercambio completo de GPUDirect Storage (GDS) mostrando cómo los datos se leen desde un SSD NVMe directamente a la memoria GPU (BAR1) evitando por completo la caché de páginas de la CPU. Este es un escenario de protocolo LOCAL — los tres actores (GPU, CPU/SO del Host, SSD NVMe) son componentes dentro de una sola máquina conectados vía PCIe, no puntos finales en red.",
+    "learning_objectives": [
+      "Comprender por qué la ruta de I/O de almacenamiento tradicional (NVMe → caché de páginas → cudaMemcpy) es ineficiente para cargas de trabajo GPU",
+      "Aprender cómo GPUDirect Storage elimina buffers de rebote de CPU dirigiendo el DMA NVMe directamente a memoria GPU BAR1",
+      "Rastrear el ciclo de vida de la API cuFile: cuFileDriverOpen → cuFileHandleRegister → cuFileBufRegister → cuFileRead/cuFileWrite",
+      "Comprender el rol del módulo del kernel nvidia-fs como intermediario entre el controlador NVMe y la gestión de memoria GPU",
+      "Ver cómo el DMA PCIe peer-to-peer (P2P) permite a controladores NVMe escribir directamente a GPU BAR1 sin involucramiento de CPU",
+      "Observar el envío de comandos NVMe con entradas PRP/SGL apuntando a direcciones físicas GPU en lugar de DRAM del host",
+      "Comprender por qué GDS requiere que la memoria GPU BAR1 esté registrada — el módulo nvidia-fs debe fijar y mapear páginas GPU para DMA",
+      "Ver cómo cuFileWrite invierte la ruta: memoria GPU → SSD NVMe para guardado de checkpoints de IA"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Ruta tradicional (sin GDS): NVMe → Caché de Páginas → Buffer de Usuario → cudaMemcpy → GPU",
+      "detail": "SIN GPUDirect Storage, leer datos NVMe en memoria GPU requiere múltiples copias mediadas por CPU: (1) La aplicación llama a read() o pread(). (2) El controlador NVMe envía un comando NVMe Read con entradas PRP apuntando a páginas DRAM del host asignadas por la caché de páginas. (3) El SSD NVMe hace DMA de datos a DRAM del host (caché de páginas). (4) El kernel copia datos de la caché de páginas al buffer de espacio de usuario. (5) La aplicación llama a cudaMemcpyHostToDevice() para copiar el buffer de usuario a memoria GPU. (6) El runtime CUDA hace DMA de datos desde DRAM del host fijada a GPU vía PCIe. Cada copia consume ciclos de CPU, ancho de banda de memoria, y añade latencia."
+    },
+    "1": {
+      "text": "Penalización de ancho de banda de ruta tradicional: los datos cruzan el bus PCIe DOS VECES",
+      "detail": "En la ruta tradicional, los datos de lectura NVMe cruzan el bus PCIe dos veces: (1) SSD NVMe → DRAM del Host (PCIe x4 Gen5 = 32 GB/s), (2) DRAM del Host → GPU vía cudaMemcpy (PCIe x16 Gen5 = 64 GB/s). Con GDS, los datos cruzan PCIe solo UNA VEZ: SSD NVMe → GPU directamente."
+    },
+    "2": {
+      "text": "cuFileDriverOpen() — Inicializar el subsistema GPUDirect Storage",
+      "detail": "La aplicación llama a cuFileDriverOpen() para inicializar el subsistema GDS. Esto activa la carga del módulo del kernel nvidia-fs. nvidia-fs registra callbacks de operación DMA con el controlador NVMe del host vía nvme_register_fs(). También consulta la topología PCIe para verificar que la GPU y el SSD NVMe son capaces de P2P."
+    },
+    "3": {
+      "text": "open(\"/data/training/imagenet_shard_0042.bin\", O_RDONLY | O_DIRECT)",
+      "detail": "open() POSIX estándar con flag O_DIRECT. O_DIRECT es obligatorio para GDS — evita la caché de páginas de Linux, que es exactamente lo que queremos ya que GDS envía datos directamente a memoria GPU."
+    },
+    "4": {
+      "text": "cuFileHandleRegister() — Registrar descriptor de archivo con GDS",
+      "detail": "Envuelve el fd POSIX en un handle cuFile. nvidia-fs valida que el archivo reside en un sistema de archivos soportado (ext4, XFS o dispositivo de bloque crudo) y resuelve el archivo al dispositivo de bloque NVMe subyacente."
+    },
+    "5": {
+      "text": "cuFileBufRegister() — Fijar memoria GPU y crear mapeo DMA BAR1",
+      "detail": "Este es el paso crítico de configuración. cuFileBufRegister() fija las páginas de memoria GPU (previniendo que el controlador GPU las migre o desaloje) y crea un mapeo de apertura BAR1. Después de esta llamada, el buffer GPU es accesible en una dirección física vía PCIe — cualquier dispositivo PCIe (incluyendo el controlador NVMe) puede hacer DMA a esta dirección."
+    },
+    "6": {
+      "text": "cuFileRead() — Iniciar lectura directa NVMe → GPU (4 MiB)",
+      "detail": "La aplicación llama a cuFileRead(). nvidia-fs traduce el offset del archivo a LBAs NVMe (vía el mapa de extents del sistema de archivos), construye SQE(s) NVMe Read con entradas PRP apuntando a direcciones físicas GPU BAR1, y los envía al controlador NVMe. La innovación clave: nvidia-fs intercepta la ruta de mapeo DMA del controlador NVMe y reemplaza las entradas scatter-gather normales de DRAM del host con direcciones físicas GPU BAR1."
+    },
+    "7": {
+      "text": "SQE NVMe Read enviado — doorbell activado",
+      "detail": "El controlador NVMe del host escribe el SQE de 64 bytes en la Submission Queue en DRAM del host y escribe el nuevo puntero de cola SQ al registro doorbell del controlador NVMe. El SQE contiene opcode=0x02 (Read), NSID=1, SLBA=0, NLB=8191 (4 MiB), y críticamente: PRP1 = dirección física GPU BAR1. El controlador NVMe no sabe ni le importa que PRP1 apunta a memoria GPU — hará DMA de datos ciegamente a esa dirección."
+    },
+    "8": {
+      "text": "El SSD NVMe obtiene el SQE de la memoria del host",
+      "detail": "El controlador NVMe detecta la escritura del doorbell y emite una PCIe Memory Read para obtener el SQE de 64 bytes de la Submission Queue en DRAM del host. Luego inicia una lectura NAND flash para el rango de LBA solicitado."
+    },
+    "9": {
+      "text": "DMA P2P: 4 MiB fluyendo SSD NVMe → GPU BAR1 (cero copias de CPU)",
+      "detail": "EL MOMENTO EDUCATIVO CLAVE. El controlador NVMe lee datos de NAND flash en su buffer DRAM interno, luego emite TLPs PCIe Memory Write apuntando a la dirección GPU BAR1 del PRP1/lista PRP. El complejo raíz PCIe decodifica la dirección BAR1 y enruta los TLPs directamente a la GPU — los datos nunca entran en DRAM del host y la CPU nunca ve los bytes de carga útil."
+    },
+    "10": {
+      "text": "Finalización NVMe — CQE publicado, MSI-X activado",
+      "detail": "Después de que todos los datos han sido transferidos por DMA a GPU BAR1, el controlador NVMe publica una Entrada de Cola de Finalización (CQE) de 16 bytes al CQ en DRAM del host y dispara una interrupción MSI-X."
+    },
+    "11": {
+      "text": "cuFileRead() retorna — 4 MiB de datos de entrenamiento están en memoria GPU",
+      "detail": "cuFileRead() retorna 4194304 (bytes leídos exitosamente). Los datos de entrenamiento están ahora en GPU HBM3, inmediatamente accesibles a kernels CUDA. Involucramiento total de CPU: escribir un SQE NVMe de 64 bytes + activar un doorbell + procesar un CQE de 16 bytes. La CPU nunca tocó un solo byte de la carga útil de 4 MiB."
+    },
+    "12": {
+      "text": "cuFileWrite() — Guardar checkpoint desde memoria GPU a NVMe (4 MiB)",
+      "detail": "Después de que el cómputo de entrenamiento se completa, la aplicación guarda un checkpoint llamando a cuFileWrite(). Esto escribe contenidos de memoria GPU directamente al SSD NVMe sin pasar por DRAM del host."
+    },
+    "13": {
+      "text": "SQE NVMe Write enviado — PRP1 = GPU BAR1",
+      "detail": "El SQE del comando NVMe Write es idéntico en estructura al comando Read pero con opcode 0x01 (Write). PRP1 sigue apuntando a la dirección GPU BAR1 — pero ahora el controlador NVMe emitirá TLPs PCIe Memory READ a esta dirección (leyendo memoria GPU) en lugar de TLPs Memory Write."
+    },
+    "14": {
+      "text": "DMA P2P: 4 MiB fluyendo GPU BAR1 → SSD NVMe (guardado de checkpoint)",
+      "detail": "El controlador NVMe lee 4 MiB de la memoria GPU BAR1 vía TLPs PCIe P2P Memory Read. Las lecturas PCIe son transacciones divididas — el controlador NVMe envía TLPs de solicitud MRd, la fabric PCIe los enruta a la GPU, y la GPU devuelve TLPs CplD (Finalización con Datos)."
+    },
+    "15": {
+      "text": "Finalización NVMe Write — checkpoint persistido en NAND",
+      "detail": "El controlador NVMe completa la escritura a NAND flash y publica un CQE con estado=éxito. cuFileWrite() retorna 4194304 (bytes escritos). El checkpoint está ahora persistido de forma segura en el SSD."
+    },
+    "16": {
+      "text": "Resumen GDS: I/O de copia cero entre NVMe y GPU a ancho de banda PCIe completo",
+      "detail": "GPUDirect Storage elimina la CPU de la ruta de datos de almacenamiento completamente. El único rol de la CPU es el plano de control: enviar descriptores de comando NVMe de 64 bytes y procesar entradas de finalización de 16 bytes. Todo el movimiento masivo de datos ocurre vía DMA PCIe peer-to-peer entre el SSD NVMe y la GPU.\nComponentes clave: API cuFile (espacio de usuario), módulo del kernel nvidia-fs (espacio del kernel), controlador NVMe (sin modificar), enrutamiento PCIe P2P (hardware)."
+    }
+  }
+}

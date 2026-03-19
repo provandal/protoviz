@@ -1,0 +1,102 @@
+{
+  "meta": {
+    "title": "RoCEv2 RC：链路训练 → QP 连接 → RDMA WRITE → RDMA READ",
+    "description": "基于 100GbE 的完整 RoCEv2 可靠连接（RC）交换，从物理链路建立（自动协商、链路训练、RS-FEC）开始，经过 IP/ARP 配置、IB 连接管理器（CM）QP 建立（MAD/CM REQ→REP→RTU）、一次将 4KB 缓冲区直接推送到远端内存而目标 CPU 不参与的 RDMA WRITE，以及一次检索相同缓冲区的 RDMA READ。主机状态跨所有 OSI 层展示，包括 verbs API、QP 状态机、IB 传输头部、IP/UDP 封装、PFC 可感知的以太网和物理层 RS-FEC 状态。帧字段标注了 IBTA、RFC 和 IEEE 规范参考，并交叉引用 Linux 内核源码（rdma-core、drivers/infiniband/hw/mlx5）。",
+    "learning_objectives": [
+      "理解 100GbE 物理链路如何通过自动协商和链路训练独立建立（主机↔交换机各自独立）",
+      "追踪 RoCEv2 的 ARP 解析和 IP 寻址（RoCEv2 运行在 UDP/IP 上，与 RoCEv1 不同）",
+      "跟踪 IB 连接管理器 MAD 交换以将队列对从 RESET 转换到 RTS",
+      "观察 QP 状态机转换：RESET → INIT → RTR → RTS",
+      "了解 RDMA WRITE 如何绕过远端 CPU——目标上不消耗接收 WQE",
+      "了解 RDMA READ 需要一个往返，以及 RETH/AETH 头部如何携带寻址信息",
+      "理解内存区域（MR）密钥（lkey/rkey）及其在 RDMA 授权中的角色",
+      "观察 PFC（优先级流控）如何在拥塞下防止无损以太网丢包"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "链路 A：检测到信号 — 发起方 ↔ 交换机端口 A",
+      "detail": "发起方上的光收发器检测到来自交换机端口 A 的光信号。按照 IEEE 802.3cd 第 73 条款开始自动协商（AN）。一层是点对点的——这独立于交换机↔目标链路。"
+    },
+    "1": {
+      "text": "链路 B：检测到信号 — 交换机端口 B ↔ 目标",
+      "detail": "目标上的光收发器检测到来自交换机端口 B 的光信号。此链路上独立开始 AN。"
+    },
+    "2": {
+      "text": "链路 A：AN 完成 — 协商为 100GbE，链路训练开始",
+      "detail": "AN 在发起方和交换机端口 A 之间交换技术能力页。双方协商为 100GBASE-SR4。RS(544,514) FEC 对于 100G 是强制性的。链路训练开始以均衡通道（预加重、后光标）。"
+    },
+    "3": {
+      "text": "链路 B：AN 完成 — 协商为 100GbE，链路训练开始",
+      "detail": "AN 在交换机端口 B ↔ 目标上完成。相同协商：100GBASE-SR4 配合 RS(544,514) FEC。链路训练在此链路上独立开始。"
+    },
+    "4": {
+      "text": "链路 A UP — 发起方 ↔ 交换机 100Gbps，带 RS-FEC",
+      "detail": "发起方↔交换机链路训练完成。通过 DCBX 协商（此处未展示）在优先级 3 上启用 PFC（802.1Qbb）。以太网帧现在可以在此链路段上流动。"
+    },
+    "5": {
+      "text": "链路 B UP — 交换机 ↔ 目标 100Gbps，带 RS-FEC",
+      "detail": "交换机↔目标链路训练完成。PFC 已启用。两条链路现在都已建立——交换机可以在其端口之间转发二层帧。端到端二层连通性已建立。"
+    },
+    "6": {
+      "text": "ARP 请求：谁拥有 192.168.1.20？",
+      "detail": "RoCEv2 使用 IP 寻址。在任何连接建立之前，必须先建立 IP 可达性。"
+    },
+    "7": {
+      "text": "ARP 应答：192.168.1.20 的 MAC 地址是 00:02:c9:ab:cd:ef",
+      "detail": ""
+    },
+    "8": {
+      "text": "双方通过 ibv_reg_mr() 注册内存区域",
+      "detail": "ibv_reg_mr() 锁定物理页面，构建 DMA 映射，并在 RNIC 的内存转换表（MTT）中注册虚拟→物理转换。返回 lkey（用于本地 DMA）和 rkey（与远端共享以进行 RDMA 访问）。Linux：mlx5_ib_reg_user_mr() → MLX5_CMD_OP_CREATE_MKEY 固件命令。"
+    },
+    "9": {
+      "text": "QP 已创建 — 状态：RESET",
+      "detail": "ibv_create_qp() 分配一个队列对（发送队列 + 接收队列 + 完成队列）。QP 初始状态为 RESET——无法发送或接收。mlx5：MLX5_CMD_OP_CREATE_QP 固件命令分配 QPN。"
+    },
+    "10": {
+      "text": "QP 通过 ibv_modify_qp() 从 RESET 转换到 INIT",
+      "detail": "modify_qp(RESET→INIT) 设置：P_Key 索引、端口号、访问标志。QP 现在可以投递接收 WQE（但还不能发送）。Linux：ib_modify_qp() → mlx5_ib_modify_qp() → MLX5_CMD_OP_RST2INIT_QP。必需属性：IB_QP_PKEY_INDEX | IB_QP_PORT | IB_QP_ACCESS_FLAGS。"
+    },
+    "11": {
+      "text": "CM REQ 已发送 — 提议 QP 参数",
+      "detail": "rdma_connect() 触发 ib_send_cm_req()。将发起方 QPN、起始 PSN、路径 MTU=4096、重试计数和应用私有数据发送到目标。此时两个 QP 仍处于 INIT 状态。"
+    },
+    "12": {
+      "text": "CM REP 已接收 — 目标接受，提供其 QPN 和 PSN",
+      "detail": "收到 REQ 后，目标调用 rdma_accept() → ib_send_cm_rep()。目标在发送 REP 后将其 QP 转换到 RTR（Ready To Receive）。发起方在收到 REP 后将其 QP 转换到 RTR。INIT→RTR 设置：目标 QPN、RQ PSN、路径 MTU、AV（地址向量）。Linux：mlx5_ib_modify_qp() → MLX5_CMD_OP_INIT2RTR_QP。"
+    },
+    "13": {
+      "text": "CM RTU 已发送 — 两个 QP 均转换到 RTS。连接已建立。",
+      "detail": "发送 RTU 后，发起方将 QP 转换：RTR→RTS。收到 RTU 后，目标将 QP 转换：RTR→RTS。RTR→RTS 设置：SQ PSN、重试计数、RNR 重试、超时。Linux：MLX5_CMD_OP_RTR2RTS_QP。QP 现在完全可用——RDMA 操作可以开始了。"
+    },
+    "14": {
+      "text": "应用程序将 RDMA WRITE 工作请求投递到发送队列",
+      "detail": "ibv_post_send() 使用操作码 IBV_WR_RDMA_WRITE。WR 指定：本地 SG 列表（源缓冲区的 lkey + vaddr）、远端 vaddr + rkey。通过 mmio 写入 RNIC BAR 寄存器的门铃（ibv_post_send 之后无系统调用）。Linux：mlx5_post_one_wr() → 构建 64 字节 WQE → 通过 mlx5_write64() 敲 RNIC MMIO 门铃。"
+    },
+    "15": {
+      "text": "RDMA WRITE — 4KB 推送到远端内存，目标 CPU 零参与",
+      "detail": "RNIC DMA 读取本地缓冲区，封装为 BTH+RETH+UDP+IP+Eth 后传输。目标 RNIC 验证 ICRC，检查 rkey 对 MR 表的授权，DMA 将载荷写入目标物理内存。目标 CPU 不会感知到任何东西，直到应用程序轮询 CQ（仅在目标投递了 WRITE_WITH_IMM 时才会发生）。"
+    },
+    "16": {
+      "text": "来自目标 RNIC 的 ACK — WRITE 完成，CQE 已在发起方投递",
+      "detail": "目标 RNIC 自主生成 RC ACK。目标上无 CPU 参与。收到 ACK 后，发起方 RNIC 向发起方的 CQ 投递一个 CQE（完成队列条目）。应用程序通过 ibv_poll_cq() 获知完成。Linux：mlx5_ib_poll_cq() 从 CQ 环形缓冲区读取 CQE。"
+    },
+    "17": {
+      "text": "应用程序投递 RDMA READ 工作请求",
+      "detail": "ibv_post_send() 使用操作码 IBV_WR_RDMA_READ。指定：用于接收数据的本地 SG 缓冲区（lkey）、远端 vaddr + rkey。RDMA READ 需要一个往返——发起方发送请求，目标发送数据。"
+    },
+    "18": {
+      "text": "RDMA READ 请求 — 此方向无数据",
+      "detail": "发起方发送 BTH(opcode=0x0C) + RETH 指定读取内容。无载荷。目标 RNIC 将自主 DMA 读取其自身内存并响应。"
+    },
+    "19": {
+      "text": "RDMA READ 响应 — 目标 RNIC DMA 读取内存并发送数据",
+      "detail": "目标 RNIC：接收 READ 请求 → 验证 rkey → DMA 读取物理内存 → 构建响应包 → 传输。目标上 CPU 零参与。发起方 RNIC：接收响应 → DMA 写入发起方的本地缓冲区 → 投递 READ CQE。应用程序调用 ibv_poll_cq() 获取结果。返回的数据与 RDMA WRITE 写入的完全相同——通过 ICRC 进行端到端验证。"
+    },
+    "20": {
+      "text": "场景完成",
+      "detail": "总结：两条独立的 100GbE 链路建立（主机↔交换机各自独立），交换机提供二层转发，发起方建立了 RoCEv2 RC 连接，执行了一次将 4KB RDMA WRITE 到远端内存（远端 CPU 零参与），然后用 RDMA READ 读回相同数据（同样远端 CPU 零参与）。总数据帧：2。总控制帧：5（ARP×2，CM×3）。远端 CPU 从未因数据操作被中断。"
+    }
+  }
+}

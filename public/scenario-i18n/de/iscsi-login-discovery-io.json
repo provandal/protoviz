@@ -1,0 +1,78 @@
+{
+  "meta": {
+    "title": "iSCSI: Login \u2192 Discovery \u2192 SCSI INQUIRY \u2192 WRITE(10) \u2192 READ(10)",
+    "description": "Vollst\u00e4ndiger iSCSI-Sitzungslebenszyklus \u00fcber 10GbE TCP/IP: TCP-3-Wege-Handshake, iSCSI-Login-Phase (Authentifizierung und Parameteraushandlung), SendTargets-Discovery, Target-Login, SCSI INQUIRY zur LUN-Identifizierung, SCSI WRITE(10) und READ(10) f\u00fcr Daten-I/O. iSCSI ist das am weitesten verbreitete SAN-Protokoll und transportiert SCSI-Befehle \u00fcber Standard-TCP/IP-Netzwerke \u2014 keine spezielle Hardware erforderlich. Dieses Szenario zeigt, wie SCSI-Blockspeicher \u00fcber Ethernet funktioniert, im Kontrast zu Fibre Channel (dediziertes SAN-Fabric) und NVMe-oF (n\u00e4chste Generation).",
+    "learning_objectives": [
+      "Verstehen, wie iSCSI SCSI-Befehle auf TCP-Verbindungen mittels PDU-Framing abbildet",
+      "Der iSCSI-Login-Phase folgen: Sicherheitsaushandlung, Betriebsparameteraustausch",
+      "SendTargets-Discovery sehen \u2014 wie ein Initiator verf\u00fcgbare Targets und LUNs erkennt",
+      "iSCSI-Sitzungs- und Verbindungskennungen beobachten (ISID, TSIH, CID)",
+      "SCSI INQUIRY nachverfolgen, um Ger\u00e4tetyp, Hersteller und Kapazit\u00e4t zu ermitteln",
+      "Einem SCSI WRITE(10) durch iSCSI folgen: Command-PDU, Data-Out-PDUs, Response-PDU",
+      "Einem SCSI READ(10) folgen: Command-PDU, Data-In-PDUs, Response-PDU",
+      "iSCSI-Header/Daten-Digests (CRC32C) f\u00fcr Datenintegrit\u00e4t verstehen"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Physische Verbindung aktiv \u2014 10GbE auf beiden Segmenten",
+      "detail": "Standard-10GbE-Ethernet-Verbindungen werden aktiv. Im Gegensatz zu FC (dediziertes SAN-Fabric) oder RoCEv2 (erfordert PFC/verlustfreies Ethernet) l\u00e4uft iSCSI auf jedem Standard-IP-Netzwerk. Keine spezielle Switch-Konfiguration erforderlich \u2014 TCP \u00fcbernimmt Zuverl\u00e4ssigkeit und Flusskontrolle."
+    },
+    "1": {
+      "text": "TCP-3-Wege-Handshake \u2192 Verbindung zu Port 3260 hergestellt",
+      "detail": "Der iscsid-Daemon des Initiators \u00f6ffnet eine TCP-Verbindung zum bekannten iSCSI-Port 3260 (IANA-zugewiesen) des Targets. Der Standard-TCP-SYN \u2192 SYN-ACK \u2192 ACK-Handshake stellt einen zuverl\u00e4ssigen Bytestrom her.\niSCSI rahmt seine PDUs \u00fcber diese TCP-Verbindung. Im Gegensatz zu Protokollen, die UDP verwenden (RoCEv2) oder dediziertes Framing (FC), verl\u00e4sst sich iSCSI auf TCP f\u00fcr Zuverl\u00e4ssigkeit, Reihenfolge und Flusskontrolle. Das bedeutet: \u2022 Keine spezielle NIC erforderlich (jeder TCP/IP-Stack funktioniert) \u2022 Funktioniert \u00fcber geroutete Netzwerke (nicht auf L2 beschr\u00e4nkt) \u2022 TCP-Staukontrolle begrenzt Durchsatz unter Last \u2022 TCP-Verarbeitungsaufwand verbraucht CPU-Zyklen\nDetails zum 3-Wege-Handshake finden Sie im TCP-Szenario."
+    },
+    "2": {
+      "text": "iSCSI Login \u2192 Sicherheitsaushandlung (AuthMethod=None)",
+      "detail": "Der Initiator sendet die erste Login-PDU. Der iSCSI-Login hat zwei Stufen: 1. Sicherheitsaushandlung (CSG=0) \u2014 Authentifizierungsmethoden-Auswahl 2. Betriebsaushandlung (CSG=1) \u2014 Sitzungsparameter-Abstimmung\nDiese PDU tr\u00e4gt Schl\u00fcssel-Wert-Paare: \u2022 InitiatorName=iqn.2024-01.com.example:host01 (IQN des Initiators) \u2022 AuthMethod=None (keine Authentifizierung \u2014 CHAP ist in der Produktion \u00fcblich)\nDie ISID (Initiator Session ID) ist ein 6-Byte-Wert, der zusammen mit der TSIH des Targets diese iSCSI-Sitzung eindeutig identifiziert."
+    },
+    "3": {
+      "text": "Login-Antwort \u2190 Sicherheit akzeptiert, TSIH=0x0001 zugewiesen",
+      "detail": "Das Target akzeptiert AuthMethod=None und weist TSIH (Target Session Identifying Handle) = 0x0001 zu. Das T-Bit (Transit) ist gesetzt und wechselt zur Betriebsaushandlungsstufe."
+    },
+    "4": {
+      "text": "Login \u2192 Betriebsparameteraushandlung",
+      "detail": "Der Initiator schl\u00e4gt Betriebsparameter vor, die den Datentransfer steuern:\n\u2022 MaxRecvDataSegmentLength = 262144 (256KB) \u2014 max. Daten pro PDU \u2022 FirstBurstLength = 262144 \u2014 erlaubte unaufgeforderte Daten vor R2T \u2022 MaxBurstLength = 524288 \u2014 max. Gesamtdaten pro R2T-Sequenz \u2022 InitialR2T = Yes \u2014 Target muss R2T vor Write-Daten senden \u2022 ImmediateData = Yes \u2014 kleine Write-Daten k\u00f6nnen auf Command-PDU aufgesetzt werden \u2022 HeaderDigest = None \u2014 kein CRC auf iSCSI-Headern \u2022 DataDigest = None \u2014 kein CRC auf Datensegmenten\nDiese Parameter werden ausgehandelt \u2014 die tats\u00e4chlichen Werte sind je nach Parameter das Minimum oder Maximum dessen, was jede Seite vorschl\u00e4gt."
+    },
+    "5": {
+      "text": "Login abgeschlossen \u2190 Full Feature Phase \u2014 Sitzung hergestellt",
+      "detail": "Das Target akzeptiert die Betriebsparameter und \u00fcberf\u00fchrt die Sitzung in die Full Feature Phase (NSG=3). Die iSCSI-Sitzung ist nun vollst\u00e4ndig hergestellt und bereit f\u00fcr SCSI-Befehle.\nSitzungskennungen: \u2022 ISID = 0x00023d000001 (vom Initiator zugewiesen) \u2022 TSIH = 0x0001 (vom Target zugewiesen) \u2022 (ISID + TSIH) identifizieren diese Sitzung global eindeutig"
+    },
+    "6": {
+      "text": "SCSI INQUIRY \u2192 Initiator ermittelt Ger\u00e4teeigenschaften von LUN 0",
+      "detail": "Die Linux-SCSI-Mittelschicht sendet automatisch INQUIRY an jede LUN, um Ger\u00e4tetyp, Hersteller und F\u00e4higkeiten zu ermitteln. Dies ist der gleiche SCSI-INQUIRY-Befehl wie im Fibre-Channel-Szenario \u2014 iSCSI transportiert ihn einfach \u00fcber TCP statt FCP.\nDer INQUIRY-Befehl ist in einer iSCSI SCSI Command PDU (Opcode 0x01) mit dem 16-Byte-CDB im PDU-Header verpackt."
+    },
+    "7": {
+      "text": "INQUIRY-Antwort \u2190 Direktzugriffs-Blockger\u00e4t (LIO-ORG IBLOCK)",
+      "detail": "Das Target gibt INQUIRY-Daten zur\u00fcck, die das Ger\u00e4t als Direktzugriffs-Blockger\u00e4t (Typ 0x00) identifizieren. Der Linux-Initiator erstellt ein /dev/sdX-Ger\u00e4t f\u00fcr diese LUN.\nDie Antwort wird als iSCSI SCSI Data-In PDU mit gesetztem Status-Bit geliefert \u2014 Datenlieferung und SCSI-Status in einer PDU kombiniert (Optimierung f\u00fcr kleine Antworten)."
+    },
+    "8": {
+      "text": "SCSI WRITE(10) \u2192 4KB-Write auf LBA 0",
+      "detail": "Die Anwendung schreibt 4KB auf das Blockger\u00e4t. Der iSCSI-Initiator sendet den SCSI WRITE(10)-CDB in einer iSCSI SCSI Command PDU.\nDa InitialR2T=Yes ausgehandelt wurde, sendet der Initiator die Write-Daten noch nicht \u2014 er wartet, bis das Target via R2T Bereitschaft signalisiert."
+    },
+    "9": {
+      "text": "R2T \u2190 Target bereit zum Empfang der 4KB-Write-Daten",
+      "detail": "Das Target sendet eine R2T-PDU (Ready to Transfer), die dem Initiator die Erlaubnis erteilt, Write-Daten zu senden. Die R2T spezifiziert: \u2022 Buffer Offset = 0 (Beginn der \u00dcbertragung) \u2022 Desired Data Transfer Length = 4096 (alle 4KB senden) \u2022 Target Transfer Tag = 0x00000001 (Initiator gibt ihn in Data-Out zur\u00fcck)\nR2T bietet Flusskontrolle \u2014 das Target wird nicht durch Write-Daten \u00fcberw\u00e4ltigt, die es nicht empfangen kann. Vergleichen Sie dies mit NVMe-oF/RDMA, wo das Target Daten per RDMA READ in eigenem Tempo holt."
+    },
+    "10": {
+      "text": "Data-Out \u2192 Initiator sendet 4KB-Write-Daten",
+      "detail": "Der Initiator sendet die Write-Daten in einer iSCSI SCSI Data-Out PDU (Opcode 0x05). Die gesamten 4KB passen in eine PDU, da MaxRecvDataSegmentLength = 256KB.\nF\u00fcr gr\u00f6\u00dfere Writes (> MaxRecvDataSegmentLength) w\u00fcrden die Daten auf mehrere Data-Out-PDUs aufgeteilt, die jeweils den gleichen Target Transfer Tag aus der R2T referenzieren.\nDatenpfad-Vergleich f\u00fcr einen 4KB-Write: \u2022 iSCSI: App \u2192 Kernel-SCSI \u2192 iSCSI-PDU \u2192 TCP/IP-Stack \u2192 NIC-DMA (2 Kopien) \u2022 NVMe-oF/RDMA: App \u2192 registrierte MR \u2192 RDMA READ durch Target (0 Host-CPU-Kopien) \u2022 FC: App \u2192 Kernel-SCSI \u2192 FCP \u2192 FC-Treiber \u2192 HBA-DMA (1 Kopie)"
+    },
+    "11": {
+      "text": "WRITE-Antwort \u2190 GOOD \u2014 4KB auf LBA 0 geschrieben",
+      "detail": "Das Target best\u00e4tigt, dass der SCSI WRITE(10) mit GOOD-Status abgeschlossen wurde. Die Daten wurden auf das Backend-Blockger\u00e4t geschrieben.\niSCSI-Write-Ablauf\u00fcbersicht: 1. Initiator \u2192 Target: SCSI Command PDU (WRITE-CDB) 2. Target \u2192 Initiator: R2T-PDU (bereit f\u00fcr Daten) 3. Initiator \u2192 Target: Data-Out-PDU (4KB-Write-Daten) 4. Target \u2192 Initiator: SCSI Response PDU (GOOD-Status)"
+    },
+    "12": {
+      "text": "SCSI READ(10) \u2192 4KB-Read von LBA 0",
+      "detail": "Der Initiator sendet einen READ(10) f\u00fcr den gleichen 4KB-Block. Kein R2T wird f\u00fcr Reads ben\u00f6tigt \u2014 das Target sendet Data-In-PDUs direkt."
+    },
+    "13": {
+      "text": "Data-In \u2190 4KB-Read-Daten mit GOOD-Status",
+      "detail": "Das Target liest 4KB von LBA 0 und gibt sie in einer iSCSI SCSI Data-In PDU zur\u00fcck. Das Status-Bit ist gesetzt (S=1), der SCSI-GOOD-Status wird auf die letzte Daten-PDU aufgesetzt \u2014 eine separate Response-PDU wird vermieden.\niSCSI-Read-Ablauf\u00fcbersicht: 1. Initiator \u2192 Target: SCSI Command PDU (READ-CDB) 2. Target \u2192 Initiator: Data-In-PDU (4KB + GOOD-Status)\nReads sind einfacher als Writes, da es keinen R2T-Handshake gibt."
+    },
+    "14": {
+      "text": "\u27f3 Szenario abgeschlossen \u2014 iSCSI-Sitzungslebenszyklus",
+      "detail": "Dieses Szenario demonstrierte eine vollst\u00e4ndige iSCSI-Sitzung:\n1. LINK \u2014 Standard-10GbE-Ethernet, keine spezielle Konfiguration\n2. TCP \u2014 3-Wege-Handshake zu Port 3260\n3. LOGIN \u2014 Zweistufige Aushandlung (Sicherheit \u2192 Betrieb \u2192 Full Feature Phase)\n4. DISCOVERY \u2014 SCSI INQUIRY zur Identifizierung von LUN 0 (Festplatte)\n5. WRITE \u2014 Command \u2192 R2T \u2192 Data-Out \u2192 Response (4-PDU-Austausch)\n6. READ \u2014 Command \u2192 Data-In+Status (2-PDU-Austausch)\n\niSCSI vs. andere SAN-Protokolle:\n\u2502 Eigenschaft    \u2502 iSCSI        \u2502 FC           \u2502 NVMe-oF/RDMA   \u2502\n\u2502 Transport      \u2502 TCP/IP       \u2502 FC-Fabric    \u2502 RoCEv2/RDMA    \u2502\n\u2502 Netzwerk       \u2502 Jedes Ethernet \u2502 Dediziertes FC \u2502 Verlustfreies Eth \u2502\n\u2502 Spezial-HW     \u2502 Nein         \u2502 FC HBA       \u2502 RDMA-NIC       \u2502\n\u2502 CPU-Overhead   \u2502 Hoch (TCP)   \u2502 Niedrig (HBA) \u2502 Nahezu null    \u2502\n\u2502 Latenz         \u2502 ~100-500\u03bcs   \u2502 ~10-50\u03bcs     \u2502 ~5-20\u03bcs        \u2502\niSCSIs St\u00e4rke ist Einfachheit \u2014 es funktioniert auf bestehenden IP-Netzwerken ohne spezielle Hardware und ist damit das zug\u00e4nglichste und am weitesten verbreitete SAN-Protokoll."
+    }
+  }
+}

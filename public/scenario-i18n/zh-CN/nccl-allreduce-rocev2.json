@@ -1,0 +1,62 @@
+{
+  "meta": {
+    "title": "NCCL AllReduce：基于 RoCEv2 的环形算法（4 个 GPU）",
+    "description": "展示 NCCL 如何使用环形 AllReduce 算法通过 RoCEv2 RDMA 在 4 个 GPU 之间聚合梯度。包括 Reduce-Scatter 和 AllGather 两个阶段。",
+    "learning_objectives": [
+      "理解 NCCL 环形 AllReduce 算法的原理",
+      "观察 Reduce-Scatter 阶段如何分布式聚合张量块",
+      "观察 AllGather 阶段如何分发已归约的块",
+      "理解环形拓扑如何将带宽利用率最大化",
+      "跟踪每个 GPU 在每个步骤发送和接收的块",
+      "理解 AllReduce 在 AI 分布式训练中的关键作用",
+      "了解 NCCL 如何使用 RoCEv2 RDMA 进行高性能传输",
+      "将环形算法与其他 AllReduce 算法进行对比"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "物理链路建立 — 所有 4 个 GPU 节点的 100GbE 无损网络",
+      "detail": "所有 4 个 GPU 节点通过 100GbE 连接到交换机，PFC 和 ECN 已启用。在真实的 AI 训练集群中，网络拓扑可能是胖树或轨道优化设计，有多层交换机。本场景为清晰起见简化为单个交换机。\nNCCL 探测拓扑（通过 nvidia-smi topo、NVML 和 IB 设备查询）以确定最优的集合算法。对于 4 个 GPU 的节点间 RoCEv2，它通常选择环形算法。"
+    },
+    "1": {
+      "text": "NCCL 初始化完成 — 环形拓扑已建立，QP 已连接，GPU 缓冲区已注册",
+      "detail": "ncclCommInitRank() 已完成。NCCL 已：\n1. 通过 TCP 引导以交换地址（NCCL_COMM_ID）\n2. 检测到 GPUDirect RDMA 能力（nvidia-peermem 已加载）\n3. 在环形邻居之间创建了 RDMA QP：\n   环形：GPU 0 → GPU 1 → GPU 2 → GPU 3 → GPU 0\n4. 通过 ibv_reg_mr() 将 GPU 内存缓冲区注册为 RDMA 内存区域，nvidia-peermem 提供 GPU BAR1 映射\n5. 带外交换了 rkey 和缓冲区地址\n每个 GPU 在 GPU HBM（高带宽内存）中有发送和接收缓冲区。NCCL 使用双缓冲和流水线来重叠计算与通信——当一个块正在传输时，GPU 内核正在归约上一个块。\n4 个 GPU 的环形拓扑：\n  GPU 0 → GPU 1 → GPU 2 → GPU 3 → GPU 0（环形下一个）\n  GPU 0 ← GPU 3 ← GPU 2 ← GPU 1 ← GPU 0（环形上一个）"
+    },
+    "2": {
+      "text": "ncclAllReduce() 调用 — 1MB 梯度张量，4 块 × 256KB",
+      "detail": "训练循环调用 ncclAllReduce(sendbuf, recvbuf, count, ncclFloat, ncclSum, comm, stream)。这触发环形 AllReduce 算法。\n输入：每个 GPU 有一个来自反向传播的 1MB 梯度张量（262,144 个 float32 值）。目标：每个 GPU 最终得到所有 4 个 GPU 梯度的总和（用于 SGD/Adam 优化器更新）。\nNCCL 将张量分为 N=4 块，每块 256KB：\n  块 0：字节 [0, 256KB)\n  块 1：字节 [256KB, 512KB)\n  块 2：字节 [512KB, 768KB)\n  块 3：字节 [768KB, 1MB)\n\n环形算法分两个阶段：\n阶段 1——Reduce-Scatter（N-1 = 3 步）：\n  每个 GPU 向环形下一个发送一块，从环形上一个接收一块，\n  并将接收到的块与自己的累加（求和）。3 步后，\n  每个 GPU 恰好持有一块的完全归约结果。\n\n阶段 2——AllGather（N-1 = 3 步）：\n  每个 GPU 将其完全归约的块沿环发送。\n  3 步后，每个 GPU 拥有所有 4 块完全归约的结果。\n\n每个 GPU 传输的总数据量：2 × (N-1)/N × DataSize\n  = 2 × 3/4 × 1MB = 1.5 MB 发送 + 1.5 MB 接收\n这是最优的——带宽随 N 线性扩展。"
+    },
+    "3": {
+      "text": "Reduce-Scatter 步骤 1 — 所有 GPU 将 chunk[rank] 发送到环中的下一个",
+      "detail": "所有 4 个 GPU 同时向其环形下一个邻居发送一块：\n  GPU 0 发送块 0 → GPU 1（通过 RDMA WRITE 到 GPU 1 的 HBM）\n  GPU 1 发送块 1 → GPU 2\n  GPU 2 发送块 2 → GPU 3\n  GPU 3 发送块 3 → GPU 0\n\n我们以 GPU 0 → GPU 1 作为代表性链路展示。RDMA WRITE 通过 GPUDirect RDMA 直接落入 GPU 1 的 HBM 接收缓冲区——RNIC DMA 引擎写入由 nvidia-peermem 映射的 GPU BAR1 内存。两端的 CPU 都不参与数据传输。\n接收后，GPU 1 启动 CUDA 内核计算：\n  recv_buf[块 0] = recv_buf[块 0] + local[块 0]\n这将 GPU 0 的梯度加到 GPU 1 自己的块 0 梯度上。"
+    },
+    "4": {
+      "text": "Reduce-Scatter 步骤 1（反向）— GPU 0 从 Rank 3 接收块",
+      "detail": "同时，GPU 0 从 Rank 3（其环形上一个）接收一块。所有传输并行发生——环形是双向的，链路全双工。每个 GPU 同时发送和接收。\nGPU 0 累加：local[块 3] += received[来自 Rank 3 的块 3]"
+    },
+    "5": {
+      "text": "Reduce-Scatter 步骤 2 — 部分和在环中旋转",
+      "detail": "每个 GPU 将其累加的块（步骤 1 的部分和）发送到环形下一个邻居。部分和在环中旋转，每步增长。\n\n  GPU 0 发送累加块 → GPU 1（现在包含 2 个 GPU 的和）\n  GPU 1 发送累加块 → GPU 2\n  GPU 2 发送累加块 → GPU 3\n  GPU 3 发送累加块 → GPU 0\n\n此步骤后，每块包含 3 个 GPU 梯度的和。\n注意：无论有多少 GPU 参与，每次传输的数据量保持恒定在 256KB。这就是为什么环形 AllReduce 扩展性好——每个 GPU 的带宽 = 2(N-1)/N × DataSize，随着 N 增长接近 2× DataSize。对比朴素的 AllReduce（全部到一个再到全部），后者在根节点创建瓶颈。"
+    },
+    "6": {
+      "text": "Reduce-Scatter 步骤 3（最终）— 每个 GPU 现在拥有一个完全归约的块",
+      "detail": "最终的 Reduce-Scatter 步骤。GPU 1 接收并累加后：\n  GPU 1 的块 = GPU 0 + GPU 1 + GPU 2 + GPU 3 梯度的和\n\n每个 GPU 现在恰好持有一块的完全归约结果：\n  GPU 0：完全归约的块 0\n  GPU 1：完全归约的块 1\n  GPU 2：完全归约的块 2\n  GPU 3：完全归约的块 3\n\nReduce-Scatter 完成。归约（求和）已完成。但每个 GPU 只拥有最终结果的 1/4。AllGather 分发剩余的块。"
+    },
+    "7": {
+      "text": "AllGather 步骤 1 — GPU 广播其已完全归约的块",
+      "detail": "现在每个 GPU 将其完全归约的块沿环发送：\n  GPU 0 发送完全归约的块 0 → GPU 1\n  GPU 1 发送完全归约的块 1 → GPU 2\n  GPU 2 发送完全归约的块 2 → GPU 3\n  GPU 3 发送完全归约的块 3 → GPU 0\n\n与 Reduce-Scatter 不同，AllGather 不累加——它只是将接收到的块复制到输出缓冲区的正确位置。步骤 1 后，每个 GPU 拥有 4 块归约块中的 2 块。\nRDMA WRITE 直接目标到最终输出缓冲区的位置——块 0 去偏移 0，块 1 去偏移 256KB，以此类推。"
+    },
+    "8": {
+      "text": "AllGather 步骤 2 — 每个 GPU 现在拥有 4 个已归约块中的 3 个",
+      "detail": "块继续在环中旋转。此步骤后，每个 GPU 已收到 4 个完全归约块中的 3 个加上自己的——仅剩 1 块。"
+    },
+    "9": {
+      "text": "AllGather 步骤 3（最终）— 所有 GPU 都拥有完整的归约结果",
+      "detail": "最终的 AllGather 步骤。每个 GPU 现在在其输出缓冲区中拥有所有 4 块完全归约的块。AllReduce 完成。\n结果：每个 GPU 拥有一个相同的 1MB 缓冲区，包含所有 4 个 GPU 梯度的总和。优化器（SGD、Adam 等）现在可以在每个 GPU 上相同地更新模型权重，保持模型副本同步。"
+    },
+    "10": {
+      "text": "⟳ 场景完成 — 基于 RoCEv2 的 NCCL Ring-AllReduce",
+      "detail": "本场景展示了 NCCL 在 4 个 GPU 节点上的 Ring-AllReduce：\n阶段 1——REDUCE-SCATTER（3 步）：\n  每个 GPU 每步向环形下一个邻居发送一块。\n  接收方将收到的数据与自己的累加（求和）。\n  N-1=3 步后，每个 GPU 恰好持有一块（总张量的 1/N）的完全归约结果。\n\n阶段 2——ALLGATHER（3 步）：\n  每个 GPU 将其完全归约的块沿环发送。\n  接收方复制（不累加）到输出缓冲区。\n  N-1=3 步后，每个 GPU 拥有所有 N 块完全归约的结果。\n\n总计：2(N-1) = 6 步，4 个 GPU。\n性能特征：• 每个 GPU 每步数据量：DataSize/N = 256KB • 每个 GPU 发送的总数据量：2 × (N-1)/N × DataSize = 1.5MB • 带宽利用率：2(N-1)/N = 75%（N → ∞ 时接近 100%）• 所有传输通过 GPUDirect 使用 RDMA WRITE——零 CPU 拷贝\n为什么 AI 训练使用 Ring AllReduce：• 数据并行训练：每个 GPU 处理不同的 mini-batch 但必须在优化器步骤前同步梯度 • AllReduce(Sum) 在每次反向传播后调用——通常每个 epoch 数千次 • 大规模（数百个 GPU）时，AllReduce 延迟直接影响训练吞吐量：即使每步多 1ms × 100,000 步 = 100s\n\nNCCL 可能选择的替代算法：• Tree AllReduce——更适合小消息（更低延迟）• CollNet（SHARP）——网内归约（交换机做求和）• NVLink + RDMA 混合——NVLink 节点内，RDMA 节点间\n无损 RoCEv2 网络（PFC + ECN/DCQCN）至关重要：丢包会导致 RDMA 超时，回退到重传并严重损害 AllReduce 性能。"
+    }
+  }
+}

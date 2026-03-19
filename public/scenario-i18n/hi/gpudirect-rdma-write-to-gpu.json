@@ -1,0 +1,43 @@
+{
+  "meta": {
+    "title": "GPUDirect RDMA: RoCEv2 WRITE सीधे GPU Memory में",
+    "description": "GPUDirect RDMA RoCEv2 के माध्यम से रिमोट सर्वर से सीधे GPU HBM में डेटा ट्रांसफर सक्षम करता है। यह परिदृश्य भौतिक लिंक स्थापना, nvidia-peermem GPU मेमोरी को PCIe BAR1 के माध्यम से RDMA सबसिस्टम में एक्सपोज़ करना, GPU मेमोरी पर Memory Region रजिस्ट्रेशन, QP कनेक्शन, और GPU HBM को लक्षित RDMA WRITE और READ दोनों ऑपरेशन दिखाता है — AI नोड पर ज़ीरो CPU इन्वॉल्वमेंट के साथ।",
+    "learning_objectives": [
+      "पूर्ण GPUDirect RDMA डेटा पथ ट्रेस करें: रिमोट सर्वर → RNIC → PCIe BAR1 → GPU HBM",
+      "समझें कि GPUDirect RDMA होस्ट DRAM बाउंसिंग और CPU इन्वॉल्वमेंट क्यों हटाता है",
+      "देखें कि nvidia-peermem GPU मेमोरी सबसिस्टम को RDMA सबसिस्टम से कैसे जोड़ता है",
+      "PCIe BAR1 aperture मैपिंग GPU HBM को RNIC DMA के लिए कैसे सुलभ बनाती है, यह समझें",
+      "GPU मेमोरी पर RDMA WRITE (push) और RDMA READ (pull) दोनों मॉडल देखें",
+      "समझें कि GPUDirect RDMA AI/ML inference serving और GPU computing में कब उपयोग होता है",
+      "GPU MR rkey/vaddr के साथ RDMA ऑथराइज़ेशन मॉडल समझें"
+    ]
+  },
+  "timeline": {
+    "0": { "text": "Link A: सिग्नल डिटेक्ट — AI Node ↔ Switch पोर्ट A", "detail": "AI नोड पर ऑप्टिकल ट्रांसीवर स्विच पोर्ट A से प्रकाश डिटेक्ट करता है। Auto-Negotiation शुरू।" },
+    "1": { "text": "Link B: सिग्नल डिटेक्ट — Switch पोर्ट B ↔ Remote Server", "detail": "रिमोट सर्वर पर ऑप्टिकल ट्रांसीवर स्विच पोर्ट B से प्रकाश डिटेक्ट करता है। स्वतंत्र AN शुरू।" },
+    "2": { "text": "Link A: AN पूर्ण — 100GbE सहमत, Link Training शुरू", "detail": "दोनों 100GBASE-SR4 पर सहमत। RS(544,514) FEC 100G के लिए अनिवार्य। चैनल इक्वलाइज़ करने के लिए Link Training।" },
+    "3": { "text": "Link B: AN पूर्ण — 100GbE सहमत, Link Training शुरू", "detail": "स्विच पोर्ट B ↔ रिमोट सर्वर पर AN पूर्ण। Link Training स्वतंत्र रूप से शुरू।" },
+    "4": { "text": "Link A UP — RS-FEC के साथ 100Gbps पर AI Node ↔ Switch", "detail": "Link Training पूर्ण। DCBX के माध्यम से priority 3 पर PFC सक्षम।" },
+    "5": { "text": "Link B UP — RS-FEC के साथ 100Gbps पर Switch ↔ Remote Server", "detail": "दोनों लिंक ऊपर। स्विच पोर्ट के बीच L2 फ्रेम फॉरवर्ड कर सकता है।" },
+    "6": { "text": "ARP Request: 192.168.1.20 किसके पास है?", "detail": "RoCEv2 IP एड्रेसिंग उपयोग करता है। RDMA कनेक्शन सेटअप से पहले ARP रिज़ॉल्यूशन आवश्यक।" },
+    "7": { "text": "ARP Reply: 192.168.1.20 00:02:c9:ab:cd:ef पर है", "detail": "ARP कैश अपडेट। AI नोड अब RDMA कनेक्शन बना सकता है।" },
+    "8": { "text": "GPU / CUDA Runtime इनिशियलाइज़ — cuInit() और cuDeviceGet()", "detail": "CUDA runtime GPU को इनिशियलाइज़ करता है। cuInit() CUDA ड्राइवर इनिशियलाइज़ करता है, cuDeviceGet() GPU 0 चुनता है। GPU संदर्भ cuCtxCreate() के माध्यम से बनाया जाता है।" },
+    "9": { "text": "GPU मेमोरी एलोकेट — cuMemAlloc() 4MB GPU HBM बफर लौटाता है", "detail": "cuMemAlloc() GPU HBM (High Bandwidth Memory) में 4MB एलोकेट करता है। यह मेमोरी GPU के एड्रेस स्पेस में है — होस्ट CPU सीधे एक्सेस नहीं कर सकता बिना मैपिंग के।" },
+    "10": { "text": "nvidia-peermem कर्नेल मॉड्यूल लोडेड — GPU मेमोरी RDMA सबसिस्टम में एक्सपोज़", "detail": "nvidia-peermem RDMA सबसिस्टम के साथ peer_memory_client के रूप में रजिस्टर करता है। यह ibv_reg_mr() को GPU वर्चुअल एड्रेस स्वीकार करने में सक्षम बनाता है — GPU और RDMA सबसिस्टम के बीच सेतु।" },
+    "11": { "text": "GPU BAR1 मैपिंग स्थापित — GPU HBM PCIe एड्रेस पर सुलभ", "detail": "nvidia-peermem GPU भौतिक पेज को BAR1 aperture में मैप करता है। BAR1 PCIe-एड्रेसेबल विंडो है जो RNIC को GPU HBM तक सीधे DMA एक्सेस करने देती है।" },
+    "12": { "text": "ibv_reg_mr() के माध्यम से GPU BAR एड्रेस पर Memory Region रजिस्टर", "detail": "ibv_reg_mr() GPU BAR1-मैप्ड भौतिक एड्रेस के साथ कॉल होता है। RNIC हार्डवेयर पेज टेबल अब GPU मेमोरी के DMA मैपिंग रखता है। MR rkey और GPU बफर वर्चुअल एड्रेस रिमोट पीयर के साथ शेयर किया जाएगा।" },
+    "13": { "text": "रिमोट सर्वर ibv_reg_mr() के माध्यम से Memory Region रजिस्टर (होस्ट DRAM)", "detail": "रिमोट सर्वर अपना DRAM बफर MR के रूप में रजिस्टर करता है। यह मानक RDMA MR रजिस्ट्रेशन है — GPU-विशिष्ट मैपिंग की आवश्यकता नहीं।" },
+    "14": { "text": "दोनों तरफ QP बनाया — स्थिति: RESET", "detail": "ibv_create_qp() Queue Pairs एलोकेट करता है। QPs RESET स्थिति में शुरू।" },
+    "15": { "text": "ibv_modify_qp() के माध्यम से QP RESET → INIT ट्रांज़िशन", "detail": "QP INIT में ट्रांज़िशन। PFC priority, एक्सेस फ्लैग सेट। रिसीव WQEs पोस्ट किए जा सकते हैं।" },
+    "16": { "text": "CM REQ भेजा — AI नोड QP पैरामीटर प्रस्तावित, GPU MR rkey शेयर", "detail": "AI नोड CM REQ भेजता है। महत्वपूर्ण: CM private data या OOB चैनल GPU MR rkey और वर्चुअल एड्रेस ले जाता है ताकि रिमोट सर्वर GPU मेमोरी लक्षित कर सके।" },
+    "17": { "text": "CM REP प्राप्त — रिमोट सर्वर स्वीकार, QPN और PSN देता है", "detail": "रिमोट सर्वर कनेक्शन स्वीकार करता है। QP RTR में ट्रांज़िशन।" },
+    "18": { "text": "CM RTU भेजा — दोनों QPs RTS में। GPUDirect RDMA कनेक्शन स्थापित।", "detail": "दोनों QPs RTS (Ready To Send) में। GPU मेमोरी MR के रूप में रजिस्टर और rkey एक्सचेंज होने पर, GPUDirect RDMA डेटा पथ पूरी तरह स्थापित।" },
+    "19": { "text": "रिमोट सर्वर AI नोड पर GPU मेमोरी लक्षित RDMA WRITE पोस्ट करता है", "detail": "रिमोट सर्वर ibv_post_send() RDMA WRITE WQE के साथ कॉल करता है: सोर्स = लोकल DRAM बफर (lkey), डेस्टिनेशन = AI नोड का GPU बफर (rkey + VA जो CM/OOB में एक्सचेंज हुए)।" },
+    "20": { "text": "GPU में RDMA WRITE — 4MB सीधे GPU HBM में push, AI नोड पर ज़ीरो CPU", "detail": "डेटा पथ: 1. रिमोट सर्वर RNIC लोकल DRAM DMA करता है 2. RoCEv2 पैकेट में एनकैप्सुलेट 3. 100GbE लॉसलेस फैब्रिक पर ट्रांसमिट 4. AI नोड RNIC प्राप्त, rkey वैलिडेट 5. PCIe BAR1 P2P DMA के माध्यम से GPU HBM में पेलोड लिखता है\nAI नोड CPU: शामिल नहीं। GPU HBM में डेटा चुपचाप लैंड करता है।" },
+    "21": { "text": "AI नोड RNIC से ACK — GPU में WRITE पूर्ण, रिमोट सर्वर पर CQE पोस्ट", "detail": "AI नोड RNIC स्वायत्त रूप से RC ACK जनरेट करता है। रिमोट सर्वर पर CQE completion signal करता है। AI नोड CPU कभी शामिल नहीं।" },
+    "22": { "text": "रिमोट सर्वर AI नोड पर GPU मेमोरी लक्षित RDMA READ पोस्ट करता है", "detail": "रिमोट सर्वर ibv_post_send() RDMA READ WQE के साथ कॉल करता है: लोकल डेस्टिनेशन बफर (lkey), रिमोट सोर्स = AI नोड GPU बफर (rkey + VA)।" },
+    "23": { "text": "GPU मेमोरी से RDMA READ Request — इस दिशा में कोई डेटा नहीं", "detail": "RNIC छोटा READ Request AI नोड को भेजता है जो GPU बफर एड्रेस और rkey निर्दिष्ट करता है। कोई पेलोड नहीं।" },
+    "24": { "text": "RDMA READ Response — AI नोड का RNIC GPU HBM से DMA करता है और डेटा भेजता है", "detail": "AI नोड RNIC: READ request प्राप्त → rkey वैलिडेट → PCIe BAR1 P2P DMA के माध्यम से GPU HBM पढ़ता है → response पैकेट बनाता है → रिमोट सर्वर को ट्रांसमिट। AI नोड CPU: ज़ीरो इन्वॉल्वमेंट। GPU डेटा सीधे HBM से वायर पर।" },
+    "25": { "text": "⟳ परिदृश्य पूर्ण — GPU मेमोरी में GPUDirect RDMA डेटा ट्रांसफर", "detail": "इस परिदृश्य ने GPUDirect RDMA प्रदर्शित किया:\nSETUP: cuInit → cuMemAlloc → nvidia-peermem BAR1 मैपिंग → ibv_reg_mr (GPU MR) → CM QP bring-up → rkey एक्सचेंज\nRDMA WRITE to GPU: रिमोट DRAM →[RNIC]→[100GbE]→[RNIC]→[PCIe BAR1]→ GPU HBM\nRDMA READ from GPU: रिमोट request →[100GbE]→ GPU HBM →[PCIe BAR1]→[RNIC]→[100GbE]→ रिमोट DRAM\nCPU copies: 0। होस्ट DRAM bounce: 0। यही GPUDirect RDMA का मूल मूल्य है।" }
+  }
+}

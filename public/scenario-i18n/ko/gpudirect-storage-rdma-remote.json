@@ -1,0 +1,109 @@
+{
+  "meta": {
+    "title": "[WIP] GPUDirect Storage: RoCEv2를 통한 원격 NVMe-oF Read/Write로 GPU 메모리 접근",
+    "description": "RoCEv2를 통해 원격 NVMe-oF 스토리지에서 GPU 메모리로 직접 데이터를 읽고 쓰는 시나리오. GDS(GPUDirect Storage)가 NVMe-oF/RDMA 전송과 결합하여 호스트 DRAM 바운스 버퍼를 우회하고 스토리지에서 GPU HBM으로 직접 데이터를 배치합니다.",
+    "learning_objectives": [
+      "원격 NVMe-oF/RDMA와 GPUDirect Storage의 결합 방식 이해",
+      "cuFile API를 통한 원격 스토리지 ↔ GPU 직접 I/O 확인",
+      "RDMA WRITE/READ를 통한 스토리지 ↔ GPU HBM 제로카피 경로 추적"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "링크 A: 신호 감지 — GPU 노드 ↔ 스위치",
+      "detail": "GPU 노드의 광 트랜시버가 스위치 포트 A에서 빛을 감지합니다. IEEE 802.3cd 조항 73에 따라 오토네고시에이션이 시작됩니다."
+    },
+    "1": {
+      "text": "링크 B: 신호 감지 — 스위치 ↔ 스토리지 타겟",
+      "detail": "스토리지 타겟의 광 트랜시버가 스위치 포트 B에서 빛을 감지합니다."
+    },
+    "2": {
+      "text": "링크 A UP — GPU 노드 ↔ 스위치 100Gbps, RS-FEC",
+      "detail": "AN 및 Link Training이 완료됩니다. RoCEv2를 위해 우선순위 3에 PFC가 활성화됩니다."
+    },
+    "3": {
+      "text": "링크 B UP — 스위치 ↔ 스토리지 타겟 100Gbps, RS-FEC",
+      "detail": "양쪽 링크가 가동됩니다. 엔드투엔드 L2 연결이 수립되었습니다."
+    },
+    "4": {
+      "text": "ARP 요청: 192.168.1.20은 누구인가요?",
+      "detail": "GPU 노드가 RoCEv2 GID-to-MAC 매핑을 위해 스토리지 타겟 IP를 MAC으로 해석합니다."
+    },
+    "5": {
+      "text": "ARP 응답: 192.168.1.20은 00:02:c9:ab:cd:ef입니다",
+      "detail": "스토리지 타겟이 응답합니다. GPU 노드가 이제 스토리지에 대한 L2 도달 가능성을 갖습니다."
+    },
+    "6": {
+      "text": "CM REQ — GPU 노드가 NVMe-oF/RDMA 전송용 QP 제안",
+      "detail": "IB Connection Manager 요청. GPU 노드가 NVMe-oF/RDMA 연결을 위한 RC QP 매개변수를 제안합니다. 프라이빗 데이터에 TP8010에 따른 NVMe-oF RDMA CM 요청 형식(큐 ID, SQ/RQ 크기)이 포함됩니다."
+    },
+    "7": {
+      "text": "CM REP — 스토리지 타겟이 수락, QPN 및 PSN 제공",
+      "detail": "스토리지 타겟이 연결을 수락하고 QP 번호(0x00B002)와 시작 PSN(8765432)을 제공합니다."
+    },
+    "8": {
+      "text": "CM RTU — 양쪽 QP가 RTS로 전이, RDMA 전송 준비 완료",
+      "detail": "양쪽 QP가 RTS로 이동합니다. NVMe-oF/RDMA 전송 레이어가 이제 RDMA SEND를 통해 NVMe 명령 캡슐을 보내고 RDMA WRITE/READ를 통해 데이터를 전송할 수 있습니다."
+    },
+    "9": {
+      "text": "Fabrics Connect — Admin Queue (QID=0)",
+      "detail": "NVMe-oF Fabrics Connect 명령이 RDMA SEND를 통해 전송되어 어드민 큐 연관을 수립합니다. Connect Data(SGL을 통해 전송)에 hostnqn, subnqn, hostid가 포함됩니다. 스토리지 타겟이 컨트롤러 ID를 할당합니다."
+    },
+    "10": {
+      "text": "Fabrics Connect 응답 — Controller ID=1 할당",
+      "detail": "스토리지 타겟이 Fabrics Connect를 수락하고 컨트롤러 ID 1을 할당합니다. 어드민 큐가 수립되었습니다 — Identify, Get Log Page 및 기타 어드민 명령을 전송할 수 있습니다."
+    },
+    "11": {
+      "text": "Fabrics Connect — I/O Queue (QID=1)",
+      "detail": "I/O Queue 1을 위한 Fabrics Connect. 이후 NVMe Read/Write 명령을 제출할 수 있습니다. I/O 큐는 cuFileRead/cuFileWrite 명령이 디스패치되는 곳입니다."
+    },
+    "12": {
+      "text": "cuFileDriverOpen() — GDS 드라이버 초기화, nvidia-fs 로드",
+      "detail": "애플리케이션이 cuFileDriverOpen()을 호출하여 GPUDirect Storage를 초기화합니다. NVMe I/O 경로를 가로채어 DMA를 호스트 DRAM 대신 GPU 메모리로 리디렉션하는 nvidia-fs 커널 모듈을 로드합니다. nvidia-peermem이 IB 피어 메모리 클라이언트로 등록되어 RDMA MR이 GPU 페이지로 뒷받침될 수 있습니다."
+    },
+    "13": {
+      "text": "cuFileHandleRegister() — 원격 NVMe-oF 네임스페이스를 GDS에 등록",
+      "detail": "애플리케이션이 파일 핸들(원격 NVMe-oF 네임스페이스로 뒷받침)을 GDS에 등록합니다. nvidia-fs에게 이 파일 디스크립터의 I/O를 가로채어 GPUDirect 경로를 사용하라고 알립니다."
+    },
+    "14": {
+      "text": "cuFileBufRegister() — GPU 버퍼를 RDMA용으로 등록, 바운스 버퍼 우회",
+      "detail": "애플리케이션이 GPU 메모리 버퍼를 GDS에 등록합니다. nvidia-peermem이 BAR1을 통해 GPU 페이지를 고정하고 GPU HBM으로 뒷받침되는 RDMA Memory Region을 생성합니다. RNIC가 이제 이 GPU 버퍼에 직접 DMA할 수 있습니다. 호스트 DRAM 바운스 버퍼가 우회됩니다 — 이것이 GPU 메모리에 대한 제로카피 스토리지 I/O의 핵심 활성화 요소입니다."
+    },
+    "15": {
+      "text": "cuFileRead() 호출 — GDS가 GPU 메모리를 RDMA 타겟으로 NVMe READ 발행",
+      "detail": "애플리케이션이 cuFileRead()를 호출합니다. GDS가 GPU 메모리 영역(rkey=0xGPU01234)을 가리키는 SGL 디스크립터가 있는 NVMe Read 명령을 구성합니다. 스토리지 타겟이 디스크에서 데이터를 읽으면 이 GPU 주소로 직접 RDMA WRITE합니다 — 데이터가 호스트 DRAM을 전혀 건드리지 않습니다."
+    },
+    "16": {
+      "text": "cuFileRead → NVMe Read 명령 전송(SGL → GPU 메모리)",
+      "detail": "NVMe Read 명령 캡슐이 RDMA SEND를 통해 전송됩니다. SGL 디스크립터에 GPU 메모리 영역의 rkey와 가상 주소가 포함됩니다. 스토리지 타겟이 이를 사용하여 GPU HBM으로 직접 읽기 데이터를 RDMA WRITE합니다."
+    },
+    "17": {
+      "text": "스토리지가 RDMA WRITE로 읽기 데이터를 GPU HBM에 직접 전달 — 호스트 DRAM 바운스 없음",
+      "detail": "핵심 순간: 스토리지 타겟이 NVMe SSD에서 데이터를 읽은 후 GPU 메모리 영역을 대상으로 RDMA WRITE를 수행합니다. RETH 헤더에 GPU BAR1 가상 주소와 rkey가 포함됩니다. GPU 노드의 RNIC가 이 RDMA WRITE를 수신하고 PCIe P2P를 통해 페이로드를 GPU HBM에 직접 DMA합니다 — 데이터가 호스트 DRAM이나 CPU 캐시를 절대 통과하지 않습니다.\n전통적 경로: 스토리지 → RDMA WRITE → 호스트 DRAM → CPU memcpy → GPU\nGDS 경로: 스토리지 → RDMA WRITE → RNIC → PCIe BAR1 → GPU HBM(제로 바운스)"
+    },
+    "18": {
+      "text": "NVMe Read 완료 — cuFileRead() 반환, 데이터가 GPU HBM에 있음",
+      "detail": "NVMe 완료가 읽기 완료를 확인합니다. 데이터가 이제 GPU HBM에 있으며 CUDA 커널에서 즉시 사용 가능합니다 — 추가 복사가 필요하지 않습니다."
+    },
+    "19": {
+      "text": "cuFileWrite() 호출 — GDS가 GPU HBM에서 데이터를 소스로 NVMe WRITE 발행",
+      "detail": "애플리케이션이 cuFileWrite()를 호출합니다. GDS가 GPU 메모리를 가리키는 SGL 디스크립터가 있는 NVMe Write 명령을 구성합니다. 스토리지 타겟이 GPU HBM에서 직접 쓰기 데이터를 RDMA READ합니다 — 데이터가 호스트 DRAM을 거치지 않습니다."
+    },
+    "20": {
+      "text": "cuFileWrite → NVMe Write 명령 전송(SGL → GPU 메모리 RDMA READ용)",
+      "detail": "NVMe Write 명령 캡슐이 RDMA SEND를 통해 전송됩니다. SGL이 GPU 버퍼의 rkey와 가상 주소를 제공합니다. 스토리지 타겟이 이 주소에서 RDMA READ하여 쓰기 데이터를 가져옵니다."
+    },
+    "21": {
+      "text": "RDMA READ 응답 — GPU 데이터가 HBM에서 스토리지로 직접 전송",
+      "detail": "스토리지 타겟이 GPU 메모리 영역을 대상으로 RDMA READ 요청을 발행했습니다. GPU 노드의 RNIC가 PCIe BAR1 P2P DMA를 통해 GPU HBM에서 자율적으로 읽고 데이터를 포함한 RDMA READ 응답을 전송합니다. GPU 노드의 CPU 관여 없음 — RNIC가 모든 것을 처리합니다.\n전통적 경로: GPU → CPU memcpy → 호스트 DRAM → RDMA SEND → 스토리지\nGDS 경로: GPU HBM → RNIC(BAR1 P2P를 통해) → RDMA READ 응답 → 스토리지"
+    },
+    "22": {
+      "text": "NVMe Write 완료 — cuFileWrite() 반환, 데이터가 스토리지에 영구 저장됨",
+      "detail": "NVMe 완료가 쓰기 완료를 확인합니다. GPU HBM의 데이터가 호스트 DRAM을 한 번도 거치지 않고 원격 NVMe 스토리지에 영구 저장되었습니다."
+    },
+    "23": {
+      "text": "⟳ 시나리오 완료 — RoCEv2를 통한 GPUDirect Storage",
+      "detail": "요약: 두 개의 100GbE 링크가 가동되었습니다. IB CM을 통해 RDMA QP가 수립되었습니다. NVMe-oF Fabrics Connect가 RDMA를 통해 어드민 및 I/O 큐를 생성했습니다. cuFileDriverOpen, cuFileHandleRegister, cuFileBufRegister로 GDS가 초기화되어 — GPU 메모리를 RDMA용으로 등록하고 호스트 DRAM 바운스 버퍼를 우회합니다. cuFileRead가 NVMe READ를 트리거하고 데이터가 RDMA WRITE를 통해 GPU HBM에 직접 전달되었습니다. cuFileWrite가 NVMe WRITE를 트리거하고 데이터가 RDMA READ를 통해 GPU HBM에서 직접 가져왔습니다. 두 경우 모두 호스트 DRAM 바운스 없음, 데이터 경로의 CPU 관여 없음."
+    }
+  }
+}

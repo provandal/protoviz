@@ -1,0 +1,113 @@
+{
+  "meta": {
+    "title": "[WIP] GPUDirect Storage: قراءة/كتابة NVMe-oF بعيدة لذاكرة GPU فوق RoCEv2",
+    "description": "سيناريو GPUDirect Storage بيوضّح كيف GPU بيقرا ويكتب بيانات على هدف NVMe-oF/RDMA بعيد مع وصول البيانات مباشرة لـ GPU HBM — بيتجاوز host DRAM بالكامل. المسار التقليدي للتخزين البعيد بيعمل bounce مرتين (storage → RDMA → host DRAM → CPU memcpy → GPU). GDS فوق RDMA بيلغي الـ bounces: RDMA WRITE تبع هدف التخزين بيوصّل البيانات مباشرة لـ PCIe BAR1 aperture تبع GPU.",
+    "learning_objectives": [
+      "فهم كيف GPUDirect Storage (GDS) بيلغي host DRAM bounce buffer لـ I/O تخزين بعيد",
+      "شوف كيف cuFileRead بيشغّل NVMe-oF READ اللي RDMA WRITE تبعو بيوصّل البيانات مباشرة لـ GPU HBM عبر BAR1",
+      "شوف كيف cuFileWrite بيشغّل NVMe-oF WRITE اللي بياناتو بتنسحب من GPU HBM عبر RDMA READ",
+      "تتبّع NVMe-oF/RDMA transport binding: أوامر NVMe عبر RDMA SEND، بيانات عبر RDMA WRITE/READ",
+      "تابع NVMe-oF Fabrics Connect لتأسيس admin وI/O queue pairs فوق RDMA",
+      "راقب كيف nvidia-fs وnvidia-peermem بيتعاونو لتسجيل ذاكرة GPU لـ RDMA",
+      "قارن المسار التقليدي (storage → DRAM → GPU) مع مسار GDS (storage → GPU مباشرة)"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Link A: إشارة مكتشفة — GPU Node ↔ Switch",
+      "detail": "transceiver بصري على عقدة GPU بيكتشف ضوء من switch port A. Auto-Negotiation بيبلّش."
+    },
+    "1": {
+      "text": "Link B: إشارة مكتشفة — Switch ↔ Storage Target",
+      "detail": "transceiver بصري على هدف التخزين بيكتشف ضوء من switch port B."
+    },
+    "2": {
+      "text": "Link A طلع — GPU Node ↔ Switch على 100Gbps مع RS-FEC",
+      "detail": "AN وLink Training خلصو. PFC مفعّل على priority 3 لـ RoCEv2."
+    },
+    "3": {
+      "text": "Link B طلع — Switch ↔ Storage Target على 100Gbps مع RS-FEC",
+      "detail": "الرابطين طلعو. الوصول L2 من النهاية للنهاية مؤسّس."
+    },
+    "4": {
+      "text": "ARP Request: مين عندو 192.168.1.20؟",
+      "detail": "عقدة GPU بتحل IP هدف التخزين لـ MAC لربط GID-to-MAC تبع RoCEv2."
+    },
+    "5": {
+      "text": "ARP Reply: 192.168.1.20 عنوان MAC تبعو 00:02:c9:ab:cd:ef",
+      "detail": "هدف التخزين بيردّ. عقدة GPU هلق عندها وصول L2 للتخزين."
+    },
+    "6": {
+      "text": "CM REQ — عقدة GPU بتقترح QP لـ NVMe-oF/RDMA transport",
+      "detail": "طلب IB Connection Manager. عقدة GPU بتقترح RC QP parameters لاتصال NVMe-oF/RDMA. Private data فيه NVMe-oF RDMA CM request format حسب TP8010."
+    },
+    "7": {
+      "text": "CM REP — هدف التخزين بيقبل، بيوفّر QPN وPSN",
+      "detail": "هدف التخزين بيقبل الاتصال وبيوفّر QP number (0x00B002) وstarting PSN (8765432)."
+    },
+    "8": {
+      "text": "CM RTU — الـ QPs تحوّلو لـ RTS، RDMA transport جاهز",
+      "detail": "الـ QPs على الطرفين بحالة RTS. طبقة NVMe-oF/RDMA transport هلق بتقدر تبعت NVMe command capsules عبر RDMA SEND وتنقل بيانات عبر RDMA WRITE/READ."
+    },
+    "9": {
+      "text": "Fabrics Connect — Admin Queue (QID=0)",
+      "detail": "أمر NVMe-oF Fabrics Connect مبعوت عبر RDMA SEND لتأسيس ارتباط admin queue. الـ Connect Data فيه hostnqn، subnqn، وhostid. هدف التخزين بيعيّن controller ID."
+    },
+    "10": {
+      "text": "Fabrics Connect Response — Controller ID=1 معيّن",
+      "detail": "هدف التخزين بيقبل Fabrics Connect وبيعيّن controller ID 1. Admin queue مؤسّس — أوامر Identify وGet Log Page وadmin تانية بتقدر تمشي."
+    },
+    "11": {
+      "text": "Fabrics Connect — I/O Queue (QID=1)",
+      "detail": "Fabrics Connect لـ I/O Queue 1. بعد هيدا، أوامر NVMe Read/Write بتقدر تنبعت. الـ I/O queue هو وين أوامر cuFileRead/cuFileWrite رح تنبعت."
+    },
+    "12": {
+      "text": "cuFileDriverOpen() — درايفر GDS تهيّأ، nvidia-fs محمّل",
+      "detail": "التطبيق بينادي cuFileDriverOpen() لتهيئة GPUDirect Storage. هيدا بيحمّل nvidia-fs kernel module اللي بيعترض مسارات NVMe I/O وبيوجّه DMA لذاكرة GPU بدل host DRAM. nvidia-peermem بيسجّل كـ IB peer memory client فـ RDMA MRs بتقدر تكون مبنية على صفحات GPU."
+    },
+    "13": {
+      "text": "cuFileHandleRegister() — NVMe-oF namespace بعيد مسجّل مع GDS",
+      "detail": "التطبيق بيسجّل file handle (مبني على NVMe-oF namespace البعيد) مع GDS. هيدا بيقول لـ nvidia-fs يعترض I/O على هالـ file descriptor ويستعمل مسار GPUDirect."
+    },
+    "14": {
+      "text": "cuFileBufRegister() — GPU buffer مسجّل لـ RDMA، bounce buffer ملغي",
+      "detail": "التطبيق بيسجّل GPU memory buffer مع GDS. nvidia-peermem بيثبّت صفحات GPU عبر BAR1 وبيأنشئ RDMA Memory Region مبني على GPU HBM. RNIC هلق بيقدر يعمل DMA مباشرة لهالـ GPU buffer. host DRAM bounce buffer ملغي — هيدا المُمكّن الأساسي لـ zero-copy storage I/O لذاكرة GPU."
+    },
+    "15": {
+      "text": "cuFileRead() نودي — GDS بيبعت NVMe READ مع ذاكرة GPU كهدف RDMA",
+      "detail": "التطبيق بينادي cuFileRead(). GDS بيبني أمر NVMe Read مع SGL descriptor بيشير لـ GPU memory region (rkey=0xGPU01234). لمّا هدف التخزين يقرا بيانات من القرص، رح يعمل RDMA WRITE مباشرة لهالعنوان GPU — البيانات ما بتلمس host DRAM أبداً."
+    },
+    "16": {
+      "text": "cuFileRead → أمر NVMe Read مبعوت للتخزين (SGL → ذاكرة GPU)",
+      "detail": "كبسولة أمر NVMe Read مبعوتة عبر RDMA SEND. الـ SGL descriptor فيه rkey وعنوان افتراضي لـ GPU memory region. هدف التخزين رح يستعملهم لـ RDMA WRITE بيانات القراءة مباشرة لـ GPU HBM."
+    },
+    "17": {
+      "text": "التخزين بيعمل RDMA WRITE لبيانات القراءة مباشرة لـ GPU HBM — صفر bounce host DRAM",
+      "detail": "اللحظة الأساسية: هدف التخزين بيقرا البيانات من NVMe SSD تبعو، بعدين بيعمل RDMA WRITE بيستهدف GPU memory region. RETH header فيه عنوان GPU BAR1 الافتراضي والـ rkey. RNIC عقدة GPU بيستلم هالـ RDMA WRITE وبيعمل DMA للحمولة مباشرة لـ GPU HBM عبر PCIe P2P.\n\nالمسار التقليدي: Storage → RDMA WRITE → host DRAM → CPU memcpy → GPU\nمسار GDS: Storage → RDMA WRITE → RNIC → PCIe BAR1 → GPU HBM (صفر bounce)"
+    },
+    "18": {
+      "text": "NVMe Read completion — cuFileRead() رجع، البيانات بـ GPU HBM",
+      "detail": "إتمام NVMe بيأكّد إنو القراءة خلصت. البيانات هلق بـ GPU HBM ومتاحة لـ CUDA kernels فوراً — بدون نسخة إضافية."
+    },
+    "19": {
+      "text": "cuFileWrite() نودي — GDS بيبعت NVMe WRITE، البيانات مصدرها GPU HBM",
+      "detail": "التطبيق بينادي cuFileWrite(). GDS بيبني أمر NVMe Write مع SGL descriptor بيشير لذاكرة GPU. هدف التخزين رح يعمل RDMA READ لبيانات الكتابة مباشرة من GPU HBM."
+    },
+    "20": {
+      "text": "cuFileWrite → أمر NVMe Write مبعوت (SGL → ذاكرة GPU لـ RDMA READ)",
+      "detail": "كبسولة أمر NVMe Write مبعوتة عبر RDMA SEND. الـ SGL بيوفّر rkey وعنوان افتراضي تبع GPU buffer. هدف التخزين رح يعمل RDMA READ من هالعنوان ليجيب بيانات الكتابة."
+    },
+    "21": {
+      "text": "RDMA READ Response — بيانات GPU مبعوتة مباشرة من HBM للتخزين",
+      "detail": "هدف التخزين عمل RDMA READ Request بيستهدف GPU memory region. RNIC عقدة GPU بشكل مستقل بيقرا من GPU HBM عبر PCIe BAR1 P2P DMA وبيبعت هالـ RDMA READ Response فيه البيانات. صفر تدخّل CPU على عقدة GPU.\n\nالمسار التقليدي: GPU → CPU memcpy → host DRAM → RDMA SEND → Storage\nمسار GDS: GPU HBM → RNIC (عبر BAR1 P2P) → RDMA READ Response → Storage"
+    },
+    "22": {
+      "text": "NVMe Write completion — cuFileWrite() رجع، البيانات محفوظة بالتخزين",
+      "detail": "إتمام NVMe بيأكّد إنو الكتابة خلصت. البيانات من GPU HBM انحفظت بالتخزين NVMe البعيد بدون ما تلمس host DRAM أبداً."
+    },
+    "23": {
+      "text": "السيناريو خلص — GPUDirect Storage فوق RoCEv2",
+      "detail": "ملخص: رابطين 100GbE طلعو. RDMA QP تأسّس عبر IB CM. NVMe-oF Fabrics Connect أنشأ admin وI/O queues فوق RDMA. GDS تهيّأ مع cuFileDriverOpen، cuFileHandleRegister، وcuFileBufRegister — سجّل ذاكرة GPU لـ RDMA وألغى host DRAM bounce buffer. cuFileRead شغّل NVMe READ اللي بياناتو وصلت عبر RDMA WRITE مباشرة لـ GPU HBM. cuFileWrite شغّل NVMe WRITE اللي بياناتو انسحبت عبر RDMA READ مباشرة من GPU HBM. بالحالتين، صفر host DRAM bounce، صفر تدخّل CPU بمسار البيانات."
+    }
+  }
+}

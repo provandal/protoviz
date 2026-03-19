@@ -1,0 +1,78 @@
+{
+  "meta": {
+    "title": "iSCSI: כניסה → גילוי → SCSI INQUIRY → WRITE(10) → READ(10)",
+    "description": "מחזור חיים מלא של שיחת iSCSI על גבי 10GbE TCP/IP: לחיצת יד TCP תלת-כיוונית, שלב כניסת iSCSI (אימות ומשא ומתן על פרמטרים), גילוי SendTargets, כניסה ליעד, SCSI INQUIRY לזיהוי ה-LUN, ו-SCSI WRITE(10) ו-READ(10) ל-I/O של נתונים. iSCSI הוא פרוטוקול SAN הנפרס ביותר, הנושא פקודות SCSI על גבי רשתות TCP/IP סטנדרטיות — ללא צורך בחומרה מיוחדת. תרחיש זה מראה כיצד אחסון בלוקים SCSI עובד על גבי Ethernet, בניגוד ל-Fibre Channel (מרקם SAN ייעודי) ו-NVMe-oF (הדור הבא).",
+    "learning_objectives": [
+      "הבנה כיצד iSCSI ממפה פקודות SCSI על חיבורי TCP באמצעות מסגור PDU",
+      "מעקב אחר שלב כניסת iSCSI: משא ומתן אבטחה, חילופי פרמטרים תפעוליים",
+      "ראיית גילוי SendTargets — כיצד יוזם לומד על יעדים ו-LUNs זמינים",
+      "תצפית על מזהי שיחה וחיבור של iSCSI (ISID, TSIH, CID)",
+      "מעקב אחר SCSI INQUIRY לגילוי סוג מכשיר, יצרן וקיבולת",
+      "מעקב אחר SCSI WRITE(10) דרך iSCSI: PDU פקודה, PDUs של Data-Out, PDU תגובה",
+      "מעקב אחר SCSI READ(10): PDU פקודה, PDUs של Data-In, PDU תגובה",
+      "הבנת תקצירי כותרת/נתונים של iSCSI (CRC32C) לשלמות נתונים"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "קישור פיזי פעיל — 10GbE בשני המקטעים",
+      "detail": "קישורי Ethernet 10GbE סטנדרטיים עולים. בניגוד ל-FC (מרקם SAN ייעודי) או RoCEv2 (הדורש PFC/Ethernet ללא אובדן), iSCSI רץ על כל רשת IP סטנדרטית. אין צורך בהגדרת מתג מיוחדת — TCP מטפל באמינות ובקרת זרימה."
+    },
+    "1": {
+      "text": "לחיצת יד TCP תלת-כיוונית → חיבור ליציאה 3260 הוקם",
+      "detail": "הדמון iscsid של היוזם פותח חיבור TCP ליציאה הידועה 3260 של היעד (מוקצית IANA). לחיצת יד TCP סטנדרטית SYN → SYN-ACK → ACK מקימה זרם בתים אמין.\niSCSI ממסגר את ה-PDUs שלו על חיבור TCP זה. בניגוד לפרוטוקולים המשתמשים ב-UDP (RoCEv2) או מסגור ייעודי (FC), iSCSI מסתמך על TCP לאמינות, סדר ובקרת זרימה. המשמעות: • אין צורך ב-NIC מיוחד (כל מחסנית TCP/IP עובדת) • עובד ברשתות מנותבות (לא מוגבל ל-L2) • בקרת גודש TCP מגבילה תפוקה תחת עומס • תקורת עיבוד TCP צורכת מחזורי מעבד\nראו תרחיש TCP לפרטים על לחיצת היד התלת-כיוונית."
+    },
+    "2": {
+      "text": "כניסת iSCSI → משא ומתן אבטחה (AuthMethod=None)",
+      "detail": "היוזם שולח את PDU הכניסה הראשון. לכניסת iSCSI שני שלבים: 1. משא ומתן אבטחה (CSG=0) — בחירת שיטת אימות 2. משא ומתן תפעולי (CSG=1) — כוונון פרמטרי שיחה\nPDU זה נושא זוגות מפתח-ערך: • InitiatorName=iqn.2024-01.com.example:host01 (ה-IQN של היוזם) • AuthMethod=None (ללא אימות — CHAP נפוץ בייצור)\nה-ISID (Initiator Session ID) הוא ערך בן 6 בתים שיחד עם TSIH של היעד מזהה שיחת iSCSI זו באופן ייחודי. אם היוזם מתחבר מחדש עם אותו ISID, היעד יכול לחדש את השיחה במקום ליצור חדשה."
+    },
+    "3": {
+      "text": "תגובת כניסה ← אבטחה התקבלה, TSIH=0x0001 הוקצה",
+      "detail": "היעד מקבל AuthMethod=None ומקצה TSIH (Target Session Identifying Handle) = 0x0001. ביט T (Transit) מוגדר, ועובר לשלב משא ומתן תפעולי."
+    },
+    "4": {
+      "text": "כניסה → משא ומתן על פרמטרים תפעוליים",
+      "detail": "היוזם מציע פרמטרים תפעוליים השולטים בהעברת נתונים:\n• MaxRecvDataSegmentLength = 262144 (256KB) — מקסימום נתונים ל-PDU • FirstBurstLength = 262144 — נתונים לא-מבוקשים מותרים לפני R2T • MaxBurstLength = 524288 — מקסימום נתונים כוללים לרצף R2T • InitialR2T = Yes — היעד חייב לשלוח R2T לפני נתוני כתיבה • ImmediateData = Yes — נתוני כתיבה קטנים יכולים להיצמד ל-PDU הפקודה • HeaderDigest = None — ללא CRC על כותרות iSCSI (נפוץ ברשתות LAN אמינות) • DataDigest = None — ללא CRC על מקטעי נתונים\nפרמטרים אלה מנוהלים במשא ומתן — הערכים בפועל הם המינימום או המקסימום של מה שכל צד מציע, בהתאם לפרמטר."
+    },
+    "5": {
+      "text": "כניסה הושלמה ← Full Feature Phase — השיחה הוקמה",
+      "detail": "היעד מקבל את הפרמטרים התפעוליים ומעביר את השיחה ל-Full Feature Phase (NSG=3). שיחת iSCSI הוקמה כעת במלואה ומוכנה לפקודות SCSI.\nמזהי שיחה: • ISID = 0x00023d000001 (הוקצה על ידי היוזם) • TSIH = 0x0001 (הוקצה על ידי היעד) • (ISID + TSIH) מזהים שיחה זו באופן ייחודי גלובלית\nפרמטרים שנוהלו במשא ומתן: • MaxRecvDataSegmentLength = 256KB • FirstBurstLength = 256KB • MaxBurstLength = 512KB • InitialR2T = Yes, ImmediateData = Yes"
+    },
+    "6": {
+      "text": "SCSI INQUIRY → היוזם מגלה מאפייני מכשיר של LUN 0",
+      "detail": "שכבת SCSI האמצעית של Linux שולחת אוטומטית INQUIRY לכל LUN כדי לגלות סוג מכשיר, יצרן ויכולות. זו אותה פקודת SCSI INQUIRY המשמשת בתרחיש Fibre Channel — iSCSI פשוט מעביר אותה על גבי TCP במקום FCP.\nפקודת INQUIRY עטופה ב-PDU פקודת SCSI של iSCSI (opcode 0x01) עם CDB בן 16 בתים המוטבע בכותרת ה-PDU."
+    },
+    "7": {
+      "text": "תגובת INQUIRY ← מכשיר בלוק גישה-ישירה (LIO-ORG IBLOCK)",
+      "detail": "היעד מחזיר נתוני INQUIRY המזהים את המכשיר כמכשיר בלוק גישה-ישירה (סוג 0x00). יוזם Linux יוצר מכשיר /dev/sdX עבור LUN זה.\nהתגובה מועברת כ-PDU של iSCSI SCSI Data-In עם ביט Status מוגדר — משלב מסירת נתונים ומצב SCSI ב-PDU אחד (אופטימיזציה לתגובות קטנות)."
+    },
+    "8": {
+      "text": "SCSI WRITE(10) → כתיבת 4KB ל-LBA 0",
+      "detail": "האפליקציה כותבת 4KB למכשיר הבלוק. יוזם iSCSI שולח את SCSI WRITE(10) CDB עטוף ב-PDU פקודת SCSI של iSCSI.\nמכיוון ש-InitialR2T=Yes הוסכם, היוזם לא שולח נתוני כתיבה עדיין — הוא ממתין שהיעד יסמן מוכנות דרך R2T. (אם ImmediateData היה בשימוש, נתוני כתיבה קטנים יכלו להיצמד ל-PDU הפקודה עצמו.)"
+    },
+    "9": {
+      "text": "R2T ← היעד מוכן לקבל 4KB נתוני כתיבה",
+      "detail": "היעד שולח PDU של R2T (Ready to Transfer), המעניק ליוזם אישור לשלוח נתוני כתיבה. ה-R2T מציין: • Buffer Offset = 0 (תחילת ההעברה) • Desired Data Transfer Length = 4096 (שלח את כל 4KB) • Target Transfer Tag = 0x00000001 (היוזם מחזיר ב-Data-Out)\nR2T מספק בקרת זרימה — היעד לא יוצף בנתוני כתיבה שהוא לא מוכן לקבל. זה חשוב ליעדים עם שטח מאגר מוגבל. השוו ל-NVMe-oF/RDMA שבו היעד מבצע RDMA READ של נתונים בקצב שלו."
+    },
+    "10": {
+      "text": "Data-Out → היוזם שולח 4KB נתוני כתיבה",
+      "detail": "היוזם שולח את נתוני הכתיבה ב-PDU של iSCSI SCSI Data-Out (opcode 0x05). כל 4KB נכנסים ל-PDU אחד מכיוון ש-MaxRecvDataSegmentLength = 256KB.\nלכתיבות גדולות יותר (> MaxRecvDataSegmentLength), הנתונים יפוצלו על פני PDUs מרובים של Data-Out, כל אחד מתייחס לאותו Target Transfer Tag מה-R2T.\nהשוואת נתיב נתונים לכתיבה של 4KB: • iSCSI: אפליקציה → ליבת SCSI → PDU iSCSI → מחסנית TCP/IP → DMA של NIC (2 העתקות) • NVMe-oF/RDMA: אפליקציה → MR רשום → RDMA READ על ידי יעד (0 העתקות מעבד מארח) • FC: אפליקציה → ליבת SCSI → FCP → דרייבר FC → DMA של HBA (1 העתקה)"
+    },
+    "11": {
+      "text": "תגובת WRITE ← GOOD — 4KB נכתבו ל-LBA 0",
+      "detail": "היעד מאשר שכתיבת SCSI WRITE(10) הושלמה עם מצב GOOD. הנתונים נכתבו למכשיר הבלוק העורפי.\nסיכום זרימת כתיבת iSCSI: 1. יוזם → יעד: PDU פקודת SCSI (CDB של WRITE) 2. יעד → יוזם: PDU של R2T (מוכן לנתונים) 3. יוזם → יעד: PDU של Data-Out (4KB נתוני כתיבה) 4. יעד → יוזם: PDU תגובת SCSI (מצב GOOD)"
+    },
+    "12": {
+      "text": "SCSI READ(10) → קריאת 4KB מ-LBA 0",
+      "detail": "היוזם שולח READ(10) לאותו בלוק 4KB. אין צורך ב-R2T לקריאות — היעד שולח PDUs של Data-In ישירות."
+    },
+    "13": {
+      "text": "Data-In ← 4KB נתוני קריאה עם מצב GOOD",
+      "detail": "היעד קורא 4KB מ-LBA 0 ומחזיר אותם ב-PDU של iSCSI SCSI Data-In. ביט Status מוגדר (S=1), מצרף את מצב SCSI GOOD ל-PDU הנתונים הסופי — ונמנע מ-PDU תגובה נפרד.\nסיכום זרימת קריאת iSCSI: 1. יוזם → יעד: PDU פקודת SCSI (CDB של READ) 2. יעד → יוזם: PDU של Data-In (4KB + מצב GOOD)\nקריאות פשוטות יותר מכתיבות מכיוון שאין לחיצת יד R2T. לקריאות גדולות, הנתונים יפוצלו על פני PDUs מרובים של Data-In."
+    },
+    "14": {
+      "text": "⟳ התרחיש הושלם — מחזור חיי שיחת iSCSI",
+      "detail": "תרחיש זה הדגים שיחת iSCSI מלאה:\n1. קישור — Ethernet 10GbE סטנדרטי, ללא הגדרה מיוחדת 2. TCP — לחיצת יד תלת-כיוונית ליציאה 3260 3. כניסה — משא ומתן דו-שלבי (אבטחה → תפעולי → Full Feature Phase) 4. גילוי — SCSI INQUIRY לזיהוי LUN 0 (דיסק) 5. כתיבה — פקודה → R2T → Data-Out → תגובה (חילוף 4 PDUs) 6. קריאה — פקודה → Data-In+Status (חילוף 2 PDUs)\n\niSCSI לעומת פרוטוקולי SAN אחרים:\niSCSI: תעבורת TCP/IP, כל Ethernet, ללא חומרה מיוחדת, תקורת מעבד גבוהה, השהייה ~100-500μs\nFC: מרקם FC, FC ייעודי, HBA של FC, תקורת מעבד נמוכה, השהייה ~10-50μs\nNVMe-oF/RDMA: RoCEv2/RDMA, Ethernet ללא אובדן, NIC RDMA, תקורת מעבד כמעט אפס, השהייה ~5-20μs\n\nחוזקת iSCSI היא הפשטות — הוא עובד על רשתות IP קיימות ללא חומרה מיוחדת, מה שהופך אותו לפרוטוקול SAN הנגיש והנפרס ביותר."
+    }
+  }
+}

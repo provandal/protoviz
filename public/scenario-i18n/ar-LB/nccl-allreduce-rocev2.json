@@ -1,0 +1,62 @@
+{
+  "meta": {
+    "title": "NCCL AllReduce: خوارزمية Ring فوق RoCEv2 (4 GPUs)",
+    "description": "NCCL (NVIDIA Collective Communications Library) Ring-AllReduce عبر 4 عقد GPU متصلة عبر RoCEv2. AllReduce هو نمط الاتصال المسيطر بالتدريب الموزّع لـ AI — كل خطوة مزامنة gradients بتدريب data-parallel هي AllReduce. هالسيناريو بيوضّح خوارزمية الحلقة: كل GPU بيبعت قطعة لجار الحلقة عبر RDMA WRITE، بيجمّع مجاميع جزئية خلال مرحلة Reduce-Scatter (N-1 خطوات)، بعدين بيبثّ النتيجة النهائية خلال مرحلة AllGather (N-1 خطوات). مع 4 GPUs، الحلقة بتخلص بـ 6 خطوات. كل نقل البيانات بيستعمل GPUDirect RDMA — من ذاكرة GPU لذاكرة GPU بدون ما يلمس host DRAM.",
+    "learning_objectives": [
+      "فهم ليش AllReduce ضروري للتدريب الموزّع لـ AI (مزامنة gradients)",
+      "شوف كيف خوارزمية الحلقة بتقسّم AllReduce لـ Reduce-Scatter + AllGather",
+      "تابع عمليات RDMA WRITE اللي بتحمل قطع gradient بين جيران حلقة GPU",
+      "راقب كيف كل GPU بيجمّع مجاميع جزئية خلال Reduce-Scatter",
+      "فهم ليش ring AllReduce بيحقّق استعمال bandwidth أمثل: 2(N-1)/N",
+      "شوف GPUDirect RDMA بالعمل — البيانات بتتحرّك GPU-to-GPU بدون bounce بـ host DRAM",
+      "فهم الفرق بين خوارزميات ring، tree، وغيرها لـ AllReduce",
+      "فهم دور NCCL بـ frameworks متل PyTorch DDP وDeepSpeed"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "الرابط الفيزيائي طلع — 100GbE lossless fabric لكل 4 عقد GPU",
+      "detail": "كل 4 عقد GPU متصلة بالسويتش عبر 100GbE مع PFC وECN مفعّلين. بمجموعة AI حقيقية، بنية الشبكة ممكن تكون fat-tree أو تصميم rail-optimized مع عدة طبقات سويتشات. هالسيناريو بيبسّط لسويتش واحد.\nNCCL بيفحص البنية (عبر nvidia-smi topo، NVML، واستعلامات IB device) لتحديد الخوارزمية الجماعية الأمثل. لـ RoCEv2 بين العقد مع 4 GPUs، عادةً بيختار خوارزمية Ring."
+    },
+    "1": {
+      "text": "تهيئة NCCL خلصت — بنية الحلقة تأسّست، QPs متصلة، GPU buffers مسجّلة",
+      "detail": "ncclCommInitRank() خلص. NCCL:\n1. عمل bootstrap عبر TCP لتبادل العناوين (NCCL_COMM_ID)\n2. اكتشف قدرة GPUDirect RDMA (nvidia-peermem محمّل)\n3. أنشأ RDMA QPs بين جيران الحلقة:\n   الحلقة: GPU 0 → GPU 1 → GPU 2 → GPU 3 → GPU 0\n4. سجّل GPU memory buffers كـ RDMA Memory Regions عبر ibv_reg_mr() مع nvidia-peermem\n5. تبادل rkeys وعناوين buffers خارجياً\n\nكل GPU عندو send وreceive buffers بـ GPU HBM. NCCL بيستعمل double-buffering وpipelining ليدمج الحساب مع الاتصال.\n\nبنية الحلقة لـ 4 GPUs:\n  GPU 0 → GPU 1 → GPU 2 → GPU 3 → GPU 0 (ring-next)\n  GPU 0 ← GPU 3 ← GPU 2 ← GPU 1 ← GPU 0 (ring-prev)"
+    },
+    "2": {
+      "text": "ncclAllReduce() نودي — 1MB gradient tensor، 4 قطع × 256KB",
+      "detail": "حلقة التدريب بتنادي ncclAllReduce(sendbuf, recvbuf, count, ncclFloat, ncclSum, comm, stream). هيدا بيشغّل خوارزمية ring AllReduce.\n\nالمدخل: كل GPU عندو 1MB gradient tensor (262,144 قيمة float32) من المرور الخلفي. الهدف: كل GPU ينتهي عندو مجموع gradients كل الـ 4 GPUs.\n\nNCCL بيقسّم الـ tensor لـ N=4 قطع 256KB:\n  قطعة 0: بايتات [0, 256KB)\n  قطعة 1: بايتات [256KB, 512KB)\n  قطعة 2: بايتات [512KB, 768KB)\n  قطعة 3: بايتات [768KB, 1MB)\n\nالخوارزمية عندها مرحلتين:\nمرحلة 1 — Reduce-Scatter (N-1 = 3 خطوات):\n  كل GPU بيبعت قطعة وحدة لـ ring-next، بيستلم وحدة من ring-prev، وبيجمّع المستلمة مع تبعو.\n\nمرحلة 2 — AllGather (N-1 = 3 خطوات):\n  كل GPU بيبعت قطعتو المخفّضة بالكامل حول الحلقة.\n\nمجموع البيانات المنقولة لكل GPU: 2 × (N-1)/N × DataSize = 1.5 MB مرسلة + 1.5 MB مستلمة. هيدا أمثل — bandwidth بيتوسّع خطياً مع N."
+    },
+    "3": {
+      "text": "Reduce-Scatter خطوة 1 — كل GPU بيبعت chunk[rank] لـ ring-next",
+      "detail": "كل 4 GPUs بنفس الوقت بيبعتو قطعة وحدة لجار ring-next تبعون:\n  GPU 0 بيبعت قطعة 0 → GPU 1 (عبر RDMA WRITE بـ HBM تبع GPU 1)\n  GPU 1 بيبعت قطعة 1 → GPU 2\n  GPU 2 بيبعت قطعة 2 → GPU 3\n  GPU 3 بيبعت قطعة 3 → GPU 0\n\nعم نوضّح GPU 0 → GPU 1 كرابط تمثيلي. الـ RDMA WRITE بيوصل مباشرة بـ receive buffer تبع GPU 1 بـ HBM عبر GPUDirect RDMA. ولا CPU مشترك بنقل البيانات.\nبعد الاستلام، GPU 1 بيشغّل CUDA kernel ليحسب:\n  recv_buf[chunk 0] = recv_buf[chunk 0] + local[chunk 0]"
+    },
+    "4": {
+      "text": "Reduce-Scatter خطوة 1 (عكسي) — GPU 0 بيستلم قطعة من Rank 3",
+      "detail": "بنفس الوقت، GPU 0 بيستلم قطعة من Rank 3 (ring-prev تبعو). كل النقولات بتصير بالتوازي — الحلقة ثنائية الاتجاه مع روابط full-duplex. كل GPU بيبعت ويستلم بنفس الوقت.\nGPU 0 بيجمّع: local[chunk 3] += received[chunk 3 from Rank 3]"
+    },
+    "5": {
+      "text": "Reduce-Scatter خطوة 2 — المجاميع الجزئية عم تدور حول الحلقة",
+      "detail": "كل GPU بيبعت قطعتو المتراكمة (المجموع الجزئي من الخطوة 1) لجار ring-next. المجاميع الجزئية عم تدور حول الحلقة وبتكبر بكل خطوة.\n\nبعد هالخطوة، كل قطعة فيها مجموع 3 GPUs من gradients.\nملاحظة: حجم البيانات لكل نقل بيبقى ثابت على 256KB بغض النظر عن عدد GPUs. لهيك ring AllReduce بيتوسّع كويّس — bandwidth لكل GPU = 2(N-1)/N × DataSize، بيقرب من 2× DataSize كل ما N يكبر."
+    },
+    "6": {
+      "text": "Reduce-Scatter خطوة 3 (أخيرة) — كل GPU هلق عندو قطعة وحدة مخفّضة بالكامل",
+      "detail": "آخر خطوة Reduce-Scatter. بعد ما GPU 1 يستلم ويجمّع:\n  قطعة GPU 1 = مجموع GPU 0 + GPU 1 + GPU 2 + GPU 3 gradients\n\nكل GPU هلق عندو المجموع الكامل لقطعة وحدة بالضبط:\n  GPU 0: قطعة 0 مخفّضة بالكامل\n  GPU 1: قطعة 1 مخفّضة بالكامل\n  GPU 2: قطعة 2 مخفّضة بالكامل\n  GPU 3: قطعة 3 مخفّضة بالكامل\n\nReduce-Scatter خلص. التخفيض (الجمع) تمّ. بس كل GPU عندو 1/4 بس من النتيجة النهائية. AllGather بيوزّع القطع المتبقية."
+    },
+    "7": {
+      "text": "AllGather خطوة 1 — الـ GPUs بيبثّو قطعهم المخفّضة بالكامل",
+      "detail": "هلق كل GPU بيبعت قطعتو المخفّضة بالكامل حول الحلقة:\n  GPU 0 بيبعت قطعة 0 → GPU 1\n  GPU 1 بيبعت قطعة 1 → GPU 2\n  GPU 2 بيبعت قطعة 2 → GPU 3\n  GPU 3 بيبعت قطعة 3 → GPU 0\n\nبخلاف Reduce-Scatter، AllGather ما بيجمّع — بس بينسخ القطعة المستلمة بالمكان الصحيح بالـ output buffer. بعد الخطوة 1، كل GPU عندو 2 من 4 قطع مخفّضة.\nالـ RDMA WRITE بيستهدف مكان الـ output buffer النهائي مباشرة — قطعة 0 بتروح لـ offset 0، قطعة 1 لـ offset 256KB، إلخ."
+    },
+    "8": {
+      "text": "AllGather خطوة 2 — كل GPU هلق عندو 3 من 4 قطع مخفّضة",
+      "detail": "القطع بتكمّل تدور حول الحلقة. بعد هالخطوة، كل GPU استلم 3 من 4 قطع مخفّضة بالكامل زائد تبعو — ناقصو قطعة وحدة بس."
+    },
+    "9": {
+      "text": "AllGather خطوة 3 (أخيرة) — كل GPUs عندهم النتيجة المخفّضة الكاملة",
+      "detail": "آخر خطوة AllGather. كل GPU هلق عندو كل 4 القطع المخفّضة بالكامل مجمّعة بالـ output buffer تبعو. الـ AllReduce خلص.\nالنتيجة: كل GPU عندو buffer 1MB متطابق فيه مجموع gradients كل 4 GPUs. الـ optimizer (SGD، Adam، إلخ) هلق بيقدر يحدّث أوزان النموذج بشكل متطابق على كل GPU، فيبقى نسخ النموذج متزامنة."
+    },
+    "10": {
+      "text": "⟳ السيناريو خلص — NCCL Ring-AllReduce فوق RoCEv2",
+      "detail": "هالسيناريو وضّح NCCL Ring-AllReduce عبر 4 عقد GPU:\n\nمرحلة 1 — REDUCE-SCATTER (3 خطوات):\n  كل GPU بيبعت قطعة وحدة لكل خطوة لجار ring-next.\n  المستقبِل بيجمّع (يضيف) البيانات المستلمة مع تبعو.\n  بعد N-1=3 خطوات، كل GPU عندو النتيجة المخفّضة بالكامل لقطعة وحدة بالضبط.\n\nمرحلة 2 — ALLGATHER (3 خطوات):\n  كل GPU بيبعت قطعتو المخفّضة بالكامل حول الحلقة.\n  المستقبِل بينسخ (بدون جمع) بالـ output buffer.\n  بعد N-1=3 خطوات، كل GPU عندو كل N القطع المخفّضة.\n\nالمجموع: 2(N-1) = 6 خطوات لـ 4 GPUs.\n\nخصائص الأداء:\n• بيانات لكل GPU لكل خطوة: DataSize/N = 256KB\n• مجموع البيانات المرسلة لكل GPU: 2 × (N-1)/N × DataSize = 1.5MB\n• استعمال bandwidth: 2(N-1)/N = 75% من الحد الأقصى النظري (بيقرب من 100% كل ما N → ∞)\n• كل النقولات بتستعمل RDMA WRITE عبر GPUDirect — صفر نسخ CPU\n\nليش Ring AllReduce لتدريب AI:\n• التدريب data-parallel: كل GPU بيعالج mini-batches مختلفة بس لازم يزامن gradients\n• AllReduce(Sum) بينادى بعد كل backward pass — آلاف المرات لكل epoch\n• على نطاق واسع، تأخير AllReduce بيأثّر مباشرة على إنتاجية التدريب\n\nخوارزميات بديلة NCCL ممكن يختار:\n• Tree AllReduce — أحسن للرسائل الصغيرة (تأخير أقل)\n• CollNet (SHARP) — تخفيض بالشبكة (السويتش بيعمل الجمع)\n• NVLink + RDMA hybrid — NVLink داخل العقدة، RDMA بين العقد"
+    }
+  }
+}

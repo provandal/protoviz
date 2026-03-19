@@ -1,0 +1,125 @@
+{
+  "meta": {
+    "title": "Login Tisi FC → Dekouvèt Sèvè Non → Ekriti ak Lekti SCSI",
+    "description": "Yon sekans login SAN Fibre Channel konplè sou 64GFC, depi etablisman lyen fizik jis nan Fabric Login (FLOGI), dekouvèt Sèvè Non, Port Login (PLOGI), Process Login (PRLI) pou FCP, dekouvèt LUN SCSI atravè INQUIRY ak READ CAPACITY, swiv pa yon SCSI WRITE(10) ak READ(10) pou verifye ekriti a. Machin nan konekte nan yon switch FC ki ap egzekite Sèvè Non entegre ak sèvis tisi, ki achemine fram yo bay yon enstalayon depo.",
+    "learning_objectives": [
+      "Konprann kijan lyen fizik FC monte endepandaman (machin↔switch, switch↔depo)",
+      "Trase echanj FLOGI: machin mande fabric login, switch asiyen yon ID N_Port (FCID)",
+      "Swiv demann Sèvè Non pou dekouvri sib disponib atravè GID_FT",
+      "Obsève login nivo pò (PLOGI) ak login nivo pwosesis (PRLI) pou FCP",
+      "Wè kijan kòmand SCSI anvlope nan fram FCP (FCP_CMND, FCP_DATA, FCP_RSP)",
+      "Konprann salitasyon FCP_XFER_RDY obligatwa pou operasyon SCSI WRITE",
+      "Konpare pwòp modèl kouch FC (FC-0 jis FC-4) ak pil OSI a"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Lyen A: siyal detekte — HBA Machin ↔ Switch",
+      "detail": "Transeptè optik sou HBA machin nan detekte limyè nan pò switch FC. Inisyalizasyon lyen FC kòmanse. Lyen fizik la se pwen-a-pwen."
+    },
+    "1": {
+      "text": "Lyen B: siyal detekte — Switch ↔ Enstalayon Depo",
+      "detail": "Pò enstalayon depo a detekte limyè nan switch. Lyen fizik endepandan."
+    },
+    "2": {
+      "text": "Lyen A MONTE — Machin ↔ Switch nan 64GFC",
+      "detail": "Negosyasyon vitès fini: 64GFC (64.0 Gbps). Kodaj 64b/66b aktif. Primitif FC ka kounye a echanje. Kontwòl fliks BB_Credit inisyalize."
+    },
+    "3": {
+      "text": "Lyen B MONTE — Switch ↔ Depo nan 64GFC",
+      "detail": "Toude lyen fizik yo kounye a monte. Switch la ka transmèt fram FC ant pò yo. Enstalayon depo a te deja loge nan tisi a (FCID 0x010200 pre-asiyen)."
+    },
+    "4": {
+      "text": "FLOGI — Machin mande fabric login (S_ID=0x000000 → D_ID=0xFFFFFE)",
+      "detail": "Machin nan poko gen FCID (S_ID=0x000000). Li voye FLOGI bay adrès Kontwolè Tisi byen koni (0xFFFFFE). FLOGI a pote WWPN machin nan, BB_Credit, ak fonksyonalite sipòte. Sa a toujou premye ELS apre lyen monte. Linux: lpfc_els.c lpfc_issue_els_flogi() → lpfc_cmpl_els_flogi()"
+    },
+    "5": {
+      "text": "FLOGI ACC — Tisi asiyen FCID 0x010100 bay machin",
+      "detail": "Tisi a aksepte login an epi asiyen N_Port ID 0x010100. FCID sa a ap sèvi kòm S_ID machin nan nan tout fram ki vin apre. Tisi a retounen tou pwòp paramèt sèvis li ak BB_Credit. Drivè HBA machin nan estoke FCID asiyen an epi konfigire aparèy la. Linux: lpfc_cmpl_els_flogi() → lpfc_vport_set_state(FC_VPORT_ACTIVE)"
+    },
+    "6": {
+      "text": "PLOGI bay Sèvè Non (0xFFFFFC)",
+      "detail": "Anvan li mande Sèvè Non an, machin nan dwe premyèman PLOGI ak li. Sa a etabli paramèt kominikasyon nivo pò. Linux: lpfc_ct.c lpfc_ns_cmd() rele lpfc_issue_els_plogi() bay 0xFFFFFC dabò."
+    },
+    "7": {
+      "text": "Sèvè Non aksepte PLOGI — demann CT kounye a pèmèt",
+      "detail": "Login Sèvè Non fini. Machin nan ka kounye a voye demann Transpò Komen (CT)."
+    },
+    "8": {
+      "text": "Demann GID_FT — jwenn tout sib FCP (SCSI) nan tisi a",
+      "detail": "Machin nan voye yon demann Transpò Komen (CT) bay Sèvè Non an ki mande tout idantifyan pò (FCID) anrejistre kòm tip FC-4 0x08 (FCP/SCSI). Se konsa machin nan dekouvri ki enstalayon depo ki disponib. Linux: lpfc_ct.c lpfc_ns_cmd(SLI_CTNS_GID_FT) → SLI_CTNS_GID_FT=0x0171"
+    },
+    "9": {
+      "text": "Sèvè Non reponn: depo nan FCID 0x010200",
+      "detail": "Sèvè Non an retounen yon lis FCID ki sipòte FCP. Nan tisi sa a, gen yon sèl sib: enstalayon depo a nan 0x010200. Machin nan ap kounye a PLOGI nan FCID sa a pou etabli kominikasyon nivo pò. Linux: lpfc_cmpl_ct_cmd_gid_ft() trete repons lan epi kòmanse PLOGI."
+    },
+    "10": {
+      "text": "PLOGI bay depo (0x010200) — login nivo pò",
+      "detail": "Machin nan voye PLOGI bay enstalayon depo a. Fram sa a travèse switch la (achemiman baze sou D_ID). PLOGI negosye paramèt pò: BB_Credit, gwosè fram maksimòm, ak klas sèvis. Linux: lpfc_issue_els_plogi() → lpfc_cmpl_els_plogi()"
+    },
+    "11": {
+      "text": "Depo aksepte PLOGI — login nivo pò etabli",
+      "detail": "Depo aksepte login pò. Machin ak depo ka kounye a echanje fram FC dirèkteman. Men FCP (SCSI) IO egzije yon etap anplis: Process Login (PRLI)."
+    },
+    "12": {
+      "text": "PRLI — etabli pwotokòl kouch siperyè FCP (SCSI)",
+      "detail": "Process Login etabli asosyasyon FC-4 (FCP). Paj paramèt sèvis PRLI a deklare machin sa a kòm inisyatè epi negosye fonksyonalite FCP tankou konpòtman XFER_RDY. Sa a se dènye etap login anvan kòmand SCSI ka sikile. Linux: lpfc_issue_els_prli() — voye PRLI ak bit inisyatè fikse."
+    },
+    "13": {
+      "text": "PRLI ACC — FCP etabli. IO SCSI ka kòmanse.",
+      "detail": "Depo aksepte PRLI epi deklare tèt li kòm sib. Asosyasyon pwosesis FCP kounye a etabli. Kòmand SCSI ka voye kòm fram FCP_CMND. Linux: lpfc_cmpl_els_prli() → lpfc_issue_disc_scsi() deklanche dekouvèt LUN SCSI."
+    },
+    "14": {
+      "text": "SCSI INQUIRY — dekouvri tip aparèy",
+      "detail": "Machin nan voye SCSI INQUIRY (opcode 0x12) pou idantifye aparèy nan LUN 0. INQUIRY retounen tip aparèy, vandè, pwodwi, ak fonksyonalite sipòte. Linux: scsi_scan.c scsi_probe_lun() → scsi_execute_cmd(INQUIRY)"
+    },
+    "15": {
+      "text": "Done INQUIRY — aparèy se yon disk blòk (tip 0x00)",
+      "detail": "Depo retounen repons INQUIRY ki idantifye tèt li kòm yon aparèy blòk aksè-dirèk (tip 0x00, SBC). Vandè: DellEMC, Pwodwi: PowerStore."
+    },
+    "16": {
+      "text": "FCP_RSP — INQUIRY BON, LUN 0 dekouvri",
+      "detail": "Estati SCSI BON. Kouch mitan SCSI machin nan kounye a konnen sa a se yon aparèy blòk. scsi_add_lun() kreye yon aparèy SCSI epi sd_mod atache yon aparèy blòk /dev/sdX."
+    },
+    "17": {
+      "text": "WRITE(10) — ekri 4KB nan LBA 0",
+      "detail": "Aplikasyon an ekri 4KB (8 × blòk 512 oktè) kòmanse nan LBA 0. FCP_CMND pote CDB SCSI a. Machin nan dwe tann FCP_XFER_RDY anvan li voye done — sa a se kontwòl fliks ekriti FC."
+    },
+    "18": {
+      "text": "FCP_XFER_RDY — depo pare pou resevwa done ekriti",
+      "detail": "Depo voye Transfer Ready, ki bay machin nan pèmisyon pou voye jiska 4096 oktè done ekriti. Mekanis kontwòl fliks sa a inik a ekriti FC — li anpeche machin nan voye done anvan sib la alwe espas tanpon. Lekti pa bezwen etap sa a."
+    },
+    "19": {
+      "text": "FCP_DATA (1/2) — premye 2048 oktè ekriti nan offsèt 0",
+      "detail": "Recv_Size FC negosye pandan FLOGI se 2112 oktè, donk ekriti 4KB a dwe divize sou de fram FCP_DATA. SEQ_CNT=0, offsèt relatif 0."
+    },
+    "20": {
+      "text": "FCP_DATA (2/2) — dènye 2048 oktè ekriti nan offsèt 2048",
+      "detail": "Dezyèm fram FCP_DATA konplete transfè 4KB. SEQ_CNT=1, offsèt relatif 0x800 (2048). Bit fen-sekans fikse nan F_CTL."
+    },
+    "21": {
+      "text": "FCP_RSP — ekriti BON, done angaje",
+      "detail": "Depo konfime ekriti a fini ak estati SCSI BON. Done yo angaje nan depo non-volatil. Echanj la konplè: OX_ID 0x0020 libere."
+    },
+    "22": {
+      "text": "READ(10) — li retounen 4KB nan LBA 0 pou verifye ekriti",
+      "detail": "Machin nan li retounen menm 4KB pou verifye ekriti a. Pa bezwen XFER_RDY pou lekti — sib la voye FCP_DATA imedyatman apre li resevwa kòmand lan."
+    },
+    "23": {
+      "text": "FCP_DATA (1/2) — premye 2048 oktè lekti nan offsèt 0",
+      "detail": "Depo voye done lekti imedyatman — kontrèman ak ekriti, lekti pa bezwen salitasyon XFER_RDY. Menm kontrent Recv_Size aplike: 4KB divize sou de fram. SEQ_CNT=0, offsèt relatif 0."
+    },
+    "24": {
+      "text": "FCP_DATA (2/2) — dènye 2048 oktè lekti nan offsèt 2048",
+      "detail": "Dezyèm fram FCP_DATA konplete lekti 4KB. SEQ_CNT=1, offsèt relatif 0x800 (2048). Done yo ta dwe matche ak sa ki te ekri."
+    },
+    "25": {
+      "text": "FCP_RSP — lekti BON, done verifye",
+      "detail": "Estati SCSI BON. Done lekti yo matche ak done ekriti yo, sa konfime entegrite done bout-a-bout atravè tisi FC a."
+    },
+    "26": {
+      "text": "Senaryo fini",
+      "detail": "Rezime: Machin nan te etabli lyen fizik 64GFC, te fè Fabric Login (FLOGI, FCID asiyen), te dekouvri depo atravè Sèvè Non (GID_FT), te konplete Port Login (PLOGI) ak Process Login (PRLI) pou FCP, te dekouvri LUN 0 atravè SCSI INQUIRY, te ekri 4KB nan LBA 0, epi te li li retounen pou verifye. Total fram login: 10 (FLOGI×2, PLOGI×4, GID_FT×2, PRLI×2). Total fram IO: 9 (INQUIRY×3, WRITE×4, READ×3 enkli XFER_RDY)."
+    }
+  }
+}

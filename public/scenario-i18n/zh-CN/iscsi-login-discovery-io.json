@@ -1,0 +1,78 @@
+{
+  "meta": {
+    "title": "iSCSI：登录 → 发现 → SCSI INQUIRY → WRITE(10) → READ(10)",
+    "description": "基于 10GbE TCP/IP 的完整 iSCSI 会话生命周期：TCP 三次握手、iSCSI 登录阶段（认证和参数协商）、SendTargets 发现、目标登录、SCSI INQUIRY 识别 LUN、SCSI WRITE(10) 和 READ(10) 数据 I/O。iSCSI 是部署最广泛的 SAN 协议，通过标准 TCP/IP 网络承载 SCSI 命令——无需特殊硬件。本场景展示 SCSI 块存储如何在以太网上工作，并与光纤通道（专用 SAN 网络）和 NVMe-oF（下一代）进行对比。",
+    "learning_objectives": [
+      "理解 iSCSI 如何使用 PDU 帧将 SCSI 命令映射到 TCP 连接上",
+      "跟踪 iSCSI 登录阶段：安全协商、操作参数交换",
+      "了解 SendTargets 发现——发起方如何发现可用目标和 LUN",
+      "观察 iSCSI 会话和连接标识符（ISID、TSIH、CID）",
+      "追踪 SCSI INQUIRY 以发现设备类型、厂商和容量",
+      "跟踪 SCSI WRITE(10) 的 iSCSI 流程：命令 PDU、Data-Out PDU、响应 PDU",
+      "跟踪 SCSI READ(10)：命令 PDU、Data-In PDU、响应 PDU",
+      "理解 iSCSI 头部/数据摘要（CRC32C）的数据完整性保护"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "物理链路建立 — 两个网段均为 10GbE",
+      "detail": "标准 10GbE 以太网链路建立。与 FC（专用 SAN 网络）或 RoCEv2（需要 PFC/无损以太网）不同，iSCSI 可以在任何标准 IP 网络上运行。无需特殊的交换机配置——TCP 负责可靠性和流控。"
+    },
+    "1": {
+      "text": "TCP 三次握手 → 到端口 3260 的连接已建立",
+      "detail": "发起方的 iscsid 守护进程向目标的知名 iSCSI 端口 3260（IANA 分配）打开 TCP 连接。标准的 TCP SYN → SYN-ACK → ACK 握手建立了可靠的字节流。\niSCSI 在此 TCP 连接上封装其 PDU。与使用 UDP（RoCEv2）或专用帧格式（FC）的协议不同，iSCSI 依赖 TCP 提供可靠性、有序性和流控。这意味着：• 无需特殊 NIC（任何 TCP/IP 协议栈都可以）• 可跨路由网络工作（不限于二层）• TCP 拥塞控制在负载下限制吞吐量 • TCP 处理开销消耗 CPU 周期\n详见 TCP 场景的三次握手详情。"
+    },
+    "2": {
+      "text": "iSCSI Login → 安全协商（AuthMethod=None）",
+      "detail": "发起方发送第一个 Login PDU。iSCSI 登录有两个阶段：1. 安全协商（CSG=0）——认证方法选择 2. 操作协商（CSG=1）——会话参数调优\n此 PDU 携带键值对：• InitiatorName=iqn.2024-01.com.example:host01（发起方的 IQN）• AuthMethod=None（无认证——生产环境中常用 CHAP）\nISID（发起方会话 ID）是一个 6 字节的值，与目标的 TSIH 结合后，唯一标识此 iSCSI 会话。如果发起方使用相同的 ISID 重新连接，目标可以恢复会话而不是创建新会话。"
+    },
+    "3": {
+      "text": "Login 响应 ← 安全已接受，TSIH=0x0001 已分配",
+      "detail": "目标接受 AuthMethod=None 并分配 TSIH（目标会话标识句柄）= 0x0001。T（转换）位已设置，进入操作协商阶段。"
+    },
+    "4": {
+      "text": "Login → 操作参数协商",
+      "detail": "发起方提出控制数据传输的操作参数：\n• MaxRecvDataSegmentLength = 262144（256KB）——每个 PDU 的最大数据量 • FirstBurstLength = 262144——R2T 之前允许的非请求数据 • MaxBurstLength = 524288——每个 R2T 序列的最大总数据量 • InitialR2T = Yes——目标必须在写入数据之前发送 R2T • ImmediateData = Yes——小的写入数据可以附带在命令 PDU 上 • HeaderDigest = None——iSCSI 头部无 CRC（在可靠局域网中常见）• DataDigest = None——数据段无 CRC\n这些参数是协商的——实际值取决于参数类型，是双方提议的最小值或最大值。"
+    },
+    "5": {
+      "text": "Login 完成 ← 全功能阶段 — 会话已建立",
+      "detail": "目标接受操作参数并将会话转换到全功能阶段（NSG=3）。iSCSI 会话现已完全建立，可以执行 SCSI 命令。\n会话标识符：• ISID = 0x00023d000001（发起方分配）• TSIH = 0x0001（目标分配）• (ISID + TSIH) 全局唯一标识此会话\n协商后的参数：• MaxRecvDataSegmentLength = 256KB • FirstBurstLength = 256KB • MaxBurstLength = 512KB • InitialR2T = Yes，ImmediateData = Yes"
+    },
+    "6": {
+      "text": "SCSI INQUIRY → 发起方发现 LUN 0 设备特性",
+      "detail": "Linux SCSI 中间层自动向每个 LUN 发送 INQUIRY 以发现设备类型、厂商和功能。这与光纤通道场景中使用的 SCSI INQUIRY 命令相同——iSCSI 只是通过 TCP 而非 FCP 来传输它。\nINQUIRY 命令被封装在 iSCSI SCSI Command PDU（操作码 0x01）中，16 字节的 CDB 嵌入在 PDU 头部中。"
+    },
+    "7": {
+      "text": "INQUIRY 响应 ← 直接访问块设备（LIO-ORG IBLOCK）",
+      "detail": "目标返回 INQUIRY 数据，将设备标识为直接访问块设备（类型 0x00）。Linux 发起方为此 LUN 创建 /dev/sdX 设备。\n响应作为设置了 Status 位的 iSCSI SCSI Data-In PDU 交付——将数据交付和 SCSI 状态合并在一个 PDU 中（小响应的优化）。"
+    },
+    "8": {
+      "text": "SCSI WRITE(10) → 4KB 写入 LBA 0",
+      "detail": "应用程序向块设备写入 4KB。iSCSI 发起方将 SCSI WRITE(10) CDB 封装在 iSCSI SCSI Command PDU 中发送。\n由于协商了 InitialR2T=Yes，发起方暂不发送写入数据——它等待目标通过 R2T 发出就绪信号。（如果使用了 ImmediateData，小的写入数据可以附带在命令 PDU 本身上。）"
+    },
+    "9": {
+      "text": "R2T ← 目标准备好接收 4KB 写入数据",
+      "detail": "目标发送 R2T（Ready to Transfer）PDU，授权发起方发送写入数据。R2T 指定：• Buffer Offset = 0（传输起始位置）• Desired Data Transfer Length = 4096（发送全部 4KB）• Target Transfer Tag = 0x00000001（发起方在 Data-Out 中回显）\nR2T 提供流控——目标不会被它尚未准备好接收的写入数据淹没。这对缓冲区空间有限的目标很重要。与 NVMe-oF/RDMA 相比，后者目标按自己的节奏 RDMA READ 数据。"
+    },
+    "10": {
+      "text": "Data-Out → 发起方发送 4KB 写入数据",
+      "detail": "发起方在 iSCSI SCSI Data-Out PDU（操作码 0x05）中发送写入数据。整个 4KB 放入一个 PDU 中，因为 MaxRecvDataSegmentLength = 256KB。\n对于更大的写入（> MaxRecvDataSegmentLength），数据会分成多个 Data-Out PDU，每个都引用 R2T 中相同的 Target Transfer Tag。\n4KB 写入的数据路径比较：• iSCSI：应用 → 内核 SCSI → iSCSI PDU → TCP/IP 协议栈 → NIC DMA（2 次拷贝）• NVMe-oF/RDMA：应用 → 注册的 MR → 目标 RDMA READ（主机 CPU 0 次拷贝）• FC：应用 → 内核 SCSI → FCP → FC 驱动 → HBA DMA（1 次拷贝）"
+    },
+    "11": {
+      "text": "WRITE 响应 ← GOOD — 4KB 已写入 LBA 0",
+      "detail": "目标确认 SCSI WRITE(10) 以 GOOD 状态完成。数据已写入后端块设备。\niSCSI Write 流程总结：1. 发起方 → 目标：SCSI Command PDU（WRITE CDB）2. 目标 → 发起方：R2T PDU（准备好接收数据）3. 发起方 → 目标：Data-Out PDU（4KB 写入数据）4. 目标 → 发起方：SCSI Response PDU（GOOD 状态）"
+    },
+    "12": {
+      "text": "SCSI READ(10) → 从 LBA 0 读取 4KB",
+      "detail": "发起方发送同一 4KB 块的 READ(10)。读取无需 R2T——目标直接发送 Data-In PDU。"
+    },
+    "13": {
+      "text": "Data-In ← 4KB 读取数据，GOOD 状态",
+      "detail": "目标从 LBA 0 读取 4KB 并在 iSCSI SCSI Data-In PDU 中返回。Status 位已设置（S=1），将 SCSI GOOD 状态附带在最终数据 PDU 上——避免了单独的 Response PDU。\niSCSI Read 流程总结：1. 发起方 → 目标：SCSI Command PDU（READ CDB）2. 目标 → 发起方：Data-In PDU（4KB + GOOD 状态）\n读取比写入更简单，因为没有 R2T 握手。对于大的读取，数据会分成多个 Data-In PDU。"
+    },
+    "14": {
+      "text": "⟳ 场景完成 — iSCSI 会话生命周期",
+      "detail": "本场景演示了完整的 iSCSI 会话：\n1. 链路 — 标准 10GbE 以太网，无需特殊配置 2. TCP — 到端口 3260 的三次握手 3. 登录 — 两阶段协商（安全 → 操作 → 全功能阶段）4. 发现 — SCSI INQUIRY 识别 LUN 0（磁盘）5. 写入 — 命令 → R2T → Data-Out → 响应（4 个 PDU 交换）6. 读取 — 命令 → Data-In+状态（2 个 PDU 交换）\niSCSI 与其他 SAN 协议的比较：\n│ 特性         │ iSCSI        │ FC           │ NVMe-oF/RDMA   │\n│ 传输         │ TCP/IP       │ FC 网络      │ RoCEv2/RDMA    │\n│ 网络         │ 任意以太网   │ 专用 FC      │ 无损以太网     │\n│ 特殊硬件     │ 否           │ FC HBA       │ RDMA NIC       │\n│ CPU 开销     │ 高（TCP）    │ 低（HBA）    │ 接近零         │\n│ 延迟         │ ~100-500μs   │ ~10-50μs     │ ~5-20μs        │\n│ 复杂度       │ 低           │ 高           │ 中等           │\n│ 成本         │ 低           │ 高           │ 中等           │\n│ 最大吞吐量   │ ~40 Gbps     │ 64 Gbps      │ 100+ Gbps      │\niSCSI 的优势在于简单性——它可以在现有 IP 网络上工作，无需特殊硬件，使其成为最易用且部署最广泛的 SAN 协议。"
+    }
+  }
+}

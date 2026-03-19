@@ -1,0 +1,114 @@
+{
+  "meta": {
+    "title": "[WIP] GPUDirect Storage: RoCEv2上のリモートNVMe-oF Read/WriteからGPUメモリへ",
+    "description": "GPUDirect Storageを使用したシナリオ。リモートNVMe-oF/RDMAストレージターゲットからGPU HBMに直接データを読み書きする方法を示します。ホストDRAMを完全にバイパスします。従来のリモートストレージパスではデータが2回バウンスします (ストレージ → RDMA → ホストDRAM → CPU memcpy → GPU)。RDMA上のGDSは両方のバウンスを排除します。ストレージターゲットのRDMA WRITEがGPUのPCIe BAR1アパーチャに直接データを配送し、cuFileWriteのデータはRDMA READによりGPU HBMから直接取得されます。フローは物理リンク確立、ARP、IB CM QPセットアップ、NVMe-oF Fabrics Connect (管理キュー + I/Oキュー)、GDS初期化 (cuFileDriverOpen、cuFileHandleRegister、cuFileBufRegister)、GPUメモリに直接データが書き込まれるRDMA経由のNVMe READをトリガーするcuFileRead、GPUメモリから直接データが読み出されるNVMe WRITEをトリガーするcuFileWriteを網羅します。",
+    "learning_objectives": [
+      "GPUDirect Storage (GDS) がリモートストレージI/OのホストDRAMバウンスバッファをどのように排除するかを理解する",
+      "cuFileReadがNVMe-oF READをトリガーし、RDMA WRITEがBAR1経由でGPU HBMに直接データを配置する仕組みを見る",
+      "cuFileWriteがNVMe-oF WRITEをトリガーし、RDMA READによりGPU HBMからデータが直接取得される仕組みを見る",
+      "NVMe-oF/RDMAトランスポートバインディングを追跡する: RDMA SENDによるNVMeコマンド、RDMA WRITE/READによるデータ転送",
+      "NVMe-oF Fabrics Connectに従い、RDMA上で管理キューとI/Oキューペアを確立する過程を追う",
+      "nvidia-fsとnvidia-peermemがどのように連携してGPUメモリをRDMAに登録するかを観察する",
+      "従来のパス (ストレージ → DRAM → GPU) とGDSパス (ストレージ → GPU直接) を対比する",
+      "IB Connection Manager MAD交換に従い、Queue PairをRESETからRTSに遷移させる過程を追う"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "リンクA: 信号検出 — GPUノード ↔ スイッチ",
+      "detail": "GPUノードの光トランシーバがスイッチポートAからの光を検出します。IEEE 802.3cd clause 73に基づきオートネゴシエーションが開始されます。"
+    },
+    "1": {
+      "text": "リンクB: 信号検出 — スイッチ ↔ ストレージターゲット",
+      "detail": "ストレージターゲットの光トランシーバがスイッチポートBからの光を検出します。"
+    },
+    "2": {
+      "text": "リンクA UP — GPUノード ↔ スイッチ 100Gbps RS-FEC付き",
+      "detail": "オートネゴシエーションとリンクトレーニングが完了しました。RoCEv2のロスレストランスポートのため、プライオリティ3でPFC (Priority Flow Control) が有効化されています。"
+    },
+    "3": {
+      "text": "リンクB UP — スイッチ ↔ ストレージ 100Gbps RS-FEC付き",
+      "detail": "両リンクがアップしました。エンドツーエンドのL2接続が確立されています。"
+    },
+    "4": {
+      "text": "ARPリクエスト: 192.168.1.20はMACアドレスは何ですか？",
+      "detail": "GPUノードがRoCEv2のGID-to-MACマッピングのため、ストレージターゲットのIPアドレスをMACアドレスに解決します。"
+    },
+    "5": {
+      "text": "ARP応答: 192.168.1.20は00:02:c9:ab:cd:efです",
+      "detail": "ストレージターゲットが応答しました。GPUノードはストレージへのL2到達性を確保しました。"
+    },
+    "6": {
+      "text": "CM REQ — GPUノードがNVMe-oF/RDMAトランスポート用QPを提案",
+      "detail": "IB Connection Managerリクエスト。GPUノードがNVMe-oF/RDMA接続用のRC QPパラメータを提案します。プライベートデータにはTP8010に準拠したNVMe-oF RDMA CM リクエストフォーマット (キューID、SQ/RQサイズ) が含まれています。"
+    },
+    "7": {
+      "text": "CM REP — ストレージターゲットが受け入れ、QPNとPSNを提供",
+      "detail": "ストレージターゲットが接続を受け入れ、QP番号 (0x00B002) と開始PSN (8765432) を提供します。"
+    },
+    "8": {
+      "text": "CM RTU — 両QPがRTS、RDMAトランスポート準備完了",
+      "detail": "両方のQPがRTS (Ready To Send) 状態に遷移しました。NVMe-oF/RDMAトランスポートレイヤーはRDMA SENDでNVMeコマンドカプセルを送信し、RDMA WRITE/READでデータを転送できるようになりました。"
+    },
+    "9": {
+      "text": "Fabrics Connect — Admin Queue (QID=0)",
+      "detail": "NVMe-oF Fabrics ConnectコマンドがRDMA SENDで送信され、管理キューアソシエーションを確立します。Connect Data (SGLで送信) にはhostnqn、subnqn、hostidが含まれています。ストレージターゲットがコントローラIDを割り当てます。"
+    },
+    "10": {
+      "text": "Fabrics Connect応答 — Controller ID=1割り当て",
+      "detail": "ストレージターゲットがFabrics Connectを受け入れ、コントローラID 1を割り当てました。管理キューが確立され、Identify、Get Log Page、その他の管理コマンドが実行可能になります。"
+    },
+    "11": {
+      "text": "Fabrics Connect — I/O Queue (QID=1)",
+      "detail": "I/O Queue 1用のFabrics Connectです。この後、NVMe Read/Writeコマンドをサブミットできるようになります。I/OキューはcuFileRead/cuFileWriteコマンドがディスパッチされる先です。"
+    },
+    "12": {
+      "text": "cuFileDriverOpen() — GDSドライバ初期化、nvidia-fsロード",
+      "detail": "アプリケーションがcuFileDriverOpen()を呼び出してGPUDirect Storageを初期化します。これによりnvidia-fsカーネルモジュールがロードされ、NVMe I/OパスをインターセプトしてDMAをホストDRAMではなくGPUメモリにリダイレクトします。nvidia-peermemがIBピアメモリクライアントとして登録され、RDMA MRがGPUページでバックされるようになります。"
+    },
+    "13": {
+      "text": "cuFileHandleRegister() — リモートNVMe-oFネームスペースをGDSに登録",
+      "detail": "アプリケーションがファイルハンドル (リモートNVMe-oFネームスペースがバック) をGDSに登録します。これによりnvidia-fsにこのファイルディスクリプタ上のI/OをインターセプトしてGPUDirectパスを使用するよう指示します。"
+    },
+    "14": {
+      "text": "cuFileBufRegister() — GPUバッファをRDMA用に登録、バウンスバッファバイパス",
+      "detail": "アプリケーションがGPUメモリバッファをGDSに登録します。nvidia-peermemがBAR1経由でGPUページをピンし、GPU HBMでバックされたRDMA Memory Regionを作成します。RNICはこのGPUバッファに対して直接DMAできるようになります。ホストDRAMバウンスバッファはバイパスされます — これがGPUメモリへのゼロコピーストレージI/Oを実現する鍵です。"
+    },
+    "15": {
+      "text": "cuFileRead()呼び出し — GDSがGPUメモリをRDMAターゲットとしてNVMe READを発行",
+      "detail": "アプリケーションがcuFileRead()を呼び出します。GDSがGPUメモリリージョンを指すSGLディスクリプタ (rkey=0xGPU01234) を持つNVMe Readコマンドを構築します。ストレージターゲットがディスクからデータを読み出すと、このGPUアドレスにRDMA WRITEで直接データを書き込みます — データはホストDRAMに一切触れません。"
+    },
+    "16": {
+      "text": "cuFileRead → NVMe Readコマンドをストレージに送信 (SGL → GPUメモリ)",
+      "detail": "NVMe ReadコマンドカプセルがRDMA SENDで送信されます。SGLディスクリプタにGPUメモリリージョンのrkeyと仮想アドレスが含まれています。ストレージターゲットはこれらを使用して読み取りデータをRDMA WRITEでGPU HBMに直接書き込みます。"
+    },
+    "17": {
+      "text": "ストレージがRDMA WRITEで読み取りデータをGPU HBMに直接配送 — ホストDRAMバウンスなし",
+      "detail": "ここが最も重要な瞬間です: ストレージターゲットがNVMe SSDからデータを読み出し、GPUメモリリージョンをターゲットとしてRDMA WRITEを実行します。RETHヘッダにGPU BAR1仮想アドレスとrkeyが含まれています。GPUノードのRNICはこのRDMA WRITEを受信し、PCIe P2P経由でペイロードをGPU HBMに直接DMAします — データはホストDRAMやCPUキャッシュを一切通過しません。\n従来のパス: ストレージ → RDMA WRITE → ホストDRAM → CPU memcpy → GPU\nGDSパス: ストレージ → RDMA WRITE → RNIC → PCIe BAR1 → GPU HBM (ゼロバウンス)"
+    },
+    "18": {
+      "text": "NVMe Read完了 — cuFileRead()戻り、データはGPU HBMに到着",
+      "detail": "NVMe完了で読み取りの終了が確認されます。データはGPU HBMに格納されており、CUDAカーネルから即座に利用可能です — 追加のコピーは不要です。"
+    },
+    "19": {
+      "text": "cuFileWrite()呼び出し — GDSがGPU HBMからソースとしてNVMe WRITEを発行",
+      "detail": "アプリケーションがcuFileWrite()を呼び出します。GDSがGPUメモリを指すSGLディスクリプタを持つNVMe Writeコマンドを構築します。ストレージターゲットはRDMA READにより書き込みデータをGPU HBMから直接取得します — データはホストDRAMを経由しません。"
+    },
+    "20": {
+      "text": "cuFileWrite → NVMe Writeコマンド送信 (SGL → GPUメモリ RDMA READ用)",
+      "detail": "NVMe WriteコマンドカプセルがRDMA SENDで送信されます。SGLにGPUバッファのrkeyと仮想アドレスが含まれています。ストレージターゲットはこのアドレスからRDMA READで書き込みデータを取得します。"
+    },
+    "21": {
+      "text": "RDMA READ Response — GPUデータがHBMからストレージに直接送信",
+      "detail": "ストレージターゲットがGPUメモリリージョンをターゲットとしたRDMA READ Requestを発行しました。GPUノードのRNICがPCIe BAR1 P2P DMA経由でGPU HBMから自律的にデータを読み出し、データを含むRDMA READ Responseを送信します。GPUノード側のCPUは一切関与しません — RNICがすべてを処理します。\n従来のパス: GPU → CPU memcpy → ホストDRAM → RDMA SEND → ストレージ\nGDSパス: GPU HBM → RNIC (BAR1 P2P経由) → RDMA READ Response → ストレージ"
+    },
+    "22": {
+      "text": "NVMe Write完了 — cuFileWrite()戻り、データがストレージに永続化",
+      "detail": "NVMe完了で書き込みの終了が確認されます。GPU HBMからのデータはホストDRAMに一切触れることなく、リモートNVMeストレージに永続化されました。"
+    },
+    "23": {
+      "text": "シナリオ完了 — RoCEv2上のGPUDirect Storage",
+      "detail": "まとめ: 2つの100GbEリンクがアップしました。IB CMによりRDMA QPが確立されました。NVMe-oF Fabrics Connectにより、RDMA上に管理キューとI/Oキューが作成されました。GDSがcuFileDriverOpen、cuFileHandleRegister、cuFileBufRegisterで初期化され、GPUメモリがRDMAに登録されてホストDRAMバウンスバッファがバイパスされました。cuFileReadがNVMe READをトリガーし、そのデータはRDMA WRITEによりGPU HBMに直接配送されました。cuFileWriteがNVMe WRITEをトリガーし、そのデータはRDMA READによりGPU HBMから直接取得されました。いずれの場合もホストDRAMバウンスはゼロ、データパスへのCPU関与もゼロです。"
+    }
+  }
+}

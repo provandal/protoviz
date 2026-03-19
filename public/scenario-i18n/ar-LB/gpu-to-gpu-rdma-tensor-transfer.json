@@ -1,0 +1,53 @@
+{
+  "meta": {
+    "title": "GPU-to-GPU RDMA: نقل Tensor بين العقد عبر RoCEv2",
+    "description": "نقل tensor من GPU لـ GPU بين عقدتين باستخدام GPUDirect RDMA فوق RoCEv2. هيدا المسار الأساسي للبيانات للتدريب الموزّع لـ AI، خدمة الاستدلال، ومجموعات حوسبة GPU. السيناريو بيتتبّع الدورة الكاملة: تخصيص ذاكرة CUDA، كشف GPU BAR1 عبر nvidia-peermem، تسجيل MR مقابل ذاكرة GPU، إقامة QP عبر CM، RDMA WRITE يدفع tensor مباشرة من HBM تبع GPU 0 لـ HBM تبع GPU 1 (بدون bounce بالـ host DRAM)، وRDMA READ يسحبو رجوعاً. بيقارن مسار GPUDirect (نسخة 1) مع المسار التقليدي (4 نسخ).",
+    "learning_objectives": [
+      "تتبّع مسار بيانات GPU-to-GPU RDMA الكامل: GPU HBM → PCIe → RNIC → شبكة → RNIC → PCIe → GPU HBM",
+      "فهم ليش GPUDirect RDMA بيلغي bounce الـ host DRAM وتدخّل الـ CPU",
+      "شوف كيف nvidia-peermem بيربط نظام ذاكرة GPU مع نظام RDMA",
+      "قارن المسار التقليدي (GPU→CPU→RNIC→شبكة→RNIC→CPU→GPU، 4 نسخ) مع GPUDirect (نسخة 1)",
+      "تابع PCIe peer-to-peer (P2P) DMA بين RNIC وGPU عبر BAR1 aperture",
+      "فهم متى GPUDirect RDMA بيستعمل: NCCL collectives، خدمة الاستدلال، حوسبة GPU",
+      "شوف RDMA WRITE (push model) وRDMA READ (pull model) لذاكرة GPU"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "الرابط الفيزيائي طلع — 100GbE lossless fabric بين عقد GPU",
+      "detail": "العقدتين تبع GPU متصلين بالسويتش عبر 100GbE مع PFC وECN مفعّلين. الـ lossless fabric ضروري — RDMA بيعتمد على الشبكة ما ترمي باكيتات.\nبنية مجموعة GPU النموذجية: كل عقدة فيها 8 GPUs مع NVLink داخل العقدة و1-8 RNICs للـ RDMA بين العقد. هالسيناريو بيوضّح GPU وRNIC واحد لكل عقدة للتبسيط."
+    },
+    "1": {
+      "text": "ذاكرة CUDA متخصّصة — buffers tensor 4MB بـ GPU HBM على العقدتين",
+      "detail": "cuMemAlloc() بيخصّص ذاكرة بـ GPU HBM (High Bandwidth Memory):\n• عقدة A: 4MB tensor buffer على GPU VA 0x7f0000000000\n• عقدة B: 4MB tensor buffer على GPU VA 0x7f0100000000\n\nهالذاكرة بمساحة العنوان الخاصة بالـ GPU — الـ CPU ما بيقدر يوصلها مباشرة، ولا الـ RNIC. GPUDirect RDMA بيحل هالمشكلة عبر كشف ذاكرة GPU للـ RNIC عبر PCIe BAR1 aperture."
+    },
+    "2": {
+      "text": "GPU BAR1 mapping — ذاكرة GPU مكشوفة لمساحة عناوين PCIe عبر nvidia-peermem",
+      "detail": "nvidia-peermem (kernel module) بيسجّل حالو كـ peer_memory_client مع نظام RDMA. لمّا ibv_reg_mr() ينادى مقابل عنوان GPU افتراضي، nvidia-peermem بيعترض:\n1. بينادي nvidia_p2p_get_pages() لتثبيت صفحات ذاكرة GPU\n2. بياخد العناوين الفيزيائية تبع GPU (بـ DRAM المحلي تبع GPU)\n3. بيربطها عبر PCIe BAR1 aperture تبع GPU\n4. بيرجّع عناوين PCIe bus لمحرّك DMA تبع RNIC\n\nهلق الـ RNIC بيقدر يعمل DMA مباشرة لذاكرة GPU عبر PCIe peer-to-peer.\n\nالمسار التقليدي (بدون GPUDirect):\n  GPU → cudaMemcpy → host DRAM → ibv_post_send → RNIC → شبكة\n  = 4 نسخ، 2 تدخّلات CPU\n\nمسار GPUDirect RDMA:\n  GPU HBM → BAR1 → RNIC → شبكة → RNIC → BAR1 → GPU HBM\n  = نقل DMA 1 لكل اتجاه، 0 نسخ بيانات CPU"
+    },
+    "3": {
+      "text": "Memory Regions مسجّلة مقابل ذاكرة GPU — مفاتيح RDMA متبادلة",
+      "detail": "ibv_reg_mr() بينادى مع عناوين GPU الافتراضية. nvidia-peermem بيعترض وبيوفّر العناوين الفيزيائية المربوطة بـ BAR1 لجدول صفحات hardware تبع RNIC.\nبعد تسجيل MR، العقدتين بيتبادلو rkeys خارجياً (عادةً عبر قناة تحكّم TCP أو RDMA SEND). كل عقدة هلق عندها {rkey, virtual_address, length} تبع العقدة البعيدة — كل شي مطلوب لـ RDMA READ/WRITE.\nتسجيل MR مكلف (ميكروثوانٍ لميلي ثوانٍ) ولازم يتعمل مرة وحدة خلال التهيئة. NCCL بيسجّل الـ buffers مسبقاً خلال ncclCommInitRank()."
+    },
+    "4": {
+      "text": "الـ QPs متصلة (RTS) — قناة RDMA جاهزة لنقل GPU-to-GPU",
+      "detail": "Reliable Connected (RC) QPs وصلت لـ RTS عبر CM REQ/REP/RTU. مع الـ QPs بحالة RTS وذاكرة GPU مسجّلة كـ MRs، مسار بيانات GPU-to-GPU مؤسّس بالكامل."
+    },
+    "5": {
+      "text": "RDMA WRITE — 4MB tensor مدفوع من GPU A HBM → GPU B HBM (صفر نسخ CPU)",
+      "detail": "تطبيق عقدة A بينادي ibv_post_send() مع RDMA WRITE WQE بيشير لـ buffer GPU المحلي (المصدر) وbuffer GPU تبع عقدة B (الوجهة، عبر rkey + VA من RETH).\n\nمسار البيانات خطوة بخطوة:\n1. محرّك DMA تبع RNIC A بيقرا 4MB من HBM تبع GPU A عبر PCIe BAR1 (peer-to-peer DMA — بدون تدخّل host DRAM)\n2. RNIC A بيقسّم لباكيتات بحجم MTU (4K حمولة لكل باكيت) وبيبعت فوق RoCEv2\n3. الباكيتات بتعبر السويتش lossless\n4. RNIC B بيستلم الباكيتات وبيعمل DMA-write لكل وحدة مباشرة بـ HBM تبع GPU B عبر PCIe BAR1 (peer-to-peer)\n5. بعد كل الباكيتات، RNIC B بيبعت ACK\n\nالـ CPUs على ولا عقدة بيلمسو بيانات الـ tensor. CPU عقدة A بس بيحط الـ WQE (64 بايت)؛ CPU عقدة B مش مشترك أبداً (RDMA one-sided).\nعلى 100 Gbps، 4MB بياخد ~330 ميكروثانية على السلك."
+    },
+    "6": {
+      "text": "RDMA READ Request — عقدة A بتطلب 4MB tensor من HBM تبع GPU B",
+      "detail": "تطبيق عقدة A بينادي ibv_post_send() مع RDMA READ WQE. الـ RNIC بيبعت READ Request صغير (78 بايت) لعقدة B بيحدد عنوان buffer GPU البعيد والـ rkey.\nRDMA READ هو نموذج \"سحب\" — الطالب (عقدة A) بيقول للمجيب (عقدة B) أي ذاكرة بعيدة يقرا. RNIC عقدة B بشكل مستقل بيجيب البيانات من HBM تبع GPU B وبيبعتها. CPU عقدة B ما بيتدخّل."
+    },
+    "7": {
+      "text": "RDMA READ Response — 4MB tensor من GPU B HBM → GPU A HBM",
+      "detail": "RNIC عقدة B بشكل مستقل:\n1. بيقرا 4MB من HBM تبع GPU B عبر PCIe BAR1 (P2P DMA)\n2. بيبعت كـ RDMA READ Response packets لعقدة A\n3. RNIC عقدة A بيكتب كل باكيت بـ HBM تبع GPU A عبر BAR1\n\nبعد الإتمام، CQ (completion queue) تبع عقدة A بتشير للتطبيق إنو بيانات الـ tensor متاحة.\n\nمقارنة RDMA READ مع WRITE:\n• WRITE: المبادر بيدفع البيانات (تأخير أقل)\n• READ: المبادر بيسحب البيانات (المجيب ما بيحتاج يبادر)\n• NCCL بيفضّل WRITE للعمليات الجماعية"
+    },
+    "8": {
+      "text": "السيناريو خلص — نقل tensor GPU-to-GPU عبر RDMA",
+      "detail": "هالسيناريو وضّح نقل GPU-to-GPU RDMA من النهاية للنهاية:\n\nالتهيئة:\n  cuMemAlloc → nvidia-peermem BAR1 mapping → ibv_reg_mr (GPU MR)\n  → CM QP bring-up → تبادل rkey\n\nRDMA WRITE (دفع — GPU A → GPU B):\n  GPU A HBM → PCIe BAR1 P2P → RNIC A → RoCEv2 → RNIC B\n  → PCIe BAR1 P2P → GPU B HBM\n  تدخّل CPU: 0 (بس حط الـ WQE)\n\nRDMA READ (سحب — GPU B → GPU A):\n  طلب: RNIC A → RoCEv2 → RNIC B\n  جواب: GPU B HBM → RNIC B → RoCEv2 → RNIC A → GPU A HBM\n  تدخّل CPU على عقدة B: 0\n\nمقارنة مسار البيانات:\n┌──────────────────────────┬────────┬──────────┐\n│ المسار                   │ النسخ  │ عمليات CPU │\n├──────────────────────────┼────────┼──────────┤\n│ التقليدي (بدون GPUDirect)│   4    │    2     │\n│ GPU→CPU→RNIC→شبكة→RNIC→CPU→GPU              │\n├──────────────────────────┼────────┼──────────┤\n│ GPUDirect RDMA           │   1    │    0     │\n│ GPU→RNIC→شبكة→RNIC→GPU                     │\n└──────────────────────────┴────────┴──────────┘\n\nوين GPU-to-GPU RDMA بيستعمل:\n• NCCL AllReduce/AllGather بالتدريب الموزّع لـ AI\n• خدمة الاستدلال: نقل KV cache بين GPUs\n• حوسبة GPU: MPI_Send/Recv مع GPU buffers\n• حفظ/استرجاع حالة GPU\n\nالمكوّنات الأساسية:\n• nvidia-peermem: بيربط ذاكرة GPU ونظام RDMA\n• PCIe BAR1: نافذة ذاكرة GPU يوصلها RNIC\n• Lossless fabric: PFC + ECN/DCQCN بيمنع خسارة الباكيتات\n• RDMA verbs: zero-copy، kernel-bypass، CPU-bypass"
+    }
+  }
+}

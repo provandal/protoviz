@@ -1,0 +1,85 @@
+{
+  "meta": {
+    "title": "SMB Direct: Negociación → Canal RDMA → Lectura y Escritura de archivos sobre RoCEv2",
+    "description": "SMB Direct (MS-SMBD) habilita el compartir archivos SMB 3.x sobre transportes RDMA (RoCEv2, iWARP). Después de que la negociación SMB basada en TCP descubre la capacidad RDMA, la conexión migra a un canal RDMA. Las lecturas de archivos usan RDMA READ (el servidor obtiene del buffer del cliente) y las escrituras de archivos usan RDMA WRITE (el servidor empuja datos al buffer del cliente), ambas evitando la ruta de datos de CPU.",
+    "learning_objectives": [
+      "Comprender cómo SMB3 descubre la capacidad RDMA durante NEGOTIATE",
+      "Ver la negociación SMB Direct (MS-SMBD) que establece el canal RDMA",
+      "Seguir cómo los datos de archivos evitan TCP completamente una vez que el canal RDMA está activo",
+      "Rastrear SMB2 WRITE con RDMA: el cliente ofrece descriptor de buffer, el servidor hace RDMA READ de los datos",
+      "Rastrear SMB2 READ con RDMA: el servidor hace RDMA WRITE de datos al buffer registrado del cliente",
+      "Comprender la gestión de créditos de SMB Direct para control de flujo",
+      "Apreciar el beneficio de descarga de CPU: la ruta de datos del servidor de archivos es de copia cero"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Enlace físico activo — fabric sin pérdidas 100GbE para SMB Direct",
+      "detail": "Ambos hosts se conectan vía 100GbE con PFC habilitado (requerido para transporte RoCEv2 sin pérdidas). SMB Direct en Windows detecta NICs con capacidad RDMA vía proveedores NetworkDirect (ND) registrados en el sistema."
+    },
+    "1": {
+      "text": "QPs RDMA conectados — SMB Direct establece el canal RDMA",
+      "detail": "Antes de la negociación SMB Direct, la conexión RDMA subyacente debe establecerse. El cliente se conecta al listener RDMA del servidor (puerto 5445) vía CM REQ/REP/RTU.\nUna vez que el QP alcanza el estado RTS, la negociación SMB Direct puede comenzar sobre RDMA SEND/RECV."
+    },
+    "2": {
+      "text": "Solicitud de Negociación SMB Direct — el cliente propone parámetros RDMA",
+      "detail": "El cliente envía un mensaje de Negociación SMB Direct vía RDMA SEND proponiendo: • Créditos: 255 (control de flujo para mensajes basados en SEND) • Tamaño de Envío Preferido: 1364 bytes • Tamaño Fragmentado Máximo: 1 MB • Tamaño Máximo de Read/Write: 1 MB (para transferencias masivas RDMA READ/WRITE)"
+    },
+    "3": {
+      "text": "Respuesta de Negociación SMB Direct — Canal RDMA establecido",
+      "detail": "El servidor acepta los parámetros SMB Direct. El canal RDMA está ahora activo — todos los mensajes SMB2 subsiguientes se transportarán sobre RDMA SEND/RECV en lugar de TCP."
+    },
+    "4": {
+      "text": "SMB2 NEGOTIATE — dialecto 3.1.1 con capacidad de transformación RDMA",
+      "detail": "Intercambio estándar SMB2 NEGOTIATE, pero ahora transportado sobre el canal RDMA SMB Direct (vía RDMA SEND). El cliente propone SMB 3.1.1 e incluye el contexto de negociación de Transformación RDMA, que habilita cifrado de cargas RDMA en SMB 3.1.1."
+    },
+    "5": {
+      "text": "Respuesta SMB2 NEGOTIATE — SMB 3.1.1 confirmado",
+      "detail": "El servidor selecciona el dialecto SMB 3.1.1. Capacidades MULTI_CHANNEL y LARGE_MTU confirmadas."
+    },
+    "6": {
+      "text": "SMB2 SESSION_SETUP + TREE_CONNECT — autenticar y mapear recurso compartido",
+      "detail": "Sesión SMB2 estándar y conexión de árbol, transportados sobre RDMA. SESSION_SETUP autentica vía Kerberos (dominio) o NTLM. TREE_CONNECT mapea \\\\servidor\\recurso$ para acceso a archivos."
+    },
+    "7": {
+      "text": "Sesión establecida, recurso compartido conectado",
+      "detail": "Sesión y conexión de árbol exitosas. El cliente ahora puede abrir archivos."
+    },
+    "8": {
+      "text": "SMB2 CREATE — abrir vm01.vhdx para lectura/escritura",
+      "detail": "El cliente abre el archivo de disco virtual Hyper-V. Esta es una carga de trabajo típica de SMB Direct: Hyper-V almacena imágenes de disco de VM en recursos compartidos SMB remotos, y todo el I/O de VM fluye sobre SMB Direct."
+    },
+    "9": {
+      "text": "Respuesta CREATE — handle de archivo para vm01.vhdx (100 GB)",
+      "detail": "El servidor devuelve un handle de archivo persistente."
+    },
+    "10": {
+      "text": "SMB2 WRITE con descriptor de buffer RDMA — 1 MB a vm01.vhdx",
+      "detail": "El cliente envía un comando SMB2 WRITE vía RDMA SEND, pero en lugar de datos en línea, incluye un SMB_DIRECT_BUFFER_DESCRIPTOR_V1 conteniendo: offset de memoria (dirección virtual) del buffer registrado, R_Key para acceso RDMA, longitud de datos.\nEl campo Channel = SMB2_CHANNEL_RDMA_V1 le dice al servidor que haga RDMA READ de los datos desde este descriptor de buffer en lugar de esperar datos en línea."
+    },
+    "11": {
+      "text": "RDMA READ — el servidor obtiene 1 MB de datos de escritura de la memoria del cliente",
+      "detail": "La RNIC del servidor emite un RDMA READ para obtener 1 MB de datos de escritura directamente del buffer de memoria registrado del cliente. Ninguna CPU participa en la transferencia de datos — es motor DMA a motor DMA sobre la fabric RoCEv2 sin pérdidas."
+    },
+    "12": {
+      "text": "Respuesta SMB2 WRITE — 1 MB escrito exitosamente",
+      "detail": "El servidor confirma 1 MB escrito. Toda la ruta de datos fue de copia cero."
+    },
+    "13": {
+      "text": "SMB2 READ con descriptor de buffer RDMA — 1 MB de vm01.vhdx",
+      "detail": "El cliente envía SMB2 READ con Channel = SMB2_CHANNEL_RDMA_V1 y un descriptor de buffer. El servidor hará RDMA WRITE de los datos del archivo directamente al buffer de memoria registrado del cliente."
+    },
+    "14": {
+      "text": "RDMA WRITE — el servidor empuja 1 MB de datos de lectura a la memoria del cliente",
+      "detail": "La RNIC del servidor hace RDMA WRITE de 1 MB de datos del archivo directamente al buffer registrado del cliente. La CPU del servidor solo inicia el RDMA WRITE (publica un WQE); el movimiento real de datos es completamente manejado por hardware."
+    },
+    "15": {
+      "text": "Respuesta SMB2 READ — datos ya en el buffer del cliente (cero datos en línea)",
+      "detail": "La respuesta READ contiene solo estado — los datos del archivo ya fueron entregados vía RDMA WRITE. Data Remaining = 0 confirma que todos los datos fueron transferidos.\nCompare esto con SMB sobre TCP: el 1 MB completo de datos del archivo estaría en línea en la respuesta SMB2 READ."
+    },
+    "16": {
+      "text": "⟳ Escenario completo — I/O de archivos SMB Direct sobre RoCEv2",
+      "detail": "Este escenario demostró SMB Direct (MS-SMBD):\nCONFIGURACIÓN: Conexión QP RDMA → Negociación SMB Direct (créditos, tamaño máx R/W) → SMB2 NEGOTIATE (3.1.1) → SESSION_SETUP → TREE_CONNECT → CREATE\nESCRITURA DE ARCHIVO (SMB2_CHANNEL_RDMA_V1): Cliente: comando WRITE + descriptor de buffer (vía RDMA SEND). Servidor: RDMA READ obtiene 1 MB del buffer del cliente (copia cero). Servidor: respuesta WRITE (vía RDMA SEND)\nLECTURA DE ARCHIVO (SMB2_CHANNEL_RDMA_V1): Cliente: comando READ + descriptor de buffer (vía RDMA SEND). Servidor: RDMA WRITE empuja 1 MB al buffer del cliente (copia cero). Servidor: respuesta READ — sin datos en línea (vía RDMA SEND)\nPuntos clave: • Mensajes de control (comandos, respuestas) → RDMA SEND/RECV • Datos masivos (contenido de archivo) → RDMA READ/WRITE (copia cero) • WRITE usa RDMA READ (el servidor obtiene del cliente) • READ usa RDMA WRITE (el servidor empuja al cliente)"
+    }
+  }
+}

@@ -1,0 +1,116 @@
+{
+  "meta": {
+    "title": "Happy Eyeballs: Kijan Navigatè Ou Chwazi Ant IPv4 ak IPv6",
+    "description": "Ou tape example.com nan navigatè ou. Dèyè sèn, yon algorit entèlijan ki rele Happy Eyeballs (RFC 8305) fè konpetisyon ant koneksyon IPv6 ak IPv4 pou ba ou eksperyans ki pi rapid posib. Senaryo sa a montre toude sitiyasyon: IPv6 mache (koneksyon an 30ms) ak IPv6 kase (retounen otomatik sou IPv4 apre 250ms). San Happy Eyeballs, yon chemen IPv6 kase ta vle di 20+ segond ap tann.",
+    "learning_objectives": [
+      "Konprann ke navigatè modèn voye rekèt DNS AAAA (IPv6) ak A (IPv4) an paralèl",
+      "Aprann ke Happy Eyeballs toujou prefere IPv6 men pa pral tann lontan pou li",
+      "Wè revèy 250ms la — ase long pou jis anvè IPv6, ase kout pou itilizatè pa remake",
+      "Obsève kijan yon chemen IPv6 echwe deklanche retounen otomatik sou IPv4 ak ti reta",
+      "Apresye ke Happy Eyeballs entegre nan chak navigatè ak sistèm operasyon modèn",
+      "Konpare fòma adrès IPv4 (32-bit) ak IPv6 (128-bit) nan antèt pakè aktyèl",
+      "Konprann ke san Happy Eyeballs, IPv6 kase ta vle di 20+ segond apasman"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Rekèt DNS AAAA — 'Ki adrès IPv6 example.com?'",
+      "detail": "Ou tape example.com nan navigatè ou epi peze Enter. Premye bagay ki rive se yon rechèch DNS — men pa yon sèl. Navigatè ou voye yon rekèt AAAA ki mande adrès IPv6 la. Rekèt sa a itilize tip DNS 28, ki espesifikman mande yon adrès IPv6 128-bit."
+    },
+    "1": {
+      "text": "Rekèt DNS A — 'Ki adrès IPv4 example.com?' (voye an paralèl)",
+      "detail": "Jis 1 milisegond apre, navigatè a voye yon dezyèm rekèt DNS — fwa sa a yon rekèt A record (tip 1) ki mande adrès IPv4 la. Toude rekèt DNS kounye a an vòl an menm tan, chak ak pwòp ID tranzaksyon pa li pou rezòlvè a ka voye repons kòrèk la tounen."
+    },
+    "2": {
+      "text": "Repons DNS AAAA — 2001:db8::443:1",
+      "detail": "Rezòlvè a reponn nan 20 milisegond ak AAAA record: 2001:db8::443:1. Sa a se yon adrès IPv6 128-bit — konpare li ak adrès IPv4 32-bit. IPv6 bay apeprè 3.4 × 10^38 adrès inik, ase pou chak grenn sab sou latè gen pwòp adrès pa li."
+    },
+    "3": {
+      "text": "Repons DNS A — 192.0.2.1",
+      "detail": "De milisegond apre, A record la rive: 192.0.2.1. Navigatè a kounye a gen toude adrès. Remake diferans gwosè: adrès IPv4 la se 32 bit (4 oktè), tandiske adrès IPv6 la se 128 bit (16 oktè) — kat fwa pi gran.\nNavigatè a kounye a gen de chemen pou menm sèvè a. Ki lès li pral itilize?"
+    },
+    "4": {
+      "text": "Navigatè a kounye a gen toude adrès. Ki lès li itilize? Se la Happy Eyeballs antre an jeu.",
+      "detail": "RFC 8305 espesifye algorit la: triye adrès destinasyon yo ak IPv6 prefere (antrelase fanmi adrès), answit eseye koneksyon nan lòd, ak yon reta 250ms ant tantativ yo. Premye fanmi adrès ki konplete yon TCP handshake genyen, epi lòt tantativ yo anile."
+    },
+    "5": {
+      "text": "TCP SYN → IPv6 (premye tantativ — IPv6 toujou ale premye)",
+      "detail": "Navigatè a imedyatman voye yon TCP SYN bay adrès IPv6 2001:db8::443:1 sou pò 443 (HTTPS). Remake EtherType a se 0x86DD (IPv6) olye de abitiyèl 0x0800 (IPv4). Antèt IPv6 la se 40 oktè — de fwa gwosè antèt IPv4 20 oktè a — paske adrès yo 128 bit olye de 32 bit."
+    },
+    "6": {
+      "text": "Revèy 250ms kòmanse — si IPv6 pa reponn atan, IPv4 ap eseye tou",
+      "detail": "Connection Attempt Delay 250ms la se nimewo majik nan Happy Eyeballs (RFC 8305 Seksyon 8). Poukisa 250 milisegond?\nTwò kout (disons 50ms) epi ou ta kòmanse koneksyon IPv4 ki pa nesesè menm lè IPv6 ap mache byen — jis yon ti jan lan akoz jeyografi. Twò long (disons 2 segond) epi itilizatè sou rezo ak IPv6 kase ta sibi reta remakab. 250ms se yon konpwomi: ase pou yon SYN-ACK IPv6 retounen nan majorite rezo, kout ase pou moun pa remake li."
+    },
+    "7": {
+      "text": "TCP SYN-ACK ← IPv6 reponn an 30ms — IPv6 genyen kous la!",
+      "detail": "Sèvè wèb la reponn ak yon SYN-ACK sou IPv6 nan jis 30 milisegond — byen anndan revèy 250ms la. Navigatè a anile revèy la. Pa gen bezwen eseye IPv4 ditou.\nSa a se chemen kontan Happy Eyeballs: IPv6 mache, li rapid, epi itilizatè a pa janm konnen yon kous te rive."
+    },
+    "8": {
+      "text": "TCP ACK → Koneksyon IPv6 etabli",
+      "detail": "Kliyan an konplete 3-way handshake ak dènye ACK la. Koneksyon TCP a kounye a ESTABLISHED sou IPv6. TLS ak HTTP ap kontinye sou koneksyon IPv6 sa a.\nTantativ IPv4 la pa te janm kòmanse — IPv6 te reponn an 30ms, byen anvan dat limit 250ms la."
+    },
+    "9": {
+      "text": "Tantativ IPv4 pa te janm kòmanse — IPv6 te ase rapid",
+      "detail": "Paske IPv6 te konplete TCP handshake nan 30ms (byen anba sèy 250ms la), navigatè a pa te janm inisye yon koneksyon IPv4 ditou. Sa a efikas: pa gen pakè gaspiye, pa gen resous sèvè gaspiye. Navigatè a ap kontinye ak TLS ak HTTP sou IPv6."
+    },
+    "10": {
+      "text": "TLS + HTTP kontinye sou IPv6 — pifò itilizatè pa janm konnen ki pwotokòl yo itilize",
+      "detail": "Soti la, TLS 1.3 ak HTTP/2 kontinye egzakteman menm jan yo ta fè sou IPv4 — kouch siperyè yo pa pran swen ki vèsyon IP ki pote yo. Ba adrès navigatè ou ka montre yon ikòn kadna, men li pa pral di «IPv6.» Pifò itilizatè pa gen okenn ide si yo sou IPv4 oswa IPv6. Sa a se egzakteman objektif la — transparans konplè."
+    },
+    "11": {
+      "text": "Kounye a ann wè kisa ki rive lè IPv6 kase...",
+      "detail": "Faz 2 te montre ka ideal la. Men kisa ki rive lè chemen IPv6 la kase — petèt yon firewall mal konfigire, yon tinèl ki tonbe, oswa yon ISP ki annonse IPv6 men pa vrèman achemine li? San Happy Eyeballs, navigatè ou ta tann 20-30 segond pou TCP timeout anvan li menm eseye IPv4. Ak Happy Eyeballs, reta a se 250 milisegond."
+    },
+    "12": {
+      "text": "Nouvo koneksyon: TCP SYN → IPv6 (eseye IPv6 premye, kòm toujou)",
+      "detail": "Yon nouvo tantativ koneksyon kòmanse — petèt itilizatè a klike sou yon lòt lyen, oswa ansyen koneksyon an te fèmen. Kòm toujou, navigatè a eseye IPv6 premye. Li voye yon TCP SYN bay 2001:db8::443:1. Revèy 250ms la kòmanse ankò.\nMen fwa sa a, yon bagay pa bon sou chemen IPv6 la..."
+    },
+    "13": {
+      "text": "Silans... 100ms pase san SYN-ACK nan IPv6",
+      "detail": "San milisegond te pase. Toujou pa gen SYN-ACK. Nan Faz 2, repons la te vini an 30ms. Yon bagay klèman pa bon ak chemen IPv6 la, men navigatè a pa panike. Li toujou gen 150ms ki rete sou revèy la. Petèt sèvè a jis yon ti jan pi lwen fwa sa a."
+    },
+    "14": {
+      "text": "250ms rive — revèy deklanche! Kòmanse retounen sou IPv4.",
+      "detail": "Connection Attempt Delay 250ms la ekspire san repons nan IPv6. Navigatè a PA abandone IPv6 — li kenbe SYN IPv6 la an atant okazi yon repons tardif rive. Men li kounye a kòmanse yon tantativ koneksyon IPv4 an paralèl. Toude kous ap kouri an menm tan."
+    },
+    "15": {
+      "text": "TCP SYN → Retounen sou IPv4 (pandan SYN IPv6 la toujou an atant)",
+      "detail": "Navigatè a voye yon TCP SYN bay adrès IPv4 192.0.2.1 sou pò 443. Remake diferans ak SYN IPv6 la:\n- EtherType se 0x0800 (IPv4) olye de 0x86DD (IPv6)\n- Antèt IPv4 la sèlman 20 oktè (vs 40 oktè IPv6)\n- IP sous se 10.0.1.10 (32 bit) olye de 2001:db8:1::10 (128 bit)\n- MSS IPv4 se 1460 (vs 1440 pou IPv6) paske antèt IPv4 la 20 oktè pi piti"
+    },
+    "16": {
+      "text": "TCP SYN-ACK ← IPv4 reponn an 35ms — IPv4 genyen!",
+      "detail": "Sèvè wèb la reponn sou IPv4 ak yon SYN-ACK an jis 35 milisegond. IPv4 mache! Navigatè a kounye a gen yon koneksyon ki genyen epi ap kontinye ak IPv4. Tantativ IPv6 ki bloke a ap anile — li te an silans pou 285ms kounye a epi klèman kase."
+    },
+    "17": {
+      "text": "TCP ACK → Koneksyon IPv4 etabli, tantativ IPv6 anile",
+      "detail": "Kliyan an voye dènye ACK la sou IPv4, sa konplete 3-way handshake la. Tantativ IPv6 la kounye a fòmèlman anile — navigatè a voye yon RST (reset) sou socket IPv6 la si yon SYN-ACK tardif janm rive, oswa senpleman fèmen li.\nKoneksyon TCP a ESTABLISHED sou IPv4. TLS ak HTTP ap kontinye sou IPv4 — ak sèlman 250ms reta konpare ak 20+ segond san Happy Eyeballs."
+    },
+    "18": {
+      "text": "IPv6 te kase oswa pa aksesib, men itilizatè a pa janm remake yon reta depase 250ms. Se sa ki majik Happy Eyeballs.",
+      "detail": "Tout pwosesis retounen an te ajoute sèlman apeprè 250 milisegond nan tan koneksyon an. Konpare sa a ak sa ki ta rive san Happy Eyeballs:\n- San Happy Eyeballs: Navigatè eseye IPv6, tann 20-30 segond pou TCP timeout, answit eseye IPv4. Itilizatè ap fikse yon paj blan pou 20+ segond.\n- Ak Happy Eyeballs: Navigatè eseye IPv6, tann 250ms, eseye IPv4 an paralèl. Reta total: ~285ms. Itilizatè prèske pa remake li.\nAlgorit sa a se sa ki fè tranzisyon IPv4-a-IPv6 la mache san pwoblèm. Li nan chak navigatè modèn (Chrome, Firefox, Safari, Edge), chak sistèm operasyon modèn (Windows, macOS, Linux, iOS, Android), epi menm nan zouti kòmandliy tankou curl."
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "Happy Eyeballs: Kijan Navigatè Ou Chwazi Ant IPv4 ak IPv6",
+      "description": "Yon vizit gide atravè algorit Happy Eyeballs — ki montre kijan navigatè yo fè konpetisyon ant koneksyon IPv6 ak IPv4 pou ba ou eksperyans ki pi rapid ak ki pi fyab",
+      "steps": {
+        "0": "Ou tape example.com nan navigatè ou. Anvan yon sèl piksèl parèt, navigatè ou bezwen konnen kijan pou rive nan sèvè sa a. Men gen yon vire ke pifò moun pa konnen: sèvè a gen DE adrès — yon adrès IPv4 ak yon adrès IPv6. Navigatè ou pral voye de rekèt DNS an paralèl: AAAA (IPv6) ak A (IPv4).",
+        "1": "Toude repons DNS rive nan kèk milisegond youn apre lòt. AAAA record la ban nou 2001:db8::443:1 — yon adrès IPv6 128-bit. A record la ban nou 192.0.2.1 — yon adrès IPv4 32-bit. Navigatè ou kounye a gen de chemen pou menm sèvè a. Ki lès li ta dwe itilize? Ki lès ki pi rapid? Ki lès ki mache vrèman?",
+        "2": "Navigatè ou TOUJOU prefere IPv6 — men li pa dispoze tann lontan. Li imedyatman voye yon TCP SYN bay adrès IPv6 la epi kòmanse yon revèy 250ms. Si IPv6 reponn anvan revèy la deklanche, bèl bagay — IPv6 genyen. Sinon, navigatè a kòmanse yon koneksyon IPv4 an paralèl. Premye fanmi adrès ki konplete yon TCP handshake genyen.",
+        "3": "250 milisegond se nimewo majik la — ase long pou jis anvè IPv6, ase kout pou itilizatè pa remake. RFC 8305 Seksyon 8 rele sa «Connection Attempt Delay.» Si IPv6 ap mache nòmalman, 250ms se plis pase ase tan pou yon SYN-ACK retounen soti nan nenpòt kote sou Tè. Si IPv6 kase, itilizatè a tann sèlman yon ka segond anvan IPv4 pran relè.",
+        "4": "Nan premye senaryo sa a, IPv6 mache pafètman. SYN-ACK la retounen an jis 30 milisegond — byen anndan dat limit 250ms la. Navigatè a imedyatman anile revèy la. Pa gen bezwen eseye IPv4 ditou. 3-way handshake la konplete sou IPv6, epi TLS ak HTTP kontinye.",
+        "5": "Tantativ IPv4 la pa te janm kòmanse — IPv6 te ase rapid. Navigatè ou ap kontinye ak TLS 1.3 ak HTTP sou koneksyon IPv6 sa a. Nan pèspektiv itilizatè a, paj la jis chaje. Yo pa gen okenn ide si yo sou IPv4 oswa IPv6. Sa a se egzakteman objektif la — transparans konplè.",
+        "6": "Kounye a ann wè kisa ki rive lè IPv6 kase. Se la Happy Eyeballs vrèman merite non li. Petèt yon router anmon gen yon wout IPv6 ki rans. Petèt yon firewall antrepriz bloke IPv6. Petèt ISP ou annonse sipò IPv6 men pa vrèman achemine li. Sa a se reyalite sou Entènèt jodia — IPv6 mache pou pifò, men pa pou tout moun.",
+        "7": "Yon nouvo koneksyon kòmanse. Kòm toujou, navigatè a eseye IPv6 premye epi kòmanse revèy 250ms la. SYN an sòti bay 2001:db8::443:1... epi anyen pa retounen. 100 milisegond pase. Toujou anyen. 200 milisegond. Silans. Navigatè a kontinye tann, men revèy la ap desann...",
+        "8": "Revèy 250ms la deklanche. Pa gen SYN-ACK nan IPv6. Navigatè a pa abandone IPv6 — li kenbe SYN sa a an atant jis okazi. Men li kounye a kòmanse yon tantativ paralèl sou IPv4. De pakè SYN kounye a nan espas: youn sou IPv6 (ap tann, san repons) ak youn sou IPv4 (fèk voye).",
+        "9": "Konpare de pakè SYN yo bò-a-bò. SYN IPv6 la gen yon antèt IP 40 oktè ak adrès 128-bit ak EtherType 0x86DD. SYN IPv4 la gen yon antèt IP 20 oktè ak adrès 32-bit ak EtherType 0x0800. MSS IPv4 la se 1460 (vs 1440 pou IPv6) paske antèt IPv4 la 20 oktè pi piti.",
+        "10": "IPv4 reponn ak yon SYN-ACK an 35 milisegond. IPv4 mache! Navigatè a kounye a gen yon koneksyon ki genyen. Li konplete 3-way handshake la sou IPv4 epi fòmèlman anile tantativ IPv6 echwe a.\nReta total ki koze pa chemen IPv6 kase a: apeprè 250ms. Prèske pa remakab.",
+        "11": "San Happy Eyeballs, yon chemen IPv6 kase ta vle di yon timeout 20+ segond anvan navigatè a menm eseye IPv4. Ven segond ap fikse yon paj blan. Ak Happy Eyeballs, reta a se 250 milisegond — a pèn pèseptib. Sèl algorit sa a responsab pou fè ke tranzisyon IPv4-a-IPv6 la mache san pwoblèm pou milya itilizatè.",
+        "12": "Algorit sa a se poukisa tranzisyon IPv4-a-IPv6 la mache an gran pati transparan. Happy Eyeballs nan chak navigatè modèn — Chrome, Firefox, Safari, Edge. Li nan chak sistèm operasyon modèn — Windows, macOS, Linux, iOS, Android. Li menm nan zouti kòmandliy tankou curl ak wget.",
+        "13": "Men kisa navigatè a aprann nan chak tantativ, ak poukisa li enpòtan pou koneksyon ki vin apre. Anpil enplemantasyon Happy Eyeballs mete an kach fanmi adrès ki genyen. Si IPv6 echwe yon fwa, navigatè a ka eseye IPv4 premye pwochen fwa (toujou ak Happy Eyeballs kòm sekirite). Sa evite repete reta 250ms la pou destinasyon kote IPv6 pa mache.",
+        "14": "Ann rezime kisa nou aprann:\n1. Navigatè ou voye rekèt DNS paralèl pou AAAA (IPv6) ak A (IPv4)\n2. Happy Eyeballs eseye IPv6 premye (pwotokòl prefere)\n3. Yon revèy 250ms kòmanse — «Connection Attempt Delay» nan RFC 8305\n4. Si IPv6 reponn anvan revèy la, IPv6 genyen — koneksyon IPv4 la pa janm kòmanse\n5. Si revèy la deklanche, IPv4 kòmanse an paralèl — premye ki konplete genyen\n6. Reta nan pi move ka: ~250ms (olye de 20+ segond san Happy Eyeballs)\n7. Itilizatè a pa janm bezwen konnen oswa pran swen ki vèsyon IP ki itilize"
+      }
+    }
+  }
+}

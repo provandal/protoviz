@@ -1,0 +1,110 @@
+{
+  "meta": {
+    "title": "查收邮件：点击收件箱时到底发生了什么",
+    "description": "你点击了 Gmail 书签。在第一封邮件显示之前，你的笔记本电脑在不到 500 毫秒内触发了约 20 次协议交换：一次 DNS 查询以找到 Gmail 的 IP 地址、一次 TCP 三次握手以建立连接、一次 TLS 1.3 握手以加密所有内容，以及 HTTP/2 多路复用请求同时获取收件箱 HTML、JavaScript 包和 API 数据——全部通过一条连接完成。本场景揭示了一个日常操作背后隐藏的复杂性，涵盖 7 种以上协议：Ethernet、IP、UDP、DNS、TCP、TLS 1.3 和 HTTP/2。",
+    "learning_objectives": [
+      "了解 DNS 解析发生在任何连接之前——互联网的电话簿查询",
+      "理解 TCP 的三次握手（SYN → SYN-ACK → ACK）是可靠连接的基础",
+      "观察 TLS 1.3 的 1-RTT 握手——浏览器和 Gmail 在一个往返中交换加密密钥",
+      "发现 TLS 中的 SNI 扩展会暴露你访问的网站，即使其他所有内容都已加密",
+      "了解 TLS 握手中的 ALPN 如何在握手完成之前就协商好 HTTP/2",
+      "观察 HTTP/2 多路复用的实际运作——HTML、JavaScript 和 API 数据通过一条连接同时获取",
+      "体会一次简单的「查收邮件」涉及 7 种以上分层协议在 500 毫秒内协同工作"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "DNS 查询——「mail.google.com 在哪？」",
+      "detail": "你点击了 Gmail 书签。在浏览器联系 Gmail 之前，它需要知道 Gmail 的 IP 地址。浏览器向你配置的解析器发送一个 DNS 查询——本质上是在互联网的电话簿中查找方向。这个 82 字节的小型 UDP 数据包是最先发生的事情。没有 DNS，就没有邮件。大多数人甚至不知道这一步的存在。"
+    },
+    "1": {
+      "text": "DNS 响应——「地址是 142.250.80.5」（带 CNAME 链）",
+      "detail": "解析器在大约 25 毫秒内响应，返回 Gmail 的 IP 地址。注意 CNAME 链：mail.google.com 实际上是 googlemail.l.google.com 的别名。Google 使用 CNAME 记录进行负载均衡和地理路由——你获得的 IP 可能与另一个国家的用户不同。应答的 TTL 为 300 秒（5 分钟），因此你的笔记本会缓存该结果，一段时间内不会再次查询。\n有趣的事实：仅这一次 DNS 查询就经过了 UDP、IP 和 Ethernet 三种协议——仅仅是为了获取一个 IP 地址。"
+    },
+    "2": {
+      "text": "TCP SYN → 连接 Gmail 端口 443",
+      "detail": "现在你的笔记本知道了 Gmail 的 IP（142.250.80.5），它开始建立连接。TCP 的三次握手就像一次正式的自我介绍：\n第一步：你的笔记本发送 SYN——「嘿 Gmail，我想和你通信。」\n这个小数据包不携带任何数据，只有一个问候和一些提议：MSS（数据块的最大大小）、窗口缩放（可以同时传输多少数据）和 SACK 支持（用于高效重传）。你的笔记本在自己这边选择一个随机端口（54321），目标是 Gmail 那边的端口 443（HTTPS）。"
+    },
+    "3": {
+      "text": "TCP SYN-ACK ← Gmail 响应",
+      "detail": "第二步：Gmail 说「收到了，我也在！」\nSYN-ACK 承担双重任务：它确认你的 SYN（ack=1，意思是「我收到了你的第 0 字节，下一个请发第 1 字节」），同时发送 Gmail 自己的 SYN 及其参数。注意这次往返大约花了 30 毫秒——这是光在光纤中传播到 Google 最近的数据中心再返回的速度。你无法比物理定律允许的速度更快地协商。"
+    },
+    "4": {
+      "text": "TCP ACK → 连接建立",
+      "detail": "第三步：「我们连接上了！」\n你的笔记本发送最终的 ACK，双方都进入 ESTABLISHED 状态。三次握手完成——一个完整的往返（大约 30 毫秒）。这是可靠通信的代价：在一个字节的真实数据流动之前需要三个数据包。像 QUIC（用于 HTTP/3）这样的协议试图将此过程与加密握手合并以节省时间。\n到目前为止的总时间：约 57 毫秒。你什么都没注意到。浏览器甚至还没有画出加载旋转图标。"
+    },
+    "5": {
+      "text": "TLS ClientHello——提议 TLS 1.3 + x25519 密钥交换",
+      "detail": "现在开始加密。浏览器发送一个 ClientHello，包含：\n- 支持的密码套件（AES-256-GCM、AES-128-GCM、ChaCha20）\n- 一个 x25519 公钥（TLS 1.3 的关键创新）\n- SNI：\"mail.google.com\"（告诉 Gmail 使用哪个证书）\n- ALPN：\"h2\"（告诉 Gmail 你想要 HTTP/2）\n关键创新：浏览器在第一条消息中就发送了 Diffie-Hellman 公钥。在 TLS 1.2 中，这需要额外一个往返。仅这一项优化就为互联网上的每个 HTTPS 连接节省了 30 毫秒。\n隐私提示：SNI 扩展（mail.google.com）是以明文发送的。任何监控你网络的人都能看到你正在连接 Gmail，即使其他所有内容都将被加密。Encrypted Client Hello（ECH）是一项旨在解决此问题的草案标准。"
+    },
+    "6": {
+      "text": "TLS ServerHello + 加密报文——证书、密钥，一次性全部发送",
+      "detail": "Gmail 发回一个大型响应，包含：\n1. ServerHello——选择 AES-256-GCM 并发送其 x25519 公钥。此时双方通过椭圆曲线数学计算共享密钥：x25519(my_private, their_public)。这大约需要 50 微秒。\n2. EncryptedExtensions——确认 HTTP/2（ALPN: h2）。从这里开始，所有内容都使用从共享密钥派生的密钥加密。\n3. Certificate——Gmail 的证书链（mail.google.com → GTS CA → Google Trust Services 根证书）。在 TLS 1.3 中，证书是加密的——窃听者无法看到发送了哪个证书。\n4. CertificateVerify——一个数字签名，证明 Gmail 确实拥有该证书的私钥。\n5. Finished——一个 HMAC，证明握手未被篡改。\n所有这些在一次传输中完成。你的浏览器和 Gmail 刚刚在不到 30 毫秒内完成了军事级别的加密运算。"
+    },
+    "7": {
+      "text": "Client Finished——TLS 1.3 握手在 1-RTT 内完成",
+      "detail": "浏览器验证 Gmail 的证书链，检查 CertificateVerify 签名，确认 Finished HMAC，然后发送自己的 Finished 消息。TLS 1.3 握手完成。\n双方现在派生应用流量密钥：\n  client_key = HKDF-Expand(master_secret, \"c ap traffic\", hash)\n  server_key = HKDF-Expand(master_secret, \"s ap traffic\", hash)\n从此刻起，所有内容都使用 AES-256-GCM 加密——你的邮件、你的 Cookie、你的搜索查询、邮件中的图片。对网络上的任何人来说都不可见。\n整个 TLS 握手的时间：大约 31 毫秒（一个往返）。TLS 1.2 需要大约 62 毫秒（两个往返）。节省的 31 毫秒乘以每天数十亿次连接，这就是 TLS 1.3 如此重要的原因。"
+    },
+    "8": {
+      "text": "HTTP/2 SETTINGS——协商多路复用连接",
+      "detail": "TLS 激活且 HTTP/2 已协商（通过握手期间的 ALPN），浏览器发送 HTTP/2 连接前言：一个 24 字节的魔术字符串，后跟一个 SETTINGS 帧。\n关键设置：\n- 最大并发流：100（一次最多 100 个请求！）\n- 每个流的初始窗口大小：1MB\n- 头部表大小：64KB（用于 HPACK 压缩）\nHTTP/2 是一个二进制协议——与 HTTP/1.1 的纯文本不同，HTTP/2 帧是紧凑的二进制结构。HPACK 头部压缩意味着重复的头部（如 Cookie 和 User-Agent）被编码为小型表引用，而不是每次都完整发送。"
+    },
+    "9": {
+      "text": "HTTP/2 GET /mail/u/0/#inbox（stream 1）",
+      "detail": "终于——真正的收件箱请求！浏览器在 stream 1 上发送一个 HTTP/2 HEADERS 帧，包含：\n:method: GET\n:authority: mail.google.com\n:path: /mail/u/0/#inbox\n再加上你的会话 Cookie（证明你已登录）、User-Agent 和接受的压缩格式。得益于 HPACK，这些约 800 字节的头部被压缩到约 200 字节。\n我们现在已经进入这段旅程的第 91 毫秒。你在 91 毫秒前点击了一个书签，而真正的页面请求现在才离开你的笔记本。"
+    },
+    "10": {
+      "text": "HTTP/2 200 OK——收件箱 HTML 框架（stream 1，约 15KB 压缩后）",
+      "detail": "Gmail 响应收件箱页面 HTML——但这只是一个框架。实际的邮件列表来自单独的 API 调用。这就是现代 Web 应用的工作方式：先发送一个轻量级 HTML 骨架，然后通过 JavaScript 用数据填充它。\nHTML 使用 Brotli 压缩（br），将约 60KB 压缩到约 15KB。Brotli 是 Google 专门为 Web 压缩发明的，比 gzip 的压缩率高 20-26%。\n你的浏览器在完整响应到达之前就开始解析这个 HTML——这种技术叫做渐进式渲染。"
+    },
+    "11": {
+      "text": "HTTP/2 GET /static/js/main.js（stream 3）",
+      "detail": "在 HTML 仍在 stream 1 上传输时，浏览器看到一个 <script> 标签，立即在 stream 3 上发出 JavaScript 包的请求。\n这就是 HTTP/2 多路复用的实际运作：stream 1 和 stream 3 共享同一条 TCP 连接。使用 HTTP/1.1 时，浏览器需要开一条新的 TCP 连接（又一次三次握手 + TLS 握手）仅仅是为了获取这个 JavaScript 文件。那将额外花费约 90 毫秒。"
+    },
+    "12": {
+      "text": "HTTP/2 GET /mail/u/0/api/inbox（stream 5，XHR）",
+      "detail": "HTML 框架中的 JavaScript 立即在 stream 5 上向 Gmail 的 API 请求收件箱数据。\n一条连接上的三个并发请求：\n  Stream 1：HTML（已完成）\n  Stream 3：JavaScript（下载中）\n  Stream 5：收件箱 API 数据（开始中）\n使用 HTTP/1.1 时，这需要三条 TCP 连接，每条都有各自的握手开销。HTTP/2 只用一条连接就完成了所有请求。这是现代网站比 2010 年代网站感觉更快的最大单一原因。"
+    },
+    "13": {
+      "text": "HTTP/2 DATA——JS 包（约 200KB）和收件箱 JSON（约 5KB）多路复用",
+      "detail": "Gmail 同时发回 JavaScript 包（stream 3）和收件箱 JSON（stream 5），在一条 TCP 连接上交替发送两个流的 DATA 帧。\nHTTP/2 多路复用意味着：\n- stream 3 上的 16KB JavaScript 块\n- 然后 stream 5 上的 5KB 收件箱 JSON 块\n- 然后 stream 3 上的更多 JavaScript\n- 依此类推……\n浏览器独立处理每个流。收件箱 JSON（约 5KB）很快完成，让浏览器可以在更大的 JavaScript 包（约 200KB）仍在下载时就渲染邮件主题和发件人。\n使用 HTTP/1.1 时，较小的收件箱 JSON 会被卡在较大的 JavaScript 文件后面（队头阻塞）。HTTP/2 完全消除了这个问题。"
+    },
+    "14": {
+      "text": "收件箱已渲染——你可以看到你的邮件了",
+      "detail": "在你点击书签大约 400 毫秒后，收件箱出现在屏幕上。在这一眨眼的功夫里，你的笔记本：\n1. 通过 DNS 查找了 Gmail 的 IP（UDP，端口 53）\n2. 建立了 TCP 连接（三次握手）\n3. 协商了 TLS 1.3 加密（x25519 密钥交换，AES-256-GCM）\n4. 建立了 HTTP/2 多路复用连接\n5. 请求了收件箱 HTML、JavaScript 和 API 数据\n6. 接收并解压了所有三项，在一条连接上交替传输\n7. 解析 HTML、执行 JavaScript、渲染了你的邮件\n使用的协议：Ethernet、IP、UDP、DNS、TCP、TLS 1.3、HTTP/2\n共 7 种以上协议，约 20 次网络交换，约 400 毫秒。\n你完全没有察觉。"
+    },
+    "15": {
+      "text": "实时通知通道已建立（Server-Sent Events）",
+      "detail": "Gmail 还没有完成。收件箱加载后，它使用 Server-Sent Events（SSE）在 HTTP/2 上建立了一个长连接流用于实时通知。\n当有人给你发邮件时，Google 的后端通过这个流推送一条小型 JSON 通知，Gmail 立即更新你的收件箱——无需轮询，无需刷新页面。HTTP/2 连接保持打开状态，静静地等待。\n这就是现代 Web：看起来简单的「查收邮件」实际上是一个复杂的、多协议的实时通信系统。而这一切都始于一次 DNS 查询。"
+    },
+    "16": {
+      "text": "场景完成——查收邮件",
+      "detail": "当你点击 Gmail 书签时到底发生了什么：\nDNS 解析（1 个往返，约 25 毫秒）：\n  你的笔记本询问「mail.google.com 在哪？」\n  解析器回答「142.250.80.5」\n\nTCP 握手（1 个往返，约 30 毫秒）：\n  SYN → SYN-ACK → ACK\n  与端口 443 建立可靠连接\n\nTLS 1.3 握手（1 个往返，约 30 毫秒）：\n  ClientHello（x25519 公钥、SNI、ALPN）\n  ServerHello + Certificate + Finished（加密）\n  Client Finished\n  加密已激活：AES-256-GCM\n\nHTTP/2 多路复用加载（约 300 毫秒）：\n  连接前言 + SETTINGS\n  GET /mail/u/0/#inbox → 200 OK（HTML 框架，15KB）\n  GET /static/js/main.js → 200 OK（JS 包，200KB）\n  GET /mail/u/0/api/inbox → 200 OK（收件箱 JSON，5KB）\n  所有三个响应在一条连接上交替传输\n\n实时推送：\n  Server-Sent Events 流用于实时邮件通知\n\n总计：约 400 毫秒，7 种以上协议，约 20 次数据包交换。下次有人说「我只是查一下邮件」时，你就知道线路上到底在发生什么了。"
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "查收邮件时到底发生了什么",
+      "description": "一次导览，带你了解点击 Gmail 书签时发生的每一次协议交换——从 DNS 到收件箱渲染",
+      "steps": {
+        "0": "你刚刚点击了 Gmail 书签。看起来很简单，对吧？在幕后，你的笔记本电脑即将执行现代工程学中最令人惊叹的壮举之一——大约 20 次协议交换，涉及 7 种以上不同的协议，全部在不到半秒内完成。\n一切从这里开始：浏览器不知道 Gmail 的 IP 地址，所以它发送一个 DNS 查询。可以把 DNS 想象成互联网的电话簿。你的笔记本问「mail.google.com 在哪？」，使用一个 82 字节的小型 UDP 数据包发送到端口 53。这是你访问任何网站的第一步，而大多数人完全不知道这一步的存在。",
+        "1": "DNS 解析器返回了答案：「mail.google.com 在 142.250.80.5。」但仔细看——有一个 CNAME 链。mail.google.com 实际上是 googlemail.l.google.com 的别名。Google 利用这个技巧进行负载均衡和地理路由。如果你在东京，你可能会得到一个完全不同的 IP 地址，指向一台离你更近的服务器。\nTTL（生存时间）是 300 秒，所以你的笔记本会缓存这个答案 5 分钟。如果你在 2 分钟后再次查看邮件，它会完全跳过 DNS 查询。这就省了 25 毫秒。\n总耗时：约 25 毫秒。我们有了 IP 地址。现在我们需要建立连接。",
+        "2": "你的笔记本向 Gmail（142.250.80.5，端口 443 即 HTTPS）发送一个 TCP SYN 数据包。这是著名的三次握手的第一步。\n注意目的 MAC 地址——它是你路由器的 MAC，而不是 Gmail 的。这是因为在你的本地网络上，帧首先发送到路由器。然后路由器通过互联网将数据包转发到 Google 的数据中心。Ethernet 严格局限于本地；IP 负责长距离路由。\nSYN 携带了重要的提议：MSS 为 1460 字节（每个数据包的最大块大小）、窗口缩放因子 7（用于大型传输窗口）和允许 SACK（用于高效的丢包恢复）。",
+        "3": "Gmail 回复了 SYN-ACK——「收到你的 SYN，这是我的！」这个数据包从 Google 的数据中心传到你的笔记本再返回，大约花了 30 毫秒。这个往返时间主要是光在光纤中传播的速度——瓶颈是物理定律，而不是软件。\nACK 号（1）证明 Gmail 收到了你的 SYN。Gmail 还发送了自己的窗口缩放因子（8，比你的更大）——Google 的服务器是为高带宽连接设计的。",
+        "4": "你的笔记本发送最终的 ACK。TCP 连接现在在双方都处于 ESTABLISHED 状态。三个数据包，一个往返，大约 30 毫秒。还没有交换任何数据——这只是一次互相介绍。\n快速计算：DNS 花了 25 毫秒，TCP 握手花了 31 毫秒。我们现在已经进入这个过程 57 毫秒了，还没有加载你邮件的一个字节。下一步：加密。",
+        "5": "现在加密开始了。浏览器发送一个 TLS ClientHello——现代互联网安全中最重要的消息之一。\nClientHello 包含浏览器的 x25519 公钥。这是 TLS 1.3 的关键创新：通过在第一条消息中就发送密钥共享，服务器可以立即计算共享密钥。TLS 1.2 需要额外一个往返才能做到这一点。\n这条消息中还有：SNI（Server Name Indication）写着「mail.google.com」。这有一个让大多数人惊讶的事实：SNI 是以明文发送的。任何监视你网络的人都能看到你在连接 Gmail，即使其他所有内容都被加密了。\n另外 ALPN 表示「我偏好 HTTP/2」——在 TLS 握手中协商应用协议，以便加密一开始就准备就绪。",
+        "6": "Gmail 回复了一个大型传输，包含 ServerHello 加上四条加密消息，一次性全部发送。\n首先，ServerHello 给出了 Gmail 的 x25519 公钥。此时双方执行椭圆曲线数学运算来计算共享密钥——大约 50 微秒。然后 ServerHello 之后的所有内容都被加密了。\n加密载荷内包含：EncryptedExtensions（确认 HTTP/2）、证书链（mail.google.com 由 Google Trust Services 签署）、CertificateVerify（证明 Gmail 拥有私钥）和 Finished（整个握手的 HMAC）。\n在 TLS 1.2 中，证书是以明文发送的。在 TLS 1.3 中，网络观察者只能看到不透明的加密字节。这是一个重大的隐私改进。",
+        "7": "浏览器验证 Gmail 的证书链，检查签名，确认 Finished HMAC，然后发送自己的 Finished 消息。TLS 1.3 握手完成。\n双方现在拥有通过 HKDF（密钥派生函数）派生的应用流量密钥。从此刻起，每一个字节都用 AES-256-GCM 加密。\n整个 TLS 握手：一个往返，大约 31 毫秒。TLS 1.2 需要两个往返（约 62 毫秒）。节省的 31 毫秒乘以每天数十亿次 HTTPS 连接，这就是 TLS 1.3 对互联网如此重要的原因。\n总耗时：约 89 毫秒。DNS + TCP + TLS 完成。现在是真正的邮件了。",
+        "8": "加密已激活且 HTTP/2 已协商，浏览器发送 HTTP/2 连接前言（一个 24 字节的魔术字符串）和一个 SETTINGS 帧。\n关键设置：100 个并发流（意味着一条连接上可以同时发出 100 个请求）、每个流 1MB 的流控窗口，以及 HPACK 头部压缩。HTTP/2 是一个二进制协议——比 HTTP/1.1 的纯文本紧凑得多。HPACK 压缩意味着重复的头部（如 Cookie）被发送为小型表索引而非完整文本。",
+        "9": "就是这里——真正的收件箱请求！浏览器发送：\n  GET /mail/u/0/#inbox\n在 HTTP/2 stream 1 上，附带你的会话 Cookie（证明你已登录）、User-Agent 和接受的压缩格式。\n我们现在已经进入这段旅程的第 91 毫秒。从你点击书签到现在已经过了 91 毫秒的 DNS、TCP、TLS 和 HTTP/2 设置，而第一个真正的请求现在才离开你的笔记本。你仍然没有注意到任何延迟。",
+        "10": "Gmail 返回收件箱 HTML——但这只是一个框架。页面的骨架，里面有空的容器等待填充邮件。这大约是 60KB 的 HTML，使用 Brotli（Google 的压缩算法，比 gzip 好 20-26%）压缩到约 15KB。\n你的浏览器在完整响应到达之前就开始解析这个 HTML。这种技术（渐进式渲染）就是为什么页面似乎是逐渐出现的，而不是一下子全部显示。",
+        "11": "在 HTML 还在传输时，浏览器看到一个 <script> 标签，立即在 stream 3 上发起第二个请求：JavaScript 包。\n这就是 HTTP/2 多路复用。Stream 1（HTML）和 stream 3（JavaScript）共享同一条 TCP 连接。使用 HTTP/1.1 时，浏览器需要开第二条 TCP 连接，增加约 90 毫秒的握手开销。",
+        "12": "第三个请求在 stream 5 上发起：一个 XHR 调用 Gmail 的收件箱 API。一条 TCP 连接上的三个并发请求。\n想想 HTTP/1.1 需要什么：\n- 连接 1：HTML（TCP + TLS 握手 = 约 90 毫秒开销）\n- 连接 2：JavaScript（又要约 90 毫秒开销）\n- 连接 3：API 数据（又要约 90 毫秒开销）\nHTTP/2 无需任何额外开销就完成了所有三个请求。仅多路复用就节省了大约 180 毫秒的握手时间。",
+        "13": "Gmail 同时发回 JavaScript 包（约 200KB 压缩后）和收件箱 JSON（约 5KB），交替发送两个流的 DATA 帧。一块 JavaScript，然后一块收件箱 JSON，然后更多 JavaScript……\n收件箱 JSON 先完成（它小了 40 倍），所以浏览器可以在 JavaScript 包还在下载时就开始渲染邮件主题和发件人。使用 HTTP/1.1 时，较小的 JSON 响应会被较大的 JavaScript 文件阻塞。HTTP/2 的多路复用消除了这种队头阻塞。",
+        "14": "在你点击书签大约 400 毫秒后，收件箱出现在屏幕上。在不到半秒内，你的笔记本完成了 DNS 解析、TCP 连接建立、TLS 1.3 加密、HTTP/2 多路复用加载、Brotli 解压、HTML 解析、JavaScript 执行和 UI 渲染。\n7 种协议。20 次交换。400 毫秒。而你以为你只是「查一下邮件」。",
+        "15": "但 Gmail 还没完。它在 HTTP/2 上打开了一个持久的 Server-Sent Events（SSE）流用于实时推送通知。当有人给你发新邮件时，一条微小的 JSON 通知通过这个流到达，你的收件箱立即更新——无需轮询，无需刷新页面。\nHTTP/2 连接在后台保持打开状态，静静地等待。这是现代 Web 的巅峰：一个复杂的、多层的实时通信系统，给人的感觉只是「查一下邮件」。",
+        "16": "让我们回顾一下刚才看到的一切：\n1. DNS（25 毫秒）——通过 UDP 查找 mail.google.com 的 IP 地址\n2. TCP（31 毫秒）——与 Gmail 端口 443 进行三次握手\n3. TLS 1.3（31 毫秒）——x25519 密钥交换，AES-256-GCM 加密\n4. HTTP/2 设置（1 毫秒）——连接前言和 SETTINGS\n5. 收件箱加载（约 300 毫秒）——HTML、JavaScript 和 API 数据多路复用\n6. 实时推送——SSE 流用于实时通知\n涉及的协议：Ethernet、IP、UDP、DNS、TCP、TLS 1.3、HTTP/2\n总时间：约 400 毫秒，7 种以上协议，约 20 次数据包交换\n你访问的每个网站都经过这同一个协议栈。每次搜索、每个视频、每次社交媒体滚动。理解这些协议就是理解现代互联网的骨干。"
+      }
+    }
+  }
+}

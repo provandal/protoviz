@@ -1,0 +1,194 @@
+{
+  "meta": {
+    "title": "NVMe/TCP: mDNS → Descubrimiento CDC → DIM → Conexión al Subsistema → I/O",
+    "description": "Un intercambio completo NVMe over TCP (NVMe-oF/TCP) desde el descubrimiento inicial de servicios hasta las operaciones de I/O. Un host Linux ejecutando nvme-stas descubre un Controlador de Descubrimiento Centralizado (CDC) vía mDNS, se registra con DIM (TP8013), recupera Discovery Log Pages del CDC conteniendo referencias DDC, se conecta al Controlador de Descubrimiento Directo (DDC) en el array de almacenamiento para conocer detalles del Controlador I/O, luego se conecta al Controlador I/O para realizar operaciones NVMe Write y Read. Demuestra la jerarquía completa de descubrimiento de tres niveles: CDC → DDC → IOC.",
+    "learning_objectives": [
+      "Comprender cómo nvme-stas (stafd) descubre CDCs vía anuncio de servicio mDNS (_nvme-disc._tcp)",
+      "Seguir la inicialización de conexión NVMe-oF/TCP: intercambio de PDUs ICReq/ICResp y negociación de parámetros",
+      "Observar el comando Fabrics Connect estableciendo una cola Admin con un Controlador de Descubrimiento",
+      "Ver cómo DIM (Gestión de Información de Descubrimiento, TP8013) registra un host con un CDC",
+      "Comprender los Discovery Log Pages: cómo los hosts aprenden qué subsistemas y controladores están disponibles",
+      "Rastrear la conexión completa al Controlador I/O: Fabrics Connect → Identify Controller → Identify Namespace",
+      "Observar comandos NVMe Write y Read fluyendo sobre TCP con PDUs CapsuleCmd, R2T, H2CData y C2HData",
+      "Comprender la jerarquía de controladores CDC → DDC → IOC en la arquitectura de descubrimiento NVMe-oF"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Consulta mDNS: _nvme-disc._tcp.local",
+      "detail": "El demonio stafd del host (parte de nvme-stas) consulta mDNS buscando controladores de descubrimiento NVMe. Envía una consulta DNS multicast a 224.0.0.251:5353 buscando registros PTR que coincidan con el tipo de servicio _nvme-disc._tcp. Este es el mecanismo DNS-SD (Descubrimiento de Servicios basado en DNS, RFC 6763) especificado en TP8009 para descubrimiento automatizado de CDC."
+    },
+    "1": {
+      "text": "Respuesta mDNS: CDC en 192.168.100.50:8009",
+      "detail": "El CDC responde con registros mDNS anunciando su servicio de descubrimiento. El registro PTR mapea _nvme-disc._tcp.local al nombre de instancia del servicio. El registro SRV proporciona el hostname y puerto del destino (8009). El registro TXT lleva pares clave-valor: p=tcp (tipo de transporte) y nqn=nqn.2014-08.org.nvmexpress.discovery (el NQN de descubrimiento bien conocido)."
+    },
+    "2": {
+      "text": "TCP SYN → Puerto 8009 del CDC",
+      "detail": "stafd inicia una conexión TCP al CDC en 192.168.100.50:8009. El puerto 8009 es el trsvcid predeterminado para controladores de descubrimiento NVMe."
+    },
+    "3": {
+      "text": "TCP SYN-ACK ← CDC",
+      "detail": "La pila TCP del CDC responde con SYN-ACK."
+    },
+    "4": {
+      "text": "TCP ACK — conexión establecida al CDC",
+      "detail": "El host completa la negociación en 3 pasos. Conexión TCP al CDC ahora establecida. La capa NVMe-oF/TCP enviará ICReq a continuación."
+    },
+    "5": {
+      "text": "ICReq → CDC (Inicializar Conexión NVMe/TCP)",
+      "detail": "Primer PDU NVMe-oF/TCP después de la negociación TCP. El host envía una Solicitud de Inicialización de Conexión (ICReq) para negociar parámetros NVMe/TCP. Campos clave: Versión de Formato PDU, tipos de digest solicitados, Alineación de Datos PDU del Host, y R2Ts pendientes máximos."
+    },
+    "6": {
+      "text": "ICResp ← CDC (Parámetros de conexión aceptados)",
+      "detail": "El CDC responde con ICResp confirmando los parámetros negociados. Con ICReq/ICResp completados, la capa de transporte NVMe/TCP está inicializada y lista para comandos NVMe."
+    },
+    "7": {
+      "text": "Fabrics Connect → CDC (Cola Admin, NQN de Descubrimiento)",
+      "detail": "El host envía un comando NVMe Fabrics Connect para establecer una asociación de cola Admin con el CDC. El comando usa opcode 0x7F (Fabrics) con fctype=0x01 (Connect). Queue ID 0 indica la cola Admin. Los datos de Connect (1024 bytes) llevan la identidad del host: Host ID (UUID), Host NQN, y el NQN del Subsistema destino (nqn.2014-08.org.nvmexpress.discovery)."
+    },
+    "8": {
+      "text": "Respuesta Fabrics Connect ← CDC (CNTLID=65)",
+      "detail": "El CDC acepta el Fabrics Connect y asigna Controller ID 65 a este host. La cola admin está ahora establecida."
+    },
+    "9": {
+      "text": "Registro DIM → CDC (TP8013)",
+      "detail": "El host envía un comando de Gestión de Información de Descubrimiento (DIM) para registrarse con el CDC. DIM está definido en TP8013 y permite a los hosts registrarse/desregistrarse con controladores de descubrimiento. El registro incluye el NQN del host, Host ID (UUID), nombre de host y versión del SO."
+    },
+    "10": {
+      "text": "Respuesta de Registro DIM ← CDC (Éxito)",
+      "detail": "El CDC confirma el registro del host. El host está ahora en la base de datos del CDC y recibirá discovery log pages filtrados por la configuración de zonificación."
+    },
+    "11": {
+      "text": "Get Log Page → CDC (Discovery Log, LID 0x70)",
+      "detail": "El host solicita el Discovery Log Page (LID 0x70) del CDC. Este es un comando estándar NVMe Get Log Page admin. El discovery log contiene entradas para todos los subsistemas accesibles a este host, filtrados por la configuración de zonificación del CDC."
+    },
+    "12": {
+      "text": "Discovery Log Page ← CDC (2 referencias DDC)",
+      "detail": "El CDC devuelve el discovery log con 2 entradas de referencia DDC: 1) DDC en array de almacenamiento 1 (subtipo=1, Subsistema de Descubrimiento) en 192.168.100.51:8009 2) DDC en array de almacenamiento 2 (subtipo=1) en 192.168.100.52:8009\nEstas son referencias — el CDC dirige al host a conectarse a cada DDC (Controlador de Descubrimiento Directo) para conocer qué Controladores I/O están disponibles en ese array."
+    },
+    "13": {
+      "text": "TCP SYN → Puerto 8009 del DDC (array de almacenamiento)",
+      "detail": "stafd sigue la referencia DDC del discovery log del CDC. Inicia una conexión TCP al Controlador de Descubrimiento Directo (DDC) en el array de almacenamiento 1 en 192.168.100.51:8009. Este es el segundo nivel de la jerarquía de descubrimiento de tres niveles: CDC (red completa) → DDC (por array) → IOC (por subsistema)."
+    },
+    "14": {
+      "text": "TCP SYN-ACK ← DDC",
+      "detail": "El DDC del array de almacenamiento confirma el intento de conexión TCP."
+    },
+    "15": {
+      "text": "TCP ACK — conexión establecida al DDC",
+      "detail": "Negociación TCP al DDC del array de almacenamiento completa."
+    },
+    "16": {
+      "text": "ICReq → DDC (Inicializar Conexión NVMe/TCP)",
+      "detail": "Inicialización NVMe/TCP con el DDC — mismo intercambio ICReq/ICResp que con el CDC."
+    },
+    "17": {
+      "text": "ICResp ← DDC (Parámetros de conexión aceptados)",
+      "detail": "El DDC acepta los parámetros de transporte NVMe/TCP."
+    },
+    "18": {
+      "text": "Fabrics Connect → DDC (Cola Admin, NQN de Descubrimiento)",
+      "detail": "El host envía Fabrics Connect al DDC usando el NQN de subsistema de descubrimiento bien conocido (nqn.2014-08.org.nvmexpress.discovery) — el mismo NQN usado para la conexión al CDC."
+    },
+    "19": {
+      "text": "Respuesta Fabrics Connect ← DDC (CNTLID=1)",
+      "detail": "El DDC acepta la conexión y asigna CNTLID=1. La cola admin al DDC está establecida."
+    },
+    "20": {
+      "text": "Registro DIM → DDC (TP8013)",
+      "detail": "El host se registra con el DDC vía DIM, tal como lo hizo con el CDC."
+    },
+    "21": {
+      "text": "Respuesta de Registro DIM ← DDC (Éxito)",
+      "detail": "El DDC confirma el registro del host."
+    },
+    "22": {
+      "text": "Get Log Page → DDC (Discovery Log, LID 0x70)",
+      "detail": "El host solicita el Discovery Log Page del DDC. A diferencia del log del CDC que contenía referencias DDC, el log del DDC contiene las entradas reales de subsistemas NVM — específicamente los Controladores I/O en este array de almacenamiento."
+    },
+    "23": {
+      "text": "Discovery Log del DDC ← DDC (subsys-alpha en 4420)",
+      "detail": "El DDC devuelve su discovery log con 1 entrada: Subsistema NVM A (nqn.2024-01.com.storage:subsys-alpha) en 192.168.100.51:4420. Este es el NQN del Controlador I/O que stacd usará para conectarse. La jerarquía de descubrimiento de tres niveles está ahora completa: CDC (red completa) → DDC (por array) → IOC (por subsistema)."
+    },
+    "24": {
+      "text": "TCP SYN → Puerto 4420 del Controlador I/O",
+      "detail": "stacd inicia una conexión TCP al Controlador I/O en 192.168.100.51:4420 — la dirección y puerto aprendidos del discovery log del DDC. El puerto 4420 es el puerto asignado por IANA para NVMe over Fabrics."
+    },
+    "25": {
+      "text": "TCP SYN-ACK ← Controlador I/O",
+      "detail": "El Controlador I/O confirma el intento de conexión TCP."
+    },
+    "26": {
+      "text": "TCP ACK — conexión establecida al Controlador I/O",
+      "detail": "Negociación TCP al Controlador I/O completa."
+    },
+    "27": {
+      "text": "ICReq → Controlador I/O",
+      "detail": "Inicialización NVMe/TCP — mismo intercambio ICReq/ICResp que con el CDC."
+    },
+    "28": {
+      "text": "ICResp ← Controlador I/O",
+      "detail": "El Controlador I/O acepta los parámetros de transporte NVMe/TCP."
+    },
+    "29": {
+      "text": "Fabrics Connect → Controlador I/O (subsys-alpha)",
+      "detail": "El host se conecta al Controlador I/O usando el NQN del subsistema aprendido del discovery log del DDC (nqn.2024-01.com.storage:subsys-alpha). Esto crea la asociación de cola Admin. A diferencia de las conexiones CDC y DDC que usaron el NQN de descubrimiento bien conocido, esta usa el NQN real del subsistema de almacenamiento — completando el nivel final de la jerarquía CDC → DDC → IOC."
+    },
+    "30": {
+      "text": "Respuesta Fabrics Connect ← Controlador I/O (CNTLID=1)",
+      "detail": "El Controlador I/O acepta la conexión y asigna CNTLID=1. La cola admin está establecida."
+    },
+    "31": {
+      "text": "Identify Controller (CNS=0x01)",
+      "detail": "El host envía Identify Controller (opcode admin 0x06, CNS=1) para conocer las capacidades del controlador: número de serie, modelo, versión de firmware, tamaño máximo de transferencia de datos (MDTS), número de namespaces y características soportadas."
+    },
+    "32": {
+      "text": "Respuesta Identify Controller (4 namespaces, MDTS=256KB)",
+      "detail": "El Controlador I/O devuelve su identidad: modelo \"NVMe-oF/TCP Storage Array\", firmware v2.1.0, MDTS=6 (transferencia máxima 256KB), y 4 namespaces."
+    },
+    "33": {
+      "text": "Identify Namespace (NSID=1, CNS=0x00)",
+      "detail": "El host identifica el Namespace 1 para conocer su tamaño, formato LBA y capacidades."
+    },
+    "34": {
+      "text": "Respuesta Identify Namespace (NSID=1, ~1TB, LBAs de 512B)",
+      "detail": "El Namespace 1 tiene ~1TB de capacidad (1,953,525,168 × LBAs de 512 bytes), 25% utilizado. Formato LBA 0: 512 bytes por LBA, sin metadatos, mejor rendimiento relativo."
+    },
+    "35": {
+      "text": "Fabrics Connect Cola I/O 1",
+      "detail": "El host crea la Cola I/O 1 vía Fabrics Connect con QID=1. Las colas I/O se usan para comandos NVMe Read/Write (los comandos admin usan QID=0)."
+    },
+    "36": {
+      "text": "Cola I/O 1 establecida — lista para I/O",
+      "detail": "La Cola I/O 1 está establecida. El host ahora puede enviar comandos NVMe Read y Write. El dispositivo de bloque /dev/nvme0n1 está ahora completamente operacional."
+    },
+    "37": {
+      "text": "Comando NVMe Write (4KB a LBA 0x1000)",
+      "detail": "El host envía un comando NVMe Write de 4KB al Namespace 1 en LBA 0x1000. El SQE Write (64 bytes) se envía como un PDU CapsuleCmd en la Cola I/O 1. Sobre NVMe/TCP, los datos de escritura no se envían en línea con el comando — el controlador primero debe enviar un PDU R2T (Listo para Transferir) solicitando los datos."
+    },
+    "38": {
+      "text": "R2T ← Controlador (solicita 4KB de datos de escritura)",
+      "detail": "El Controlador I/O envía un PDU Ready-to-Transfer (R2T) solicitando los datos de escritura del host. El R2T especifica la etiqueta de transferencia, offset de datos (0 = inicio) y longitud (4096 bytes). Este es el mecanismo de control de flujo NVMe/TCP."
+    },
+    "39": {
+      "text": "H2CData → Controlador (4KB de carga útil de escritura)",
+      "detail": "El host envía los 4KB de datos de escritura en un PDU H2CData (Datos Host-a-Controlador). La etiqueta de transferencia coincide con el R2T. El flag LAST indica que este es el PDU de datos final para este comando."
+    },
+    "40": {
+      "text": "Finalización de Write ← Controlador (Éxito)",
+      "detail": "El Controlador I/O completa la escritura y devuelve un CapsuleResp con estado 0x0000 (Éxito). Los 4KB han sido escritos en LBA 0x1000 en el Namespace 1."
+    },
+    "41": {
+      "text": "Comando NVMe Read (4KB del LBA 0x1000)",
+      "detail": "El host lee de vuelta los mismos 4KB del LBA 0x1000. El SQE Read se envía como CapsuleCmd en la Cola I/O 1. A diferencia de Write, el comando Read no requiere R2T — el controlador envía datos directamente vía PDUs C2HData."
+    },
+    "42": {
+      "text": "C2HData ← Controlador (4KB de carga útil de lectura)",
+      "detail": "El Controlador I/O envía los 4KB de datos de lectura en un PDU C2HData (Datos Controlador-a-Host). Para lecturas, los datos fluyen del controlador al host sin negociación R2T. El flag LAST marca este como el PDU de datos final."
+    },
+    "43": {
+      "text": "Finalización de Read ← Controlador (Éxito)",
+      "detail": "Lectura completada exitosamente. Los 4KB de datos del LBA 0x1000 han sido entregados al host. El ciclo de vida completo de NVMe/TCP está ahora demostrado: descubrimiento mDNS → registro CDC → discovery log del CDC (referencias DDC) → conexión DDC → discovery log del DDC (detalles IOC) → conexión IOC → identificación del controlador → enumeración de namespaces → configuración de cola I/O → Write → Read. La jerarquía de descubrimiento de tres niveles (CDC → DDC → IOC) está completa."
+    }
+  }
+}

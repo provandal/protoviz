@@ -1,0 +1,194 @@
+{
+  "meta": {
+    "title": "NVMe/TCP: mDNS → גילוי CDC → DIM → חיבור תת-מערכת → I/O",
+    "description": "חילוף NVMe over TCP (NVMe-oF/TCP) מלא מגילוי שירות ראשוני ועד פעולות I/O. מארח Linux המריץ nvme-stas מגלה בקר גילוי מרכזי (CDC) דרך mDNS, נרשם עם DIM (TP8013), שולף Discovery Log Pages של CDC המכילים הפניות DDC, מתחבר לבקר גילוי ישיר (DDC) במערך האחסון ללמידת פרטי בקר IO, ואז מתחבר לבקר IO לביצוע פעולות כתיבה וקריאה NVMe. מדגים את מדרג הגילוי התלת-שכבתי המלא: CDC → DDC → IOC.",
+    "learning_objectives": [
+      "הבנה כיצד nvme-stas (stafd) מגלה CDCs דרך פרסום שירות mDNS (_nvme-disc._tcp)",
+      "מעקב אחר אתחול חיבור NVMe-oF/TCP: חילוף PDU של ICReq/ICResp ומשא ומתן על פרמטרים",
+      "תצפית על פקודת Fabrics Connect המקימה תור Admin לבקר גילוי",
+      "ראיית כיצד DIM (Discovery Information Management, TP8013) רושם מארח עם CDC",
+      "הבנת Discovery Log Pages: כיצד מארחים לומדים אילו תת-מערכות ובקרים זמינים",
+      "מעקב אחר חיבור בקר IO מלא: Fabrics Connect → Identify Controller → Identify Namespace",
+      "צפייה בפקודות כתיבה וקריאה NVMe הזורמות על TCP עם PDUs של CapsuleCmd, R2T, H2CData ו-C2HData",
+      "הבנת מדרג הבקרים CDC → DDC → IOC בארכיטקטורת גילוי NVMe-oF"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "שאילתת mDNS: _nvme-disc._tcp.local",
+      "detail": "הדמון stafd של המארח (חלק מ-nvme-stas) שולח שאילתת mDNS לבקרי גילוי NVMe. הוא שולח שאילתת DNS בשידור רב ל-224.0.0.251:5353 ומחפש רשומות PTR התואמות לסוג שירות _nvme-disc._tcp. זהו מנגנון DNS-SD (DNS-Based Service Discovery, RFC 6763) המצוין ב-TP8009 לגילוי CDC אוטומטי. stafd משתמש ב-Avahi (מימוש mDNS/DNS-SD של Linux) לרישום דפדפן שירות לסוג שירות זה."
+    },
+    "1": {
+      "text": "תגובת mDNS: CDC ב-192.168.100.50:8009",
+      "detail": "ה-CDC עונה עם רשומות mDNS המפרסמות את שירות הגילוי שלו. רשומת PTR ממפה _nvme-disc._tcp.local לשם מופע השירות. רשומת SRV מספקת את שם המארח ויציאה (8009). רשומת TXT נושאת זוגות מפתח-ערך: p=tcp (סוג תעבורה) ו-nqn=nqn.2014-08.org.nvmexpress.discovery (NQN הגילוי הידוע). callback של Avahi ב-stafd מנתח רשומות אלה ומרכיב מילון בקר עם transport, traddr, trsvcid ו-subsysnqn."
+    },
+    "2": {
+      "text": "TCP SYN → CDC יציאה 8009",
+      "detail": "stafd מתחיל חיבור TCP ל-CDC ב-192.168.100.50:8009. יציאה 8009 היא ה-trsvcid (Transport Service ID) ברירת המחדל לבקרי גילוי NVMe. לחיצת יד TCP תלת-כיוונית מקימה את התעבורה האמינה ש-NVMe-oF/TCP ירוץ עליה."
+    },
+    "3": {
+      "text": "TCP SYN-ACK ← CDC",
+      "detail": "מחסנית ה-TCP של CDC עונה ב-SYN-ACK, מאשרת את ה-SYN של המארח ושולחת מספר רצף משלה."
+    },
+    "4": {
+      "text": "TCP ACK — חיבור ל-CDC הוקם",
+      "detail": "המארח משלים את לחיצת היד התלת-כיוונית. חיבור TCP ל-CDC הוקם כעת. שכבת NVMe-oF/TCP תשלח ICReq הבא."
+    },
+    "5": {
+      "text": "ICReq → CDC (אתחול חיבור NVMe/TCP)",
+      "detail": "PDU ראשון של NVMe-oF/TCP לאחר לחיצת יד TCP. המארח שולח Initialize Connection Request (ICReq) למשא ומתן על פרמטרי NVMe/TCP. שדות מרכזיים: גרסת פורמט PDU (רק v0 מוגדר), סוגי תקציר מבוקשים (תקצירי כותרת ו/או נתונים לשלמות), יישור נתוני PDU של מארח, ומקסימום R2Ts פתוחים."
+    },
+    "6": {
+      "text": "ICResp ← CDC (פרמטרי חיבור התקבלו)",
+      "detail": "ה-CDC עונה ב-ICResp המאשר את הפרמטרים שנוהלו במשא ומתן. CPDA (Controller PDU Data Alignment) וסוגי תקציר שהתקבלו של הבקר מוחזרים. MaxData מציין את הנתונים המרביים שהבקר יכול לטפל בהם לכל R2T. עם השלמת ICReq/ICResp, שכבת תעבורת NVMe/TCP מאותחלת ומוכנה לפקודות NVMe."
+    },
+    "7": {
+      "text": "Fabrics Connect → CDC (תור Admin, NQN גילוי)",
+      "detail": "המארח שולח פקודת NVMe Fabrics Connect להקמת שיוך תור Admin עם ה-CDC. הפקודה משתמשת ב-opcode 0x7F (Fabrics) עם fctype=0x01 (Connect). Queue ID 0 מציין את תור ה-Admin. נתוני Connect (1024 בתים) נושאים את זהות המארח: Host ID (UUID), Host NQN, ו-NQN תת-מערכת יעד (nqn.2014-08.org.nvmexpress.discovery — NQN תת-מערכת הגילוי הידוע). Controller ID מוגדר ל-0xFFFF (דינמי) כך שה-CDC מקצה אחד."
+    },
+    "8": {
+      "text": "תגובת Fabrics Connect ← CDC (CNTLID=65)",
+      "detail": "ה-CDC מקבל את Fabrics Connect ומקצה Controller ID 65 למארח זה. תור ה-Admin הוקם כעת — המארח יכול לשלוח פקודות ניהול ל-CDC, כולל DIM ו-Get Log Page."
+    },
+    "9": {
+      "text": "DIM Register → CDC (TP8013)",
+      "detail": "המארח שולח פקודת Discovery Information Management (DIM) להירשם עם ה-CDC. DIM מוגדר ב-TP8013 ומאפשר למארחים להירשם/להתבטל מרישום עם בקרי גילוי. הרישום כולל את NQN המארח, Host ID (UUID), שם מארח וגרסת מערכת הפעלה. לאחר הרישום, ה-CDC כולל מארח זה בחישובי הזונינג שלו וישלח התראות אסינכרוניות כאשר לוג הגילוי משתנה."
+    },
+    "10": {
+      "text": "תגובת DIM Register ← CDC (הצלחה)",
+      "detail": "ה-CDC מאשר את רישום המארח. המארח כעת במסד הנתונים של ה-CDC ויקבל Discovery Log Pages מסוננים לפי תצורת הזונינג — רק תת-מערכות שמארח זה מורשה לגשת אליהן יופיעו."
+    },
+    "11": {
+      "text": "Get Log Page → CDC (לוג גילוי, LID 0x70)",
+      "detail": "המארח מבקש את Discovery Log Page (LID 0x70) מה-CDC. זו פקודת Get Log Page ניהולית סטנדרטית של NVMe. לוג הגילוי מכיל ערכים לכל תת-המערכות הנגישות למארח זה, מסוננים לפי תצורת הזונינג של ה-CDC."
+    },
+    "12": {
+      "text": "Discovery Log Page ← CDC (2 הפניות DDC)",
+      "detail": "ה-CDC מחזיר את לוג הגילוי עם 2 ערכי הפניית DDC: 1) DDC במערך אחסון 1 (subtype=1, תת-מערכת גילוי) ב-192.168.100.51:8009 2) DDC במערך אחסון 2 (subtype=1, תת-מערכת גילוי) ב-192.168.100.52:8009 אלו הפניות — ה-CDC מפנה את המארח להתחבר לכל DDC (בקר גילוי ישיר) ללמוד אילו בקרי IO זמינים במערך אחסון זה."
+    },
+    "13": {
+      "text": "TCP SYN → DDC יציאה 8009 (מערך אחסון)",
+      "detail": "stafd עוקב אחר הפניית DDC מלוג הגילוי של ה-CDC. הוא מתחיל חיבור TCP לבקר הגילוי הישיר (DDC) במערך אחסון 1 ב-192.168.100.51:8009. ה-DDC מספק Discovery Log Pages ספציפיים לתת-מערכות IO במערך אחסון מסוים זה. זו השכבה השנייה במדרג הגילוי התלת-שכבתי: CDC (רחב-רשת) → DDC (לפי-מערך) → IOC (לפי-תת-מערכת)."
+    },
+    "14": {
+      "text": "TCP SYN-ACK ← DDC",
+      "detail": "ה-DDC של מערך האחסון מאשר את ניסיון חיבור ה-TCP."
+    },
+    "15": {
+      "text": "TCP ACK — חיבור ל-DDC הוקם",
+      "detail": "לחיצת יד TCP ל-DDC במערך האחסון הושלמה."
+    },
+    "16": {
+      "text": "ICReq → DDC (אתחול חיבור NVMe/TCP)",
+      "detail": "אתחול NVMe/TCP עם ה-DDC — אותו חילוף ICReq/ICResp כמו עם ה-CDC."
+    },
+    "17": {
+      "text": "ICResp ← DDC (פרמטרי חיבור התקבלו)",
+      "detail": "DDC מקבל פרמטרי תעבורת NVMe/TCP."
+    },
+    "18": {
+      "text": "Fabrics Connect → DDC (תור Admin, NQN גילוי)",
+      "detail": "המארח שולח Fabrics Connect ל-DDC באמצעות NQN תת-מערכת הגילוי הידוע (nqn.2014-08.org.nvmexpress.discovery) — אותו NQN ששימש לחיבור CDC. גם CDC וגם DDC הם בקרי גילוי; הם נבדלים בהיקף (CDC = מרכזי/רחב-רשת, DDC = מקומי למערך אחסון) אך משתמשים באותו פרוטוקול גילוי ו-NQN."
+    },
+    "19": {
+      "text": "תגובת Fabrics Connect ← DDC (CNTLID=1)",
+      "detail": "ה-DDC מקבל את החיבור ומקצה CNTLID=1. תור ה-Admin ל-DDC הוקם — המארח יכול כעת לבקש את לוג הגילוי של ה-DDC ללמוד על בקרי IO במערך אחסון זה."
+    },
+    "20": {
+      "text": "DIM Register → DDC (TP8013)",
+      "detail": "המארח נרשם עם ה-DDC דרך DIM, בדיוק כפי שעשה עם ה-CDC. זה מבטיח שה-DDC מחזיר ערכי לוג גילוי מסוננים לפי תצורת הזונינג למארח ספציפי זה."
+    },
+    "21": {
+      "text": "תגובת DIM Register ← DDC (הצלחה)",
+      "detail": "ה-DDC מאשר את רישום המארח. המארח יכול כעת לבקש את דף לוג הגילוי של ה-DDC ללמוד אילו בקרי IO במערך אחסון זה נגישים."
+    },
+    "22": {
+      "text": "Get Log Page → DDC (לוג גילוי, LID 0x70)",
+      "detail": "המארח מבקש את Discovery Log Page מה-DDC. בניגוד ללוג של ה-CDC שהכיל הפניות DDC, לוג ה-DDC מכיל את ערכי תת-מערכת NVM בפועל — ספציפית בקרי IO במערך אחסון זה הנגישים למארח זה."
+    },
+    "23": {
+      "text": "לוג גילוי DDC ← DDC (subsys-alpha ביציאה 4420)",
+      "detail": "ה-DDC מחזיר את לוג הגילוי שלו עם ערך אחד: תת-מערכת NVM A (nqn.2024-01.com.storage:subsys-alpha) ב-192.168.100.51:4420. זהו NQN בקר IO ש-stacd ישתמש בו להתחבר. מדרג הגילוי התלת-שכבתי הושלם כעת: CDC (רחב-רשת) → DDC (לפי-מערך) → IOC (לפי-תת-מערכת)."
+    },
+    "24": {
+      "text": "TCP SYN → בקר IO יציאה 4420",
+      "detail": "stacd מתחיל חיבור TCP לבקר IO ב-192.168.100.51:4420 — הכתובת והיציאה שנלמדו מלוג הגילוי של ה-DDC. יציאה 4420 היא היציאה שהוקצתה על ידי IANA ל-NVMe over Fabrics."
+    },
+    "25": {
+      "text": "TCP SYN-ACK ← בקר IO",
+      "detail": "בקר IO מאשר את ניסיון חיבור ה-TCP."
+    },
+    "26": {
+      "text": "TCP ACK — חיבור לבקר IO הוקם",
+      "detail": "לחיצת יד TCP לבקר IO הושלמה."
+    },
+    "27": {
+      "text": "ICReq → בקר IO",
+      "detail": "אתחול NVMe/TCP — אותו חילוף ICReq/ICResp כמו עם ה-CDC."
+    },
+    "28": {
+      "text": "ICResp ← בקר IO",
+      "detail": "בקר IO מקבל פרמטרי תעבורת NVMe/TCP."
+    },
+    "29": {
+      "text": "Fabrics Connect → בקר IO (subsys-alpha)",
+      "detail": "המארח מתחבר לבקר IO באמצעות NQN תת-מערכת שנלמד מלוג הגילוי של ה-DDC (nqn.2024-01.com.storage:subsys-alpha). זה יוצר את שיוך תור ה-Admin. בניגוד לחיבורי CDC ו-DDC שהשתמשו ב-NQN הגילוי הידוע, כאן משתמשים ב-NQN תת-מערכת האחסון בפועל — ומשלימים את השכבה הסופית במדרג CDC → DDC → IOC."
+    },
+    "30": {
+      "text": "תגובת Fabrics Connect ← בקר IO (CNTLID=1)",
+      "detail": "בקר IO מקבל את החיבור ומקצה CNTLID=1. תור ה-Admin הוקם — המארח יכול כעת לזהות את הבקר ומרחבי השמות שלו."
+    },
+    "31": {
+      "text": "Identify Controller (CNS=0x01)",
+      "detail": "המארח שולח Identify Controller (admin opcode 0x06, CNS=1) ללמוד את יכולות הבקר: מספר סידורי, דגם, גרסת קושחה, גודל העברת נתונים מרבי (MDTS), מספר מרחבי שמות ותכונות נתמכות."
+    },
+    "32": {
+      "text": "תגובת Identify Controller (4 מרחבי שמות, MDTS=256KB)",
+      "detail": "בקר IO מחזיר את זהותו: דגם \"NVMe-oF/TCP Storage Array\", קושחה v2.1.0, MDTS=6 (העברה מרבית 256KB), ו-4 מרחבי שמות. דרייבר המארח משתמש ב-MDTS להגבלת גודלי בקשות I/O."
+    },
+    "33": {
+      "text": "Identify Namespace (NSID=1, CNS=0x00)",
+      "detail": "המארח מזהה מרחב שמות 1 ללמוד את גודלו, פורמט LBA ויכולות. CNS=0 עם NSID ספציפי מחזיר נתוני זהות מרחב השמות."
+    },
+    "34": {
+      "text": "תגובת Identify Namespace (NSID=1, ~1TB, LBAs של 512B)",
+      "detail": "מרחב שמות 1 בעל קיבולת ~1TB (1,953,525,168 × LBAs של 512 בתים), 25% בשימוש. פורמט LBA 0: 512 בתים ל-LBA, ללא metadata. המארח יציג זאת כ-/dev/nvmeXnY."
+    },
+    "35": {
+      "text": "Fabrics Connect תור IO 1",
+      "detail": "המארח יוצר תור IO 1 דרך Fabrics Connect עם QID=1. תורי IO משמשים לפקודות קריאה/כתיבה NVMe (פקודות ניהול משתמשות ב-QID=0). גודל SQ מוגדר ל-128 ערכים."
+    },
+    "36": {
+      "text": "תור IO 1 הוקם — מוכן ל-I/O",
+      "detail": "תור IO 1 הוקם. המארח יכול כעת לשלוח פקודות קריאה וכתיבה NVMe. מכשיר הבלוק /dev/nvme0n1 כעת פעיל לחלוטין."
+    },
+    "37": {
+      "text": "פקודת כתיבה NVMe (4KB ל-LBA 0x1000)",
+      "detail": "המארח מגיש פקודת כתיבה NVMe של 4KB למרחב שמות 1 ב-LBA 0x1000. SQE הכתיבה (64 בתים) נשלח כ-PDU של CapsuleCmd בתור IO 1. הפקודה מציינת 8 LBAs. בתעבורת NVMe/TCP, נתוני הכתיבה לא נשלחים בתוך הפקודה — הבקר חייב קודם לשלוח PDU של R2T (Ready to Transfer) המבקש את הנתונים."
+    },
+    "38": {
+      "text": "R2T ← בקר (בקשה ל-4KB נתוני כתיבה)",
+      "detail": "בקר IO שולח PDU של Ready-to-Transfer (R2T) המבקש את נתוני הכתיבה מהמארח. ה-R2T מציין את תגית ההעברה, היסט נתונים (0 = התחלה) ואורך (4096 בתים). זהו מנגנון בקרת הזרימה של NVMe/TCP."
+    },
+    "39": {
+      "text": "H2CData → בקר (מטען כתיבה 4KB)",
+      "detail": "המארח שולח 4KB נתוני כתיבה ב-PDU של H2CData (Host-to-Controller Data). תגית ההעברה תואמת ל-R2T. דגל LAST מציין שזה PDU הנתונים הסופי לפקודה זו."
+    },
+    "40": {
+      "text": "השלמת כתיבה ← בקר (הצלחה)",
+      "detail": "בקר IO משלים את הכתיבה ומחזיר CapsuleResp עם מצב 0x0000 (הצלחה). 4KB נכתבו ל-LBA 0x1000 במרחב שמות 1."
+    },
+    "41": {
+      "text": "פקודת קריאה NVMe (4KB מ-LBA 0x1000)",
+      "detail": "המארח קורא חזרה את אותם 4KB מ-LBA 0x1000. SQE הקריאה נשלח כ-CapsuleCmd בתור IO 1. בניגוד לכתיבה, פקודת הקריאה אינה דורשת R2T — הבקר שולח נתונים ישירות דרך PDUs של C2HData."
+    },
+    "42": {
+      "text": "C2HData ← בקר (מטען קריאה 4KB)",
+      "detail": "בקר IO שולח 4KB נתוני קריאה ב-PDU של C2HData (Controller-to-Host Data). לקריאות, נתונים זורמים מבקר למארח ללא לחיצת יד R2T — הבקר שולח נתונים ברגע שהם זמינים מהמדיה."
+    },
+    "43": {
+      "text": "השלמת קריאה ← בקר (הצלחה)",
+      "detail": "הקריאה הושלמה בהצלחה. 4KB הנתונים מ-LBA 0x1000 הועברו למארח. מחזור חיי NVMe/TCP המלא הודגם כעת: גילוי mDNS → רישום CDC → לוג גילוי CDC (הפניות DDC) → חיבור DDC → לוג גילוי DDC (פרטי IOC) → חיבור IOC → זיהוי בקר → ספירת מרחבי שמות → הקמת תור IO → כתיבה → קריאה. מדרג הגילוי התלת-שכבתי (CDC → DDC → IOC) הושלם."
+    }
+  }
+}

@@ -1,0 +1,101 @@
+{
+  "meta": {
+    "title": "IPv6 vs IPv4 헤더 비교: 더 단순하고, 빠르고, 확장 가능한",
+    "description": "IPv6와 IPv4 헤더를 직접 비교하는 시나리오. IPv4의 13개 필드, 가변 길이, 실 검사합 재계산 vs IPv6의 8개 필드, 고정 40바이트, 체크섬 없음. 확장 헤더 체인, 분할 제한(소스만 분할 가능, 라우터 불가), Path MTU Discovery를 포함합니다.",
+    "learning_objectives": [
+      "IPv4와 IPv6 헤더 구조의 주요 차이점 이해",
+      "IPv6의 고정 헤더와 체크섬 제거가 라우터 처리를 빠르게 하는 이유 이해",
+      "IPv6 확장 헤더 체인의 작동 방식 확인",
+      "IPv6에서 소스만 분할할 수 있는 이유와 Path MTU Discovery의 중요성 이해"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "파트 1 -- IPv4 패킷: 호스트 A가 라우터를 통해 호스트 B로 전송",
+      "detail": "호스트 A가 192.168.2.20의 호스트 B에 20바이트 TCP 페이로드가 담긴 IPv4 패킷을 구성합니다. IPv4 헤더에는 가변 길이 IHL, 분할 필드(Identification, Flags, Fragment Offset), Header Checksum을 포함한 13개 필드가 있습니다. DF(Don't Fragment)를 설정하더라도 분할 필드는 모든 패킷에 존재합니다. 옵션이 없으면 헤더는 20바이트이지만 옵션이 있으면 최대 60바이트까지 될 수 있습니다."
+    },
+    "1": {
+      "text": "IPv4 헤더 상세: 13개 필드, 가변 길이, 체크섬 필요",
+      "detail": "IPv4 헤더(RFC 791)에는 13개 필드가 있습니다: Version(4비트), IHL(4비트), DSCP(6비트), ECN(2비트), Total Length(16비트), Identification(16비트), Flags(3비트), Fragment Offset(13비트), TTL(8비트), Protocol(8비트), Header Checksum(16비트), Source IP(32비트), Destination IP(32비트), 그리고 가변 길이 Options.\n고속 포워딩의 주요 문제: 1. 가변 헤더 길이(페이로드 시작을 알기 전에 IHL을 읽어야 함) 2. 수신 시 Header Checksum을 검증하고 포워딩 시 재계산해야 함 3. 분할하지 않을 때도 분할 필드가 항상 존재 4. 옵션이 하드웨어 구현을 어렵게 함"
+    },
+    "2": {
+      "text": "라우터가 IPv4 패킷 수신: 체크섬 재계산 필요(TTL 변경), 분할 가능",
+      "detail": "라우터가 IPv4 패킷을 수신하고 여러 작업을 수행해야 합니다:\n1. Header Checksum 검증 — 헤더의 ones' complement 합을 계산하여 0xFFFF인지 확인. 아니면 패킷을 조용히 폐기.\n2. TTL을 64에서 63으로 감소. TTL이 0이 되면 폐기하고 ICMP Time Exceeded 전송.\n3. Header Checksum 재계산 — TTL이 변경되었으므로 체크섬이 무효화됨. 포워딩 전에 재계산 필수. 이것이 IPv6가 완전히 제거한 순수 오버헤드.\n4. MTU 확인 — 나가는 인터페이스의 MTU가 패킷 크기보다 작고 DF가 설정되지 않았으면 라우터가 패킷을 분할.\n10Gbps에서 최소 크기 패킷(64바이트)으로 라우터는 초당 ~1488만 패킷을 처리할 수 있으며, 체크섬 재계산은 측정 가능한 지연을 추가합니다."
+    },
+    "3": {
+      "text": "라우터가 IPv4 패킷 포워딩: TTL=63, 새 체크섬 0x4e3c",
+      "detail": "라우터가 감소된 TTL(63)과 재계산된 헤더 체크섬(0x4e3c)으로 패킷을 포워딩합니다. L2 주소가 라우터-호스트 B 세그먼트용으로 재작성됩니다. TTL과 체크섬을 제외한 IPv4 헤더의 모든 필드는 변경되지 않습니다 — 하지만 표준에 증분 체크섬 메커니즘이 없으므로 체크섬은 완전히 재계산되어야 했습니다."
+    },
+    "4": {
+      "text": "13개 필드, 가변 길이, 모든 홀에서 체크섬 재계산",
+      "detail": "IPv4 헤더 요약: 13개 필드, 20-60바이트(Options로 인해 가변), Header Checksum은 TTL이 변경되므로 모든 홉에서 재계산 필수. 분할 메커니즘(Identification, Flags, Fragment Offset)은 분할을 사용하지 않을 때도 모든 패킷에서 32비트를 소비합니다. 가변 길이 Options 필드는 하드웨어가 페이로드까지의 고정 오프셋을 가정할 수 없게 합니다. 이러한 설계 선택은 1981년(RFC 791) 라우터가 느린 소프트웨어 구현이었을 때 합리적이었지만, 현대 회선 속도(100Gbps+)에서는 성능 부담입니다."
+    },
+    "5": {
+      "text": "파트 2 -- IPv6 패킷: 같은 데이터, 같은 경로, 더 단순한 헤더",
+      "detail": "호스트 A가 이제 동일한 TCP 페이로드를 IPv6로 호스트 B에 보냅니다. IPv6 헤더는 놀라울 정도로 간단합니다: 8개 필드만, 항상 정확히 40바이트. IHL 필드 없음(크기가 절대 변하지 않으므로), Header Checksum 없음(TCP/UDP가 이미 데이터를 체크섬하므로), 분할 필드 없음(IPv6에서는 소스만 분할 가능하므로).\nEtherType이 0x0800(IPv4)에서 0x86DD(IPv6)로 변경되었고, 주소는 32비트 대신 128비트입니다."
+    },
+    "6": {
+      "text": "IPv6 헤더 상세: 8개 필드, 고정 40바이트, 체크섬 없음",
+      "detail": "IPv6 헤더(RFC 8200)에는 8개 필드만 있습니다: Version(4비트), Traffic Class(8비트), Flow Label(20비트), Payload Length(16비트), Next Header(8비트), Hop Limit(8비트), Source Address(128비트), Destination Address(128비트).\nIPv4 대비 제거된 것: - IHL — 헤더가 항상 40바이트이므로 사라짐 - Identification, Flags, Fragment Offset — Fragment 확장 헤더로 이동 - Header Checksum — 완전히 제거(TCP/UDP에 이미 체크섬 있음) - Options — 확장 헤더 체인 메커니즘으로 대체\n추가된 것: - Flow Label(20비트) — 전송 헤더를 검사하지 않고 흐름을 식별, 암호화된 트래픽에 중요\n이름 변경된 것: - TTL → Hop Limit(솔직한 이름 — 항상 홉 카운터였지 타이머가 아님) - Protocol → Next Header(확장 헤더 체이닝 지원)"
+    },
+    "7": {
+      "text": "라우터가 IPv6 패킷 수신: 체크섬 재계산 없음, 분할 없음 -- Hop Limit만 감소",
+      "detail": "라우터가 IPv6 패킷을 수신하고 할 일이 극적으로 간단합니다:\n1. 체크섬 검증 없음 — 검증하거나 재계산할 헤더 체크섬이 없음. 2. Hop Limit을 64에서 63으로 감소. 0에 도달하면 폐기하고 ICMPv6 Time Exceeded 전송.\n3. 분할 결정 없음 — 패킷이 나가는 MTU에 비해 너무 크면 ICMPv6 Packet Too Big(MTU 값 포함)을 보내고 패킷을 폐기. 소스가 Path MTU Discovery를 통해 분할을 처리해야 함.\n4. L2 재작성 — 다음 홉을 위한 새 소스/목적지 MAC.\n체크섬 계산 없음. 분할 로직 없음. 라우터가 최소한의 패킷당 처리로 회선 속도로 포워딩할 수 있습니다."
+    },
+    "8": {
+      "text": "라우터가 IPv6 포워딩 -- IPv4보다 훨씬 빠른 처리",
+      "detail": "라우터가 Hop Limit을 63으로 감소시키고 IPv6 패킷을 포워딩합니다. 체크섬이 없으므로 재계산하지 않았습니다. 라우터의 포워딩 경로가 IP 헤더에서 정확히 한 필드(Hop Limit)만 접근했으며, IPv4의 두 필드(TTL과 Header Checksum)와 비교됩니다. 체크섬 계산 자체는 단순 감소보다 훨씬 비용이 큽니다.\n규모에서 이 차이는 중요합니다. 초당 1억 패킷을 포워딩하는 라우터는 IPv4 대신 IPv6를 포워딩할 때 초당 1억 번의 체크섬 연산을 절약합니다."
+    },
+    "9": {
+      "text": "8개 필드, 고정 40바이트, 홀별 체크섬 없음 -- 라우터가 더 빠름",
+      "detail": "IPv6 헤더 요약: 8개 필드, 항상 정확히 40바이트, 어떤 홉에서도 체크섬 계산 없음. 라우터의 유일한 필수 패킷당 수정은 Hop Limit을 1 감소시키는 것입니다. IPv4에서 라우터가 포워딩하는 모든 패킷에 대해 TTL 감소와 헤더 체크섬 재계산을 해야 하는 것과 비교됩니다.\n고정 헤더 크기는 하드웨어가 모든 필드에 접근하기 위해 상수 오프셋을 사용할 수 있음을 의미합니다. 가변 길이 Options 필드를 파싱할 필요가 없습니다."
+    },
+    "10": {
+      "text": "파트 3 -- 확장 헤더 체이닝: Router Alert가 있는 Hop-by-Hop Options",
+      "detail": "IPv6 확장 헤더는 IPv4의 인라인 Options를 대체하는 메커니즘입니다. 선택적 기능을 가변 길이 기본 헤더에 넣는 대신, IPv6는 Next Header 필드를 사용하여 별도의 헤더를 체이닝합니다.\n이 예시에서 호스트 A가 MLD 멀티캐스트 그룹 관리를 위한 Router Alert 옵션이 있는 Hop-by-Hop Options 헤더가 포함된 패킷을 보냅니다. 체인:\nIPv6 헤더(Next Header = 0) → Hop-by-Hop Options(Next Header = 6) → TCP\nHop-by-Hop Options 헤더는 특별합니다: 경로의 모든 라우터가 검사해야 하는 유일한 확장 헤더입니다. 다른 모든 확장 헤더는 목적지에서만 처리됩니다."
+    },
+    "11": {
+      "text": "확장 헤더 체인: IPv6(Next Header=0) → Hop-by-Hop(Next Header=6) → TCP",
+      "detail": "Next Header 체이닝 메커니즘은 단순하면서도 우아합니다:\n1. IPv6 기본 헤더: Next Header = 0 (Hop-by-Hop Options) \"내 다음에는 Hop-by-Hop Options 헤더가 옵니다\"\n2. Hop-by-Hop Options 헤더: Next Header = 6 (TCP) \"내 다음에는 TCP가 옵니다\"\n3. TCP 헤더: 최종 상위 레이어 프로토콜\n일반적인 Next Header 값: 0: Hop-by-Hop Options, 6: TCP, 17: UDP, 43: Routing Header, 44: Fragment Header, 50: ESP, 51: AH, 58: ICMPv6, 59: No Next Header.\n확장 헤더의 순서는 RFC 8200 섹션 4.1에 명시되어 있습니다."
+    },
+    "12": {
+      "text": "IPv6 분할: 소스만 분할 가능 -- 라우터는 절대 불가",
+      "detail": "IPv4와 IPv6 사이의 가장 중요한 차이점 중 하나입니다. IPv4에서는 경로의 모든 라우터가 나가는 MTU를 초과하는 패킷을 분할할 수 있습니다. IPv6에서는 소스 호스트만 분할을 수행합니다.\n라우터가 나가는 링크에 비해 너무 큰 패킷을 만나면: 1. 패킷을 드롭 2. 링크의 MTU와 함께 ICMPv6 Packet Too Big(타입 2) 전송 3. 소스가 이를 수신하고 패킷 크기를 줄여 재전송\n이것이 Path MTU Discovery(RFC 8201)이며, IPv6에서 필수입니다.\nFragment Header는 별도의 확장 헤더(Next Header = 44)로: Fragment Offset(13비트), M 플래그(1비트), Identification(32비트, IPv4의 16비트 대비)을 포함합니다."
+    },
+    "13": {
+      "text": "분할 체인: IPv6(Next Header=44) → Fragment Header(Next Header=6) → TCP 페이로드",
+      "detail": "Fragment 확장 헤더 체인:\n1. IPv6 기본 헤더: Next Header = 44 (Fragment Header) \"내 다음에는 Fragment Header가 옵니다\"\n2. Fragment Header: Next Header = 6 (TCP), Fragment Offset = 0(첫 번째 프래그먼트), M = 1(더 많은 프래그먼트 있음), Identification = 0x0000abcd\n3. TCP 헤더 + 페이로드(프래그먼트 내용)\n소스 전용 분할의 이점: - 라우터의 고속 경로에 분할 로직이 필요 없음 - 분할 기반 공격 제거(TCP 헤더를 프래그먼트로 분할하여 방화벽을 우회하는 타이니 프래그먼트 공격) - 32비트 Identification 필드(IPv4의 16비트 대비)가 고속 링크에서 ID 충돌을 줄임 - Path MTU Discovery 사용을 강제하여 라우터 분할에 의존하는 것보다 효율적"
+    },
+    "14": {
+      "text": "IPv4에서는 모든 라우터가 분할 가능. IPv6에서는 소스만. 이것이 Path MTU Discovery가 필수인 이유.",
+      "detail": "IPv6의 Path MTU Discovery(PMTUD, RFC 8201) 작동 방식:\n1. 소스가 로컬 링크 MTU(일반적으로 1280-1500바이트)로 패킷 전송 2. 경로의 라우터가 더 작은 MTU를 가지면 패킷을 드롭하고 더 작은 MTU 값과 함께 ICMPv6 Packet Too Big 전송 3. 소스가 이 Path MTU를 캐시하고 이후 패킷 크기를 조정 4. 주기적으로 소스가 더 큰 패킷으로 프로브하여 MTU 증가를 감지\nIPv6 최소 MTU는 1280바이트(IPv4의 68바이트 대비)입니다. 이는 IPv6 프래그먼트가 1280바이트보다 작아지지 않아 버퍼 관리가 단순해집니다."
+    },
+    "15": {
+      "text": "요약: IPv6는 더 단순하고(8 vs 13 필드), 더 빠르고(체크섬 없음), 더 확장 가능(확장 헤더 체인)",
+      "detail": "IPv4 vs IPv6 헤더 비교:\n| 속성 | IPv4 | IPv6 |\n| 헤더 필드 | 13 | 8 |\n| 헤더 크기 | 20-60바이트(가변) | 40바이트(고정) |\n| 헤더 체크섬 | 있음(매 홉 재계산) | 없음 |\n| 분할 | 모든 라우터 가능 | 소스만(PMTUD 필수) |\n| 주소 크기 | 32비트 | 128비트 |\n| 흐름 식별 | 5-튜플 딥 인스펙션 | Flow Label(20비트) |\n| 옵션/확장 | 인라인(가변 헤더) | 확장 헤더 체인 |\n| 최소 MTU | 68바이트 | 1280바이트 |\nIPv6는 단순히 \"더 큰 주소의 IPv4\"가 아닙니다. 고속 하드웨어 포워딩, 확장성, 보안을 위한 IP 헤더의 근본적인 재설계입니다."
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "IPv6 vs IPv4 헤더 비교",
+      "description": "IPv6와 IPv4 헤더의 차이점을 단계별로 비교합니다",
+      "steps": {
+        "0": "먼저 IPv4 패킷을 보겠습니다. 호스트 A가 라우터를 통해 호스트 B로 패킷을 보냅니다.",
+        "1": "IPv4 헤더는 13개 필드로 구성됩니다. 가변 길이(IHL 필드로 지정)이고 헤더 체크섬이 포함되어 있습니다.",
+        "2": "라우터가 패킷을 수신합니다. TTL을 감소시키므로 체크섬을 재계산해야 합니다. 필요하면 분할도 수행할 수 있습니다.",
+        "3": "라우터가 TTL=63으로 패킷을 포워딩합니다. 새로운 체크섬 0x4e3c가 계산됩니다. 모든 홀에서 이 계산이 반복됩니다.",
+        "4": "이것이 IPv4의 문제점입니다: 13개 필드, 가변 길이, 모든 홀에서 체크섬 재계산이 필요합니다.",
+        "5": "이제 동일한 데이터를 IPv6로 보내봅니다. 같은 경로지만 훨씬 단순한 헤더입니다.",
+        "6": "IPv6 헤더는 8개 필드만 있고, 항상 고정 40바이트입니다. 체크섬이 없습니다 -- L2와 L4 체크섬이 충분하다고 판단했습니다.",
+        "7": "라우터가 IPv6 패킷을 수신합니다. 체크섬 재계산이 없고, 분할도 없습니다 -- Hop Limit만 1 감소시키면 됩니다.",
+        "8": "라우터가 IPv6를 포워딩합니다. IPv4보다 훨씬 빠른 처리 -- 고속 라우터에서 큰 차이를 만듭니다.",
+        "9": "IPv6 헤더가 더 효율적인 이유: 더 적은 필드, 고정 크기, 홀별 체크섬 없음.",
+        "10": "IPv6의 확장성: 확장 헤더 체인. Next Header 필드가 다음 헤더 유형을 가리킵니다. 여기서는 Router Alert가 있는 Hop-by-Hop Options를 보여줍니다.",
+        "11": "확장 헤더 체인 예시: IPv6 → Hop-by-Hop → TCP. 각 헤더의 Next Header가 다음을 가리키는 연결 리스트 구조입니다.",
+        "12": "IPv6의 중요한 변경: 소스만 분할할 수 있습니다. 라우터는 절대 분할하지 않습니다. 패킷이 너무 크면 ICMPv6 Packet Too Big을 반환합니다.",
+        "13": "분할 헤더 체인 예시: IPv6 → Fragment Header → TCP. 분할이 필요하면 소스가 Fragment 확장 헤더를 추가합니다.",
+        "14": "요약: IPv6는 더 단순하고(8 vs 13 필드), 더 빠르고(체크섬 없음), 더 확장 가능한(확장 헤더 체인) 헤더를 가집니다."
+      }
+    }
+  }
+}

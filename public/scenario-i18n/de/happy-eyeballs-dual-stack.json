@@ -1,0 +1,116 @@
+{
+  "meta": {
+    "title": "Happy Eyeballs: Wie Ihr Browser zwischen IPv4 und IPv6 w\u00e4hlt",
+    "description": "Sie geben example.com in Ihren Browser ein. Im Hintergrund l\u00e4sst ein cleverer Algorithmus namens Happy Eyeballs (RFC 8305) IPv6- und IPv4-Verbindungen gegeneinander antreten, um Ihnen die schnellstm\u00f6gliche Erfahrung zu bieten \u2014 ohne dass Sie es je bemerken. Ihr Browser fragt DNS sowohl nach einem AAAA-Record (IPv6) als auch nach einem A-Record (IPv4) und versucht dann sofort IPv6 zuerst. Wenn IPv6 innerhalb von 250 Millisekunden antwortet, wunderbar \u2014 Sie nutzen IPv6. Falls nicht, feuert der Browser zus\u00e4tzlich eine IPv4-Verbindung ab, und wer zuerst antwortet, gewinnt. Dieses Szenario zeigt beide Ergebnisse: IPv6 gewinnt das Rennen, und IPv6 scheitert mit einem nahtlosen IPv4-Fallback. Der gesamte Vorgang ist f\u00fcr den Benutzer unsichtbar, und es ist der Grund, warum der \u00dcbergang des Internets von IPv4 zu IPv6 weitgehend schmerzfrei war.\n",
+    "learning_objectives": [
+      "Verstehen, dass moderne Browser sowohl AAAA- (IPv6) als auch A- (IPv4) DNS-Anfragen parallel senden",
+      "Lernen, dass Happy Eyeballs immer IPv6 bevorzugt, aber nicht lange darauf wartet",
+      "Den 250ms-Timer sehen \u2014 lang genug, um IPv6 fair zu behandeln, kurz genug, dass Benutzer es nicht bemerken",
+      "Beobachten, wie ein fehlgeschlagener IPv6-Pfad automatischen IPv4-Fallback mit minimaler Verz\u00f6gerung ausl\u00f6st",
+      "Verstehen, dass Happy Eyeballs in jedem modernen Browser und Betriebssystem eingebaut ist",
+      "IPv4- (32-Bit) und IPv6- (128-Bit) Adressformate in tats\u00e4chlichen Paket-Headern vergleichen",
+      "Verstehen, warum ohne Happy Eyeballs defektes IPv6 Timeouts von 20+ Sekunden bedeuten w\u00fcrde"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "DNS AAAA Query \u2014 \u201eWie lautet die IPv6-Adresse von example.com?\u201c",
+      "detail": "Sie haben example.com in Ihren Browser eingegeben und Enter gedr\u00fcckt. Das Allererste, was passiert, ist ein DNS-Lookup \u2014 aber nicht nur einer. Ihr Browser sendet eine AAAA-Anfrage, die nach der IPv6-Adresse fragt. Diese Anfrage verwendet DNS-Typ 28, der speziell eine 128-Bit-IPv6-Adresse anfordert. Die Anfrage ist winzig: nur 82 Bytes \u00fcber UDP. Moderne Browser und Betriebssysteme fragen immer sowohl nach IPv6- als auch nach IPv4-Adressen, damit sie Optionen haben.\n"
+    },
+    "1": {
+      "text": "DNS A Query \u2014 \u201eWie lautet die IPv4-Adresse von example.com?\u201c (parallel gesendet)",
+      "detail": "Nur 1 Millisekunde sp\u00e4ter sendet der Browser eine zweite DNS-Anfrage \u2014 diesmal eine A-Record-Anfrage (Typ 1), die nach der IPv4-Adresse fragt. Beide DNS-Anfragen sind nun gleichzeitig unterwegs, jede mit eigener Transaction ID, damit der Resolver die richtige Antwort der richtigen Frage zuordnen kann. Diese Strategie paralleler Anfragen ist in RFC 8305 Abschnitt 3 spezifiziert: Der Browser m\u00f6chte beide Adressen so schnell wie m\u00f6glich, um das Happy-Eyeballs-Rennen starten zu k\u00f6nnen.\n"
+    },
+    "2": {
+      "text": "DNS AAAA Response \u2014 2001:db8::443:1",
+      "detail": "Der Resolver antwortet in 20 Millisekunden mit dem AAAA-Record: 2001:db8::443:1. Dies ist eine 128-Bit-IPv6-Adresse \u2014 vergleichen Sie sie mit den 32-Bit-Adressen von IPv4. IPv6 bietet rund 3,4 \u00d7 10^38 eindeutige Adressen, genug damit jedes Sandkorn auf der Erde eine eigene IP-Adresse h\u00e4tte.\nDer Browser hat nun eine der zwei ben\u00f6tigten Adressen. Gem\u00e4\u00df RFC 8305 k\u00f6nnte er sofort mit nur dem AAAA-Record einen Verbindungsversuch starten, aber die meisten Implementierungen warten kurz auf beide Antworten.\n"
+    },
+    "3": {
+      "text": "DNS A Response \u2014 192.0.2.1",
+      "detail": "Zwei Millisekunden sp\u00e4ter trifft der A-Record ein: 192.0.2.1. Der Browser hat nun beide Adressen. Beachten Sie den Gr\u00f6\u00dfenunterschied: Die IPv4-Adresse ist 32 Bit (4 Bytes), w\u00e4hrend die IPv6-Adresse 128 Bit (16 Bytes) umfasst \u2014 viermal gr\u00f6\u00dfer.\nDer Browser hat nun die Wahl: 2001:db8::443:1 (IPv6) oder 192.0.2.1 (IPv4) verwenden? Beides sollte funktionieren \u2014 example.com ist Dual-Stack. Genau hier kommt Happy Eyeballs ins Spiel.\n"
+    },
+    "4": {
+      "text": "Der Browser hat nun beide Adressen. Welche verwendet er? Hier greift Happy Eyeballs.",
+      "detail": "RFC 8305 spezifiziert den Algorithmus: Zieladressen sortieren mit Bevorzugung von IPv6 (Adressfamilien-Interleaving), dann Verbindungsversuche der Reihe nach mit 250ms Verz\u00f6gerung zwischen den Versuchen starten. Die erste Adressfamilie, die einen TCP-Handshake abschlie\u00dft, gewinnt, und der unterlegene Versuch wird abgebrochen.\nWarum IPv6 bevorzugen? Weil das Internet von IPv4 auf IPv6 \u00fcbergeht, und der einzige Weg, die Adoption voranzutreiben, ist, es tats\u00e4chlich zu nutzen, wenn es funktioniert. Aber wenn es nicht funktioniert, sollte der Benutzer niemals darunter leiden.\n"
+    },
+    "5": {
+      "text": "TCP SYN \u2192 IPv6 (erster Versuch \u2014 IPv6 geht immer zuerst)",
+      "detail": "Der Browser sendet sofort ein TCP SYN an die IPv6-Adresse 2001:db8::443:1 auf Port 443 (HTTPS). Beachten Sie, dass der EtherType 0x86DD (IPv6) statt des \u00fcblichen 0x0800 (IPv4) ist. Der IPv6-Header ist 40 Bytes gro\u00df \u2014 doppelt so gro\u00df wie der 20-Byte-IPv4-Header \u2014 weil diese 128-Bit-Adressen allein 32 Bytes belegen.\nGleichzeitig startet der Browser einen 250ms-Timer. Wenn dieses IPv6-SYN innerhalb von 250 Millisekunden kein SYN-ACK erh\u00e4lt, wird der Browser auch IPv4 versuchen. Das ist der Kern von Happy Eyeballs: IPv6 einen Vorsprung geben, aber nicht ewig warten.\n"
+    },
+    "6": {
+      "text": "250ms-Timer gestartet \u2014 wenn IPv6 nicht rechtzeitig antwortet, wird auch IPv4 versucht",
+      "detail": "Die 250ms Connection Attempt Delay ist die magische Zahl in Happy Eyeballs (RFC 8305 Abschnitt 8). Warum 250 Millisekunden?\nZu kurz (sagen wir 50ms) und man w\u00fcrde unn\u00f6tige IPv4-Verbindungen starten, selbst wenn IPv6 einwandfrei funktioniert \u2014 nur etwas langsamer aufgrund geographischer Entfernung. Zu lang (sagen wir 2 Sekunden) und Benutzer in defekten IPv6-Netzwerken w\u00fcrden die Verz\u00f6gerung bemerken. 250ms ist der ideale Kompromiss: lang genug, um einem funktionierenden IPv6-Pfad eine faire Chance zu geben, kurz genug, dass Menschen die Wartezeit kaum wahrnehmen.\n"
+    },
+    "7": {
+      "text": "TCP SYN-ACK \u2190 IPv6 antwortet in 30ms \u2014 IPv6 gewinnt das Rennen!",
+      "detail": "Der Webserver antwortet mit einem SYN-ACK \u00fcber IPv6 in nur 30 Millisekunden \u2014 deutlich innerhalb des 250ms-Timers. Der Browser bricht den Timer ab. Es gibt keinen Grund, IPv4 \u00fcberhaupt zu versuchen.\nDas ist der gl\u00fcckliche Pfad von Happy Eyeballs: IPv6 funktioniert, es ist schnell, und der Benutzer wei\u00df nie, welche IP-Version verwendet wurde. Der IPv4-Versuch wird nie gestartet. In einem gut angebundenen Dual-Stack-Netzwerk ist dies das typische Ergebnis \u2014 IPv6 funktioniert einfach.\n"
+    },
+    "8": {
+      "text": "TCP ACK \u2192 IPv6-Verbindung hergestellt",
+      "detail": "Der Client vervollst\u00e4ndigt den 3-Way-Handshake mit dem abschlie\u00dfenden ACK. Die TCP-Verbindung ist nun \u00fcber IPv6 im Zustand ESTABLISHED. TLS und HTTP werden \u00fcber diese IPv6-Verbindung fortgef\u00fchrt.\nDer IPv4-Versuch wurde nie gestartet \u2014 IPv6 antwortete in 30ms, deutlich vor der 250ms-Frist. Gesamtzeit von DNS bis verbunden: etwa 55 Millisekunden. Der Benutzer sieht nichts au\u00dfer einer schnell ladenden Seite.\n"
+    },
+    "9": {
+      "text": "IPv4-Versuch wurde nie gestartet \u2014 IPv6 war schnell genug",
+      "detail": "Da IPv6 den TCP-Handshake in 30ms abschloss (deutlich unter der 250ms-Schwelle), hat der Browser nie eine IPv4-Verbindung initiiert. Das ist effizient: keine verschwendeten Pakete, keine verschwendeten Server-Ressourcen. Der Browser f\u00e4hrt mit TLS und HTTP \u00fcber die IPv6-Verbindung fort.\n"
+    },
+    "10": {
+      "text": "TLS + HTTP laufen \u00fcber IPv6 \u2014 die meisten Benutzer wissen nie, welches Protokoll sie nutzen",
+      "detail": "Von hier an laufen TLS 1.3 und HTTP/2 exakt so ab wie \u00fcber IPv4 \u2014 die h\u00f6heren Schichten interessiert es nicht, welche IP-Version sie transportiert. Die Adressleiste Ihres Browsers zeigt vielleicht ein Schloss-Symbol, aber es wird nicht \u201eIPv6\u201c anzeigen. Die meisten Benutzer haben keine Ahnung, ob sie zu einem bestimmten Zeitpunkt IPv4 oder IPv6 verwenden, und genau das ist der Punkt: Der \u00dcbergang soll unsichtbar sein.\n"
+    },
+    "11": {
+      "text": "Nun sehen wir, was passiert, wenn IPv6 defekt ist...",
+      "detail": "Phase 2 zeigte den Idealfall. Aber was passiert, wenn der IPv6-Pfad defekt ist \u2014 vielleicht eine fehlkonfigurierte Firewall, ein ausgefallener Tunnel oder ein ISP, der IPv6 bewirbt, es aber nicht wirklich routet? Ohne Happy Eyeballs w\u00fcrde Ihr Browser auf das TCP-SYN-Timeout warten \u2014 typischerweise 20 bis 30 Sekunden \u2014 bevor er IPv4 versucht. Das ist eine Ewigkeit beim Websurfen. Happy Eyeballs l\u00f6st dies mit dem 250ms-Fallback-Timer.\n"
+    },
+    "12": {
+      "text": "Neue Verbindung: TCP SYN \u2192 IPv6 (IPv6 zuerst, wie immer)",
+      "detail": "Ein neuer Verbindungsversuch startet \u2014 vielleicht hat der Benutzer einen anderen Link angeklickt, oder die vorherige Verbindung wurde geschlossen. Wie immer versucht der Browser zuerst IPv6. Er sendet ein TCP SYN an 2001:db8::443:1. Der 250ms-Timer startet erneut.\nAber diesmal stimmt etwas mit dem IPv6-Pfad nicht. Vielleicht hat ein Router auf dem Weg eine veraltete Route, oder eine \u00fcbereifrige Firewall verwirft IPv6-Verkehr, oder der IPv6-Tunnel des ISP ist ausgefallen. Das SYN-Paket geht ins Netzwerk und... Stille.\n"
+    },
+    "13": {
+      "text": "Stille... 100ms vergehen ohne SYN-ACK von IPv6",
+      "detail": "Einhundert Millisekunden sind vergangen. Immer noch kein SYN-ACK. In Phase 2 kam die Antwort in 30ms. Etwas stimmt offensichtlich nicht mit dem IPv6-Pfad, aber der Browser gerät nicht in Panik. Er hat noch 150ms auf dem Timer. Vielleicht ist der Server diesmal nur etwas weiter entfernt. Happy Eyeballs ist geduldig \u2014 aber nicht zu geduldig.\n"
+    },
+    "14": {
+      "text": "250ms abgelaufen \u2014 Timer feuert! IPv4-Fallback wird gestartet.",
+      "detail": "Die 250ms Connection Attempt Delay ist ohne IPv6-Antwort abgelaufen. Der Browser gibt IPv6 NICHT auf \u2014 er h\u00e4lt das IPv6-SYN offen, falls eine versp\u00e4tete Antwort eintrifft. Aber er startet nun einen parallelen IPv4-Verbindungsversuch. Beide Rennen laufen gleichzeitig.\nDas ist entscheidend: Der Browser wartet nicht, bis IPv6 vollst\u00e4ndig in ein Timeout l\u00e4uft (was 20+ Sekunden dauern k\u00f6nnte). Er startet den Backup-Plan nach nur 250ms. Der Benutzer hat kaum Zeit zum Blinzeln gehabt.\n"
+    },
+    "15": {
+      "text": "TCP SYN \u2192 IPv4-Fallback (w\u00e4hrend IPv6-SYN noch aussteht)",
+      "detail": "Der Browser sendet ein TCP SYN an die IPv4-Adresse 192.0.2.1 auf Port 443. Beachten Sie die Unterschiede zum IPv6-SYN: - EtherType ist 0x0800 (IPv4) statt 0x86DD (IPv6) - IPv4-Header ist nur 20 Bytes (vs. IPv6s 40 Bytes) - Quell-IP ist 10.0.1.10 (32 Bit) statt 2001:db8:1::10 (128 Bit) - MSS ist 1460 (vs. 1440 f\u00fcr IPv6), weil der kleinere IPv4-Header\n  mehr Platz f\u00fcr Nutzdaten l\u00e4sst\n\nDas IPv6-SYN ist immer noch da drau\u00dfen, unbeantwortet. Beide Versuche treten nun gegeneinander an. Wer zuerst ein SYN-ACK bekommt, gewinnt.\n"
+    },
+    "16": {
+      "text": "TCP SYN-ACK \u2190 IPv4 antwortet in 35ms \u2014 IPv4 gewinnt!",
+      "detail": "Der Webserver antwortet \u00fcber IPv4 mit einem SYN-ACK in nur 35 Millisekunden. IPv4 funktioniert! Der Browser hat nun eine erfolgreiche Verbindung und f\u00e4hrt mit IPv4 fort. Der steckengebliebene IPv6-Versuch wird abgebrochen \u2014 er ist seit 285ms still und offensichtlich defekt.\nAus Benutzersicht betrug die Gesamtverz\u00f6gerung: 22ms (DNS) + 250ms (Warten auf IPv6) + 35ms (IPv4-Handshake) = 307ms. Das ist kaum sp\u00fcrbar. Ohne Happy Eyeballs h\u00e4tte die Verz\u00f6gerung 22ms (DNS) + 20.000ms (IPv6-Timeout) + 35ms (IPv4-Handshake) = \u00fcber 20 Sekunden betragen. Das ist der Unterschied zwischen \u201eDie Seite hat geladen\u201c und \u201eIst das Internet kaputt?\u201c\n"
+    },
+    "17": {
+      "text": "TCP ACK \u2192 IPv4-Verbindung hergestellt, IPv6-Versuch abgebrochen",
+      "detail": "Der Client sendet das abschlie\u00dfende ACK \u00fcber IPv4 und vervollst\u00e4ndigt den 3-Way-Handshake. Der IPv6-Versuch wird nun formell abgebrochen \u2014 der Browser sendet ein RST (Reset) auf dem IPv6-Socket, falls ein versp\u00e4tetes SYN-ACK eintrifft, oder schlie\u00dft ihn einfach.\nDie TCP-Verbindung ist \u00fcber IPv4 im Zustand ESTABLISHED. TLS und HTTP werden \u00fcber diese IPv4-Verbindung fortgef\u00fchrt. Die Webseite l\u00e4dt normal. Der Benutzer hatte keine Ahnung, dass IPv6 defekt war, dass ein Wettlauf entschieden wurde, oder dass ein von Internet-Ingenieuren entworfener Algorithmus ihm eine 20-Sekunden-Wartezeit erspart hat.\n"
+    },
+    "18": {
+      "text": "IPv6 war defekt oder unerreichbar, aber der Benutzer bemerkte keine Verz\u00f6gerung \u00fcber 250ms hinaus. Das ist die Magie von Happy Eyeballs.",
+      "detail": "Der gesamte Fallback-Prozess f\u00fcgte der Verbindungszeit nur etwa 250 Millisekunden hinzu. Vergleichen Sie das mit dem, was ohne Happy Eyeballs passieren w\u00fcrde:\n- Ohne Happy Eyeballs: Browser versucht IPv6, wartet 20-30 Sekunden auf\n  TCP-Timeout, versucht dann IPv4. Benutzer starrt eine halbe Minute\n  auf eine leere Seite und denkt, die Website sei offline.\n\n- Mit Happy Eyeballs: Browser versucht IPv6, wartet 250ms, startet IPv4\n  parallel, verbindet sich in insgesamt 285ms. Benutzer sieht einen normalen Seitenaufbau.\n\nDieser Algorithmus ist der Grund, warum der IPv4-zu-IPv6-\u00dcbergang f\u00fcr Endbenutzer weitgehend schmerzfrei war. Er ist in jeden modernen Browser eingebaut (Chrome, Firefox, Safari, Edge), in jedes moderne Betriebssystem (Windows, macOS, Linux, iOS, Android) und sogar in Kommandozeilen-Tools wie curl.\n"
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "Happy Eyeballs: Wie Ihr Browser zwischen IPv4 und IPv6 w\u00e4hlt",
+      "description": "Eine gef\u00fchrte Tour durch den Happy-Eyeballs-Algorithmus \u2014 wie Browser IPv6- und IPv4-Verbindungen gegeneinander antreten lassen, um die schnellste und zuverl\u00e4ssigste Erfahrung zu bieten",
+      "steps": {
+        "0": "Sie geben example.com in Ihren Browser ein. Bevor ein einziges Pixel erscheint, muss Ihr Browser herausfinden, wie er den Server erreicht. Aber hier kommt ein Twist, den die meisten Menschen nicht kennen: Der Server hat ZWEI Adressen \u2014 eine IPv4-Adresse und eine IPv6-Adresse. Ihr Browser sendet zwei DNS-Anfragen parallel, eine f\u00fcr jede. Die AAAA-Anfrage (Typ 28) fragt nach der IPv6-Adresse. Die A-Anfrage (Typ 1) fragt nach der IPv4-Adresse. Beide sind gleichzeitig unterwegs, rasen zum DNS-Resolver und zur\u00fcck.\n",
+        "1": "Beide DNS-Antworten treffen innerhalb von Millisekunden ein. Der AAAA-Record liefert 2001:db8::443:1 \u2014 eine 128-Bit-IPv6-Adresse. Der A-Record liefert 192.0.2.1 \u2014 eine 32-Bit-IPv4-Adresse. Ihr Browser hat nun zwei Pfade zum selben Server. Welchen soll er nutzen? Genau dieses Problem l\u00f6st Happy Eyeballs.\n",
+        "2": "Ihr Browser bevorzugt IMMER IPv6 \u2014 aber er ist nicht bereit, lange zu warten. Er sendet sofort ein TCP SYN an die IPv6-Adresse und startet einen 250ms-Timer. Wenn IPv6 vor Ablauf des Timers antwortet, wunderbar \u2014 IPv6 gewinnt. Falls nicht, startet der Browser auch eine IPv4-Verbindung, und wer zuerst antwortet, gewinnt.\nSchauen Sie auf das EtherType-Feld im Ethernet-Header: 0x86DD bedeutet IPv6. Vergleichen Sie das mit dem 0x0800, das Sie in IPv4-Paketen sehen. So erkennt Netzwerk-Hardware, welche IP-Version ein Frame transportiert.\n",
+        "3": "250 Millisekunden ist die magische Zahl \u2014 lang genug, um IPv6 fair zu behandeln, kurz genug, dass Benutzer es nicht bemerken. RFC 8305 Abschnitt 8 nennt dies die \u201eConnection Attempt Delay\u201c. Wenn IPv6 normal funktioniert, reichen 250ms mehr als aus, damit ein SYN-ACK von fast \u00fcberall auf der Welt zur\u00fcckkehrt. Wenn es nicht rechtzeitig zur\u00fcckkommt, stimmt wahrscheinlich etwas nicht.\n",
+        "4": "Im ersten Szenario funktioniert IPv6 perfekt. Das SYN-ACK kommt in nur 30 Millisekunden zur\u00fcck \u2014 deutlich innerhalb der 250ms-Frist. Der Browser bricht sofort den Timer ab. Es gibt keinen Grund, IPv4 \u00fcberhaupt zu versuchen. Der 3-Way-Handshake wird \u00fcber IPv6 abgeschlossen, und die Verbindung ist hergestellt.\nDies ist das typische Ergebnis in einem gesunden Dual-Stack-Netzwerk. IPv6 funktioniert einfach, und der Benutzer bemerkt keinen Unterschied.\n",
+        "5": "Der IPv4-Versuch wurde nie gestartet \u2014 IPv6 war schnell genug. Ihr Browser f\u00e4hrt mit TLS 1.3 und HTTP \u00fcber diese IPv6-Verbindung fort. Aus Benutzersicht hat die Seite einfach geladen. Er hat keine Ahnung, ob er auf IPv4 oder IPv6 ist. Genau das ist das Ziel: nahtlose, unsichtbare Protokollauswahl.\n",
+        "6": "Nun sehen wir, was passiert, wenn IPv6 defekt ist. Hier verdient Happy Eyeballs wirklich seinen Namen. Vielleicht hat ein Upstream-Router eine veraltete IPv6-Route. Vielleicht blockiert eine Unternehmens-Firewall IPv6. Vielleicht bewirbt Ihr ISP IPv6-Unterst\u00fctzung, routet es aber nicht wirklich. Diese Situationen sind \u00fcberraschend h\u00e4ufig, und ohne Happy Eyeballs w\u00fcrden sie Websites f\u00fcr 20 bis 30 Sekunden wie offline erscheinen lassen.\n",
+        "7": "Eine neue Verbindung startet. Wie immer versucht der Browser zuerst IPv6 und startet den 250ms-Timer. Das SYN geht an 2001:db8::443:1 raus... und nichts kommt zur\u00fcck. 100 Millisekunden vergehen. Immer noch nichts. 200 Millisekunden. Stille. Der Browser wartet weiter, aber der Timer tickt herunter.\n",
+        "8": "Der 250ms-Timer feuert. Kein SYN-ACK von IPv6. Der Browser gibt IPv6 nicht auf \u2014 er h\u00e4lt das SYN offen, f\u00fcr den Fall. Aber nun startet er einen parallelen Versuch \u00fcber IPv4. Zwei SYN-Pakete sind jetzt unterwegs: eines \u00fcber IPv6 (wartend, unbeantwortet) und eines \u00fcber IPv4 (frisch gesendet). Das ist ein Rennen, und beide Protokolle laufen gleichzeitig.\n",
+        "9": "Vergleichen Sie die beiden SYN-Pakete nebeneinander. Das IPv6-SYN hat einen 40-Byte-IP-Header mit 128-Bit-Adressen und EtherType 0x86DD. Das IPv4-SYN hat einen 20-Byte-IP-Header mit 32-Bit-Adressen und EtherType 0x0800. Die IPv4-MSS ist 1460 (vs. 1440 f\u00fcr IPv6), weil der kleinere Header mehr Platz f\u00fcr Daten l\u00e4sst. Trotz dieser Unterschiede tragen beide Pakete dasselbe TCP SYN an Port 443. TCP ist es egal, welche IP-Version es transportiert.\n",
+        "10": "IPv4 antwortet mit einem SYN-ACK in 35 Millisekunden. IPv4 funktioniert! Der Browser hat nun eine erfolgreiche Verbindung. Er schlie\u00dft den 3-Way-Handshake \u00fcber IPv4 ab und bricht den fehlgeschlagenen IPv6-Versuch formell ab.\nZus\u00e4tzliche Verz\u00f6gerung durch den defekten IPv6-Pfad: etwa 250 Millisekunden. Das ist alles. Der Benutzer bemerkt m\u00f6glicherweise nicht einmal, dass die Seite etwas langsamer als \u00fcblich war.\n",
+        "11": "Ohne Happy Eyeballs w\u00fcrde ein defekter IPv6-Pfad ein 20+ Sekunden langes Timeout bedeuten, bevor der Browser \u00fcberhaupt IPv4 versucht. Zwanzig Sekunden auf eine leere Seite starren. Mit Happy Eyeballs betr\u00e4gt die Verz\u00f6gerung 250 Millisekunden \u2014 kaum wahrnehmbar. Dieser einzige Algorithmus ist der Grund, warum der \u00dcbergang des Internets von IPv4 zu IPv6 f\u00fcr Endbenutzer weitgehend transparent war.\n",
+        "12": "Dieser Algorithmus ist der Grund, warum der IPv4-zu-IPv6-\u00dcbergang gr\u00f6\u00dftenteils transparent funktioniert. Happy Eyeballs steckt in jedem modernen Browser \u2014 Chrome, Firefox, Safari, Edge. Es steckt in jedem modernen Betriebssystem \u2014 Windows, macOS, Linux, iOS, Android. Es steckt sogar in Kommandozeilen-Tools wie curl. Milliarden von Verbindungen pro Tag nutzen Happy Eyeballs, und fast niemand hat je davon geh\u00f6rt.\n",
+        "13": "Hier ist, was der Browser aus jedem Versuch lernt, und warum es f\u00fcr zuk\u00fcnftige Verbindungen relevant ist. Viele Happy-Eyeballs-Implementierungen cachen die gewinnende Adressfamilie. Wenn IPv6 einmal gescheitert ist, wird der Browser beim n\u00e4chsten Mal m\u00f6glicherweise IPv4 zuerst versuchen (immer noch mit Happy Eyeballs, aber mit IPv4 als bevorzugter Familie). Diese \u201eVerbindungshistorie\u201c bedeutet, dass nachfolgende Verbindungen zum selben Host noch schneller sind \u2014 der Browser wei\u00df bereits, welcher Pfad funktioniert.\n",
+        "14": "Fassen wir zusammen, was wir gelernt haben:\n1. Ihr Browser sendet parallele DNS-Anfragen f\u00fcr AAAA (IPv6) und A (IPv4) 2. Happy Eyeballs versucht zuerst IPv6 (das bevorzugte Protokoll) 3. Ein 250ms-Timer startet \u2014 die \u201eConnection Attempt Delay\u201c aus RFC 8305 4. Wenn IPv6 rechtzeitig antwortet, gewinnt es und IPv4 wird nie versucht 5. Wenn IPv6 zu langsam oder defekt ist, startet IPv4 parallel nach 250ms 6. Welches Protokoll den TCP-Handshake zuerst abschlie\u00dft, gewinnt das Rennen 7. Der unterlegene Versuch wird abgebrochen \u2014 keine verschwendeten Ressourcen\nHappy Eyeballs ist einer der stillen Helden des Internets: ein eleganter Algorithmus, der ein reales Problem l\u00f6st (defekte IPv6-Pfade), w\u00e4hrend er die Adoption des Protokolls vorantreibt, das das Internet dringend ben\u00f6tigt (IPv6). Und das Beste? Es funktioniert so gut, dass man nie bemerkt, dass es l\u00e4uft.\n"
+      }
+    }
+  }
+}

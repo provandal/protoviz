@@ -1,0 +1,194 @@
+{
+  "meta": {
+    "title": "NVMe/TCP: mDNS \u2192 CDC Discovery \u2192 DIM \u2192 Subsystem Connect \u2192 I/O",
+    "description": "Ein vollst\u00e4ndiger NVMe over TCP (NVMe-oF/TCP)-Austausch von der anf\u00e4nglichen Service-Erkennung bis zu I/O-Operationen. Ein Linux-Host mit nvme-stas entdeckt einen Centralized Discovery Controller (CDC) via mDNS, registriert sich mit DIM (TP8013), ruft CDC Discovery Log Pages mit DDC-Verweisen ab, verbindet sich mit dem Direct Discovery Controller (DDC) auf dem Speicher-Array, um IO-Controller-Details zu erfahren, und verbindet sich dann mit dem IO Controller f\u00fcr NVMe Write- und Read-Operationen. Demonstriert die vollst\u00e4ndige dreistufige Discovery-Hierarchie: CDC \u2192 DDC \u2192 IOC. Behandelt TP8009 (CDC-Architektur), TP8010 und TP8013 (DIM).",
+    "learning_objectives": [
+      "Verstehen, wie nvme-stas (stafd) CDCs via mDNS-Service-Advertisement (_nvme-disc._tcp) entdeckt",
+      "Der NVMe-oF/TCP-Verbindungsinitialisierung folgen: ICReq/ICResp-PDU-Austausch und Parameteraushandlung",
+      "Beobachten, wie der Fabrics Connect-Befehl eine Admin Queue zu einem Discovery Controller herstellt",
+      "Sehen, wie DIM (Discovery Information Management, TP8013) einen Host bei einem CDC registriert",
+      "Discovery Log Pages verstehen: wie Hosts erfahren, welche Subsysteme und Controller verf\u00fcgbar sind",
+      "Die vollst\u00e4ndige IO-Controller-Verbindung nachverfolgen: Fabrics Connect \u2192 Identify Controller \u2192 Identify Namespace",
+      "NVMe Write- und Read-Befehle \u00fcber TCP mit CapsuleCmd, R2T, H2CData und C2HData PDUs beobachten",
+      "Die CDC \u2192 DDC \u2192 IOC Controller-Hierarchie in der NVMe-oF Discovery-Architektur verstehen"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "mDNS-Abfrage: _nvme-disc._tcp.local",
+      "detail": "Der stafd-Daemon des Hosts (Teil von nvme-stas) fragt mDNS nach NVMe Discovery Controllern ab. Er sendet eine Multicast-DNS-Abfrage an 224.0.0.251:5353 und sucht nach PTR-Records f\u00fcr den Diensttyp _nvme-disc._tcp. Dies ist der DNS-SD-Mechanismus (DNS-Based Service Discovery, RFC 6763), der in TP8009 f\u00fcr die automatisierte CDC-Erkennung spezifiziert ist. stafd verwendet Avahi (Linux mDNS/DNS-SD-Implementierung), um einen Service-Browser f\u00fcr diesen Diensttyp zu registrieren."
+    },
+    "1": {
+      "text": "mDNS-Antwort: CDC bei 192.168.100.50:8009",
+      "detail": "Der CDC antwortet mit mDNS-Records, die seinen Discovery-Dienst ank\u00fcndigen. Der PTR-Record bildet _nvme-disc._tcp.local auf den Service-Instance-Namen ab. Der SRV-Record liefert den Ziel-Hostnamen und Port (8009). Der TXT-Record tr\u00e4gt Schl\u00fcssel-Wert-Paare: p=tcp (Transporttyp) und nqn=nqn.2014-08.org.nvmexpress.discovery (die bekannte Discovery-NQN). Der Avahi-Callback von stafd parst diese Records und erstellt ein Controller-Dictionary mit Transport, traddr, trsvcid und subsysnqn."
+    },
+    "2": {
+      "text": "TCP SYN \u2192 CDC Port 8009",
+      "detail": "stafd initiiert eine TCP-Verbindung zum CDC bei 192.168.100.50:8009. Port 8009 ist die Standard-trsvcid (Transport Service ID) f\u00fcr NVMe Discovery Controller. Der TCP-3-Wege-Handshake stellt den zuverl\u00e4ssigen Transport her, \u00fcber den NVMe-oF/TCP l\u00e4uft."
+    },
+    "3": {
+      "text": "TCP SYN-ACK \u2190 CDC",
+      "detail": "Der TCP-Stack des CDC antwortet mit SYN-ACK, best\u00e4tigt das SYN des Hosts und sendet seine eigene Sequenznummer."
+    },
+    "4": {
+      "text": "TCP ACK \u2014 Verbindung zum CDC hergestellt",
+      "detail": "Der Host schlie\u00dft den 3-Wege-Handshake ab. Die TCP-Verbindung zum CDC ist nun hergestellt. Die NVMe-oF/TCP-Schicht sendet als N\u00e4chstes ICReq."
+    },
+    "5": {
+      "text": "ICReq \u2192 CDC (NVMe/TCP-Verbindung initialisieren)",
+      "detail": "Erste NVMe-oF/TCP-PDU nach dem TCP-Handshake. Der Host sendet einen Initialize Connection Request (ICReq), um NVMe/TCP-Parameter auszuhandeln. Wichtige Felder: PDU Format Version (nur v0 definiert), angeforderte Digest-Typen (Header- und/oder Daten-Digests f\u00fcr Integrit\u00e4t), Host PDU Data Alignment und max. ausstehende R2Ts. Der 128-Byte ICReq ist das Erste, was der NVMe/TCP-Treiber nach TCP-Connect sendet (nvme_tcp_init_connection)."
+    },
+    "6": {
+      "text": "ICResp \u2190 CDC (Verbindungsparameter akzeptiert)",
+      "detail": "Der CDC antwortet mit ICResp und best\u00e4tigt die ausgehandelten Parameter. Die CPDA (Controller PDU Data Alignment) des Controllers und die akzeptierten Digest-Typen werden zur\u00fcckgegeben. MaxData gibt die maximalen Daten an, die der Controller pro R2T verarbeiten kann. Nach Abschluss von ICReq/ICResp ist die NVMe/TCP-Transportschicht initialisiert und bereit f\u00fcr NVMe-Befehle."
+    },
+    "7": {
+      "text": "Fabrics Connect \u2192 CDC (Admin Queue, Discovery NQN)",
+      "detail": "Der Host sendet einen NVMe Fabrics Connect-Befehl, um eine Admin-Queue-Assoziation mit dem CDC herzustellen. Der Befehl verwendet Opcode 0x7F (Fabrics) mit fctype=0x01 (Connect). Queue ID 0 bezeichnet die Admin Queue. Die Connect-Daten (1024 Bytes) tragen die Host-Identit\u00e4t: Host ID (UUID), Host NQN und die Ziel-Subsystem-NQN (nqn.2014-08.org.nvmexpress.discovery \u2014 die bekannte Discovery-Subsystem-NQN). Controller ID ist auf 0xFFFF (dynamisch) gesetzt, damit der CDC eine zuweist."
+    },
+    "8": {
+      "text": "Fabrics Connect-Antwort \u2190 CDC (CNTLID=65)",
+      "detail": "Der CDC akzeptiert den Fabrics Connect und weist diesem Host Controller ID 65 zu. Die Admin Queue ist nun hergestellt \u2014 der Host kann Admin-Befehle an den CDC senden, einschlie\u00dflich DIM und Get Log Page."
+    },
+    "9": {
+      "text": "DIM Register \u2192 CDC (TP8013)",
+      "detail": "Der Host sendet einen Discovery Information Management (DIM)-Befehl, um sich beim CDC zu registrieren. DIM ist in TP8013 definiert und erm\u00f6glicht es Hosts, sich bei Discovery Controllern zu registrieren/abzumelden. Die Registrierung umfasst die Host-NQN, Host ID (UUID), Hostname und Betriebssystemversion. Nach der Registrierung ber\u00fccksichtigt der CDC diesen Host in seinen Zoning-Berechnungen und sendet Asynchronous Event Notifications, wenn sich das Discovery-Log \u00e4ndert (z.B. neue Subsysteme werden verf\u00fcgbar). In nvme-stas wird dies von libnvmes Funktion nvmf_register_ctrl() behandelt."
+    },
+    "10": {
+      "text": "DIM Register-Antwort \u2190 CDC (Erfolg)",
+      "detail": "Der CDC best\u00e4tigt die Registrierung des Hosts. Der Host befindet sich nun in der Datenbank des CDC und erh\u00e4lt Discovery Log Pages, die nach der Zoning-Konfiguration gefiltert sind \u2014 nur Subsysteme, auf die dieser Host Zugriff hat, werden angezeigt. Der CDC sendet au\u00dferdem AENs (Asynchronous Event Notifications), wenn sich das Discovery-Log \u00e4ndert."
+    },
+    "11": {
+      "text": "Get Log Page \u2192 CDC (Discovery Log, LID 0x70)",
+      "detail": "Der Host fordert die Discovery Log Page (LID 0x70) vom CDC an. Dies ist ein Standard-NVMe-Get-Log-Page-Admin-Befehl. Das Discovery-Log enth\u00e4lt Eintr\u00e4ge f\u00fcr alle f\u00fcr diesen Host zug\u00e4nglichen Subsysteme, gefiltert nach der Zoning-Konfiguration des CDC. Jeder Eintrag liefert Transporttyp, Adressfamilie, Transportadresse (IP), Port, Subsystem-NQN und Subsystem-Typ (NVM oder Discovery-Verweis). Der Host liest den Generation Counter vor und nach dem Abruf \u2014 \u00e4ndert er sich, muss das Log erneut gelesen werden."
+    },
+    "12": {
+      "text": "Discovery Log Page \u2190 CDC (2 DDC-Verweise)",
+      "detail": "Der CDC gibt das Discovery-Log mit 2 DDC-Verweiseintr\u00e4gen zur\u00fcck: 1) DDC auf Speicher-Array 1 (subtype=1, Discovery Subsystem) bei 192.168.100.51:8009 2) DDC auf Speicher-Array 2 (subtype=1, Discovery Subsystem) bei 192.168.100.52:8009. Dies sind Verweise \u2014 der CDC leitet den Host an, sich mit jedem DDC (Direct Discovery Controller) zu verbinden, um zu erfahren, welche IO Controller auf diesem Speicher-Array verf\u00fcgbar sind. Der CDC liefert die netzwerkweite Sicht; die DDCs liefern die Array-spezifischen Details. stafd wird nun dem ersten Verweis folgen und sich mit dem DDC auf Speicher-Array 1 verbinden."
+    },
+    "13": {
+      "text": "TCP SYN \u2192 DDC Port 8009 (Speicher-Array)",
+      "detail": "stafd folgt dem DDC-Verweis aus dem Discovery-Log des CDC. Es initiiert eine TCP-Verbindung zum Direct Discovery Controller (DDC) auf Speicher-Array 1 bei 192.168.100.51:8009. Der DDC ist ein Discovery Controller, der auf dem Speicher-Array selbst l\u00e4uft (im Gegensatz zum CDC, der im Netzwerk-Switch l\u00e4uft). Der DDC liefert Discovery Log Pages, die spezifisch f\u00fcr die IO-Subsysteme auf diesem bestimmten Speicher-Array sind. Dies ist die zweite Stufe der dreistufigen Discovery-Hierarchie: CDC (netzwerkweit) \u2192 DDC (pro Array) \u2192 IOC (pro Subsystem)."
+    },
+    "14": {
+      "text": "TCP SYN-ACK \u2190 DDC",
+      "detail": "Der DDC des Speicher-Arrays best\u00e4tigt den TCP-Verbindungsversuch."
+    },
+    "15": {
+      "text": "TCP ACK \u2014 Verbindung zum DDC hergestellt",
+      "detail": "TCP-Handshake zum DDC auf dem Speicher-Array ist abgeschlossen."
+    },
+    "16": {
+      "text": "ICReq \u2192 DDC (NVMe/TCP-Verbindung initialisieren)",
+      "detail": "NVMe/TCP-Initialisierung mit dem DDC \u2014 gleicher ICReq/ICResp-Austausch wie mit dem CDC."
+    },
+    "17": {
+      "text": "ICResp \u2190 DDC (Verbindungsparameter akzeptiert)",
+      "detail": "DDC akzeptiert NVMe/TCP-Transportparameter."
+    },
+    "18": {
+      "text": "Fabrics Connect \u2192 DDC (Admin Queue, Discovery NQN)",
+      "detail": "Der Host sendet Fabrics Connect an den DDC mit der bekannten Discovery-Subsystem-NQN (nqn.2014-08.org.nvmexpress.discovery) \u2014 die gleiche NQN wie f\u00fcr die CDC-Verbindung verwendet. Sowohl CDC als auch DDC sind Discovery Controller; sie unterscheiden sich im Umfang (CDC = zentralisiert/netzwerkweit, DDC = lokal auf einem Speicher-Array), verwenden aber das gleiche Discovery-Protokoll und die gleiche NQN."
+    },
+    "19": {
+      "text": "Fabrics Connect-Antwort \u2190 DDC (CNTLID=1)",
+      "detail": "Der DDC akzeptiert die Verbindung und weist CNTLID=1 zu. Die Admin Queue zum DDC ist hergestellt \u2014 der Host kann nun das Discovery-Log des DDC anfordern, um \u00fcber IO Controller auf diesem Speicher-Array zu erfahren."
+    },
+    "20": {
+      "text": "DIM Register \u2192 DDC (TP8013)",
+      "detail": "Der Host registriert sich beim DDC via DIM, genau wie beim CDC. Dies stellt sicher, dass der DDC Discovery-Log-Eintr\u00e4ge zur\u00fcckgibt, die nach der Zoning-Konfiguration f\u00fcr diesen spezifischen Host gefiltert sind. Der DDC sendet au\u00dferdem AENs, wenn sich Subsysteme auf diesem Speicher-Array \u00e4ndern."
+    },
+    "21": {
+      "text": "DIM Register-Antwort \u2190 DDC (Erfolg)",
+      "detail": "Der DDC best\u00e4tigt die Registrierung des Hosts. Der Host kann nun die Discovery Log Page des DDC anfordern, um zu erfahren, welche IO Controller auf diesem Speicher-Array zug\u00e4nglich sind."
+    },
+    "22": {
+      "text": "Get Log Page \u2192 DDC (Discovery Log, LID 0x70)",
+      "detail": "Der Host fordert die Discovery Log Page vom DDC an. Im Gegensatz zum Log des CDC, das DDC-Verweise enthielt, enth\u00e4lt das Log des DDC die tats\u00e4chlichen NVM-Subsystem-Eintr\u00e4ge \u2014 insbesondere die IO Controller auf diesem Speicher-Array, die f\u00fcr diesen Host zug\u00e4nglich sind. Dies ist der Schritt, in dem der Host die NQN und Verbindungsdetails des IO Controllers erf\u00e4hrt."
+    },
+    "23": {
+      "text": "DDC Discovery Log \u2190 DDC (subsys-alpha bei Port 4420)",
+      "detail": "Der DDC gibt sein Discovery-Log mit 1 Eintrag zur\u00fcck: NVM Subsystem A (nqn.2024-01.com.storage:subsys-alpha) bei 192.168.100.51:4420. Dies ist die IO-Controller-NQN, die stacd f\u00fcr die Verbindung verwenden wird. Die dreistufige Discovery-Hierarchie ist nun abgeschlossen: CDC (netzwerkweit) \u2192 DDC (pro Array) \u2192 IOC (pro Subsystem). stacd hat nun die Subsystem-NQN und Verbindungsdetails, die zum Aufbau einer IO-Controller-Verbindung ben\u00f6tigt werden."
+    },
+    "24": {
+      "text": "TCP SYN \u2192 IO Controller Port 4420",
+      "detail": "stacd initiiert eine TCP-Verbindung zum IO Controller bei 192.168.100.51:4420 \u2014 die Adresse und der Port, die aus dem Discovery-Log des DDC gelernt wurden (nqn.2024-01.com.storage:subsys-alpha). Port 4420 ist der IANA-zugewiesene Port f\u00fcr NVMe over Fabrics."
+    },
+    "25": {
+      "text": "TCP SYN-ACK \u2190 IO Controller",
+      "detail": "IO Controller best\u00e4tigt den TCP-Verbindungsversuch."
+    },
+    "26": {
+      "text": "TCP ACK \u2014 Verbindung zum IO Controller hergestellt",
+      "detail": "TCP-Handshake zum IO Controller ist abgeschlossen."
+    },
+    "27": {
+      "text": "ICReq \u2192 IO Controller",
+      "detail": "NVMe/TCP-Initialisierung \u2014 gleicher ICReq/ICResp-Austausch wie mit dem CDC."
+    },
+    "28": {
+      "text": "ICResp \u2190 IO Controller",
+      "detail": "IO Controller akzeptiert NVMe/TCP-Transportparameter."
+    },
+    "29": {
+      "text": "Fabrics Connect \u2192 IO Controller (subsys-alpha)",
+      "detail": "Der Host verbindet sich mit dem IO Controller unter Verwendung der Subsystem-NQN, die aus dem Discovery-Log des DDC gelernt wurde (nqn.2024-01.com.storage:subsys-alpha). Dies erstellt die Admin-Queue-Assoziation. Im Gegensatz zu den CDC- und DDC-Verbindungen, die die bekannte Discovery-NQN verwendeten, wird hier die tats\u00e4chliche Speicher-Subsystem-NQN verwendet \u2014 womit die letzte Stufe der CDC \u2192 DDC \u2192 IOC-Hierarchie abgeschlossen wird."
+    },
+    "30": {
+      "text": "Fabrics Connect-Antwort \u2190 IO Controller (CNTLID=1)",
+      "detail": "IO Controller akzeptiert die Verbindung und weist CNTLID=1 zu. Die Admin Queue ist hergestellt \u2014 der Host kann nun den Controller und seine Namespaces identifizieren."
+    },
+    "31": {
+      "text": "Identify Controller (CNS=0x01)",
+      "detail": "Der Host sendet Identify Controller (Admin-Opcode 0x06, CNS=1), um die F\u00e4higkeiten des Controllers zu erfahren: Seriennummer, Modell, Firmware-Version, maximale Datentransfergr\u00f6\u00dfe (MDTS), Anzahl der Namespaces und unterst\u00fctzte Features. Diese 4096-Byte-Antwort ist essenziell f\u00fcr die korrekte Konfiguration des Host-Treibers."
+    },
+    "32": {
+      "text": "Identify Controller-Antwort (4 Namespaces, MDTS=256KB)",
+      "detail": "Der IO Controller gibt seine Identit\u00e4t zur\u00fcck: Modell \"NVMe-oF/TCP Storage Array\", Firmware v2.1.0, MDTS=6 (max. Transfer 256KB) und 4 Namespaces. Der Host-Treiber verwendet MDTS, um I/O-Anfragegr\u00f6\u00dfen zu begrenzen, und nn (Number of Namespaces), um zu wissen, wie viele Namespaces aufgez\u00e4hlt werden m\u00fcssen."
+    },
+    "33": {
+      "text": "Identify Namespace (NSID=1, CNS=0x00)",
+      "detail": "Der Host identifiziert Namespace 1, um dessen Gr\u00f6\u00dfe, LBA-Format und F\u00e4higkeiten zu erfahren. CNS=0 mit einer bestimmten NSID gibt die Identit\u00e4tsdaten des Namespaces zur\u00fcck, einschlie\u00dflich Gesamtgr\u00f6\u00dfe (nsze), Kapazit\u00e4t (ncap), aktuelle Auslastung (nuse) und LBA-Format (Sektorgr\u00f6\u00dfe, Metadaten)."
+    },
+    "34": {
+      "text": "Identify Namespace-Antwort (NSID=1, ~1TB, 512B LBAs)",
+      "detail": "Namespace 1 hat ~1TB Kapazit\u00e4t (1.953.525.168 \u00d7 512-Byte-LBAs), 25% ausgelastet. LBA-Format 0: 512 Bytes pro LBA, keine Metadaten, beste relative Performance. Die Block-Schicht des Hosts stellt dies als /dev/nvmeXnY dar (z.B. /dev/nvme0n1)."
+    },
+    "35": {
+      "text": "Fabrics Connect IO Queue 1",
+      "detail": "Der Host erstellt IO Queue 1 via Fabrics Connect mit QID=1. IO Queues werden f\u00fcr NVMe Read/Write-Befehle verwendet (Admin-Befehle verwenden QID=0). SQ Size ist auf 128 Eintr\u00e4ge gesetzt. Mehrere IO Queues k\u00f6nnen erstellt werden (typischerweise eine pro CPU-Kern f\u00fcr beste Performance)."
+    },
+    "36": {
+      "text": "IO Queue 1 hergestellt \u2014 bereit f\u00fcr I/O",
+      "detail": "IO Queue 1 ist hergestellt. Der Host kann nun NVMe Read- und Write-Befehle senden. Das Blockger\u00e4t /dev/nvme0n1 ist nun voll betriebsbereit."
+    },
+    "37": {
+      "text": "NVMe Write-Befehl (4KB auf LBA 0x1000)",
+      "detail": "Der Host sendet einen 4KB-NVMe-Write-Befehl an Namespace 1 bei LBA 0x1000. Das Write-SQE (64 Bytes) wird als CapsuleCmd-PDU auf IO Queue 1 gesendet. Der Befehl spezifiziert 8 LBAs (0-basiert NLB=7) \u00d7 512 Bytes = 4096 Bytes. \u00dcber NVMe/TCP werden die Write-Daten nicht inline mit dem Befehl gesendet \u2014 der Controller muss zuerst eine R2T-PDU (Ready to Transfer) senden, um die Daten anzufordern."
+    },
+    "38": {
+      "text": "R2T \u2190 Controller (4KB Write-Daten anfordern)",
+      "detail": "Der IO Controller sendet eine Ready-to-Transfer-PDU (R2T), die die Write-Daten vom Host anfordert. Die R2T spezifiziert den Transfer Tag, Daten-Offset (0 = Start) und L\u00e4nge (4096 Bytes). Dies ist der NVMe/TCP-Flusskontrollmechanismus \u2014 der Controller steuert, wann und wie viele Daten der Host sendet. Dies unterscheidet sich von RDMA, wo der Host Daten direkt pushen kann."
+    },
+    "39": {
+      "text": "H2CData \u2192 Controller (4KB Write-Nutzlast)",
+      "detail": "Der Host sendet die 4KB-Write-Daten in einer H2CData-PDU (Host-to-Controller Data). Der Transfer Tag stimmt mit der R2T \u00fcberein. Das LAST-Flag zeigt an, dass dies die letzte Daten-PDU f\u00fcr diesen Befehl ist. F\u00fcr gr\u00f6\u00dfere Writes k\u00f6nnen mehrere R2T/H2CData-Austausche stattfinden (gesteuert durch maxr2t aus ICReq)."
+    },
+    "40": {
+      "text": "Write-Abschluss \u2190 Controller (Erfolg)",
+      "detail": "Der IO Controller schlie\u00dft den Write ab und gibt eine CapsuleResp mit Status 0x0000 (Erfolg) zur\u00fcck. Die 4KB wurden auf LBA 0x1000 in Namespace 1 geschrieben. Der Host-Treiber schlie\u00dft die Block-I/O-Anfrage ab."
+    },
+    "41": {
+      "text": "NVMe Read-Befehl (4KB von LBA 0x1000)",
+      "detail": "Der Host liest die gleichen 4KB von LBA 0x1000 zur\u00fcck. Das Read-SQE wird als CapsuleCmd auf IO Queue 1 gesendet. Im Gegensatz zum Write ben\u00f6tigt der Read-Befehl keine R2T \u2014 der Controller sendet Daten direkt \u00fcber C2HData-PDUs."
+    },
+    "42": {
+      "text": "C2HData \u2190 Controller (4KB Read-Nutzlast)",
+      "detail": "Der IO Controller sendet die 4KB-Read-Daten in einer C2HData-PDU (Controller-to-Host Data). Bei Reads flie\u00dfen die Daten vom Controller zum Host ohne R2T-Handshake \u2014 der Controller sendet Daten, sobald sie vom Speichermedium verf\u00fcgbar sind. Das LAST-Flag markiert dies als letzte Daten-PDU."
+    },
+    "43": {
+      "text": "Read-Abschluss \u2190 Controller (Erfolg)",
+      "detail": "Read erfolgreich abgeschlossen. Die 4KB-Daten von LBA 0x1000 wurden an den Host geliefert. Der vollst\u00e4ndige NVMe/TCP-Lebenszyklus ist nun demonstriert: mDNS-Erkennung \u2192 CDC-Registrierung \u2192 CDC Discovery Log (DDC-Verweise) \u2192 DDC-Verbindung \u2192 DDC Discovery Log (IOC-Details) \u2192 IOC-Verbindung \u2192 Controller-Identifikation \u2192 Namespace-Aufz\u00e4hlung \u2192 IO-Queue-Aufbau \u2192 Write \u2192 Read. Die dreistufige Discovery-Hierarchie (CDC \u2192 DDC \u2192 IOC) ist abgeschlossen."
+    }
+  }
+}

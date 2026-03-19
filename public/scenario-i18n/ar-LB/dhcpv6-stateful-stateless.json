@@ -1,0 +1,125 @@
+{
+  "meta": {
+    "title": "DHCPv6: Stateless (O-flag) مقابل Stateful (M-flag) + Prefix Delegation",
+    "description": "بيوضّح الوضعين تبع DHCPv6 وكيف RA M و O flags بيختاروا بيناتهم. الجزء 1 بيوضّح stateless DHCPv6 (O=1, M=0) وين ال client بياخد عنوان عبر SLAAC وبس بيسأل DHCPv6 عن DNS/NTP. الجزء 2 بيوضّح stateful DHCPv6 (M=1) مع كامل تبادل SARR ال 4 رسائل (Solicit-Advertise-Request-Reply). الجزء 3 بيوضّح Prefix Delegation (IA_PD)، يلّي هو كيف home routers بتحصل على IPv6 prefix من ال ISP — بيلغي الحاجة لـ NAT.",
+    "learning_objectives": [
+      "فهم دور RA M و O flags باختيار stateless مقابل stateful DHCPv6",
+      "شوف كيف stateless DHCPv6 (Information-Request / Reply) بيوصّل DNS و NTP بدون ما يتابع العناوين",
+      "تابع تبادل SARR ال 4 رسائل تبع stateful DHCPv6 (Solicit → Advertise → Request → Reply)",
+      "حدّد DHCPv6 message types, DUID identifiers, و key options (IA_NA, IA_Address, DNS servers)",
+      "فهم DHCPv6 Prefix Delegation (IA_PD) وليش بيلغي الحاجة لـ IPv6 NAT",
+      "قارن DHCPv6 SARR مع DHCPv4 DORA وفهم الفروقات المعمارية",
+      "اعرف إنو IPv6 بيفصل تعيين العنوان (SLAAC) عن الإعدادات (DHCPv6) بالتصميم"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "RA → ال Router بيعلن عن prefix 2001:db8:1::/64 مع M=0, O=1, A=1",
+      "detail": "ال router بشكل دوري بيبعت Router Advertisements لـ ff02::1 (كل ال nodes). هال RA بيحمل تلات flags حاسمة: M=0 يعني 'ما تستعمل DHCPv6 لعنوانك — استعمل SLAAC.' O=1 يعني 'استعمل DHCPv6 لإعدادات تانية متل DNS و NTP.' ال Prefix Information option فيها 2001:db8:1::/64 مع A=1 (autonomous)، يلّي بيخبّر الهوستات يولّدوا عنوان SLAAC من هال prefix. هال M=0/O=1 combination هو أكتر deployment model شائع — بيعطي الهوستات بساطة SLAAC للعناوين مع DNS configuration مركزي عبر DHCPv6."
+    },
+    "1": {
+      "text": "SLAAC → ال Client بيضبّط حاله أوتوماتيكياً 2001:db8:1::211:22ff:fe33:4401/64",
+      "detail": "لأنه ال RA كان عنده A=1 على ال prefix و M=0، ال client بيستعمل Stateless Address Autoconfiguration (RFC 4862). بيدمج ال /64 prefix مع ال interface identifier تبعه (مشتق من MAC عبر EUI-64 أو random stable ID حسب RFC 7217) ليكوّن عنوان globally routable. DAD (Duplicate Address Detection) بيصير قبل ما يُستعمل العنوان. لتفاصيل SLAAC الكاملة، شوف IPv6 SLAAC scenario. ال client هلّق عنده عنوان IPv6 شغّال بس بلا DNS servers — هون بيدخل DHCPv6."
+    },
+    "2": {
+      "text": "ال Client بيشوف O=1: 'لازم أسأل DHCPv6 عن إعدادات إضافية'",
+      "detail": "ال network stack تبع ال client بيعالج RA flags. O=1 بيفعّل ال DHCPv6 client ليبعت Information-Request message. بعكس Solicit (يلّي بيطلب عنوان)، Information-Request بس بيسأل عن configuration parameters — هيدا 'stateless' DHCPv6 لأنه السيرفر ما بيحتاج يتابع أي per-client state أو address bindings. ال client من قبل عنده عنوانه من SLAAC."
+    },
+    "3": {
+      "text": "DHCPv6 Information-Request → ال Client بيسأل عن DNS, search list, NTP",
+      "detail": "ال client بيبعت Information-Request (message type 11) لـ ff02::1:2 (All_DHCP_Relay_Agents_and_Servers) باستعمال UDP source port 546 و destination port 547. الرسالة فيها Client Identifier (DUID) و Option Request Option (ORO) بتعدّد ال options يلّي بده إياهم: DNS Recursive Name Server (23), DNS Search List (24), و SNTP Servers (31). ملاحظة: ما في IA_NA option — ال client مش عم يطلب عنوان. هيدا الفرق الأساسي بين stateless و stateful DHCPv6."
+    },
+    "4": {
+      "text": "DHCPv6 Reply ← السيرفر بيعطي DNS 2001:db8:1::53, search domain, SNTP",
+      "detail": "السيرفر بيرد بـ Reply (type 7) فيه ال options المطلوبة. DNS servers: 2001:db8:1::53 و 2001:4860:4860::8888. DNS search list: example.com, lab.example.com. SNTP server: 2001:db8:1::123. السيرفر ما بيسجّل أي binding — ببساطة بيعطي نفس الإعدادات لكل client بيسأل. هيدا ليش اسمه 'stateless.' السيرفر ممكن يعمل reboot ويخسر كل ذاكرته، ولسا بيشتغل تمام لأنه ما في شي ليتذكّره."
+    },
+    "5": {
+      "text": "ال Client مضبوط بالكامل: عنوان SLAAC + DNS من DHCPv6",
+      "detail": "ال client هلّق عنده كل شي يلزمه: عنوان IPv6 globally routable (2001:db8:1::211:22ff:fe33:4401 من SLAAC)، default gateway (fe80::211:22ff:fe33:44ff من ال RA)، DNS servers و search domain (من DHCPv6)، و NTP server (من DHCPv6). هيدا أكتر IPv6 deployment model شيوعاً: SLAAC لعناوين، DHCPv6 لـ DNS/NTP."
+    },
+    "6": {
+      "text": "Stateless DHCPv6 — السيرفر ما بيتابع مين عنده شو. بس بيعطي config info لأي حدا بيسأل.",
+      "detail": "بـ IPv4، DHCP بيعمل كل شي — عناوين، DNS، NTP، gateway، subnet mask. بـ IPv6، الشغل مقسّم: Router Advertisements بتعطي ال gateway وال prefix، SLAAC بيولّد العنوان، و DHCPv6 بيكمّل DNS و NTP. هال separation of concerns هو خيار تصميم مقصود بـ IPv6. O=1 هو بأبعد حد أكتر RA flag setting شيوعاً بشبكات enterprise و ISP."
+    },
+    "7": {
+      "text": "RA → ال Router بيعلن M=1, O=1 — 'استعمل DHCPv6 لعنوانك'",
+      "detail": "network segment مختلف (أو router معاد ضبطه) بيبعت RA مع M=1. هيدا بيخبّر الهوستات: 'ما تضبّط عناوين من SLAAC — خد عنوانك من DHCPv6 server.' ال prefix information option عندها A=0، بيأكّد إنو SLAAC ما لازم يُستعمل. هيدا ال enterprise model وين ال IT administrators بيحتاجوا تحكّم مشدد بتعيينات العناوين لل audit trails, access control, و DNS registration. لما M=1، ال O flag عملياً implied (رح تاخد config مع العنوان)، بس عادةً بيتحط صراحة."
+    },
+    "8": {
+      "text": "ال Client بيشوف M=1: 'لازم أستعمل DHCPv6 تأخد عنواني'",
+      "detail": "ال M flag بيفعّل تبادل DHCPv6 كامل. بعكس الحالة ال stateless (Information-Request / Reply)، ال client هلّق رح يمرّ بتبادل SARR ال 4 رسائل: Solicit → Advertise → Request → Reply. هيدا مشابه لـ DORA تبع DHCPv4 (Discover → Offer → Request → Ack). السيرفر رح يحافظ على binding database بتتابع أي DUID عنده أي عنوان، مع lease lifetimes و renewal timers — يعني 'stateful.'"
+    },
+    "9": {
+      "text": "DHCPv6 Solicit → ال Client بيدوّر على DHCPv6 servers (msg type 1)",
+      "detail": "ال client بيبعت Solicit لـ ff02::1:2. فيه Client Identifier تبعه (DUID-LLT — Link-Layer address + Time، أكتر نوع DUID شائع)، IA_NA (Identity Association for Non-temporary Addresses) بيطلب عنوان ثابت، Option Request لـ DNS، و Elapsed Time option. ال IAID تبع ال IA_NA (Identity Association ID) عادةً مشتق من ال interface index. T1 و T2 محطوطين 0، يعني 'خلّي السيرفر يقرّر جدول التجديد.' أي DHCPv6 server على ال link رح يرد بـ Advertise."
+    },
+    "10": {
+      "text": "DHCPv6 Advertise ← السيرفر بيعرض 2001:db8:1::100 (msg type 2)",
+      "detail": "السيرفر بيرد بـ Advertise، بيعرض عنوان 2001:db8:1::100 مع preferred lifetime 86400s (24 ساعة) و valid lifetime 172800s (48 ساعة). ال IA_NA فيها T1=43200s (12 ساعة) و T2=69120s (19.2 ساعة) — T1 هو وقت ال client يبدأ ال renewal (unicast Renew لهالسيرفر)، و T2 هو وقت يبدأ ال rebinding (multicast Rebind لأي server، بحال هيدا راح). ال Preference option محطوط 255 (أقصى)، بيخبّر ال client يقبل هالعرض فوراً بدون ما يستنّى servers تانية. DNS servers و search list كمان مشمولين."
+    },
+    "11": {
+      "text": "DHCPv6 Request → ال Client بيقبل: 'رح آخد 2001:db8:1::100 من server ...53' (msg type 3)",
+      "detail": "ال client بيبعت Request لـ ff02::1:2 (لسا multicast، فـ servers تانية بيعرفوا إنو هال client اختار). المهم، ال Request فيه Client Identifier وال Server Identifier الاتنين — ال Server ID المنسوخ من ال Advertise بيخبّر السيرفر المختار يثبّت ال binding، وبيخبّر servers تانية يلغوا أي عروض مؤقتة. ال IA_NA بتكرّر العنوان المعروض. هيدا ال 'R' بـ SARR، مشابه لل 'R' بـ DORA تبع DHCPv4."
+    },
+    "12": {
+      "text": "DHCPv6 Reply ← السيرفر بيأكّد 2001:db8:1::100 — ال binding شغّال (msg type 7)",
+      "detail": "السيرفر بيبعت Reply بيأكّد تعيين العنوان. السيرفر هلّق عمل persistent binding: Client DUID → 2001:db8:1::100، مع lifetimes و renewal timers. هال binding بيبقى بعد إعادة تشغيل السيرفر (مخزّن بـ lease file أو database). ال client رح يبعت Renew عند T1 (12 ساعة) ليمدّد ال lease. إذا السيرفر ما رد عند T2 (19.2 ساعة)، ال client بيعمل multicast Rebind لأي server متاح. إذا ال valid lifetime خلص، العنوان بينحل."
+    },
+    "13": {
+      "text": "DAD → ال Client بيفحص 2001:db8:1::100 لل duplicates (NS من ::)",
+      "detail": "حتى لو العنوان إجا من DHCPv6، ال client لازم يعمل Duplicate Address Detection قبل ما يستعمله. ال client بيبعت Neighbor Solicitation مع source :: (غير محدد) لعنوان solicited-node multicast ff02::1:ff00:100. إذا ما وصلت Neighbor Advertisement خلال ثانية وحدة، العنوان بيُعتبر فريد وبينتقل من 'tentative' لـ 'preferred.' إذا duplicate انكشف، ال client بيبعت DHCPv6 Decline message وبيعيد يجرّب."
+    },
+    "14": {
+      "text": "ال Client مضبوط: عنوان DHCPv6-assigned 2001:db8:1::100 + DNS",
+      "detail": "ال client شغّال بالكامل بعنوان معيّن من السيرفر وإعدادات DNS. بعكس الحالة ال stateless، السيرفر عم يحافظ على binding لهال client وبيتوقّع renewal. هال model بيعطي المسؤولين رؤية كاملة لتعيينات العناوين — ضروري لشبكات enterprise يلّي بتحتاج audit trails, access control lists مبنية على IP, و dynamic DNS registration."
+    },
+    "15": {
+      "text": "تبادل 4 رسائل (SARR)، متل DHCP DORA بـ IPv4، بس عبر UDP 546/547 مع multicast",
+      "detail": "DHCPv6 SARR (Solicit-Advertise-Request-Reply) بيقابل DHCPv4 DORA (Discover-Offer-Request-Ack). فروقات أساسية: DHCPv6 بيستعمل UDP ports 546 (client) و 547 (server) بدل 67/68. DHCPv6 بيستعمل IPv6 multicast (ff02::1:2) بدل IPv4 broadcast (255.255.255.255). DHCPv6 بيحدّد ال clients بـ DUID (فريد عالمياً) بدل MAC address — هيدا أقوى لما هوست عنده عدة interfaces. DHCPv6 ما بيعطي default gateway — هيدا دايماً بييجي من ال RA."
+    },
+    "16": {
+      "text": "DHCPv6 Solicit + IA_PD → Home router بيسأل ال ISP عن prefix",
+      "detail": "ال home router (CPE — Customer Premises Equipment) بيبعت Solicit مع IA_PD option (Identity Association for Prefix Delegation, option 25). هيدا مختلف عن IA_NA — ال router مش عم يطلب عنوان واحد لحاله، عم يطلب prefix كامل يقدر يقسّمه ويعلن عنه للأجهزة على LAN تبعه. ال hint بيقترح /48، يلّي بيعطي ال home router 65536 /64 subnets ليتصرّف فيهم (وحدة لكل VLAN, guest network, IoT segment, الخ). ال ISPs عادةً بيعطوا /48, /56, أو /60."
+    },
+    "17": {
+      "text": "DHCPv6 Reply ← ال ISP بيعطي 2001:db8:abcd::/48 لل home router",
+      "detail": "DHCPv6 server تبع ال ISP بيرد بـ Reply فيه IA_PD مع IA_Prefix option 26: delegated prefix 2001:db8:abcd::/48 مع preferred lifetime 7 أيام و valid lifetime 30 يوم. ال home router هلّق 'مالك' هال /48 وبيقدر يقسّمه كيف ما بده. /48 بيعطي 65536 /64 subnets — أكتر من أي بيت أو عمل صغير رح يحتاج أبداً. السيرفر بيسجّل هال delegation وبيتوقّع renewal."
+    },
+    "18": {
+      "text": "RA → Home router بيعلن 2001:db8:abcd:1::/64 على ال LAN تبعه",
+      "detail": "ال home router بياخد ال delegated /48، بيقطع أول /64 subnet (2001:db8:abcd:1::/64)، وبيبدأ يعلن عنه عبر Router Advertisements على ال LAN interface تبعه. أجهزة ال LAN بتستلم هال RA، بتعمل SLAAC، وبتاخد عناوين IPv6 globally routable. ما في NAT بالموضوع — كل جهاز على ال LAN عنده عنوان حقيقي routable. firewall تبع ال home router بيأمّن الحماية (stateful packet filtering)، مش ال address translation. هيدا فرق جوهري عن IPv4 home networking."
+    },
+    "19": {
+      "text": "هيك home router تبعك بياخد IPv6 prefix من ال ISP — بلا حاجة لـ NAT",
+      "detail": "Prefix Delegation هي الآلية يلّي بتخلّي IPv6 end-to-end connectivity يشتغل على نطاق واسع. ال ISP تبعك بيعطي ال router تبعك prefix خاص. ال router بيقسّمه وبيعلن /64s على كل LAN segment. كل جهاز بياخد عنوان globally unique وroutable. ما في NAT يعني ما في port forwarding hassles، ما في بروتوكولات peer-to-peer معطّلة، ما في NAT state tables بتطفح. الأمان بييجي من stateful firewall تبع ال router، يلّي بيحظر الاتصالات الداخلة غير المطلوبة بال default — نفس الحماية يلّي NAT كان يعطيها بالصدفة، بس بدون ال downsides. هيدا IPv6 عم يشتغل كما هو مصمّم."
+    },
+    "20": {
+      "text": "خلص ال Scenario — DHCPv6 stateless, stateful, و prefix delegation",
+      "detail": "هال scenario وضّح تلات أوضاع تشغيل DHCPv6:\n1. STATELESS (M=0, O=1) — ال Client بياخد عنوان من SLAAC, DNS/NTP من DHCPv6 Information-Request. السيرفر ما بيتابع شي. أكتر setup شائع.\n2. STATEFUL (M=1) — ال Client بياخد عنوان وإعدادات من DHCPv6 عبر تبادل SARR ال 4 رسائل. السيرفر بيحافظ على binding database. بيُستعمل بشبكات enterprise يلّي بتحتاج address accountability.\n3. PREFIX DELEGATION — ال Router بياخد prefix كامل من DHCPv6 وبيقسّمه لل LAN تبعه. هيك IPv6 بيتفادى NAT — كل جهاز بياخد عنوان globally routable.\nبـ IPv4، DHCP بيعمل كل شي. بـ IPv6، SLAAC و DHCPv6 بيقسّموا الشغل. ال RA M و O flags هم ال control plane يلّي بيقرّر كيف هال تقسيم بيشتغل."
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "DHCPv6: Stateless, Stateful, و Prefix Delegation",
+      "description": "تابع التلات أوضاع تبع DHCPv6 وكيف RA flags بتتحكّم بسلوك ال client",
+      "steps": {
+        "0": "بـ IPv4، DHCP بيعمل كل شي — بيوزّع عناوين، DNS servers، default gateways، و subnet masks كلّهم ببروتوكول واحد. بـ IPv6، الشغل مقسّم: Router Advertisements بتعطي ال gateway وال prefix، SLAAC بيقدر يولّد عناوين، و DHCPv6 بيكمّل الباقي. ال M و O flags تبع ال RA هم ال control knobs يلّي بيقرّروا كيف هال تقسيم بيشتغل. خلّينا نشوف التلات أوضاع بالعمل.",
+        "1": "ال router بيبعت Router Advertisement مع M=0 و O=1. M=0 يعني 'ما تستعمل DHCPv6 لعنوانك — استعمل SLAAC.' O=1 يعني 'استعمل DHCPv6 لإعدادات تانية متل DNS و NTP.' ال RA كمان فيه prefix 2001:db8:1::/64 مع ال A (Autonomous) flag محطوط، يلّي بيخبّر الهوستات إنهم بيقدروا يستعملوا هال prefix لـ SLAAC. هال M=0/O=1 combination هو أكتر deployment model شيوعاً على الإنترنت اليوم.",
+        "2": "ال client بياخد ال /64 prefix من ال RA وبيضيف ال interface identifier تبعه ليكوّن عنوان /128 كامل عبر SLAAC. باستعمال EUI-64، ال MAC 00:11:22:33:44:01 بيصير interface ID 0211:22ff:fe33:4401، فالعنوان بيصير 2001:db8:1::211:22ff:fe33:4401. DAD بيأكّد ما حدا تاني عنده هالعنوان. ال client هلّق عنده عنوان IPv6 شغّال بس بلا DNS servers — هون بيدخل DHCPv6.",
+        "3": "لأنه ال RA كان عنده O=1، ال client بيبعت DHCPv6 Information-Request (message type 11) لعنوان multicast ff02::1:2 على UDP port 547. هيدي الرسالة الأساسية لـ stateless DHCPv6 — لاحظ ما في IA_NA option، يعني ال client مش عم يطلب عنوان. بس بده DNS servers (option 23)، DNS search list (option 24)، و SNTP servers (option 31). الرسالة فيها DUID تبع ال client للتعريف.",
+        "4": "ال DHCPv6 server بيرد بـ Reply فيه DNS servers, search list, و SNTP server. السيرفر ما بيسجّل أي binding — بيعطي نفس المعلومات لكل client بيسأل. هيدا ليش اسمه 'stateless.' السيرفر ممكن يعمل reboot ولسا بيشتغل تمام لأنه ما في شي ليتذكّره. ال client هلّق مضبوط بالكامل: عنوان SLAAC زائد DNS من DHCPv6. O=1 هو بأبعد حد أكتر setup شيوعاً — بسيط، scalable، وبيشتغل منيح.",
+        "5": "هلّق خلّينا نشوف stateful DHCPv6. RA مختلف بيوصل مع M=1، بيخبّر ال clients 'خدوا عنوانكم من DHCPv6، مش SLAAC.' ال prefix information عندها A=0، بتأكّد إنو SLAAC معطّل للعناوين. هيدا ال enterprise model — ال IT administrators بيحتاجوا يعرفوا بالضبط أي عنوان لأي جهاز لل security audits, access control, و dynamic DNS registration. M=1 بيفعّل تبادل DHCPv6 مختلف بالكامل.",
+        "6": "ال client بيبعت DHCPv6 Solicit (message type 1) — ال 'S' بـ SARR، مشابه لـ DHCP Discover بـ IPv4. فيه DUID تبع ال client (DUID-LLT، مبني على MAC + timestamp)، IA_NA option بيطلب عنوان non-temporary، و Option Request لـ DNS. ال Solicit بيروح لـ ff02::1:2، فكل DHCPv6 servers على ال link بيسمعوها. ال Elapsed Time option بيبدأ على 0، بيعني هيدي أول إرسالة.",
+        "7": "السيرفر بيرد بـ Advertise (message type 2)، بيعرض عنوان 2001:db8:1::100. ال IA_NA فيها T1 (renewal time، 12 ساعة) و T2 (rebinding time، 19.2 ساعة). ال IA_Address sub-option فيها العنوان الفعلي مع preferred lifetime (24 ساعة) و valid lifetime (48 ساعة). ال Preference option محطوط 255 (أقصى)، بيخبّر ال client يقبل فوراً بدون ما يستنّى servers تانية ترد. DNS servers و search list مشمولين بالعرض.",
+        "8": "ال client بيبعت Request (message type 3) — 'بقبل العرض من server ...53.' هالرسالة بتروح لـ ff02::1:2 (multicast)، مش unicast للسيرفر، فـ servers تانية على ال link بيشوفوها وبيلغوا أي عروض مؤقتة. ال Request فيه Client ID و Server ID الاتنين — ال Server ID المنسوخ من ال Advertise هو كيف ال client بيقول 'اخترتك.' هيدا ال 'R' بـ SARR.",
+        "9": "السيرفر بيبعت Reply (message type 7) بيأكّد تعيين العنوان. السيرفر هلّق عمل persistent binding: DUID تبع هال client بيطابق 2001:db8:1::100. ال binding بيبقى بعد إعادة تشغيل السيرفر. ال client لازم يعمل renew عند T1 (12 ساعة) ببعت Renew message. إذا السيرفر ما فات عند T2 (19.2 ساعة)، ال client بيعمل multicast Rebind. تبادل SARR ال 4 رسائل خلص — متل DORA بـ IPv4، بس عبر UDP 546/547 مع multicast بدل broadcast.",
+        "10": "حتى لو العنوان إجا من server، ال client لسا لازم يعمل DAD (Duplicate Address Detection). بيبعت Neighbor Solicitation من العنوان غير المحدد (::) لمجموعة solicited-node multicast لـ 2001:db8:1::100. إذا ما حدا رد خلال ثانية وحدة، العنوان تأكّد إنه فريد. إذا duplicate انلاقى، ال client بيبعت DHCPv6 Decline وبيطلب عنوان مختلف. DAD إلزامي بـ IPv6 بغض النظر كيف العنوان انحصل.",
+        "11": "هلّق لـ Prefix Delegation — هيك home router تبعك بياخد IPv6 من ال ISP تبعك. ال home router (CPE) بيبعت Solicit مع IA_PD option بدل IA_NA. مش عم يطلب عنوان واحد — عم يطلب prefix كامل يقدر يقسّمه ويعلن عنه على LAN تبعه. ال hint بيطلب /48، يلّي بيعطي 65536 /64 subnets. ال ISPs عادةً بيعطوا /48, /56, أو /60 حسب allocation policy تبعهم.",
+        "12": "DHCPv6 server تبع ال ISP بيرد بـ Reply فيه ال delegated prefix 2001:db8:abcd::/48. ال home router هلّق مالك هال prefix وبيقدر يقطعه لـ /64 subnets كيف ما بده — وحدة لل main LAN، وحدة لـ guest network، وحدة لأجهزة IoT. /48 بيعطي 65536 /64 subnets. السيرفر بيسجّل هال delegation مع lifetimes وبيتوقّع renewal.",
+        "13": "ال home router فوراً بيبدأ يعلن عن واحد من /64 subnets الجداد تبعه (2001:db8:abcd:1::/64) على ال LAN عبر Router Advertisements. أجهزة ال LAN بتستلم ال RA، بتعمل SLAAC، وبتاخد عناوين IPv6 globally routable. ما في NAT بالموضوع — كل لابتوب، تلفون، و smart thermostat بياخد عنوان حقيقي publicly routable. الأمان بييجي من stateful firewall تبع ال router، يلّي بيحظر ال unsolicited inbound traffic.",
+        "14": "Prefix Delegation هي كيف كل إنترنت IPv6 بيتفادى NAT. ال ISP تبعك بيعطي ال router تبعك prefix خاص. ما في NAT يعني ما في port forwarding hassles، ما في بروتوكولات peer-to-peer معطّلة، ما في NAT state table overflows. كل جهاز بياخد عنوان globally routable — هيدا بالتصميم، مش bug. الأمان بييجي من stateful firewalling، مش إخفاء العناوين.",
+        "15": "خلّينا نلخّص. شفنا تلات أوضاع DHCPv6، كلّهم محكومين ببتين بال Router Advertisement. O=1 لحاله يعني 'خد DNS من DHCPv6، العنوان من SLAAC' — أكتر setup شيوعاً. M=1 يعني 'خد عنوانك من DHCPv6' — بيُستعمل بشبكات enterprise يلّي بتحتاج تتبّع العناوين. و Prefix Delegation بيعطي ال routers prefixes كاملة يقسّموها لل LANs تبعهم، وهيدا كيف IPv6 بيلغي NAT. بـ IPv4، DHCP بيعمل كل شي. بـ IPv6، SLAAC و DHCPv6 بيقسّموا الشغل — وهال التقسيم هو يلّي بيخلّي IPv6 أكتر مرونة وقابلية للتوسّع."
+      }
+    }
+  }
+}

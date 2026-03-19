@@ -1,0 +1,86 @@
+{
+  "meta": {
+    "title": "[WIP] GPUDirect Storage：NVMe 直接读取到 GPU 内存（本地 PCIe）",
+    "description": "展示 GPUDirect Storage（GDS）如何绕过传统路径（NVMe → 页面缓存 → 用户缓冲区 → cudaMemcpy → GPU），实现 NVMe SSD 和 GPU 内存之间的零拷贝 P2P DMA 传输。",
+    "learning_objectives": [
+      "理解传统存储 I/O 路径为何数据两次跨越 PCIe 总线",
+      "了解 cuFileDriverOpen() 如何初始化 GDS 子系统",
+      "观察 cuFileBufRegister() 如何锁定 GPU 内存并创建 BAR1 DMA 映射",
+      "跟踪 P2P DMA 流程：NVMe SSD → GPU BAR1（零 CPU 拷贝）",
+      "理解从 GPU 到 NVMe 的写入路径（检查点保存）",
+      "将 GDS 性能与传统路径进行对比",
+      "理解 O_DIRECT 和绕过页面缓存的重要性",
+      "了解 GDS 在 AI 训练数据加载和检查点保存中的应用"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "传统路径（无 GDS）：NVMe → 页面缓存 → 用户缓冲区 → cudaMemcpy → GPU",
+      "detail": "没有 GPUDirect Storage 时，将 NVMe 数据读入 GPU 内存需要多次 CPU 介入的拷贝：(1) 应用程序调用 read() 或 pread()。(2) NVMe 驱动提交 NVMe Read 命令，PRP 条目指向页面缓存分配的主机 DRAM 页面。(3) NVMe SSD 将数据 DMA 到主机 DRAM（页面缓存）。(4) 内核将数据从页面缓存复制到用户空间缓冲区（如果不使用 O_DIRECT）。(5) 应用程序调用 cudaMemcpyHostToDevice() 将用户缓冲区复制到 GPU 内存。(6) CUDA 运行时通过 PCIe 将数据从锁定的主机 DRAM DMA 到 GPU。每次拷贝都消耗 CPU 周期、内存带宽并增加延迟。对于每个 epoch 读取 TB 级数据的 AI 训练工作负载，这成为严重瓶颈。CPU 成为存储和 GPU 之间的桥梁——浪费 CPU 时间和 PCIe 带宽（数据两次跨越 PCIe：SSD→主机，然后主机→GPU）。"
+    },
+    "1": {
+      "text": "传统路径带宽惩罚：数据两次跨越 PCIe 总线",
+      "detail": "在传统路径中，NVMe 读取数据两次跨越 PCIe 总线：(1) NVMe SSD → 主机 DRAM（PCIe x4 Gen5 = 32 GB/s），(2) 主机 DRAM → GPU via cudaMemcpy（PCIe x16 Gen5 = 64 GB/s）。使用 GDS，数据仅跨越 PCIe 一次：NVMe SSD → GPU 直接。对于 7 GB/s 的 NVMe SSD 喂数给 H100 GPU，GDS 可以将 SSD 的全部带宽交付到 GPU 内存。传统路径浪费主机 DRAM 带宽并用 CPU 从不处理的流式 I/O 数据污染 CPU L3 缓存。GDS 还通过消除内核到用户空间的拷贝和 cudaMemcpy 调度开销来降低延迟。对于多 GPU 多 SSD 的大规模 AI 训练，总带宽节省非常可观。"
+    },
+    "2": {
+      "text": "cuFileDriverOpen() — 初始化 GPUDirect Storage 子系统",
+      "detail": "应用程序（或 DALI/kvikio 等框架）调用 cuFileDriverOpen() 初始化 GDS 子系统。这触发加载 nvidia-fs 内核模块（如未加载）。nvidia-fs 通过 nvme_register_fs() 向 NVMe 主机驱动注册 DMA 操作回调。它还查询 PCIe 拓扑以验证 GPU 和 NVMe SSD 是否支持 P2P（同一根复合体或通过 PCIe 交换机连接）。如果 P2P 不可行，GDS 回退到通过主机 DRAM 的弹跳缓冲区路径（由于拷贝次数减少仍比传统路径快）。nvidia-fs 模块还与 NVIDIA GPU 驱动（nvidia.ko）协调，访问 GPU 内存管理 API 以进行 BAR1 映射和页面锁定。"
+    },
+    "3": {
+      "text": "open(\"/data/training/imagenet_shard_0042.bin\", O_RDONLY | O_DIRECT)",
+      "detail": "标准 POSIX open()，带 O_DIRECT 标志。O_DIRECT 对 GDS 是必需的——它绕过 Linux 页面缓存，这正是我们想要的，因为 GDS 直接将数据发送到 GPU 内存。没有 O_DIRECT，内核会在主机 DRAM 中分配页面缓存缓冲区并先将数据复制到那里，违背了 GDS 的目的。返回的 fd 将在下一步被 cuFileHandleRegister() 包装。"
+    },
+    "4": {
+      "text": "cuFileHandleRegister() — 向 GDS 注册文件描述符",
+      "detail": "将 POSIX fd 包装在 cuFile 句柄中。nvidia-fs 验证文件位于支持的文件系统（ext4、XFS 或裸块设备）上，并将文件解析到底层 NVMe 块设备（/dev/nvme0n1p1）。此映射允许 cuFileRead/cuFileWrite 直接向正确的 NVMe 控制器和命名空间提交 NVMe 命令，绕过通用块层 I/O 调度器以获得最大性能。"
+    },
+    "5": {
+      "text": "cuFileBufRegister() — 锁定 GPU 内存并创建 BAR1 DMA 映射",
+      "detail": "这是关键的设置步骤。cuFileBufRegister() 锁定 GPU 内存页面（防止 GPU 驱动迁移或逐出它们）并创建 BAR1 映射。GPU 的 BAR1 是一个 PCIe 基地址寄存器，在系统物理地址空间中暴露 GPU 内存（HBM）的窗口。此调用后，VA 0x7f1a_0000_0000 处的 GPU 缓冲区可通过 PCIe 在物理地址 0x0000_3a00_0000_0000 处访问——任何 PCIe 设备（包括 NVMe 控制器）都可以 DMA 到此地址。IOMMU（如存在）也必须配置为允许 NVMe 设备访问此 GPU BAR1 范围。"
+    },
+    "6": {
+      "text": "cuFileRead() — 开始直接 NVMe → GPU 读取（4 MiB）",
+      "detail": "应用程序使用 cuFile 句柄、GPU 缓冲区和传输大小调用 cuFileRead()。nvidia-fs 将文件偏移转换为 NVMe LBA（通过文件系统 extent 映射），构造 PRP 条目指向 GPU BAR1 物理地址的 NVMe Read SQE，并提交给 NVMe 驱动。关键创新：nvidia-fs 挂钩到 NVMe 驱动的 DMA 映射路径（dma_map_sg），用 GPU BAR1 物理地址替换正常的主机 DRAM 散列-聚集条目。NVMe 驱动本身未修改——它只看到 PRP 中的物理地址并正常提交。"
+    },
+    "7": {
+      "text": "NVMe Read SQE 已提交 — 门铃已按下",
+      "detail": "NVMe 主机驱动将 64 字节 SQE 写入主机 DRAM 中的提交队列，并将新的 SQ 尾指针写入 NVMe 控制器的门铃寄存器（通过 PCIe 的 MMIO 写入）。SQE 包含 opcode=0x02（Read）、NSID=1、SLBA=0、NLB=8191（4 MiB），关键是：PRP1 = GPU BAR1 物理地址（0x0000_3a00_0000_0000）。NVMe 控制器不知道也不关心 PRP1 指向 GPU 内存——它将盲目地 DMA 数据到该地址。"
+    },
+    "8": {
+      "text": "NVMe SSD 从主机内存获取 SQE",
+      "detail": "NVMe 控制器检测到门铃写入（新的 SQ 尾）并发起 PCIe Memory Read 以从主机 DRAM 的提交队列中获取 64 字节 SQE。控制器解析 SQE，提取 Read 操作码、NSID、SLBA、NLB 和 PRP 地址。然后为请求的 LBA 范围发起 NAND 闪存读取。"
+    },
+    "9": {
+      "text": "P2P DMA：4 MiB 流动 NVMe SSD → GPU BAR1（零 CPU 拷贝）",
+      "detail": "关键教学时刻。NVMe 控制器从 NAND 闪存读取数据到其内部 DRAM 缓冲区，然后发出目标为 PRP1/PRP 列表中 GPU BAR1 地址的 PCIe Memory Write TLP。PCIe 根复合体解码 BAR1 地址并将 TLP 直接路由到 GPU——数据从不进入主机 DRAM，CPU 从不看到载荷字节。在 PCIe Gen5 x4（32 GB/s 链路带宽）下，4 MiB 传输大约在 125 微秒内完成。GPU 的内存控制器接收写入并将数据放入 HBM3。对比：传统路径需要约 250 微秒（两次 PCIe 跨越加上 CPU memcpy 开销和页面缓存分配）。"
+    },
+    "10": {
+      "text": "NVMe 完成 — CQE 已投递，MSI-X 已触发",
+      "detail": "所有数据 DMA 到 GPU BAR1 后，NVMe 控制器向主机 DRAM 中的 CQ 投递一个 16 字节完成队列条目（CQE）并触发 MSI-X 中断。CQE 包含 CID=0x0042（匹配 Read 命令）、status=0（成功）和更新的 SQ 头指针。NVMe 主机驱动的中断处理程序处理 CQE 并唤醒等待此完成的 nvidia-fs 线程。"
+    },
+    "11": {
+      "text": "cuFileRead() 返回 — 4 MiB 训练数据已在 GPU 内存中",
+      "detail": "cuFileRead() 返回 4194304（成功读取的字节数）。训练数据现在在注册缓冲区地址的 GPU HBM3 中，CUDA 内核可以立即访问。PyTorch DataLoader（或 DALI 管线）可以直接将此张量馈送给模型的前向传播。CPU 的全部参与：写入一个 64 字节 NVMe SQE + 按一次门铃 + 处理一个 16 字节 CQE。CPU 从未触碰 4 MiB 载荷的任何一个字节。这就是 GPUDirect Storage 的威力：以 NVMe 线速进行存储 I/O，CPU 数据平面开销为零。"
+    },
+    "12": {
+      "text": "cuFileWrite() — 从 GPU 内存保存检查点到 NVMe（4 MiB）",
+      "detail": "训练计算完成后，应用程序通过调用 cuFileWrite() 保存检查点。这将 GPU 内存内容直接写入 NVMe SSD，无需经过主机 DRAM 暂存。写入路径是读取路径的镜像：nvidia-fs 构造 PRP 条目指向 GPU BAR1 地址的 NVMe Write SQE，但现在 NVMe 控制器将从这些地址 DMA 读取（GPU → SSD）。这对于大型模型检查点保存至关重要，因为模型参数（可能 GB 级）驻留在 GPU 内存中。"
+    },
+    "13": {
+      "text": "NVMe Write SQE 已提交 — PRP1 = GPU BAR1",
+      "detail": "NVMe Write 命令 SQE 在结构上与 Read 命令相同，但操作码为 0x01（Write）。PRP1 仍指向 GPU BAR1 地址——但现在 NVMe 控制器将向此地址发出 PCIe Memory READ TLP（读取 GPU 内存）而非 Memory Write TLP（写入 GPU 内存）。PCIe 根复合体将读取路由到 GPU，GPU 返回数据。"
+    },
+    "14": {
+      "text": "P2P DMA：4 MiB 流动 GPU BAR1 → NVMe SSD（检查点保存）",
+      "detail": "NVMe 控制器通过 PCIe P2P Memory Read TLP 从 GPU BAR1 内存读取 4 MiB。PCIe 读取是分离事务——NVMe 控制器发送 MRd 请求 TLP，PCIe 网络将其路由到 GPU，GPU 返回 CplD（带数据的完成）TLP。NVMe 控制器在其内部写入缓冲区中累积数据并编程 NAND 闪存。同样，主机 DRAM 和 CPU 不在数据路径中。"
+    },
+    "15": {
+      "text": "NVMe Write 完成 — 检查点已持久化到 NAND",
+      "detail": "NVMe 控制器完成到 NAND 闪存的写入并投递 status=success 的 CQE。cuFileWrite() 返回 4194304（写入的字节数）。检查点现在已安全持久化在 SSD 上。整个保存操作使用了零 CPU 拷贝——CPU 仅协调了 NVMe 命令提交并处理了完成中断。"
+    },
+    "16": {
+      "text": "GDS 总结：NVMe 和 GPU 之间的零拷贝 I/O，达到全 PCIe 带宽",
+      "detail": "GPUDirect Storage 将 CPU 从存储数据路径中完全消除。CPU 的唯一角色是控制平面：提交 64 字节 NVMe 命令描述符和处理 16 字节完成条目。所有批量数据移动通过 NVMe SSD 和 GPU 之间的 PCIe 点对点 DMA 完成。对于 AI 训练工作负载：GDS 使以全 NVMe 带宽（每 SSD 7+ GB/s）直接读取训练数据到 GPU 内存成为可能，并以相同速度保存检查点。8 个 NVMe SSD 馈送一个 H100 GPU 时，GDS 可以提供 50+ GB/s 的训练数据带宽，零 CPU 开销。关键组件：cuFile API（用户空间）、nvidia-fs 内核模块（内核空间）、NVMe 驱动（未修改）、PCIe P2P 路由（硬件）。"
+    }
+  }
+}

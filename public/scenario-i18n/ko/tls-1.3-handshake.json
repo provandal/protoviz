@@ -1,0 +1,61 @@
+{
+  "meta": {
+    "title": "TLS 1.3: 완전한 핸드셰이크 → 암호화된 애플리케이션 데이터 → Alert 종료",
+    "description": "TCP 연결 위에서의 완전한 TLS 1.3 핸드셰이크. ClientHello(x25519 키 공유 포함), ServerHello, 암호화된 확장/인증서/검증/Finished, 1-RTT 핸드셰이크 완료, AES-256-GCM으로 암호화된 HTTPS 요청/응답, close_notify 종료.",
+    "learning_objectives": [
+      "TLS 1.3이 1-RTT로 핸드셰이크를 완료하는 방식 이해",
+      "ClientHello/ServerHello의 키 공유 메커니즘 확인",
+      "암호화된 확장, 인증서, 검증의 역할 이해"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "TCP SYN → 포트 443(HTTPS)",
+      "detail": "클라이언트가 서버의 HTTPS 포트(443)에 TCP 연결을 시작합니다. TLS 1.3은 TCP 위에서 실행됩니다(TLS 1.3 + HTTP/3의 QUIC/UDP는 여기서 다루지 않음). TLS를 시작하기 전에 TCP 핸드셰이크가 먼저 완료되어야 합니다."
+    },
+    "1": {
+      "text": "TCP SYN-ACK ← 서버 확인",
+      "detail": "서버가 SYN-ACK로 응답합니다."
+    },
+    "2": {
+      "text": "TCP ACK → 연결 수립",
+      "detail": "TCP 3-way 핸드셰이크가 완료되었습니다. TLS 핸드셰이크가 즉시 시작됩니다."
+    },
+    "3": {
+      "text": "TLS ClientHello — TLS 1.3 + x25519 키 공유 제안",
+      "detail": "클라이언트가 ClientHello를 전송합니다. 지원 버전(TLS 1.3), 암호 스위트(AES-256-GCM), 키 공유 그룹(x25519), 클라이언트의 공개 키를 포함합니다."
+    },
+    "4": {
+      "text": "TLS ServerHello — AES-256-GCM + x25519 키 공유 선택",
+      "detail": "서버가 AES-256-GCM 암호 스위트와 x25519 키 공유를 선택하고 서버 공개 키를 반환합니다. 이 시점부터 양쪽이 핸드셰이크 키를 계산할 수 있습니다."
+    },
+    "5": {
+      "text": "서버 암호화 플라이트 — EncryptedExtensions + Certificate + CertificateVerify + Finished",
+      "detail": "서버가 네 개의 핸드셰이크 메시지를 전송하며, 모두 ECDHE 공유 비밀에서 파생된 핸드셰이크 트래픽 키로 암호화됩니다:\n1. EncryptedExtensions — 키와 무관한 확장(ALPN: h2 등)\n2. Certificate — X.509 인증서 체인(암호화됨! TLS 1.2에서는 평문)\n3. CertificateVerify — 핸드셰이크 전사 기록에 대한 서명으로 서버가 인증서에 매칭되는 개인 키를 보유함을 증명\n4. Finished — 전체 핸드셰이크에 대한 HMAC으로 무결성 증명\n와이어에서 이들은 \"Application Data\"(콘텐츠 유형 23)로 나타납니다. 실제 콘텐츠 유형은 암호화된 페이로드의 마지막 바이트에 숨겨져 있습니다(TLS 1.3 \"내부 콘텐츠 유형\"). 이것은 미들박스가 특정 핸드셰이크 메시지에 간섭하는 것을 방지합니다.\n서버의 Finished를 검증한 후 클라이언트가 다음을 파생할 수 있습니다:\n4. Master Secret = HKDF-Extract(derived_secret, 0)\n5. 클라이언트/서버 애플리케이션 트래픽 키"
+    },
+    "6": {
+      "text": "Client Finished(암호화) — TLS 1.3 핸드셰이크 1-RTT로 완료",
+      "detail": "클라이언트가 Finished 메시지를 전송합니다(핸드셰이크 키로 암호화):\n• Verify Data = HMAC-SHA384(client_finished_key, Hash(전체_핸드셰이크))\n서버가 이를 검증하면 핸드셰이크가 완료됩니다. 양쪽이 Master Secret에서 애플리케이션 트래픽 키를 파생합니다:\n  client_app_key = HKDF-Expand(Master Secret, \"c ap traffic\", Hash)\n  server_app_key = HKDF-Expand(Master Secret, \"s ap traffic\", Hash)\n\n총: TLS 핸드셰이크에 1 왕복(TCP 이후). 비교: TLS 1.2는 2 왕복이 필요했습니다. TLS 1.3 + 0-RTT(PSK 재개)를 사용하면 0 왕복도 가능합니다.\n참고: 서버는 자체 Finished 직후 애플리케이션 데이터를 전송할 수 있습니다 — 클라이언트의 Finished를 기다릴 필요가 없습니다. 이것을 TLS 1.3에서 \"0.5-RTT 데이터\"라고 합니다."
+    },
+    "7": {
+      "text": "HTTPS GET 요청 — AES-256-GCM 애플리케이션 트래픽 키로 암호화",
+      "detail": "클라이언트가 HTTP/2 GET 요청을 전송합니다. 전체 HTTP 요청(메서드, 헤더, 경로, 쿠키 — 모든 것)이 TLS Application Data 레코드 내에 암호화됩니다.\n암호화: 레코드별 논스를 사용한 AES-256-GCM:\n  nonce = write_iv XOR sequence_number (64비트)\n시퀀스 번호가 레코드마다 증가하여 레코드에 명시적 IV 없이 논스 고유성을 보장합니다(TLS 1.2 대비 레코드당 8바이트 절약).\n인증: GCM이 암호문과 연관 데이터(레코드 헤더)를 커버하는 128비트 태그를 생성합니다. 모든 변조는 복호화 실패를 유발합니다."
+    },
+    "8": {
+      "text": "HTTPS 200 OK 응답 — 암호화된 페이지 콘텐츠",
+      "detail": "서버가 애플리케이션 트래픽 키로 암호화된 페이지 콘텐츠로 응답합니다. 대형 응답은 여러 TLS 레코드에 걸쳐 전송됩니다(레코드당 최대 16,384바이트 평문, 콘텐츠 유형과 패딩을 위한 256바이트 추가).\nHTTP/2는 단일 TLS 연결 내에서 여러 스트림을 다중화하므로, CSS, JS, 이미지에 대한 동시 요청이 모두 이 암호화된 터널을 공유합니다."
+    },
+    "9": {
+      "text": "TLS close_notify alert — 클라이언트가 우아한 종료 시작",
+      "detail": "클라이언트가 close_notify를 전송하여 더 이상 TLS 데이터를 보내지 않겠다고 알립니다. 이 alert는 암호화됩니다(와이어에서 Application Data로 나타남).\nclose_notify는 절단 공격을 방지합니다 — 이것이 없으면 공격자가 TCP 연결을 종료하여 은밀히 데이터를 삭제할 수 있습니다. close_notify를 사용하면 양쪽 모두 데이터 전송이 완료되었음을 알 수 있습니다."
+    },
+    "10": {
+      "text": "TLS close_notify ← 서버 응답, TLS 세션 깔끔하게 종료",
+      "detail": "서버가 자체 close_notify로 응답합니다. 양쪽 모두 이제 TLS 세션이 깔끔하게 종료되었음을 알고 있습니다. 전송 연결을 닫기 위해 TCP FIN/ACK가 뒤따릅니다."
+    },
+    "11": {
+      "text": "⟳ 시나리오 완료 — TLS 1.3 완전한 핸드셰이크",
+      "detail": "이 시나리오는 TLS 1.3(RFC 8446) 완전한 핸드셰이크를 시연했습니다:\nTCP 핸드셰이크 (3 패킷):\n  SYN → SYN-ACK → ACK\n\nTLS 1.3 핸드셰이크 (3 메시지, 1 왕복):\n  ClientHello (key_share: x25519 공개 키)\n  ServerHello (key_share: x25519 공개 키)\n  → 양쪽이 ECDHE 공유 비밀 계산\n  서버: {EncryptedExtensions, Certificate, CertificateVerify, Finished}\n        ↑ 모두 핸드셰이크 트래픽 키로 암호화\n  클라이언트: {Finished}\n\n애플리케이션 데이터:\n  AES-256-GCM을 통한 양방향 HTTP/2\n\nTLS 종료:\n  상호 close_notify alert\n\nTLS 1.2 대비 주요 개선 사항: • 1-RTT 핸드셰이크(2-RTT 대비) — 클라이언트가 키 공유를 선제적으로 전송 • 인증서 암호화 — 수동 관찰자가 서버 ID를 볼 수 없음 • AEAD 암호 스위트만 사용 — CBC 패딩 오라클, RC4, 3DES 없음 • RSA 키 전송 없음 — 항상 순방향 비밀성(ECDHE 필수) • 단순화된 상태 머신 — 적은 이동 부분, 적은 공격 벡터 • HKDF 기반 키 스케줄 — 깔끔하고 분석 가능한 키 파생 • 재개를 위한 0-RTT 사용 가능(재생 주의사항 포함)\n협상된 암호 스위트: TLS_AES_256_GCM_SHA384\n키 교환: x25519(Curve25519 ECDHE)\n서버 인증: ECDSA(secp256r1) 인증서"
+    }
+  }
+}

@@ -1,0 +1,102 @@
+{
+  "meta": {
+    "title": "RoCEv2 RC: Link Training → QP Connection → RDMA WRITE → RDMA READ",
+    "description": "تبادل RoCEv2 Reliable Connected (RC) كامل فوق 100GbE، بدءاً من تأسيس الرابط الفيزيائي (Auto-Negotiation، Link Training، RS-FEC)، مروراً بإعداد IP/ARP، إقامة QP عبر IB Connection Manager (CM) بتبادل MAD/CM REQ→REP→RTU، RDMA WRITE بيدفع 4KB buffer مباشرة بذاكرة بعيدة بدون تدخّل CPU على الهدف، وRDMA READ بيسترجع نفس الـ buffer. حالة الـ host موضّحة عبر كل طبقات OSI.",
+    "learning_objectives": [
+      "فهم كيف روابط 100GbE الفيزيائية بتطلع بشكل مستقل (host↔switch) عبر Auto-Negotiation وLink Training",
+      "تتبّع حل عناوين ARP وعنونة IP لـ RoCEv2 (اللي بيشتغل فوق UDP/IP)",
+      "تابع تبادل IB Connection Manager MAD لنقل Queue Pair من RESET لـ RTS",
+      "راقب تحوّلات آلة حالة QP: RESET → INIT → RTR → RTS",
+      "شوف كيف RDMA WRITE بيتجاوز CPU البعيد — ولا receive WQE مستهلك على الهدف",
+      "شوف كيف RDMA READ بيتطلّب جولة وكيف هيدرات RETH/AETH بتحمل العنونة",
+      "فهم مفاتيح Memory Region (MR) (lkey/rkey) ودورها بتفويض RDMA",
+      "راقب كيف PFC (Priority Flow Control) بيمنع رمي Ethernet بدون خسارة تحت الازدحام"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Link A: إشارة مكتشفة — Initiator ↔ Switch port A",
+      "detail": "transceiver بصري على الـ initiator بيكتشف ضوء من switch port A. Auto-Negotiation (AN) بيبلّش حسب IEEE 802.3cd clause 73. L1 نقطة لنقطة — هيدا مستقل عن رابط switch↔target."
+    },
+    "1": {
+      "text": "Link B: إشارة مكتشفة — Switch port B ↔ Target",
+      "detail": "transceiver بصري على الـ target بيكتشف ضوء من switch port B. AN بيبلّش بشكل مستقل على هالرابط."
+    },
+    "2": {
+      "text": "Link A: AN خلص — 100GbE متفق عليه، Link Training بيبلّش",
+      "detail": "AN بيتبادل صفحات technology ability بين الـ initiator وswitch port A. الطرفين بيتفقو على 100GBASE-SR4. RS(544,514) FEC إجباري لـ 100G. Link Training بيبلّش لمعادلة القناة (pre-emphasis، post-cursor)."
+    },
+    "3": {
+      "text": "Link B: AN خلص — 100GbE متفق عليه، Link Training بيبلّش",
+      "detail": "AN بيخلص على switch port B ↔ target. نفس التفاوض: 100GBASE-SR4 مع RS(544,514) FEC."
+    },
+    "4": {
+      "text": "Link A طلع — Initiator ↔ Switch على 100Gbps مع RS-FEC",
+      "detail": "Link Training خلص على initiator↔switch. PFC (802.1Qbb) مفعّل على priority 3 عبر تفاوض DCBX. إطارات Ethernet هلق بتقدر تمشي على هالقطعة."
+    },
+    "5": {
+      "text": "Link B طلع — Switch ↔ Target على 100Gbps مع RS-FEC",
+      "detail": "Link Training خلص على switch↔target. PFC مفعّل. الرابطين طلعو — السويتش بيقدر يمرّر إطارات L2 بين منافذو. الوصول L2 من النهاية للنهاية مؤسّس."
+    },
+    "6": {
+      "text": "ARP Request: مين عندو 192.168.1.20؟",
+      "detail": "RoCEv2 بيستعمل عنونة IP. قبل أي إعداد اتصال، لازم الوصول IP يتأسّس."
+    },
+    "7": {
+      "text": "ARP Reply: 192.168.1.20 عنوان MAC تبعو 00:02:c9:ab:cd:ef",
+      "detail": ""
+    },
+    "8": {
+      "text": "الطرفين بيسجّلو Memory Regions عبر ibv_reg_mr()",
+      "detail": "ibv_reg_mr() بيثبّت الصفحات الفيزيائية، بيبني DMA mapping، وبيسجّل الترجمة virtual→physical بجدول MTT تبع RNIC. بيرجّع lkey (لـ DMA المحلي) وrkey (للمشاركة مع البعيد لوصول RDMA)."
+    },
+    "9": {
+      "text": "QP منشأ — حالة: RESET",
+      "detail": "ibv_create_qp() بيخصّص Queue Pair (Send Queue + Receive Queue + Completion Queue). الـ QP بيبلّش بحالة RESET — ما بيقدر يبعت ولا يستقبل."
+    },
+    "10": {
+      "text": "QP تحوّل RESET → INIT عبر ibv_modify_qp()",
+      "detail": "modify_qp(RESET→INIT) بيحدد: P_Key index، رقم المنفذ، access flags. الـ QP هلق بيقدر يحط Receive WQEs (بس ما بيقدر يبعت بعد)."
+    },
+    "11": {
+      "text": "CM REQ مبعوت — بيقترح معطيات QP",
+      "detail": "rdma_connect() بيشغّل ib_send_cm_req(). بيبعت QPN تبع الـ initiator، PSN البادئ، path MTU=4096، retry counts، وprivate data التطبيق للهدف. الـ QPs بعدهم بـ INIT بهالنقطة."
+    },
+    "12": {
+      "text": "CM REP مستلم — الهدف بيقبل، بيوفّر QPN وPSN تبعو",
+      "detail": "لمّا يستلم REQ، الهدف بينادي rdma_accept() → ib_send_cm_rep(). الهدف بيحوّل QP تبعو لـ RTR (Ready To Receive) بعد إرسال REP. الـ initiator بيحوّل QP تبعو لـ RTR لمّا يستلم REP.\nINIT→RTR بيحدد: dest QPN، RQ PSN، path MTU، AV (address vector)."
+    },
+    "13": {
+      "text": "CM RTU مبعوت — الـ QPs تحوّلو لـ RTS. الاتصال تأسّس.",
+      "detail": "بعد إرسال RTU، الـ initiator بيحوّل QP: RTR→RTS. لمّا يستلم RTU، الهدف بيحوّل QP: RTR→RTS.\nRTR→RTS بيحدد: SQ PSN، retry count، RNR retry، timeout.\nالـ QP هلق شغّال بالكامل — عمليات RDMA بتقدر تبلّش."
+    },
+    "14": {
+      "text": "التطبيق بيحط RDMA WRITE Work Request بالـ Send Queue",
+      "detail": "ibv_post_send() مع opcode IBV_WR_RDMA_WRITE. الـ WR بيحدد: local SG list (lkey + vaddr تبع source buffer)، remote vaddr + rkey. Doorbell ring عبر MMIO write لـ RNIC BAR register (بدون syscall بعد ibv_post_send)."
+    },
+    "15": {
+      "text": "RDMA WRITE — 4KB مدفوعة بذاكرة بعيدة، صفر CPU على الهدف",
+      "detail": "RNIC بيعمل DMA لـ local buffer، بيغلّف بـ BTH+RETH+UDP+IP+Eth، بيبعت. RNIC الهدف بيتحقّق من ICRC، بيفحص تفويض rkey مقابل جدول MR، بيعمل DMA للحمولة بذاكرة الهدف الفيزيائية. CPU الهدف ما بيشوف شي لحد ما التطبيق يفحص CQ."
+    },
+    "16": {
+      "text": "ACK من RNIC الهدف — WRITE خلص، CQE محطوط على الـ initiator",
+      "detail": "RNIC الهدف بشكل مستقل بيولّد RC ACK. بدون تدخّل CPU على الهدف. لمّا يستلم ACK، RNIC الـ initiator بيحط CQE (Completion Queue Entry) بـ CQ تبع الـ initiator. التطبيق بيتعلّم عن الإتمام عبر ibv_poll_cq()."
+    },
+    "17": {
+      "text": "التطبيق بيحط RDMA READ Work Request",
+      "detail": "ibv_post_send() مع opcode IBV_WR_RDMA_READ. بيحدد: local SG buffer للبيانات المستلمة (lkey)، remote vaddr + rkey. RDMA READ بيتطلّب جولة — الـ initiator بيبعت طلب، الهدف بيبعت بيانات."
+    },
+    "18": {
+      "text": "RDMA READ Request — بدون بيانات بهالاتجاه",
+      "detail": "الـ initiator بيبعت BTH(opcode=0x0C) + RETH بيحدد شو يقرا. بدون حمولة. RNIC الهدف بشكل مستقل رح يعمل DMA لذاكرتو ويردّ."
+    },
+    "19": {
+      "text": "RDMA READ Response — RNIC الهدف بيعمل DMA للذاكرة وبيبعت البيانات",
+      "detail": "RNIC الهدف: بيستلم READ request → بيتحقّق من rkey → DMA يقرا الذاكرة الفيزيائية → بيبني response packet(s) → بيبعت. صفر تدخّل CPU على الهدف.\nRNIC الـ initiator: بيستلم response → DMA يكتب بـ local buffer تبع الـ initiator → بيحط READ CQE.\nالبيانات المسترجعة هي بالضبط اللي انكتبت بالـ RDMA WRITE — متحقّقة end-to-end بـ ICRC."
+    },
+    "20": {
+      "text": "السيناريو خلص",
+      "detail": "ملخص: رابطين 100GbE مستقلين طلعو (host↔switch كل واحد)، السويتش وفّر تمرير L2، الـ initiator أسّس اتصال RoCEv2 RC، عمل RDMA WRITE لـ 4KB بذاكرة بعيدة (صفر تدخّل CPU بعيد)، بعدين قرا نفس البيانات بـ RDMA READ (كمان صفر تدخّل CPU بعيد). مجموع إطارات البيانات: 2. مجموع إطارات التحكّم: 5 (ARP×2, CM×3). CPU البعيد ما انقطع أبداً لعمليات البيانات."
+    }
+  }
+}

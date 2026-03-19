@@ -1,0 +1,86 @@
+{
+  "meta": {
+    "title": "[WIP] GPUDirect Storage: קריאת NVMe ישירות לזיכרון GPU (PCIe מקומי)",
+    "description": "חילוף GPUDirect Storage (GDS) מלא המראה כיצד נתונים נקראים מ-NVMe SSD ישירות לזיכרון GPU (BAR1) תוך עקיפת מטמון הדפים של המעבד לחלוטין. זהו תרחיש פרוטוקול מקומי — כל שלושת השחקנים (GPU, מעבד/מערכת הפעלה מארחת, NVMe SSD) הם רכיבים בתוך מכשיר יחיד המחוברים דרך PCIe.",
+    "learning_objectives": [
+      "הבנה מדוע נתיב I/O אחסון מסורתי (NVMe → מטמון דפים → cudaMemcpy) אינו יעיל לעומסי GPU",
+      "למידה כיצד GPUDirect Storage מבטל מאגרי ביניים של מעבד על ידי כיוון DMA של NVMe ישירות לזיכרון BAR1 של GPU",
+      "מעקב אחר מחזור חיי cuFile API: cuFileDriverOpen → cuFileHandleRegister → cuFileBufRegister → cuFileRead/cuFileWrite",
+      "הבנת תפקיד מודול ליבה nvidia-fs כחיבור בין דרייבר NVMe וניהול זיכרון GPU",
+      "ראיית כיצד PCIe peer-to-peer (P2P) DMA מאפשר לבקרי NVMe לכתוב ישירות ל-BAR1 GPU ללא מעורבות מעבד",
+      "תצפית על הגשת פקודות NVMe עם ערכי PRP/SGL המצביעים לכתובות GPU פיזיות במקום DRAM מארח",
+      "הבנה מדוע GDS דורש רישום זיכרון BAR1 GPU — מודול nvidia-fs חייב לנעול ולמפות דפי GPU ל-DMA",
+      "ראיית כיצד cuFileWrite הופך את הנתיב: זיכרון GPU → NVMe SSD לשמירת נקודות ביקורת AI"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "נתיב מסורתי (ללא GDS): NVMe → מטמון דפים → מאגר משתמש → cudaMemcpy → GPU",
+      "detail": "ללא GPUDirect Storage, קריאת נתוני NVMe לזיכרון GPU דורשת מספר העתקות בתיווך מעבד: (1) read() → (2) NVMe DMA ל-DRAM מארח → (3) הליבה מעתיקה ממטמון דפים למאגר משתמש → (4) cudaMemcpyHostToDevice() → (5) CUDA DMA מ-DRAM מארח ל-GPU. כל העתקה צורכת מחזורי מעבד, רוחב פס זיכרון ומוסיפה השהייה."
+    },
+    "1": {
+      "text": "עונש רוחב פס נתיב מסורתי: נתונים חוצים אפיק PCIe פעמיים",
+      "detail": "בנתיב המסורתי, נתוני קריאת NVMe חוצים אפיק PCIe פעמיים: (1) NVMe SSD → DRAM מארח, (2) DRAM מארח → GPU דרך cudaMemcpy. עם GDS, נתונים חוצים PCIe רק פעם אחת: NVMe SSD → GPU ישירות."
+    },
+    "2": {
+      "text": "cuFileDriverOpen() — אתחול תת-מערכת GPUDirect Storage",
+      "detail": "האפליקציה קוראת ל-cuFileDriverOpen() לאתחול תת-מערכת GDS. זה מפעיל טעינת מודול הליבה nvidia-fs. nvidia-fs רושם callbacks של פעולות DMA עם דרייבר מארח NVMe וגם שואל את טופולוגיית PCIe לאימות שה-GPU ו-NVMe SSD תומכי P2P."
+    },
+    "3": {
+      "text": "open(\"/data/training/imagenet_shard_0042.bin\", O_RDONLY | O_DIRECT)",
+      "detail": "פתיחת POSIX סטנדרטית עם דגל O_DIRECT. O_DIRECT נדרש ל-GDS — הוא עוקף את מטמון הדפים של Linux, שזה בדיוק מה שאנחנו רוצים מכיוון ש-GDS שולח נתונים ישירות לזיכרון GPU."
+    },
+    "4": {
+      "text": "cuFileHandleRegister() — רישום מתאר קובץ עם GDS",
+      "detail": "עוטף את ה-fd של POSIX ב-handle של cuFile. nvidia-fs מאמת שהקובץ נמצא על מערכת קבצים נתמכת (ext4, XFS, או מכשיר בלוק גולמי) ומפענח את הקובץ למכשיר NVMe הבסיסי."
+    },
+    "5": {
+      "text": "cuFileBufRegister() — נעילת זיכרון GPU ויצירת מיפוי DMA BAR1",
+      "detail": "זהו צעד ההגדרה הקריטי. cuFileBufRegister() נועל דפי זיכרון GPU (מונע מדרייבר GPU להעביר או לפנות אותם) ויוצר מיפוי חלון BAR1. לאחר קריאה זו, מאגר GPU נגיש בכתובת פיזית דרך PCIe — כל מכשיר PCIe (כולל בקר NVMe) יכול לבצע DMA לכתובת זו."
+    },
+    "6": {
+      "text": "cuFileRead() — התחלת קריאה ישירה NVMe → GPU (4 MiB)",
+      "detail": "האפליקציה קוראת ל-cuFileRead(). nvidia-fs מתרגם היסט קובץ ל-LBAs של NVMe, בונה SQEs של קריאת NVMe עם ערכי PRP המצביעים לכתובות BAR1 GPU פיזיות, ומגיש אותם לדרייבר NVMe. החדשנות המרכזית: nvidia-fs מחליף ערכי scatter-gather רגילים של DRAM מארח בכתובות BAR1 GPU פיזיות."
+    },
+    "7": {
+      "text": "SQE קריאת NVMe הוגש — doorbell נדפק",
+      "detail": "דרייבר מארח NVMe כותב SQE בן 64 בתים לתור ההגשה וכותב מצביע tail חדש לרגיסטר doorbell של בקר NVMe. ה-SQE מכיל opcode=0x02 (Read), NSID=1, ובאופן קריטי: PRP1 = כתובת BAR1 GPU פיזית. בקר NVMe לא יודע ולא אכפת לו ש-PRP1 מצביע לזיכרון GPU."
+    },
+    "8": {
+      "text": "NVMe SSD שולף SQE מזיכרון מארח",
+      "detail": "בקר NVMe מזהה את כתיבת doorbell ומנפיק קריאת זיכרון PCIe לשליפת SQE מתור ההגשה ב-DRAM מארח. הבקר מנתח את ה-SQE ומתחיל קריאת פלאש NAND לטווח LBA המבוקש."
+    },
+    "9": {
+      "text": "P2P DMA: 4 MiB זורמים NVMe SSD → GPU BAR1 (אפס העתקות מעבד)",
+      "detail": "הרגע החינוכי המרכזי. בקר NVMe קורא נתונים מפלאש NAND למאגר DRAM פנימי, ואז מנפיק TLPs של Memory Write PCIe הממוענים לכתובת BAR1 GPU מ-PRP1/רשימת PRP. קומפלקס השורש PCIe מפענח את כתובת BAR1 ומנתב את ה-TLPs ישירות ל-GPU — הנתונים מעולם לא נכנסים ל-DRAM מארח והמעבד מעולם לא רואה את בתי המטען."
+    },
+    "10": {
+      "text": "השלמת NVMe — CQE פורסם, MSI-X הופעל",
+      "detail": "לאחר שכל הנתונים בוצעו DMA ל-BAR1 GPU, בקר NVMe מפרסם CQE (Completion Queue Entry) בן 16 בתים ל-CQ ב-DRAM מארח ומפעיל פסיקת MSI-X."
+    },
+    "11": {
+      "text": "cuFileRead() מחזיר — 4 MiB נתוני אימון בזיכרון GPU",
+      "detail": "cuFileRead() מחזיר 4194304 (בתים שנקראו בהצלחה). נתוני האימון כעת ב-GPU HBM3, נגישים מיד לליבות CUDA. סה\"כ מעורבות מעבד: כתיבת SQE NVMe בן 64 בתים + דפיקת doorbell אחת + עיבוד CQE אחד בן 16 בתים. המעבד מעולם לא נגע בבית אחד מ-4 MiB המטען."
+    },
+    "12": {
+      "text": "cuFileWrite() — שמירת נקודת ביקורת מזיכרון GPU ל-NVMe (4 MiB)",
+      "detail": "לאחר השלמת חישוב האימון, האפליקציה שומרת נקודת ביקורת על ידי קריאה ל-cuFileWrite(). זה כותב תוכן זיכרון GPU ישירות ל-NVMe SSD ללא ביניים דרך DRAM מארח. נתיב הכתיבה הוא מראה של נתיב הקריאה."
+    },
+    "13": {
+      "text": "SQE כתיבת NVMe הוגש — PRP1 = BAR1 GPU",
+      "detail": "פקודת כתיבת NVMe זהה במבנה לפקודת הקריאה אבל עם opcode 0x01 (Write). PRP1 עדיין מצביע לכתובת BAR1 GPU — אבל כעת בקר NVMe ינפיק TLPs של Memory READ PCIe לכתובת זו (קריאת זיכרון GPU)."
+    },
+    "14": {
+      "text": "P2P DMA: 4 MiB זורמים BAR1 GPU → NVMe SSD (שמירת נקודת ביקורת)",
+      "detail": "בקר NVMe קורא 4 MiB מזיכרון BAR1 GPU דרך TLPs של Memory Read PCIe P2P. קריאות PCIe הן עסקאות מפוצלות — בקר NVMe שולח TLPs של בקשת MRd, מרקם PCIe מנתב אותם ל-GPU, וה-GPU מחזיר TLPs של CplD (Completion with Data). שוב, DRAM מארח ומעבד אינם בנתיב הנתונים."
+    },
+    "15": {
+      "text": "השלמת כתיבת NVMe — נקודת ביקורת נשמרה ב-NAND",
+      "detail": "בקר NVMe משלים את הכתיבה ל-NAND ומפרסם CQE עם מצב=הצלחה. cuFileWrite() מחזיר 4194304. נקודת הביקורת נשמרה בבטחה ב-SSD."
+    },
+    "16": {
+      "text": "סיכום GDS: I/O אפס-העתקות בין NVMe ו-GPU ברוחב פס PCIe מלא",
+      "detail": "GPUDirect Storage מבטל את המעבד מנתיב נתוני האחסון לחלוטין. תפקיד המעבד הוא רק מישור בקרה: הגשת מתארי פקודות NVMe בני 64 בתים ועיבוד ערכי השלמה בני 16 בתים. כל תנועת נתונים בכמויות גדולות מתרחשת דרך PCIe peer-to-peer DMA בין NVMe SSD ו-GPU.\nלעומסי אימון AI: GDS מאפשר קריאת נתוני אימון ברוחב פס NVMe מלא (7+ GB/s ל-SSD) ישירות לזיכרון GPU, ושמירת נקודות ביקורת באותה מהירות. עם 8 NVMe SSDs המזינים H100 GPU אחד, GDS יכול לספק 50+ GB/s רוחב פס נתוני אימון עם אפס תקורת מעבד."
+    }
+  }
+}

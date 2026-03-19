@@ -1,0 +1,85 @@
+{
+  "meta": {
+    "title": "SMB Direct: Negotiate → قناة RDMA → قراءة وكتابة ملف فوق RoCEv2",
+    "description": "SMB Direct (MS-SMBD) بيمكّن مشاركة ملفات SMB 3.x فوق RDMA transports (RoCEv2، iWARP). بعد تفاوض SMB المبني على TCP يكتشف قدرة RDMA، الاتصال بيهاجر لقناة RDMA. قراءة الملف بتستعمل RDMA READ (الخادم بيسحب من buffer العميل) وكتابة الملف بتستعمل RDMA WRITE (الخادم بيدفع البيانات لـ buffer العميل)، الاتنين بيتجاوزو مسار بيانات CPU.",
+    "learning_objectives": [
+      "فهم كيف SMB3 بيكتشف قدرة RDMA خلال NEGOTIATE",
+      "شوف تفاوض SMB Direct (MS-SMBD) اللي بيأسّس قناة RDMA",
+      "تابع كيف بيانات الملف بتتجاوز TCP بالكامل بعد ما قناة RDMA تنشط",
+      "تتبّع SMB2 WRITE مع RDMA: العميل بيعرض buffer descriptor، الخادم بيعمل RDMA READ للبيانات",
+      "تتبّع SMB2 READ مع RDMA: الخادم بيعمل RDMA WRITE للبيانات بـ buffer العميل المسجّل",
+      "فهم إدارة credits تبع SMB Direct للتحكّم بالتدفّق",
+      "فهم فائدة إلغاء حمل CPU: مسار بيانات خادم الملف zero-copy"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "الرابط الفيزيائي طلع — 100GbE lossless fabric لـ SMB Direct",
+      "detail": "الجهازين متصلين عبر 100GbE مع PFC مفعّل (مطلوب لـ RoCEv2 lossless transport). SMB Direct على Windows بيكتشف RDMA-capable NICs عبر NetworkDirect (ND) providers.\nSMB Direct مدعوم على:\n• Windows Server 2012 وأحدث (مدمج)\n• Windows 10/11 Enterprise/Pro (عميل)\n• Samba 4.x مع دعم RDMA\n• RNIC hardware: ConnectX، E810، EFA، إلخ"
+    },
+    "1": {
+      "text": "RDMA QPs متصلة — SMB Direct بيأسّس قناة RDMA",
+      "detail": "قبل تفاوض SMB Direct، اتصال RDMA الأساسي لازم يتأسّس. العميل بيتصل بـ RDMA listener تبع الخادم (منفذ 5445) عبر CM REQ/REP/RTU.\nبعد ما QP يوصل لحالة RTS، تفاوض SMB Direct بيقدر يبلّش فوق RDMA SEND/RECV."
+    },
+    "2": {
+      "text": "SMB Direct Negotiate Request — العميل بيقترح معطيات RDMA",
+      "detail": "العميل بيبعت رسالة SMB Direct Negotiate فوق RDMA SEND بيقترح:\n• Credits: 255 (تحكّم بالتدفّق لرسائل SEND)\n• Preferred Send Size: 1364 بايت\n• Max Fragmented Size: 1 MB\n• Max Read/Write Size: 1 MB (لنقولات RDMA READ/WRITE الكثيفة)\n\nإدارة Credits حاسمة: كل RDMA SEND بيستهلك credit واحد عند المستقبِل."
+    },
+    "3": {
+      "text": "SMB Direct Negotiate Response — قناة RDMA مؤسّسة",
+      "detail": "الخادم بيقبل معطيات SMB Direct. قناة RDMA هلق نشطة — كل رسائل SMB2 اللاحقة رح تنحمل فوق RDMA SEND/RECV بدل TCP.\nقيم متفاوض عليها: • Credits: 255 (باتجاهين) • Max RDMA Read/Write: 1 MB"
+    },
+    "4": {
+      "text": "SMB2 NEGOTIATE — dialect 3.1.1 مع قدرة RDMA transform",
+      "detail": "تبادل SMB2 NEGOTIATE عادي، بس هلق محمول فوق قناة SMB Direct RDMA (عبر RDMA SEND). العميل بيقترح SMB 3.1.1 وبيضمّن RDMA Transform negotiate context اللي بيمكّن تشفير حمولات RDMA بـ SMB 3.1.1."
+    },
+    "5": {
+      "text": "SMB2 NEGOTIATE Response — SMB 3.1.1 مؤكّد",
+      "detail": "الخادم بيختار SMB 3.1.1 dialect. قدرات MULTI_CHANNEL وLARGE_MTU مؤكّدة."
+    },
+    "6": {
+      "text": "SMB2 SESSION_SETUP + TREE_CONNECT — مصادقة وربط مشاركة",
+      "detail": "SMB2 session وtree connect عاديين، محمولين فوق RDMA. SESSION_SETUP بيصادق عبر Kerberos (domain) أو NTLM. TREE_CONNECT بيربط \\\\server\\share$ لوصول الملفات.\nبسيناريو Hyper-V over SMB، المشاركة بتستضيف ملفات VHDx virtual disk. SMB Direct هو transport الموصى فيه لتخزين VM المباشر."
+    },
+    "7": {
+      "text": "الجلسة تأسّست، المشاركة متصلة",
+      "detail": "الجلسة وtree connect نجحو. العميل هلق بيقدر يفتح ملفات."
+    },
+    "8": {
+      "text": "SMB2 CREATE — فتح vm01.vhdx للقراءة/الكتابة",
+      "detail": "العميل بيفتح ملف virtual disk تبع Hyper-V. هيدا حمل عمل SMB Direct نموذجي: Hyper-V بيخزّن صور أقراص VM على مشاركات SMB بعيدة، وكل VM I/O بيمشي فوق SMB Direct."
+    },
+    "9": {
+      "text": "CREATE response — file handle لـ vm01.vhdx (100 GB)",
+      "detail": "الخادم بيرجّع persistent file handle."
+    },
+    "10": {
+      "text": "SMB2 WRITE مع RDMA buffer descriptor — 1 MB لـ vm01.vhdx",
+      "detail": "العميل بيبعت أمر SMB2 WRITE عبر RDMA SEND، بس بدل بيانات inline، فيه SMB_DIRECT_BUFFER_DESCRIPTOR_V1 فيه:\n• Memory offset (عنوان افتراضي) تبع الـ buffer المسجّل\n• R_Key (remote key) لوصول RDMA\n• طول البيانات\n\nحقل Channel = SMB2_CHANNEL_RDMA_V1 بيقول للخادم يعمل RDMA READ للبيانات من هالـ buffer descriptor.\nهيدا النموذج \"المعكوس\": العميل بيكشف ذاكرتو والخادم بيسحب البيانات."
+    },
+    "11": {
+      "text": "RDMA READ — الخادم بيجيب 1 MB بيانات كتابة من ذاكرة العميل",
+      "detail": "RNIC الخادم بيعمل RDMA READ ليجيب 1 MB من بيانات الكتابة مباشرة من buffer العميل المسجّل. ولا CPU مشترك بنقل البيانات — محرّك DMA لمحرّك DMA فوق lossless RoCEv2 fabric."
+    },
+    "12": {
+      "text": "SMB2 WRITE Response — 1 MB انكتبت بنجاح",
+      "detail": "الخادم بيأكّد 1 MB مكتوبة. كل مسار البيانات كان zero-copy."
+    },
+    "13": {
+      "text": "SMB2 READ مع RDMA buffer descriptor — 1 MB من vm01.vhdx",
+      "detail": "العميل بيبعت SMB2 READ مع Channel = SMB2_CHANNEL_RDMA_V1 وbuffer descriptor. الخادم رح يعمل RDMA WRITE لبيانات الملف مباشرة بـ buffer العميل المسجّل.\nلـ Hyper-V over SMB، هيك قراءة VM بتشتغل: الـ hypervisor بيعمل VHDx read، اللي بيصير SMB READ فوق RDMA."
+    },
+    "14": {
+      "text": "RDMA WRITE — الخادم بيدفع 1 MB بيانات قراءة لذاكرة العميل",
+      "detail": "RNIC الخادم بيعمل RDMA WRITE لـ 1 MB من بيانات الملف مباشرة بـ buffer العميل المسجّل. مسار البيانات:\n  قرص/cache الخادم → ذاكرة الخادم → RNIC DMA → شبكة → RNIC العميل DMA → buffer العميل المسجّل\n\nCPU الخادم بس بيبادر RDMA WRITE (بيحط WQE)؛ نقل البيانات الفعلي كلو hardware-driven."
+    },
+    "15": {
+      "text": "SMB2 READ Response — البيانات بالفعل بـ buffer العميل (صفر بيانات inline)",
+      "detail": "جواب READ فيه بس status — بيانات الملف وصلت بالفعل عبر RDMA WRITE. Data Remaining = 0 بيأكّد إنو كل البيانات اتنقلت.\nقارن مع SMB فوق TCP: كل 1 MB من بيانات الملف كانت تكون inline بجواب SMB2 READ، بيتطلّب CPU الخادم ينسخ البيانات لـ TCP send buffers وCPU العميل ينسخ من TCP receive buffers."
+    },
+    "16": {
+      "text": "السيناريو خلص — SMB Direct file I/O فوق RoCEv2",
+      "detail": "هالسيناريو وضّح SMB Direct (MS-SMBD):\n\nالتهيئة:\n  اتصال RDMA QP → SMB Direct Negotiate (credits، max R/W size)\n  → SMB2 NEGOTIATE (3.1.1) → SESSION_SETUP → TREE_CONNECT → CREATE\n\nكتابة ملف (SMB2_CHANNEL_RDMA_V1):\n  العميل: أمر WRITE + buffer descriptor (عبر RDMA SEND)\n  الخادم: RDMA READ بيجيب 1 MB من buffer العميل (zero-copy)\n  الخادم: جواب WRITE (عبر RDMA SEND)\n\nقراءة ملف (SMB2_CHANNEL_RDMA_V1):\n  العميل: أمر READ + buffer descriptor (عبر RDMA SEND)\n  الخادم: RDMA WRITE بيدفع 1 MB لـ buffer العميل (zero-copy)\n  الخادم: جواب READ — بدون بيانات inline (عبر RDMA SEND)\n\nنقاط أساسية:\n• رسائل تحكّم (أوامر، أجوبة) → RDMA SEND/RECV\n• بيانات كثيفة (محتوى الملف) → RDMA READ/WRITE (zero-copy)\n• WRITE بيستعمل RDMA READ (الخادم بيسحب من العميل)\n• READ بيستعمل RDMA WRITE (الخادم بيدفع للعميل)\n• تحكّم بالتدفّق مبني على credits\n\nحالات الاستعمال الأساسية:\n• Hyper-V over SMB (VHDx على مشاركات بعيدة)\n• SQL Server على SMB\n• CSV (Cluster Shared Volumes) لـ failover clusters"
+    }
+  }
+}

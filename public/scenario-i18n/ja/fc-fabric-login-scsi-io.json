@@ -1,0 +1,122 @@
+{
+  "meta": {
+    "title": "FC Fabricログイン → ネームサーバーDiscovery → SCSI Write & Read",
+    "description": "完全なFibre Channel Fabricセッション: FLOGIでFabricにFCIDを取得、ネームサーバーへのPLOGIとGID_FTクエリでターゲットを検出、ストレージへのPLOGI/PRLIでFCP (SCSI) プロトコルを確立、SCSI INQUIRY、WRITE(10)、READ(10)によるデータ転送。",
+    "learning_objectives": [
+      "FLOGIでFabricかFCIDを取得するプロセスを理解する",
+      "ネームサーバーへのPLOGIとGID_FTによるターゲット検出を追跡する",
+      "PLOGI/PRLIでFCPプロトコルを確立する様子を見る",
+      "FCP_XFER_RDY、FCP_DATA、FCP_RSPのデータフローを観察する"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "リンクA: 信号検出 — ホストHBA ↔ スイッチ",
+      "detail": "ホストHBAがFCスイッチで信号を検出します。"
+    },
+    "1": {
+      "text": "リンクB: 信号検出 — スイッチ ↔ ストレージアレイ",
+      "detail": "ストレージ側リンクでも信号が検出されます。"
+    },
+    "2": {
+      "text": "リンクA UP — ホスト ↔ スイッチ 64GFC",
+      "detail": "64GFCでホスト側リンクがアップしました。"
+    },
+    "3": {
+      "text": "リンクB UP — スイッチ ↔ ストレージ 64GFC",
+      "detail": "64GFCでストレージ側リンクがアップしました。"
+    },
+    "4": {
+      "text": "FLOGI — ホストがFabricログインを要求 (S_ID=0x000000 → D_ID=0xFFFFFE)",
+      "detail": "ホストHBAがFLOGIフレームをFabricコントローラ (D_ID=0xFFFFFE) に送信し、FCIDの割り当てを要求します。"
+    },
+    "5": {
+      "text": "FLOGI ACC — FabricがホストにFCID 0x010100を割り当て",
+      "detail": "FabricがFLOGIを承認し、ホストにFCID 0x010100を割り当てます。ホストはこのFCIDを使ってFabric内で通信できます。"
+    },
+    "6": {
+      "text": "ネームサーバー (0xFFFFFC) へPLOGI",
+      "detail": "ホストがネームサーバー (0xFFFFFC) にポートレベルログインを実行します。"
+    },
+    "7": {
+      "text": "ネームサーバーがPLOGIを承認 — CTクエリが許可",
+      "detail": "ネームサーバーがPLOGIを承認し、Common Transport (CT) クエリが可能になりました。"
+    },
+    "8": {
+      "text": "GID_FTクエリ — Fabric内の全FCP (SCSI) ターゲットを検索",
+      "detail": "ホストがGID_FT (Get ID by FC-4 Type) クエリでFCPタイプのデバイスを検索します。"
+    },
+    "9": {
+      "text": "ネームサーバー応答: ストレージはFCID 0x010200",
+      "detail": "ネームサーバーがストレージアレイのFCID 0x010200を返します。"
+    },
+    "10": {
+      "text": "ストレージ (0x010200) へPLOGI — ポートレベルログイン",
+      "detail": "ホストがストレージにポートレベルログインを実行し、通信パラメータを交換します。"
+    },
+    "11": {
+      "text": "ストレージがPLOGIを承認 — ポートレベルログイン確立",
+      "detail": "ストレージがPLOGIを承認し、ポート間の通信が確立されました。"
+    },
+    "12": {
+      "text": "PRLI — FCP (SCSI) 上位層プロトコルを確立",
+      "detail": "ホストがPRLI (Process Login) を送信し、FCP (Fibre Channel Protocol for SCSI) の上位層プロトコルを確立します。"
+    },
+    "13": {
+      "text": "PRLI ACC — FCP確立。SCSI I/O開始可能。",
+      "detail": "ストレージがPRLIを承認し、FCPが確立されました。SCSI I/Oが可能になりました。"
+    },
+    "14": {
+      "text": "SCSI INQUIRY — デバイスタイプを検出",
+      "detail": "ホストがSCSI INQUIRYを送信し、LUN 0のデバイス情報を取得します。"
+    },
+    "15": {
+      "text": "INQUIRYデータ — ブロックディスク (type 0x00)",
+      "detail": "デバイスタイプ0x00 (ブロックディスク) が返されます。"
+    },
+    "16": {
+      "text": "FCP_RSP — INQUIRY GOOD、LUN 0検出",
+      "detail": "SCSIステータスGOODでLUN 0が検出されました。"
+    },
+    "17": {
+      "text": "WRITE(10) — LBA 0に4KB書き込み",
+      "detail": "ホストがSCSI WRITE(10)コマンドをFCP_CMNDで送信します。"
+    },
+    "18": {
+      "text": "FCP_XFER_RDY — ストレージが書き込みデータ受信準備完了",
+      "detail": "ストレージがFCP_XFER_RDYを送信し、データ転送を許可します。iSCSIのR2Tに相当します。"
+    },
+    "19": {
+      "text": "FCP_DATA (1/2) — 書き込みの最初の2048バイト (オフセット0)",
+      "detail": "FCフレームサイズ制限により、4KBのデータが2つのFCフレームに分割されます。"
+    },
+    "20": {
+      "text": "FCP_DATA (2/2) — 書き込みの最後の2048バイト (オフセット2048)",
+      "detail": "残りの2048バイトが送信されます。"
+    },
+    "21": {
+      "text": "FCP_RSP — 書き込みGOOD、データコミット済み",
+      "detail": "SCSIステータスGOODで書き込みが完了しました。"
+    },
+    "22": {
+      "text": "READ(10) — LBA 0から4KB読み取り (書き込み検証)",
+      "detail": "ホストがSCSI READ(10)で先ほど書き込んだデータを読み戻します。"
+    },
+    "23": {
+      "text": "FCP_DATA (1/2) — 読み取りの最初の2048バイト (オフセット0)",
+      "detail": "ストレージがFCP_DATAで4KBの読み取りデータを返します。"
+    },
+    "24": {
+      "text": "FCP_DATA (2/2) — 読み取りの最後の2048バイト (オフセット2048)",
+      "detail": "残りの2048バイトが送信されます。"
+    },
+    "25": {
+      "text": "FCP_RSP — 読み取りGOOD、データ検証完了",
+      "detail": "SCSIステータスGOODで読み取りが完了しました。"
+    },
+    "26": {
+      "text": "シナリオ完了",
+      "detail": "このシナリオではFC Fabricの完全なライフサイクルを実演しました: FLOGI、ネームサーバーDiscovery、PLOGI/PRLI、SCSI I/O。"
+    }
+  }
+}

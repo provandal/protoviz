@@ -1,0 +1,30 @@
+{
+  "meta": {
+    "title": "TLS 1.3: לחיצת יד 1-RTT מלאה עם סודיות קדימה",
+    "description": "לחיצת יד TLS 1.3 מלאה (RFC 8446) על גבי TCP, מ-ClientHello ועד לנתוני אפליקציה מוצפנים. מדגים את שיפורי TLS 1.3 על פני 1.2: הסרת RTT מלחיצת היד (1-RTT במקום 2-RTT), סודיות קדימה חובה דרך Ephemeral Diffie-Hellman, הצפנת תעודות שרת (מניעת צפייה פסיבית), ואותות OCSP מוצמדים.",
+    "learning_objectives": [
+      "הבנה כיצד TLS 1.3 מפחית לחיצת יד ל-RTT אחד (לעומת 2 RTTs ב-TLS 1.2)",
+      "מעקב אחר הודעות ClientHello ו-ServerHello ותצפית על חילוף key_share",
+      "ראיית חישוב סוד משותף דרך Ephemeral Diffie-Hellman ומאיפה מגיעה סודיות קדימה",
+      "הבנה מדוע TLS 1.3 מצפין תעודות שרת (בניגוד ל-TLS 1.2 שבו הן בטקסט ברור)",
+      "תצפית על הודעות Finished המאמתות את כל לחיצת היד",
+      "ראיית כיצד נתוני אפליקציה מוצפנים מיד לאחר לחיצת יד 1-RTT",
+      "הבנת הפחתת חבילות הצפנה ל-AEAD בלבד (AES-GCM, ChaCha20-Poly1305)",
+      "ניגוד TLS 1.3 עם TLS 1.2 מבחינת אבטחה וביצועים"
+    ]
+  },
+  "timeline": {
+    "0": { "text": "TCP 3-way handshake הושלם → חיבור TCP מוכן", "detail": "חיבור TCP מוכן. TLS 1.3 פועל על גבי TCP. לחיצת יד TCP דורשת 1 RTT; לחיצת יד TLS 1.3 דורשת 1 RTT נוסף. סה\"כ: 2 RTTs עד נתוני אפליקציה מוצפנים (לעומת 3 RTTs עם TLS 1.2)." },
+    "1": { "text": "ClientHello → (supported_versions: TLS 1.3, key_share: X25519 ephemeral public key)", "detail": "הלקוח שולח ClientHello עם: • supported_versions: TLS 1.3 • cipher_suites: TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256 • key_share: מפתח ציבורי ארעי X25519 • signature_algorithms: ED25519, ECDSA-P256, RSA-PSS\nהתובנה המרכזית: הלקוח שולח את חלק ה-DH שלו ב-ClientHello עצמו. ב-TLS 1.2, הלקוח היה צריך לחכות ל-ServerKeyExchange לפני שליחת פרמטרי DH — זה היה דורש RTT נוסף." },
+    "2": { "text": "ServerHello ← (key_share: X25519 ephemeral public key של השרת)", "detail": "השרת בוחר TLS_AES_256_GCM_SHA384, X25519 ל-key exchange, ושולח את מפתח X25519 הציבורי הארעי שלו. שני הצדדים יכולים כעת לחשב את הסוד המשותף. כל מה שאחרי ServerHello מוצפן." },
+    "3": { "text": "🔐 הנתונים הבאים מוצפנים (handshake traffic keys)", "detail": "שני הצדדים חישבו את הסוד המשותף מ-ECDHE X25519. HKDF מפיק מפתחות הצפנת תעבורת לחיצת יד. מכאן ואילך, כל הודעות לחיצת יד מוצפנות — כולל תעודת השרת." },
+    "4": { "text": "EncryptedExtensions ← (ALPN: h2, server_name accepted)", "detail": "השרת שולח הרחבות שאינן קשורות לקריפטוגרפיה (כולן מוצפנות כעת). ALPN מציין ש-HTTP/2 נבחר." },
+    "5": { "text": "Certificate ← (תעודת שרת, מוצפנת)", "detail": "תעודת השרת נשלחת מוצפנת — שיפור אבטחה משמעותי מעל TLS 1.2 שבו תעודות נשלחו בטקסט ברור. צופים פסיביים לא יכולים לראות לאיזה אתר הלקוח מתחבר (מלבד דרך SNI שב-ClientHello)." },
+    "6": { "text": "CertificateVerify ← (חתימה דיגיטלית של לחיצת היד)", "detail": "השרת חותם על תמליל לחיצת היד עם המפתח הפרטי שלו, מוכיח בעלות על התעודה. זה מחליף את RSA key transport של TLS 1.2 — ב-TLS 1.3 תעודות משמשות רק לאימות, לא להובלת מפתחות." },
+    "7": { "text": "Finished ← (MAC של השרת על כל לחיצת היד)", "detail": "השרת שולח הודעת Finished עם HMAC על כל הודעות לחיצת היד. זה מאמת שלחיצת היד לא שובשה (man-in-the-middle)." },
+    "8": { "text": "Finished → (MAC של הלקוח על כל לחיצת היד)", "detail": "הלקוח מאמת את תעודת השרת, בודק CertificateVerify ו-Finished של השרת, ושולח Finished משלו. לחיצת היד TLS 1.3 הושלמה." },
+    "9": { "text": "🔐 מפתחות תעבורת אפליקציה פעילים — סודיות קדימה מובטחת", "detail": "מפתחות אפליקציה סופיים מופקים מהסוד המשותף. המפתחות הארעיים של X25519 נמחקים — גם אם המפתח הפרטי ארוך-הטווח של השרת נחשף בעתיד, תעבורה שנלכדה בעבר לא ניתנת לפענוח. זו סודיות קדימה." },
+    "10": { "text": "נתוני אפליקציה מוצפנים → (HTTP/2 בקשה ראשונה)", "detail": "הלקוח שולח את בקשת HTTP/2 הראשונה, מוצפנת עם TLS 1.3 application traffic keys. סה\"כ RTTs עד נתונים: 1 TCP + 1 TLS = 2 RTTs. TLS 1.2 היה דורש 1 TCP + 2 TLS = 3 RTTs." },
+    "11": { "text": "⟳ התרחיש הושלם — לחיצת יד TLS 1.3", "detail": "TLS 1.3 מספק: • 1-RTT handshake (במקום 2-RTT ב-TLS 1.2) • סודיות קדימה חובה (ECDHE תמיד) • תעודות מוצפנות (פרטיות מפני צופים פסיביים) • חבילות הצפנה AEAD בלבד (ללא CBC, ללא RC4) • 0-RTT resumption (לחיבורים חוזרים, עם סיכוני replay)" }
+  }
+}

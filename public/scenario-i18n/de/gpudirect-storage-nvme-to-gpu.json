@@ -1,0 +1,86 @@
+{
+  "meta": {
+    "title": "[WIP] GPUDirect Storage: NVMe Read direkt in GPU-Speicher (Lokaler PCIe)",
+    "description": "Ein vollst\u00e4ndiger GPUDirect-Storage-Austausch (GDS), der zeigt, wie Daten von einer NVMe-SSD direkt in GPU-Speicher (BAR1) gelesen werden, unter vollst\u00e4ndiger Umgehung des CPU-Page-Cache. Dies ist ein LOKALES Protokollszenario \u2014 alle drei Akteure (GPU, Host-CPU/OS, NVMe-SSD) sind Komponenten innerhalb einer einzelnen Maschine, die \u00fcber PCIe verbunden sind, keine vernetzten Endpunkte. Das Szenario kontrastiert den traditionellen Speicher-Lesepfad (NVMe-SSD \u2192 Page Cache \u2192 User-Buffer \u2192 cudaMemcpy \u2192 GPU = mehrere CPU-vermittelte Kopien) mit dem GDS-Pfad (NVMe-SSD \u2192 GPU-BAR-Speicher = null CPU-Kopien). Behandelt die cuFile-API (cuFileDriverOpen, cuFileHandleRegister, cuFileBufRegister, cuFileRead, cuFileWrite), das nvidia-fs-Kernelmodul, das NVMe-Submissions abf\u00e4ngt, um DMA-Ziele auf GPU-BAR1-Adressen umzuleiten, und die PCIe Peer-to-Peer (P2P)-Transaktionen, die dies erm\u00f6glichen. Dies ist die Schl\u00fcsseltechnologie f\u00fcr schnelles Laden von KI-Trainingsdaten und Checkpoint-I/O in GPU-beschleunigtem Computing.",
+    "learning_objectives": [
+      "Verstehen, warum der traditionelle Speicher-I/O-Pfad (NVMe \u2192 Page Cache \u2192 cudaMemcpy) f\u00fcr GPU-Workloads ineffizient ist",
+      "Erfahren, wie GPUDirect Storage CPU-Bounce-Buffer eliminiert, indem NVMe-DMA direkt auf GPU-BAR1-Speicher gerichtet wird",
+      "Den cuFile-API-Lebenszyklus nachverfolgen: cuFileDriverOpen \u2192 cuFileHandleRegister \u2192 cuFileBufRegister \u2192 cuFileRead/cuFileWrite",
+      "Die Rolle des nvidia-fs-Kernelmoduls als Zwischenschicht zwischen NVMe-Treiber und GPU-Speicherverwaltung verstehen",
+      "Sehen, wie PCIe Peer-to-Peer (P2P)-DMA es NVMe-Controllern erm\u00f6glicht, direkt in GPU-BAR1 zu schreiben ohne CPU-Beteiligung",
+      "NVMe-Befehlssubmission mit PRP/SGL-Eintr\u00e4gen beobachten, die auf GPU-physische Adressen statt Host-DRAM zeigen",
+      "Verstehen, warum GDS GPU-BAR1-Speicher-Registrierung erfordert \u2014 das nvidia-fs-Modul muss GPU-Pages f\u00fcr DMA pinnen und mappen",
+      "Sehen, wie cuFileWrite den Pfad umkehrt: GPU-Speicher \u2192 NVMe-SSD f\u00fcr KI-Checkpoint-Sicherungen"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Traditioneller Pfad (ohne GDS): NVMe \u2192 Page Cache \u2192 User-Buffer \u2192 cudaMemcpy \u2192 GPU",
+      "detail": "OHNE GPUDirect Storage erfordert das Lesen von NVMe-Daten in GPU-Speicher mehrere CPU-vermittelte Kopien: (1) Anwendung ruft read() oder pread() auf. (2) NVMe-Treiber sendet einen NVMe-Read-Befehl mit PRP-Eintr\u00e4gen, die auf Host-DRAM-Pages des Page Cache zeigen. (3) NVMe-SSD f\u00fchrt DMA der Daten in Host-DRAM (Page Cache) durch. (4) Der Kernel kopiert Daten vom Page Cache in den User-Space-Buffer (wenn nicht O_DIRECT verwendet). (5) Anwendung ruft cudaMemcpyHostToDevice() auf, um den User-Buffer in GPU-Speicher zu kopieren. (6) CUDA-Runtime f\u00fchrt DMA der Daten von gepinntem Host-DRAM in die GPU via PCIe durch. Jede Kopie verbraucht CPU-Zyklen, Speicherbandbreite und erh\u00f6ht die Latenz. F\u00fcr KI-Training-Workloads, die TBs an Daten pro Epoche lesen, wird dies zu einem schwerwiegenden Engpass. Die CPU wird zur Br\u00fccke zwischen Speicher und GPU \u2014 verschwendet sowohl CPU-Zeit als auch PCIe-Bandbreite (Daten \u00fcberqueren PCIe zweimal: SSD\u2192Host, dann Host\u2192GPU)."
+    },
+    "1": {
+      "text": "Bandbreitennachteil des traditionellen Pfads: Daten \u00fcberqueren den PCIe-Bus ZWEIMAL",
+      "detail": "Im traditionellen Pfad \u00fcberqueren NVMe-Lesedaten den PCIe-Bus zweimal: (1) NVMe-SSD \u2192 Host-DRAM (PCIe x4 Gen5 = 32 GB/s), (2) Host-DRAM \u2192 GPU via cudaMemcpy (PCIe x16 Gen5 = 64 GB/s). Mit GDS \u00fcberqueren die Daten PCIe nur EINMAL: NVMe-SSD \u2192 GPU direkt. F\u00fcr eine 7 GB/s-NVMe-SSD, die eine H100-GPU versorgt, kann GDS die volle SSD-Bandbreite an den GPU-Speicher liefern. Der traditionelle Pfad verschwendet Host-DRAM-Bandbreite und verschmutzt den CPU-L3-Cache mit Streaming-I/O-Daten, die die CPU nie verarbeitet. GDS reduziert auch die Latenz, indem es die Kernel-zu-User-Kopie und den cudaMemcpy-Scheduling-Overhead eliminiert. F\u00fcr gro\u00dfangelegtes KI-Training mit vielen GPUs, die von vielen SSDs lesen, sind die aggregierten Bandbreiteneinsparungen erheblich."
+    },
+    "2": {
+      "text": "cuFileDriverOpen() \u2014 GPUDirect-Storage-Subsystem initialisieren",
+      "detail": "Die Anwendung (oder ein Framework wie DALI/kvikio) ruft cuFileDriverOpen() auf, um das GDS-Subsystem zu initialisieren. Dies l\u00f6st das Laden des nvidia-fs-Kernelmoduls aus (falls nicht bereits geladen). nvidia-fs registriert DMA-Operations-Callbacks beim NVMe-Host-Treiber via nvme_register_fs(). Es fragt auch die PCIe-Topologie ab, um zu verifizieren, dass GPU und NVMe-SSD P2P-f\u00e4hig sind (gleicher Root Complex oder \u00fcber einen PCIe-Switch verbunden). Falls P2P nicht m\u00f6glich ist, f\u00e4llt GDS auf einen Bounce-Buffer-Pfad durch Host-DRAM zur\u00fcck (immer noch schneller als der traditionelle Pfad durch weniger Kopien). Das nvidia-fs-Modul koordiniert auch mit dem NVIDIA-GPU-Treiber (nvidia.ko) f\u00fcr den Zugriff auf GPU-Speicherverwaltungs-APIs f\u00fcr BAR1-Mapping und Page-Pinning."
+    },
+    "3": {
+      "text": "open(\"/data/training/imagenet_shard_0042.bin\", O_RDONLY | O_DIRECT)",
+      "detail": "Standard-POSIX open() mit O_DIRECT-Flag. O_DIRECT ist f\u00fcr GDS erforderlich \u2014 es umgeht den Linux-Page-Cache, was genau das ist, was wir wollen, da GDS Daten direkt an GPU-Speicher sendet. Ohne O_DIRECT w\u00fcrde der Kernel Page-Cache-Buffer in Host-DRAM allokieren und Daten zuerst dorthin kopieren, was den Zweck von GDS zunichtemachen w\u00fcrde. Der zur\u00fcckgegebene fd wird als N\u00e4chstes mit cuFileHandleRegister() umwickelt."
+    },
+    "4": {
+      "text": "cuFileHandleRegister() \u2014 Dateideskriptor bei GDS registrieren",
+      "detail": "Umwickelt den POSIX-fd in einem cuFile-Handle. nvidia-fs validiert, dass die Datei auf einem unterst\u00fctzten Dateisystem liegt (ext4, XFS oder Raw-Block-Device) und l\u00f6st die Datei zum zugrunde liegenden NVMe-Block-Device auf (/dev/nvme0n1p1). Dieses Mapping erm\u00f6glicht es cuFileRead/cuFileWrite, NVMe-Befehle direkt an den richtigen NVMe-Controller und Namespace zu senden, unter Umgehung des generischen Block-Layer-I/O-Schedulers f\u00fcr maximale Performance."
+    },
+    "5": {
+      "text": "cuFileBufRegister() \u2014 GPU-Speicher pinnen und BAR1-DMA-Mapping erstellen",
+      "detail": "Dies ist der kritische Setup-Schritt. cuFileBufRegister() pinnt die GPU-Speicher-Pages (verhindert, dass der GPU-Treiber sie migriert oder verdrd\u00e4ngt) und erstellt ein BAR1-Aperture-Mapping. Das BAR1 der GPU ist ein PCIe Base Address Register, das ein Fenster des GPU-Speichers (HBM) im physischen Systemadressraum freigibt. Nach diesem Aufruf ist der GPU-Buffer bei VA 0x7f1a_0000_0000 \u00fcber die physische Adresse 0x0000_3a00_0000_0000 via PCIe erreichbar \u2014 jedes PCIe-Ger\u00e4t (einschlie\u00dflich des NVMe-Controllers) kann DMA an diese Adresse durchf\u00fchren. Die IOMMU (falls vorhanden) muss ebenfalls konfiguriert werden, um dem NVMe-Ger\u00e4t Zugriff auf diesen GPU-BAR1-Bereich zu erlauben."
+    },
+    "6": {
+      "text": "cuFileRead() \u2014 Direkten NVMe \u2192 GPU-Read starten (4 MiB)",
+      "detail": "Die Anwendung ruft cuFileRead() mit dem cuFile-Handle, GPU-Buffer und Transfergr\u00f6\u00dfe auf. nvidia-fs \u00fcbersetzt den Datei-Offset in NVMe-LBAs (via die Dateisystem-Extent-Map), erstellt NVMe-Read-SQE(s) mit PRP-Eintr\u00e4gen, die auf GPU-BAR1-physische Adressen zeigen, und sendet sie an den NVMe-Treiber. Die zentrale Innovation: nvidia-fs hakt sich in den DMA-Mapping-Pfad (dma_map_sg) des NVMe-Treibers ein und ersetzt die normalen Host-DRAM-Scatter-Gather-Eintr\u00e4ge durch GPU-BAR1-physische Adressen. Der NVMe-Treiber selbst ist unver\u00e4ndert \u2014 er sieht nur physische Adressen in den PRPs und sendet sie normal."
+    },
+    "7": {
+      "text": "NVMe Read-SQE gesendet \u2014 Doorbell gedr\u00fcckt",
+      "detail": "Der NVMe-Host-Treiber schreibt das 64-Byte-SQE in die Submission Queue im Host-DRAM und schreibt den neuen SQ-Tail-Pointer in das Doorbell-Register des NVMe-Controllers (MMIO-Write via PCIe). Das SQE enth\u00e4lt Opcode=0x02 (Read), NSID=1, SLBA=0, NLB=8191 (4 MiB) und entscheidend: PRP1 = GPU-BAR1-physische Adresse (0x0000_3a00_0000_0000). Der NVMe-Controller wei\u00df nicht und k\u00fcmmert sich nicht, dass PRP1 auf GPU-Speicher zeigt \u2014 er wird blind Daten per DMA an diese Adresse transferieren."
+    },
+    "8": {
+      "text": "NVMe-SSD holt SQE aus Host-Speicher",
+      "detail": "Der NVMe-Controller erkennt den Doorbell-Write (neuer SQ-Tail) und f\u00fchrt einen PCIe Memory Read durch, um das 64-Byte-SQE aus der Submission Queue im Host-DRAM zu holen. Der Controller parst das SQE, extrahiert den Read-Opcode, NSID, SLBA, NLB und PRP-Adressen. Er initiiert dann einen NAND-Flash-Read f\u00fcr den angeforderten LBA-Bereich."
+    },
+    "9": {
+      "text": "P2P-DMA: 4 MiB flie\u00dfen NVMe-SSD \u2192 GPU-BAR1 (null CPU-Kopien)",
+      "detail": "DER ZENTRALE LERNMOMENT. Der NVMe-Controller liest Daten vom NAND-Flash in seinen internen DRAM-Buffer, sendet dann PCIe Memory Write TLPs an die GPU-BAR1-Adresse aus PRP1/PRP-Liste. Der PCIe-Root-Complex decodiert die BAR1-Adresse und routet die TLPs direkt zur GPU \u2014 die Daten gelangen nie in Host-DRAM und die CPU sieht die Nutzlast-Bytes nie. Bei PCIe Gen5 x4 (32 GB/s Link-Bandbreite) wird der 4-MiB-Transfer in ca. 125 Mikrosekunden abgeschlossen. Der Speicher-Controller der GPU empf\u00e4ngt die Writes und platziert die Daten in HBM3. Vergleich: Der traditionelle Pfad w\u00fcrde ~250 \u03bcs ben\u00f6tigen (zwei PCIe-\u00dcberquerungen plus CPU-memcpy-Overhead und Page-Cache-Allokation)."
+    },
+    "10": {
+      "text": "NVMe-Abschluss \u2014 CQE gepostet, MSI-X ausgel\u00f6st",
+      "detail": "Nachdem alle Daten per DMA in GPU-BAR1 transferiert wurden, postet der NVMe-Controller einen 16-Byte Completion Queue Entry (CQE) in die CQ im Host-DRAM und l\u00f6st einen MSI-X-Interrupt aus. Der CQE enth\u00e4lt CID=0x0042 (passend zum Read-Befehl), Status=0 (Erfolg) und den aktualisierten SQ-Head-Pointer. Der Interrupt-Handler des NVMe-Host-Treibers verarbeitet den CQE und weckt den nvidia-fs-Thread, der auf diesen Abschluss wartet."
+    },
+    "11": {
+      "text": "cuFileRead() kehrt zur\u00fcck \u2014 4 MiB Trainingsdaten sind im GPU-Speicher",
+      "detail": "cuFileRead() gibt 4194304 zur\u00fcck (erfolgreich gelesene Bytes). Die Trainingsdaten befinden sich nun in GPU-HBM3 an der registrierten Buffer-Adresse, sofort zug\u00e4nglich f\u00fcr CUDA-Kernels. Der PyTorch DataLoader (oder die DALI-Pipeline) kann diesen Tensor direkt dem Forward Pass des Modells zufu\u0308hren. Gesamte CPU-Beteiligung: Schreiben eines 64-Byte-NVMe-SQE + Dr\u00fccken einer Doorbell + Verarbeiten eines 16-Byte-CQE. Die CPU hat kein einziges Byte der 4-MiB-Nutzlast ber\u00fchrt. Das ist die St\u00e4rke von GPUDirect Storage: Speicher-I/O bei voller NVMe-Geschwindigkeit mit null CPU-Datenebenen-Overhead."
+    },
+    "12": {
+      "text": "cuFileWrite() \u2014 Checkpoint vom GPU-Speicher auf NVMe sichern (4 MiB)",
+      "detail": "Nach Abschluss der Trainingsberechnung sichert die Anwendung einen Checkpoint durch Aufruf von cuFileWrite(). Dies schreibt GPU-Speicherinhalte direkt auf die NVMe-SSD, ohne Zwischenspeicherung im Host-DRAM. Der Write-Pfad ist das Spiegelbild des Read-Pfads: nvidia-fs erstellt ein NVMe-Write-SQE mit PRP-Eintr\u00e4gen, die auf GPU-BAR1-Adressen zeigen, aber nun wird der NVMe-Controller per DMA von diesen Adressen lesen (GPU \u2192 SSD). Dies ist entscheidend f\u00fcr gro\u00dfe Modell-Checkpoint-Sicherungen, bei denen die Modellparameter (potenziell GBs) im GPU-Speicher liegen."
+    },
+    "13": {
+      "text": "NVMe Write-SQE gesendet \u2014 PRP1 = GPU-BAR1",
+      "detail": "Das NVMe-Write-Befehls-SQE ist in der Struktur identisch mit dem Read-Befehl, aber mit Opcode 0x01 (Write). PRP1 zeigt weiterhin auf die GPU-BAR1-Adresse \u2014 aber nun wird der NVMe-Controller PCIe Memory READ TLPs an diese Adresse senden (GPU-Speicher lesen) statt Memory Write TLPs (in GPU-Speicher schreiben). Der PCIe-Root-Complex routet die Reads zur GPU, die die Daten zur\u00fcckgibt."
+    },
+    "14": {
+      "text": "P2P-DMA: 4 MiB flie\u00dfen GPU-BAR1 \u2192 NVMe-SSD (Checkpoint-Sicherung)",
+      "detail": "Der NVMe-Controller liest 4 MiB aus GPU-BAR1-Speicher via PCIe P2P Memory Read TLPs. PCIe-Reads sind Split-Transaktionen \u2014 der NVMe-Controller sendet MRd-Request-TLPs, das PCIe-Fabric routet sie zur GPU, und die GPU gibt CplD (Completion with Data)-TLPs zur\u00fcck. Der NVMe-Controller sammelt die Daten in seinem internen Write-Buffer und programmiert den NAND-Flash. Wieder sind Host-DRAM und CPU nicht im Datenpfad."
+    },
+    "15": {
+      "text": "NVMe Write-Abschluss \u2014 Checkpoint auf NAND persistiert",
+      "detail": "Der NVMe-Controller schlie\u00dft den Write auf NAND-Flash ab und postet einen CQE mit Status=Erfolg. cuFileWrite() gibt 4194304 zur\u00fcck (geschriebene Bytes). Der Checkpoint ist nun sicher auf der SSD persistiert. Die gesamte Sicherungsoperation verwendete null CPU-Kopien \u2014 die CPU hat nur die NVMe-Befehlssubmission orchestriert und den Completion-Interrupt verarbeitet."
+    },
+    "16": {
+      "text": "GDS-Zusammenfassung: Zero-Copy-I/O zwischen NVMe und GPU bei voller PCIe-Bandbreite",
+      "detail": "GPUDirect Storage eliminiert die CPU vollst\u00e4ndig aus dem Speicher-Datenpfad. Die einzige Rolle der CPU ist die Steuerungsebene: Senden von 64-Byte-NVMe-Befehlsdeskriptoren und Verarbeiten von 16-Byte-Completion-Eintr\u00e4gen. Die gesamte Massendatenbewegung erfolgt via PCIe Peer-to-Peer-DMA zwischen NVMe-SSD und GPU. F\u00fcr KI-Training-Workloads: GDS erm\u00f6glicht das Lesen von Trainingsdaten bei voller NVMe-Bandbreite (7+ GB/s pro SSD) direkt in GPU-Speicher und das Sichern von Checkpoints mit der gleichen Geschwindigkeit. Mit 8 NVMe-SSDs, die eine H100-GPU versorgen, kann GDS 50+ GB/s Trainingsdaten-Bandbreite bei null CPU-Overhead liefern. Schl\u00fcsselkomponenten: cuFile-API (User Space), nvidia-fs-Kernelmodul (Kernel Space), NVMe-Treiber (unver\u00e4ndert), PCIe P2P-Routing (Hardware)."
+    }
+  }
+}

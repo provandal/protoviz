@@ -1,0 +1,121 @@
+{
+  "meta": {
+    "title": "GPUDirect RDMA: RDMA WRITE sou RoCEv2 Dirèkteman nan Memwa GPU",
+    "description": "Yon senaryo GPUDirect RDMA ki montre kijan yon RDMA WRITE ateri dirèkteman nan memwa GPU olye DRAM machin, itilize modil kernel nvidia-peermem. Moman edikasyonèl kle a se kontras ant RDMA WRITE tradisyonèl (nan DRAM machin) ak GPUDirect RDMA WRITE (dirèkteman nan HBM GPU atravè BAR PCIe, zewo tanpon rebondi). Fliks la kòmanse ak etablisman lyen fizik, pase nan alokasyon memwa CUDA GPU ak anrejistreman memwa peer nvidia-peermem, anrejistreman MR IB kont adrès BAR GPU, konfigirasyon QP atravè CM REQ/REP/RTU, yon RDMA WRITE ki pouse yon tanpon tensè 4MB dirèkteman nan HBM GPU san CPU okenn, ak yon RDMA READ ki rekipere menm tanpon an.",
+    "learning_objectives": [
+      "Konprann kijan nvidia-peermem ekspoze memwa GPU bay sousistèm RDMA atravè API peer_memory_client",
+      "Wè kijan cuMemAlloc alwe HBM GPU ak kijan apèti BAR1 GPU a mape memwa fizik GPU nan espas adrès PCIe",
+      "Trase ibv_reg_mr() kont yon adrès vityèl GPU — nvidia-peermem entèsepte anrejistreman an pou pike paj GPU olye paj machin",
+      "Obsève chemen DMA: RNIC ekri dirèkteman nan HBM GPU atravè peer-to-peer PCIe, san janm touche DRAM machin oswa kach CPU",
+      "Konpare RDMA WRITE tradisyonèl (RNIC → DRAM machin) vs GPUDirect RDMA WRITE (RNIC → HBM GPU atravè BAR1)",
+      "Swiv echanj MAD Jesyonè Koneksyon IB pou mennen yon Pè Fil Atant soti nan RESET rive nan RTS",
+      "Wè kijan RDMA READ soti nan memwa GPU kontounen CPU tou — RNIC GPU li HBM GPU atravè P2P PCIe",
+      "Konprann wòl nvidia_peermem_get_pages() ak nvidia_peermem_put_pages() nan sik lavi memwa GPU"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Lyen A: siyal detekte — Nè IA ↔ Switch pò A",
+      "detail": "Transeptè optik sou nè IA a detekte limyè soti nan switch pò A. Oto-Negosyasyon (AN) kòmanse dapre IEEE 802.3cd klòz 73. L1 se pwen-a-pwen — sa a endepandan de lyen switch ↔ sèvè distans."
+    },
+    "1": {
+      "text": "Lyen B: siyal detekte — Switch pò B ↔ Sèvè Distans",
+      "detail": "Transeptè optik sou sèvè distans detekte limyè soti nan switch pò B. AN kòmanse endepandaman sou lyen sa a."
+    },
+    "2": {
+      "text": "Lyen A: AN fini — 100GbE dakò, Fòmasyon Lyen kòmanse",
+      "detail": "AN echanje paj kapasite teknoloji ant nè IA ak switch pò A. Toude dakò sou 100GBASE-SR4. RS(544,514) FEC obligatwa pou 100G. Fòmasyon Lyen kòmanse pou egalise kanal la."
+    },
+    "3": {
+      "text": "Lyen B: AN fini — 100GbE dakò, Fòmasyon Lyen kòmanse",
+      "detail": "AN fini sou switch pò B ↔ sèvè distans. Menm negosyasyon: 100GBASE-SR4 ak RS(544,514) FEC. Fòmasyon Lyen kòmanse endepandaman sou lyen sa a."
+    },
+    "4": {
+      "text": "Lyen A MONTE — Nè IA ↔ Switch nan 100Gbps ak RS-FEC",
+      "detail": "Fòmasyon Lyen fini sou nè IA↔switch. PFC (802.1Qbb) aktive pou priyorite 3 atravè negosyasyon DCBX. Fram Ethernet ka kounye a sikile sou segman lyen sa a."
+    },
+    "5": {
+      "text": "Lyen B MONTE — Switch ↔ Sèvè Distans nan 100Gbps ak RS-FEC",
+      "detail": "Fòmasyon Lyen fini sou switch↔sèvè distans. PFC aktive. Toude lyen yo kounye a monte — switch la ka transmèt fram L2 ant pò li yo. Konektivite L2 bout-a-bout etabli."
+    },
+    "6": {
+      "text": "Demann ARP: kiyès ki gen 192.168.1.20?",
+      "detail": "RoCEv2 itilize adresaj IP. Anvan nenpòt konfigirasyon koneksyon, aksesibilite IP dwe etabli."
+    },
+    "7": {
+      "text": "Repons ARP: 192.168.1.20 se nan 00:02:c9:ab:cd:ef"
+    },
+    "8": {
+      "text": "Runtime GPU / CUDA inisyalize — cuInit() ak cuDeviceGet()",
+      "detail": "Aplikasyon an inisyalize API drivè CUDA. cuInit(0) chaje drivè CUDA a epi enumere GPU yo. cuDeviceGet() chwazi GPU sib la (pa egz., NVIDIA H100). cuCtxCreate() kreye yon kontèks CUDA sou aparèy la. Nan pwen sa a GPU a pare pou alokasyon memwa men pa gen memwa GPU ki alwe ankò."
+    },
+    "9": {
+      "text": "Memwa GPU alwe — cuMemAlloc() retounen tanpon HBM GPU 4MB",
+      "detail": "cuMemAlloc(&devPtr, 4194304) alwe yon tanpon 4MB nan Memwa Band Pasant Wo (HBM) GPU. Pwentè aparèy retounen (devPtr) se yon adrès vityèl GPU nan pwòp espas adrès GPU a. Memwa sa a viv sou die GPU a, konekte atravè HBM3 nan ~3.35 TB/s bann pasant. Pwentè a pa dirèkteman aksesib pa CPU oswa RNIC — li dwe mape atravè apèti BAR1 GPU pou aksè peer-to-peer."
+    },
+    "10": {
+      "text": "Modil kernel nvidia-peermem chaje — memwa GPU ekspoze bay sousistèm RDMA",
+      "detail": "modprobe nvidia-peermem chaje modil kernel nvidia-peermem. Modil sa a anrejistre tèt li kòm yon kliyan IB peer_memory_client atravè ib_register_peer_memory_client(). Lè ibv_reg_mr() rele pita ak yon adrès vityèl GPU, ib_umem_get() nwayo IB a ap rele nvidia_peermem_acquire() pou tcheke si adrès la pou memwa GPU. Si se sa, nvidia_peermem_get_pages() rele nvidia_p2p_get_pages() pou pike paj fizik GPU yo epi retounen adrès BAR1 PCIe yo."
+    },
+    "11": {
+      "text": "Mapaj BAR1 GPU etabli — HBM GPU aksesib nan adrès PCIe",
+      "detail": "nvidia-peermem rele nvidia_p2p_get_pages() ki pike paj fizik GPU ki sipòte tanpon cuMemAlloc la epi retounen adrès fizik BAR1 PCIe yo. Apèti BAR1 se fenèt PCIe kote aparèy ekstèn (tankou RNIC) ka aksede memwa GPU. Adrès BAR1 se yon adrès fizik PCIe ke motè DMA RNIC ka vize dirèkteman — pa gen TLB CPU, pa gen IOMMU pou P2P."
+    },
+    "12": {
+      "text": "Rejyon Memwa anrejistre kont adrès BAR GPU atravè ibv_reg_mr()",
+      "detail": "ibv_reg_mr(pd, gpu_va, 4194304, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ) rele ak adrès vityèl GPU a. ib_umem_get() nwayo IB a detekte sa a se memwa GPU atravè kliyan peer_memory nvidia-peermem: 1. nvidia_peermem_acquire() konfime adrès la pou memwa NVIDIA GPU 2. nvidia_peermem_get_pages() rele nvidia_p2p_get_pages() pou jwenn paj fizik BAR1 3. Adrès fizik BAR1 sa yo ekri nan MTT RNIC (Tab Tradiksyon Memwa) 4. MLX5_CMD_OP_CREATE_MKEY kreye yon MR ki gen tab paj ki pwente sou adrès BAR1 GPU lkey ak rkey retounen ka kounye a itilize pou operasyon RDMA — aparèy RNIC ap DMA dirèkteman nan/soti nan HBM GPU atravè adrès fizik BAR1 nan MTT a."
+    },
+    "13": {
+      "text": "Sèvè distans anrejistre Rejyon Memwa atravè ibv_reg_mr() (DRAM machin)",
+      "detail": "Sèvè distans la anrejistre yon Rejyon Memwa estanda sipòte pa DRAM machin. ibv_reg_mr() pike paj fizik machin, kreye mapaj DMA IOMMU, epi ekri tradiksyon paj nan MTT RNIC a. Sa a se chemen anrejistreman MR estanda — pa gen enplikasyon GPU, pa gen nvidia-peermem."
+    },
+    "14": {
+      "text": "QP kreye sou toude bò — eta: RESET",
+      "detail": "ibv_create_qp() alwe yon Pè Fil Atant. QP kòmanse nan eta RESET. QP nè IA a ap itilize ak MR ki sipòte pa GPU — lè RNIC a trete RDMA WRITE ki antre ki vize rkey GPU a, li ap DMA dirèkteman nan memwa GPU atravè antre tab MTT."
+    },
+    "15": {
+      "text": "QP fè tranzisyon RESET → INIT atravè ibv_modify_qp()",
+      "detail": "modify_qp(RESET→INIT) fikse: endèks P_Key, nimewo pò, drapo aksè (IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ pou sib GPUDirect). QP ka kounye a poste WQE Resepsyon."
+    },
+    "16": {
+      "text": "CM REQ voye — Nè IA pwopoze paramèt QP, pataje rkey MR GPU",
+      "detail": "rdma_connect() deklanche ib_send_cm_req(). Voye QPN nè IA, PSN kòmanse, MTU chemen=4096, kantite reesèy, ak done prive ki gen rkey sipòte pa GPU ak adrès vityèl BAR GPU. Sèvè distans la ap itilize rkey sa a pou ekri dirèkteman nan memwa GPU san konnen se memwa GPU — rkey a opak."
+    },
+    "17": {
+      "text": "CM REP resevwa — sèvè distans aksepte, bay QPN ak PSN pa li",
+      "detail": "Lè li resevwa REQ, sèvè distans rele rdma_accept() → ib_send_cm_rep(). Sèvè distans fè QP li fè tranzisyon nan RTR. Nè IA fè QP li fè tranzisyon nan RTR. Sèvè distans la te estoke rkey GPU nan done prive CM REQ — li ap itilize rkey sa a nan antèt RETH RDMA WRITE ki ap vini."
+    },
+    "18": {
+      "text": "CM RTU voye — toude QP yo fè tranzisyon nan RTS. Koneksyon GPUDirect RDMA etabli.",
+      "detail": "Apre li voye RTU, nè IA fè QP li fè tranzisyon: RTR→RTS. Lè li resevwa RTU, sèvè distans fè QP li fè tranzisyon: RTR→RTS. QP a kounye a konplètman operasyonèl. Sèvè distans ka emèt RDMA WRITE ki vize rkey sipòte pa GPU — done ap sikile dirèkteman soti nan rezo nan HBM GPU."
+    },
+    "19": {
+      "text": "Sèvè distans poste RDMA WRITE ki vize memwa GPU sou nè IA",
+      "detail": "ibv_post_send() ak opcode IBV_WR_RDMA_WRITE sou sèvè distans. WR espesifye: lis SG lokal ki pwente sou tanpon sous DRAM machin (done antrenman), adrès vityèl distans = adrès BAR GPU, rkey distans = kle MR sipòte pa GPU. Nan pèspektiv sèvè distans la, sa a idantik a yon RDMA WRITE nòmal — sèvè distans la pa konnen (epi pa bezwen konnen) ke memwa sib la se HBM GPU."
+    },
+    "20": {
+      "text": "RDMA WRITE nan GPU — 4MB pouse dirèkteman nan HBM GPU, zewo CPU sou nè IA",
+      "detail": "RNIC sèvè distans DMA soti nan DRAM machin, anvlope nan BTH+RETH+UDP+IP+Eth, transmèt. RNIC nè IA: resevwa pakè → verifye ICRC → chèche rkey 0xGPU01234 nan tab MR → jwenn antre MTT ki pwente sou adrès fizik BAR1 GPU → motè DMA ekri chaj itil dirèkteman nan HBM GPU atravè tranzaksyon peer-to-peer PCIe.\nKONPAREZON CHEMEN KRITIK: RDMA WRITE tradisyonèl: Rezo → RNIC → PCIe → DRAM Machin → cudaMemcpy → HBM GPU GPUDirect RDMA WRITE: Rezo → RNIC → PCIe → HBM GPU (dirèk, zewo kopi)\nChemen tradisyonèl la egzije: (1) DMA RNIC nan DRAM machin, (2) entèripsyon CPU oswa sondaj, (3) transfè cudaMemcpy() H2D ki konsome bann pasant PCIe ankò, (4) DMA GPU soti nan DRAM machin. GPUDirect elimine etap 2-4 antyèman."
+    },
+    "21": {
+      "text": "ACK soti nan RNIC nè IA — WRITE nan GPU fini, CQE poste sou sèvè distans",
+      "detail": "RNIC nè IA jenere ACK RC otonòm apre DMA GPU fini. Pa gen enplikasyon CPU sou nè IA — GPU a te resevwa done yo, RNIC a te jenere ACK la, epi CPU nè IA a pa te janm entèronp. RNIC sèvè distans poste yon CQE pou WRITE konplete."
+    },
+    "22": {
+      "text": "Sèvè distans poste RDMA READ ki vize memwa GPU sou nè IA",
+      "detail": "ibv_post_send() ak opcode IBV_WR_RDMA_READ sou sèvè distans. Espesifye: tanpon SG lokal pou done resevwa (DRAM machin, lkey), adrès vityèl distans = adrès BAR GPU, rkey distans = kle MR sipòte pa GPU. RNIC nè IA a ap fè yon lekti peer-to-peer PCIe soti nan HBM GPU epi voye done yo retounen — san CPU sou nè IA."
+    },
+    "23": {
+      "text": "Demann RDMA READ soti nan memwa GPU — pa gen done nan direksyon sa a",
+      "detail": "Sèvè distans voye BTH(opcode=0x0C) + RETH ki espesifye kisa pou li nan memwa GPU. Pa gen chaj itil. RNIC nè IA ap otonòm: chèche rkey → jwenn paj BAR1 GPU nan MTT → DMA li soti nan HBM GPU atravè P2P PCIe → bati pakè repons → transmèt."
+    },
+    "24": {
+      "text": "Repons RDMA READ — RNIC nè IA DMA soti nan HBM GPU epi voye done",
+      "detail": "RNIC nè IA: resevwa demann READ → valide rkey 0xGPU01234 → chèche MTT jwenn adrès fizik BAR1 GPU → motè DMA fè lekti P2P PCIe soti nan HBM GPU → bati pakè repons ak AETH+chaj itil → transmèt bay sèvè distans.\nZewo enplikasyon CPU sou nè IA. GPU a pa te entèronp — pa gen kernel CUDA ki te poze. RNIC a te fè tout operasyon an otonòm itilize apèti BAR1 PCIe. Se konsa kadri antrenman IA distribye (NCCL, Gloo) reyalize kominikasyon GPU ant nè ak debi wo san goulèt CPU."
+    },
+    "25": {
+      "text": "Senaryo fini — transfè done GPUDirect RDMA nan memwa GPU",
+      "detail": "Rezime: De lyen 100GbE endepandan te monte. Nè IA a te alwe HBM GPU atravè cuMemAlloc, te chaje nvidia-peermem pou ekspoze memwa GPU bay sousistèm RDMA, te anrejistre yon Rejyon Memwa IB kont adrès BAR1 GPU, epi te etabli yon koneksyon RC QP. Sèvè distans la te fè yon RDMA WRITE 4MB ki te ateri dirèkteman nan HBM GPU — zewo enplikasyon CPU sou nè IA, zewo rebondi atravè DRAM machin. Answit sèvè distans la te fè yon RDMA READ ki te rekipere done dirèkteman soti nan HBM GPU — zewo enplikasyon CPU ankò.\nPwen kle: GPUDirect RDMA elimine CPU nan chemen done a antyèman. Nan RDMA tradisyonèl + cudaMemcpy, chak oktè travèse bis PCIe de fwa (rezo→DRAM machin, answit DRAM machin→GPU). Ak GPUDirect RDMA, chak oktè travèse PCIe yon sèl fwa (rezo→GPU dirèkteman). Sa divize konsomasyon bann pasant PCIe pa de epi elimine depans CPU — kritik pou devlope antrenman IA distribye sou dè santèn de GPU."
+    }
+  }
+}
