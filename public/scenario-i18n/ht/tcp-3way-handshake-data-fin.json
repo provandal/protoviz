@@ -1,0 +1,39 @@
+{
+  "meta": {
+    "title": "TCP: Salitasyon 3 Etap → Transfè Done → Fèmti ak FIN",
+    "description": "Tout sik lavi yon koneksyon TCP sou 10GbE: etablisman lyen fizik, rezolisyon ARP, salitasyon klasik 3 etap la (SYN → SYN-ACK → ACK) ak mekanis nimewo sekans/konfimasyon, yon echanj done senp estil HTTP ki montre segmantasyon ak fenèt glisan, epi fèmti pwòp 4 etap ak FIN. Chak chan nan antèt TCP a gen anontasyon ak referans RFC epi lyen kwaze nan kòd sous kernel Linux. Sa a se senaryo fondasyon an — pratikman tout lòt pwotokòl nan ProtoViz fonksyone sou TCP oswa konpare ak li.",
+    "learning_objectives": [
+      "Konprann kijan salitasyon 3 etap TCP a etabli nimewo sekans senkronize ant de machin",
+      "Swiv echanj SYN → SYN-ACK → ACK la epi obsève seleksyon Nimewo Sekans Inisyal (ISN) la",
+      "Wè kijan nimewo sekans ak nimewo konfimasyon TCP swiv chak oktè done",
+      "Obsève negosyasyon gwosè fenèt TCP ak kijan reseptè a anonse espas tanpon disponib",
+      "Konprann negosyasyon MSS (Gwosè Maksimòm Segman) atravè opsyon TCP pandan salitasyon an",
+      "Swiv segman done TCP ki transpòte yon demann ak repons HTTP ak ACK kòrèk yo",
+      "Wè fèmti pwòp 4 etap ak FIN (FIN → ACK → FIN → ACK) epi konprann TIME_WAIT",
+      "Obsève tranzisyon machin eta TCP sou kliyan ak sèvè: CLOSED → SYN_SENT → ESTABLISHED → FIN_WAIT → TIME_WAIT"
+    ]
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "Sik Lavi Koneksyon TCP",
+      "description": "Travèse tout yon koneksyon TCP depi lyen monte, pase nan salitasyon, transfè done, jis rive nan fèmti pwòp",
+      "steps": {
+        "0": "Anvan nenpòt done ka echanje, rezo fizik la dwe pare. Toude lyen 10 Gigabit Ethernet yo (kliyan-a-switch epi switch-a-sèvè) fin fè Oto-Negosyasyon epi yo monte. Sa a se kouch fondasyon an — san yon lyen fizik ki mache, anyen lòt pa ka rive. Imajine sa tankou lè w leve telefòn nan epi w tande tonal la pou w ka rele.",
+        "1": "Kliyan an vle pale ak sèvè a nan adrès IP 10.0.1.20, men fram Ethernet yo bezwen yon adrès MAC pou rive nan destinasyon yo. Piske kliyan an poko konnen MAC sèvè a, li voye yon demann ARP (Pwotokòl Rezolisyon Adrès) bay tout aparèy sou rezo a: \"Kiyès ki gen 10.0.1.20? Di m adrès MAC ou.\" Remake adrès MAC difizyon an (ff:ff:ff:ff:ff:ff) ak kòd operasyon ARP 1 (Demann).",
+        "2": "Sèvè a rekonèt pwòp IP li nan demann ARP la epi li reponn: \"Se mwen! Adrès MAC mwen se 00:11:22:33:44:02.\" Sa a se yon repons unicast voye dirèkteman bay kliyan an. Toude bò yo mete ajou kach ARP yo pou yo pa bezwen mande ankò (omwen pou yon ti tan). Kounye a kliyan an kapab konstwi fram Ethernet konplè ki adrese bay sèvè a.",
+        "3": "Kounye a vrè aksyon TCP a kòmanse. Aplikasyon kliyan an rele connect(), epi kernel la voye yon segman SYN (senkronize) — premye etap nan gwo salitasyon 3 etap TCP a. Kliyan an chwazi yon Nimewo Sekans Inisyal owaza (ISN = 1000000) epi li pwopoze paramèt koneksyon atravè opsyon TCP: MSS 1460 oktè (chaj itil maksimòm pou chak segman), Faktè Echèl Fenèt 7 (ki pèmèt yon gwo fenèt resepsyon), ak sipò SACK. Kliyan an antre nan eta SYN_SENT epi li tann yon repons.",
+        "4": "Sèvè a te ap koute sou pò 80. Li resevwa SYN nan epi li reponn ak yon SYN-ACK — an menm tan li konfime SYN kliyan an epi li voye pa li. Remake de nimewo kritik yo: pwòp ISN sèvè a (seq = 2000000) ak nimewo konfimasyon an (ack = 1000001, ki se ISN kliyan an + 1). \"+1\" sa a pwouve sèvè a te resevwa SYN kliyan an. Drapo SYN nan li menm konsome yon nimewo sekans menm si li pa pote okenn done — sa asire salitasyon an jwenn konfimasyon fyab.",
+        "5": "Kliyan an konplete salitasyon an lè li voye dènye ACK la (ack = 2000001, ki konfime SYN sèvè a). Toude bò yo kounye a nan eta ESTABLISHED — koneksyon an ouvè epi done ka sikile nan toude direksyon. Salitasyon 3 etap la fin senkronize nimewo sekans yo, negosye MSS, epi dakò sou echèl fenèt. Tout echanj sa a te pran anviwon 100 mikwosegond sou LAN sa a. Pou konpare, menm salitasyon an atravè Entènèt ta ka pran 50-200 milisegond — se poutèt sa pwotokòl tankou QUIC eseye redwi wonn salitasyon yo.",
+        "6": "Ak koneksyon an etabli, kliyan an voye yon demann HTTP GET (205 oktè) kòm chaj itil TCP. Remake nimewo sekans lan: seq = 1000001, ki se premye oktè done apre SYN nan. Drapo PSH (Push) di pile TCP sèvè a livre done sa yo bay aplikasyon an touswit olye li mete yo nan tanpon. Apre li voye, pwochen nimewo sekans kliyan an avanse a 1000206 (1000001 + 205 oktè). TCP swiv chak oktè ak nimewo sekans — se konsa li garanti livrezon fyab epi nan lòd.",
+        "7": "Sèvè a konfime demann 205 oktè kliyan an ak nimewo ACK 1000206, ki vle di \"Mwen resevwa tout bagay jiska oktè 1000206 — voye m oktè sa a pwochen.\" Sa a se konfimasyon kimilatif: yon sèl ACK kouvri tout done yo resevwa jiska kounye a. Kliyan an, lè li resevwa ACK sa a, li konnen done yo te byen livre epi li ka libere yo nan tanpon retransmisyon an.",
+        "8": "Sèvè a voye tounen yon repons HTTP 200 OK (546 oktè). Nimewo sekans lan se seq = 2000001 — premye oktè done sèvè a. Piske 546 oktè pi piti pase MSS 1460 a, li antre nan yon sèl segman. Si sa te yon repons pi gwo (ann di, yon paj wèb 10KB), TCP ta koupe li an plizyè segman 1460 oktè epi fenèt konjesyon an ta gouvène konbyen ka nan wout an menm tan.",
+        "9": "Kliyan an konfime repons sèvè a ak ACK 2000547 (2000001 + 546). Echanj demann/repons HTTP a fini kounye a. Si w gade gwo foto a: kliyan an te voye 205 oktè epi sèvè a te voye 546 oktè, men total oktè sou fil la te pi plis akoz antèt yo ak depans salitasyon an. Pou ti echanj konsa, depans TCP a enpòtan (~40%). Pou transfè an kantite, chak segman 1460 oktè gen sèlman 54 oktè antèt (3.7% depans).",
+        "10": "Kliyan an fini epi li rele close(). Kernel la voye yon segman FIN (fini), ki siyale \"Mwen pa gen plis done pou voye.\" Kliyan an fè tranzisyon soti nan ESTABLISHED pou ale nan FIN_WAIT_1. Enpòtan: FIN se yon demi-fèmti — kliyan an ka toujou resevwa done nan men sèvè a. Tankou SYN, FIN konsome yon nimewo sekans (seq = 1000206) pou asire li jwenn konfimasyon fyab. Si ACK la pèdi, FIN nan ap retransmèt.",
+        "11": "Sèvè a konfime FIN kliyan an ak ACK 1000207 (FIN nan te konsome yon nimewo sekans). Sèvè a antre nan CLOSE_WAIT — li konnen kliyan an fini voye, men sèvè a ta ka toujou voye plis done si sa nesesè. Kliyan an, lè li resevwa ACK sa a, deplase nan FIN_WAIT_2 — li ap tann sèvè a fèmen bò pa li tou.",
+        "12": "Aplikasyon sèvè a rele close() tou. Kernel la voye pwòp FIN pa li (seq = 2000547). Sèvè a fè tranzisyon soti nan CLOSE_WAIT pou ale nan LAST_ACK — li ap tann dènye konfimasyon kliyan an. Toude bò yo fin voye FIN kounye a, donk koneksyon an ap fèmen nèt.",
+        "13": "Kliyan an voye dènye ACK la (ack = 2000548), ki konplete fèmti pwòp la. Sèvè a fè tranzisyon nan CLOSED epi li libere tout resous yo. Kliyan an antre nan TIME_WAIT, yon eta espesyal ki dire 60 segond (2 x Dire Maksimòm Segman). TIME_WAIT gen de rezon: (1) li asire dènye ACK sa a rive nan sèvè a (si li pèdi, sèvè a ap retransmèt FIN li a), epi (2) li anpeche ansyen segman ki rete nan yon koneksyon ansyen mele ak yon nouvo ki itilize menm pò yo.",
+        "14": "Se tout sik lavi koneksyon TCP a! Ann rezime sa nou te wè: (1) Lyen fizik monte epi rezolisyon ARP pou aprann adrès MAC. (2) Salitasyon 3 etap (SYN, SYN-ACK, ACK) ki senkronize nimewo sekans epi negosye opsyon yo. (3) Transfè done ak swivi nimewo sekans epi ACK kimilatif. (4) Fèmti pwòp 4 etap (FIN, ACK, FIN, ACK) ak TIME_WAIT. TCP se kolòn vètebral kominikasyon fyab sou Entènèt depi 1981 (RFC 793, kounye a RFC 9293). Konprann mekanis sa yo esansyèl pou deboge pwoblèm koneksyon epi apresye poukisa nouvo pwotokòl tankou QUIC ak RDMA te devlope."
+      }
+    }
+  }
+}
