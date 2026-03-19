@@ -13,6 +13,11 @@
     "mitLicense": "رخصة MIT",
     "disclaimer": "أوصاف البروتوكولات مبنية على تطبيقات مفتوحة المصدر (Linux kernel وrdma-core) ومعايير RFC العامة. مراجع المواصفات هي اقتباسات لمزيد من القراءة — لم يتم نسخ أي نص مملوك."
   },
+  "difficulty": {
+    "beginner": "مبتدئ",
+    "intermediate": "متوسط",
+    "advanced": "متقدم"
+  },
   "filter": {
     "searchPlaceholder": "البحث في السيناريوهات...",
     "allProtocols": "جميع البروتوكولات",

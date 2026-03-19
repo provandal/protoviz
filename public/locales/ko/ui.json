@@ -13,6 +13,11 @@
     "mitLicense": "MIT 라이선스",
     "disclaimer": "프로토콜 설명은 오픈소스 구현(Linux kernel, rdma-core)과 공개 RFC를 기반으로 합니다. 사양 참조는 추가 참고를 위한 인용이며, 독점 텍스트는 복제되지 않았습니다."
   },
+  "difficulty": {
+    "beginner": "초급",
+    "intermediate": "중급",
+    "advanced": "고급"
+  },
   "filter": {
     "searchPlaceholder": "시나리오 검색...",
     "allProtocols": "모든 프로토콜",

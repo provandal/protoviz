@@ -13,6 +13,11 @@
     "mitLicense": "Lisans MIT",
     "disclaimer": "Deskripsyon pwotokòl yo baze sou implantasyon kòd ouvè (Linux kernel, rdma-core) ak RFC piblik. Referans espesifikasyon yo se sitasyon pou lekti apwofondi — okenn tèks pwopriyetè pa repwodui."
   },
+  "difficulty": {
+    "beginner": "Debitan",
+    "intermediate": "Entèmedyè",
+    "advanced": "Avanse"
+  },
   "filter": {
     "searchPlaceholder": "Chèche senaryo...",
     "allProtocols": "Tout Pwotokòl",

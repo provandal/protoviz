@@ -1,0 +1,94 @@
+{
+  "tcp-3way-handshake-data-fin": {
+    "title": "TCP: مصافحة ثلاثية → نقل البيانات → إغلاق FIN",
+    "description": "دورة حياة اتصال TCP الكاملة: مصافحة ثلاثية (SYN → SYN-ACK → ACK) مع مزامنة ISN، نقل بيانات طلب/استجابة HTTP مع تتبع أرقام التسلسل، وإغلاق رباعي FIN مع TIME_WAIT."
+  },
+  "pfc-ecn-dcqcn-congestion-control": {
+    "title": "إيثرنت بلا خسائر: توقف PFC → علامة ECN → تحكم بالتدفق DCQCN",
+    "description": "كيف يحقق RoCEv2 نقلاً بلا خسائر: إطارات PFC PAUSE تمنع فيضان المخزن المؤقت، ECN يعلّم الحزم بتجربة ازدحام بدلاً من إسقاطها، وDCQCN يغلق حلقة التغذية الراجعة بتخفيض معدل مُفعّل بـ CNP واستعادة بناءً على مؤقت."
+  },
+  "nvme-rdma-discovery-io": {
+    "title": "NVMe-oF/RDMA: اكتشاف → اتصال Fabrics → كتابة وقراءة NVMe عبر RoCEv2",
+    "description": "تدفق NVMe الكامل عبر Fabrics باستخدام نقل RDMA: إعداد اتصال CM، اتصال Fabrics بمتحكم الاكتشاف، استرجاع سجل الاكتشاف عبر RDMA WRITE، إعداد طوابير متحكم الإدخال/الإخراج، كتابة NVMe (بيانات عبر RDMA READ) وقراءة NVMe (بيانات عبر RDMA WRITE). مسار بيانات بلا نسخ من البداية للنهاية."
+  },
+  "iscsi-login-discovery-io": {
+    "title": "iSCSI: تسجيل دخول → اكتشاف → SCSI INQUIRY → WRITE(10) → READ(10)",
+    "description": "جلسة iSCSI كاملة: اتصال TCP، تفاوض تسجيل دخول بمرحلتين (أمان + تشغيلي)، SCSI INQUIRY لاكتشاف LUN، WRITE(10) مع التحكم بالتدفق R2T، وREAD(10). بروتوكول SAN الأكثر انتشاراً — TCP/IP عادي، بدون عتاد خاص."
+  },
+  "roce-v2-rc-connection-rdma-write-read": {
+    "title": "RoCEv2 RC: تدريب الرابط → اتصال QP → RDMA WRITE → RDMA READ",
+    "description": "تبادل RoCEv2 موثوق ومتصل كامل عبر 100GbE: رابط فيزيائي، ARP، إعداد CM، RDMA WRITE، RDMA READ."
+  },
+  "fc-fabric-login-scsi-io": {
+    "title": "FC Fabric: FLOGI → خادم الأسماء → PLOGI → PRLI → SCSI I/O",
+    "description": "تسلسل تسجيل دخول SAN Fibre Channel الكامل عبر محوّل fabric: رابط فيزيائي، FLOGI، اكتشاف خادم الأسماء، PLOGI، PRLI، ثم SCSI INQUIRY، WRITE(10)، وREAD(10)."
+  },
+  "nvme-tcp-cdc-discovery-io": {
+    "title": "NVMe/TCP: mDNS → اكتشاف CDC → DIM → اتصال بالنظام الفرعي → I/O",
+    "description": "تدفق NVMe الكامل عبر TCP مع اكتشاف ثلاثي المستويات: mDNS → CDC (تسجيل DIM، إحالات DDC) → DDC على التخزين (تفاصيل متحكم IO) → اتصال IOC، تعريف المتحكم/مساحة الأسماء، كتابة وقراءة NVMe."
+  },
+  "gpudirect-rdma-write-to-gpu": {
+    "title": "GPUDirect RDMA: كتابة RDMA مباشرة إلى ذاكرة GPU",
+    "description": "GPUDirect RDMA يُظهر كتابة RDMA WRITE تصل مباشرة إلى GPU HBM عبر nvidia-peermem، متجاوزاً ذاكرة DRAM المضيفة كلياً. يغطي cuMemAlloc، كشف GPU BAR1، تسجيل MR مقابل ذاكرة GPU، ومسار بيانات DMA بلا نسخ."
+  },
+  "gpudirect-storage-nvme-to-gpu": {
+    "title": "GPUDirect Storage: قراءة NVMe مباشرة إلى ذاكرة GPU (PCIe محلي)",
+    "description": "GPUDirect Storage (GDS) يُظهر بيانات NVMe SSD تُقرأ مباشرة إلى ذاكرة GPU عبر واجهة cuFile وnvidia-fs، متجاوزاً ذاكرة التخزين المؤقت CPU كلياً. يقارن مسار التخزين التقليدي (3 نسخ) مع DMA P2P بلا نسخ من GDS."
+  },
+  "s3-rdma-object-put-get": {
+    "title": "S3/RDMA: وضع واسترجاع كائن عبر RoCEv2 (بنية مكتبة NVIDIA)",
+    "description": "تدفق S3/RDMA قبل المعيار باستخدام مكتبة NVIDIA RDMA للتخزين المتوافق مع S3: تهيئة المكتبة، اتصال QP عبر UD SEND، S3 PUT (معكوس — العميل يكتب بـ RDMA WRITE للخادم)، S3 GET (الخادم يكتب بـ RDMA WRITE للعميل). مسار بيانات بلا CPU."
+  },
+  "gpudirect-storage-rdma-remote": {
+    "title": "GPUDirect Storage: قراءة/كتابة NVMe-oF عن بُعد إلى ذاكرة GPU عبر RoCEv2",
+    "description": "GPUDirect Storage عبر شبكة RoCEv2: cuFileRead يطلق NVMe-oF READ مع RDMA WRITE يوصل البيانات مباشرة إلى GPU HBM؛ cuFileWrite يطلق NVMe-oF WRITE مع RDMA READ يسحب البيانات من GPU HBM. بلا ارتداد عبر ذاكرة المضيف."
+  },
+  "arp-ndp-resolution": {
+    "title": "ARP و NDP: تحليل عناوين IPv4 واكتشاف الجيران IPv6",
+    "description": "مقارنة جنباً إلى جنب: طلب/رد ARP بالبث وARP المجاني (IPv4) مقابل NDP بالبث المتعدد للعقدة المطلوبة طلب/إعلان الجار وإعلان الموجّه مع SLAAC (IPv6). يوضح لماذا NDP أكثر قابلية للتوسع وأماناً من ARP."
+  },
+  "smb-direct-negotiate-rdma-io": {
+    "title": "SMB Direct: تفاوض → قناة RDMA → قراءة وكتابة ملفات عبر RoCEv2",
+    "description": "SMB Direct (MS-SMBD) عبر RoCEv2: تفاوض SMB Direct، لهجة SMB 3.1.1، إعداد الجلسة/الشجرة، ثم كتابة ملف (الخادم يقرأ بـ RDMA READ من مخزن العميل) وقراءة (الخادم يكتب بـ RDMA WRITE في مخزن العميل). مسار بيانات بلا نسخ لأحمال Hyper-V عبر SMB."
+  },
+  "tls-1.3-handshake": {
+    "title": "TLS 1.3: مصافحة كاملة → بيانات تطبيق مشفرة → إغلاق بتنبيه",
+    "description": "تدفق TLS 1.3 الكامل (RFC 8446): مصافحة TCP، مصافحة TLS بـ 1-RTT مع تبادل مفاتيح x25519 (ClientHello key_share + ServerHello key_share)، رحلة الخادم المشفرة (EncryptedExtensions + Certificate + CertificateVerify + Finished)، بيانات التطبيق عبر AES-256-GCM، وإغلاق close_notify."
+  },
+  "gpu-to-gpu-rdma-tensor-transfer": {
+    "title": "GPU-إلى-GPU RDMA: نقل مصفوفة بين العقد عبر RoCEv2",
+    "description": "نقل مصفوفة GPU-إلى-GPU من طرف لطرف باستخدام GPUDirect RDMA عبر RoCEv2: تخصيص CUDA، كشف nvidia-peermem BAR1، تسجيل MR، إعداد QP، RDMA WRITE (دفع) وRDMA READ (سحب) — كله GPU HBM إلى GPU HBM بلا ارتداد عبر ذاكرة المضيف."
+  },
+  "checking-email": {
+    "title": "تفقّد بريدك: ماذا يحصل فعلاً لمّا تضغط على صندوق الوارد",
+    "description": "بتضغط على إشارة Gmail. قبل ما يظهر أي إيميل، حوالي 20 تبادل بروتوكول بيصير بأقل من 500 ميلي ثانية: بحث DNS، مصافحة TCP ثلاثية، تشفير TLS 1.3، وتحميل HTTP/2 متعدد لـ HTML وJavaScript وبيانات صندوق الوارد — كلو عبر اتصال واحد."
+  },
+  "nccl-allreduce-rocev2": {
+    "title": "NCCL AllReduce: خوارزمية الحلقة عبر RoCEv2 (4 GPU)",
+    "description": "NCCL Ring-AllReduce عبر 4 عقد GPU بـ RoCEv2: مرحلة Reduce-Scatter (3 خطوات، تراكم مجاميع التدرج الجزئية) ثم مرحلة AllGather (3 خطوات، بث النتيجة النهائية). كل حركة البيانات عبر GPUDirect RDMA WRITE — GPU HBM إلى GPU HBM، بلا نسخ CPU."
+  },
+  "ipv6-slaac-autoconfiguration": {
+    "title": "IPv6 SLAAC: إعلان الموجّه → DAD → تكوين العنوان التلقائي",
+    "description": "كيف تُعدّ أجهزة IPv6 عناوينها بنفسها بدون خادم DHCP: طلب الموجّه، إعلان الموجّه مع معلومات البادئة، توليد عنوان EUI-64 وعنوان الخصوصية، كشف العنوان المكرر عبر البث المتعدد للعقدة المطلوبة، وRDNSS لـ DNS."
+  },
+  "ipv6-vs-ipv4-header-comparison": {
+    "title": "ترويسة IPv6 مقابل IPv4: لماذا IPv6 أسرع على الشبكة",
+    "description": "مقارنة جنباً إلى جنب: ترويسة IPv4 بـ 13 حقلاً متغيرة الطول مع إعادة حساب checksum عند كل قفزة مقابل ترويسة IPv6 بـ 8 حقول ثابتة 40 بايت بلا checksum وبلا تجزئة من الموجّه."
+  },
+  "happy-eyeballs-dual-stack": {
+    "title": "Happy Eyeballs: كيف يختار متصفحك بين IPv4 وIPv6",
+    "description": "خوارزمية Happy Eyeballs (RFC 8305) عملياً: استعلامات DNS متوازية AAAA+A، سباق اتصال يفضّل IPv6 مع مؤقت احتياطي 250 ميلي ثانية، وتراجع شفاف إلى IPv4 عندما لا يعمل IPv6."
+  },
+  "dhcpv6-stateful-stateless": {
+    "title": "DHCPv6: بحالة مقابل بلا حالة — لمّا RA ما يكفي",
+    "description": "ثلاثة أوضاع DHCPv6 جنباً إلى جنب: بلا حالة (O=1, M=0) لمعلومات DNS/NTP مع SLAAC، بحالة (M=1) مع تبادل SARR الرباعي الكامل لتعيين عناوين مُدارة، وتفويض البادئة حيث يفوّض مزود الخدمة /48 لموجّه المنزل."
+  },
+  "nat64-dns64-ipv6-only-to-ipv4": {
+    "title": "NAT64/DNS64: عميل IPv6 فقط يتكلم مع خادم IPv4 فقط",
+    "description": "تقنية الانتقال الرئيسية لـ IPv6: DNS64 يصنّع سجلات AAAA من سجلات A باستخدام البادئة المعروفة 64:ff9b::/96، NAT64 يترجم حزم IPv6 إلى IPv4 على الشبكة، و464XLAT يتعامل مع التطبيقات القديمة التي تُثبّت عناوين IPv4 بالكود."
+  },
+  "ipv6-path-mtu-discovery": {
+    "title": "IPv6 اكتشاف MTU للمسار: لا مزيد من تجزئة الموجّه",
+    "description": "لماذا PMTUD إلزامي في IPv6: الموجّهات لا تستطيع التجزئة، لذا رسائل ICMPv6 حزمة كبيرة جداً تُخبر المصدر باستخدام حزم أصغر."
+  }
+}

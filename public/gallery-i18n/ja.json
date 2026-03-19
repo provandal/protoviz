@@ -1,0 +1,94 @@
+{
+  "tcp-3way-handshake-data-fin": {
+    "title": "TCP: 3-Way Handshake → データ転送 → FIN Teardown",
+    "description": "TCPコネクションの完全なライフサイクル：ISN同期を伴う3-way handshake（SYN → SYN-ACK → ACK）、シーケンス番号追跡によるHTTPリクエスト/レスポンスのデータ転送、TIME_WAITを伴う4-way FIN teardown。"
+  },
+  "pfc-ecn-dcqcn-congestion-control": {
+    "title": "Lossless Ethernet: PFC Pause → ECN マーキング → DCQCN レート制御",
+    "description": "RoCEv2がロスレス転送を実現する仕組み：PFC PAUSEフレームがバッファオーバーフローを防止、ECNがパケットをドロップせずCongestion Experiencedをマーク、DCQCNがCNPトリガーのレート削減とタイマーベースの回復でフィードバックループを閉じる。"
+  },
+  "nvme-rdma-discovery-io": {
+    "title": "NVMe-oF/RDMA: Discovery → Fabrics Connect → RoCEv2上のNVMe Write & Read",
+    "description": "RDMAトランスポートを使用した完全なNVMe over Fabrics：CMコネクションセットアップ、Discovery ControllerへのFabrics Connect、RDMA WRITEによるDiscovery Log取得、IO Controllerキューセットアップ、NVMe Write（RDMA READでデータ転送）とNVMe Read（RDMA WRITEでデータ転送）。全経路ゼロコピー。"
+  },
+  "iscsi-login-discovery-io": {
+    "title": "iSCSI: Login → Discovery → SCSI INQUIRY → WRITE(10) → READ(10)",
+    "description": "完全なiSCSIセッション：TCP接続、2段階Loginネゴシエーション（セキュリティ＋オペレーショナル）、LUN検出のためのSCSI INQUIRY、R2Tフロー制御によるWRITE(10)、READ(10)。最も広く導入されているSANプロトコル——標準TCP/IP、特殊ハードウェア不要。"
+  },
+  "roce-v2-rc-connection-rdma-write-read": {
+    "title": "RoCEv2 RC: Link Training → QP Connection → RDMA WRITE → RDMA READ",
+    "description": "100GbE上の完全なRoCEv2 Reliable Connected交換：物理リンク、ARP、CM bring-up、RDMA WRITE、RDMA READ。"
+  },
+  "fc-fabric-login-scsi-io": {
+    "title": "FC Fabric: FLOGI → Name Server → PLOGI → PRLI → SCSI I/O",
+    "description": "ファブリックスイッチを経由した完全なFibre Channel SANログインシーケンス：物理リンク、FLOGI、Name Serverディスカバリー、PLOGI、PRLI、その後SCSI INQUIRY、WRITE(10)、READ(10)。"
+  },
+  "nvme-tcp-cdc-discovery-io": {
+    "title": "NVMe/TCP: mDNS → CDC Discovery → DIM → Subsystem Connect → I/O",
+    "description": "3階層ディスカバリーによる完全なNVMe over TCPフロー：mDNS → CDC（DIM登録、DDCリファラル）→ ストレージ上のDDC（IO Controller詳細）→ IOC接続、Identify Controller/Namespace、NVMe WriteとRead。"
+  },
+  "gpudirect-rdma-write-to-gpu": {
+    "title": "GPUDirect RDMA: RoCEv2 WRITEでGPUメモリに直接転送",
+    "description": "nvidia-peermemを介してGPU HBMにRDMA WRITEが直接着地するGPUDirect RDMA。ホストDRAMを完全にバイパス。cuMemAlloc、GPU BAR1公開、GPUメモリへのMR登録、ゼロコピーDMAデータパスを解説。"
+  },
+  "gpudirect-storage-nvme-to-gpu": {
+    "title": "GPUDirect Storage: NVMe ReadをGPUメモリに直接転送（ローカルPCIe）",
+    "description": "GPUDirect Storage（GDS）：cuFile APIとnvidia-fsを使用してNVMe SSDデータをGPUメモリに直接読み込み、CPUページキャッシュを完全にバイパス。従来のストレージパス（3回コピー）とGDSゼロコピーP2P DMAを比較。"
+  },
+  "s3-rdma-object-put-get": {
+    "title": "S3/RDMA: RoCEv2上のObject PUTとGET（NVIDIAライブラリアーキテクチャ）",
+    "description": "NVIDIA RDMA for S3-compatible storageライブラリを使用した標準化前S3/RDMAフロー：Library Init、UD SENDによるQP接続、S3 PUT（反転——クライアントがサーバーにRDMA WRITE）、S3 GET（サーバーがクライアントにRDMA WRITE）。ゼロCPUデータパス。"
+  },
+  "gpudirect-storage-rdma-remote": {
+    "title": "GPUDirect Storage: RoCEv2経由リモートNVMe-oF Read/WriteをGPUメモリに直接転送",
+    "description": "RoCEv2ファブリック上のGPUDirect Storage：cuFileReadがNVMe-oF READをトリガーし、RDMA WRITEがGPU HBMに直接データを送達。cuFileWriteがNVMe-oF WRITEをトリガーし、RDMA READがGPU HBMからデータを取得。ホストDRAMバウンスゼロ。"
+  },
+  "arp-ndp-resolution": {
+    "title": "ARP & NDP: IPv4アドレス解決とIPv6近隣探索",
+    "description": "並列比較：ARPブロードキャストRequest/ReplyとGratuitous ARP（IPv4）vs NDPソリシテッドノードマルチキャストNeighbor Solicitation/AdvertisementとSLAAC付きRouter Advertisement（IPv6）。NDPがARPよりスケーラブルかつ安全な理由を解説。"
+  },
+  "smb-direct-negotiate-rdma-io": {
+    "title": "SMB Direct: Negotiate → RDMAチャネル → RoCEv2上のFile Read & Write",
+    "description": "RoCEv2上のSMB Direct（MS-SMBD）：SMB Directネゴシエート、SMB 3.1.1 dialect、session/treeセットアップ、その後file WRITE（サーバーがクライアントバッファからRDMA READ）とREAD（サーバーがクライアントバッファにRDMA WRITE）。Hyper-V over SMBワークロード向けゼロコピーデータパス。"
+  },
+  "tls-1.3-handshake": {
+    "title": "TLS 1.3: フルHandshake → 暗号化アプリケーションデータ → Alert Close",
+    "description": "完全なTLS 1.3（RFC 8446）フロー：TCP handshake、x25519鍵交換による1-RTT TLS handshake（ClientHello key_share + ServerHello key_share）、暗号化サーバーフライト（EncryptedExtensions + Certificate + CertificateVerify + Finished）、AES-256-GCM上のアプリケーションデータ、close_notify teardown。"
+  },
+  "gpu-to-gpu-rdma-tensor-transfer": {
+    "title": "GPU-to-GPU RDMA: RoCEv2経由ノード間テンソル転送",
+    "description": "RoCEv2上のGPUDirect RDMAを使用したエンドツーエンドGPU-to-GPUテンソル転送：CUDA alloc、nvidia-peermem BAR1公開、MR登録、QP bring-up、RDMA WRITE（プッシュ）とRDMA READ（プル）——すべてGPU HBMからGPU HBM、ホストDRAMバウンスゼロ。"
+  },
+  "checking-email": {
+    "title": "メールチェック：受信トレイをクリックしたとき本当に起きていること",
+    "description": "Gmailのブックマークをクリック。1通のメールが表示される前に、500ms以内に約20回のプロトコル交換が発生：DNSルックアップ、TCP 3-way handshake、TLS 1.3暗号化、HTTP/2多重化によるHTML・JavaScript・受信トレイデータの読み込み——すべて1本の接続で。"
+  },
+  "nccl-allreduce-rocev2": {
+    "title": "NCCL AllReduce: RoCEv2上のRingアルゴリズム（4 GPU）",
+    "description": "RoCEv2経由4 GPUノードでのNCCL Ring-AllReduce：Reduce-Scatterフェーズ（3ステップ、部分勾配和を蓄積）、次にAllGatherフェーズ（3ステップ、最終結果をブロードキャスト）。全データ移動はGPUDirect RDMA WRITE——GPU HBMからGPU HBM、CPUコピーゼロ。"
+  },
+  "ipv6-slaac-autoconfiguration": {
+    "title": "IPv6 SLAAC: Router Advertisement → DAD → アドレス自動設定",
+    "description": "DHCPサーバーなしでIPv6ホストが自身のアドレスを設定する方法：Router Solicitation、プレフィックス情報付きRouter Advertisement、EUI-64およびプライバシーアドレス生成、ソリシテッドノードマルチキャストによるDuplicate Address Detection、DNS用RDNSS。"
+  },
+  "ipv6-vs-ipv4-header-comparison": {
+    "title": "IPv6 vs IPv4ヘッダ：IPv6がワイヤ上で高速な理由",
+    "description": "並列比較：ホップごとにチェックサム再計算が必要なIPv4の13フィールド可変長ヘッダ vs チェックサムなし・ルーターフラグメンテーションなしのIPv6の8フィールド固定40バイトヘッダ。"
+  },
+  "happy-eyeballs-dual-stack": {
+    "title": "Happy Eyeballs: ブラウザはIPv4とIPv6をどう選ぶのか",
+    "description": "Happy Eyeballsアルゴリズム（RFC 8305）の動作：DNS AAAA+Aの並列クエリ、250msフォールバックタイマー付きIPv6優先接続レース、IPv6が壊れている場合の透過的IPv4フォールバック。"
+  },
+  "dhcpv6-stateful-stateless": {
+    "title": "DHCPv6: Stateful vs Stateless — RAだけでは足りないとき",
+    "description": "3つのDHCPv6モードを並列比較：SLAACと共にDNS/NTP情報を提供するStateless（O=1, M=0）、完全なSARR 4メッセージ交換による管理アドレス割り当てのStateful（M=1）、ISPがホームルーターに/48を委譲するPrefix Delegation。"
+  },
+  "nat64-dns64-ipv6-only-to-ipv4": {
+    "title": "NAT64/DNS64: IPv6-OnlyクライアントからIPv4-Onlyサーバーへの通信",
+    "description": "主要な連邦IPv6移行技術：DNS64がwell-knownプレフィックス64:ff9b::/96を使用してAレコードからAAAAレコードを合成、NAT64がワイヤ上でIPv6パケットをIPv4に変換、464XLATがIPv4アドレスをハードコードしたレガシーアプリに対応。"
+  },
+  "ipv6-path-mtu-discovery": {
+    "title": "IPv6 Path MTU Discovery: ルーターフラグメンテーションの廃止",
+    "description": "PMTUDがIPv6で必須である理由：ルーターはフラグメントできないため、ICMPv6 Packet Too Bigメッセージが送信元により小さなパケットの使用を指示する。"
+  }
+}

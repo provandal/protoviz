@@ -1,14 +1,16 @@
 /* global __APP_VERSION__ */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import ScenarioCard from './ScenarioCard';
 import FilterBar from './FilterBar';
 import LanguageSelector from '../common/LanguageSelector';
+import { loadGalleryTranslations, translateScenario } from '../../utils/galleryTranslation';
 
 export default function Gallery() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [scenarios, setScenarios] = useState([]);
+  const [galleryTrans, setGalleryTrans] = useState({});
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState({ protocol: '', difficulty: '', search: '' });
   const navigate = useNavigate();
@@ -21,7 +23,18 @@ export default function Gallery() {
       .catch(() => setLoading(false));
   }, []);
 
-  const filtered = scenarios.filter(s => {
+  // Load gallery translations when language changes
+  useEffect(() => {
+    loadGalleryTranslations(i18n.language).then(setGalleryTrans);
+  }, [i18n.language]);
+
+  // Apply translations to scenarios
+  const translatedScenarios = useMemo(
+    () => scenarios.map(s => translateScenario(s, galleryTrans)),
+    [scenarios, galleryTrans],
+  );
+
+  const filtered = translatedScenarios.filter(s => {
     if (filter.protocol && s.protocol_family !== filter.protocol) return false;
     if (filter.difficulty && s.difficulty !== filter.difficulty) return false;
     if (filter.search) {

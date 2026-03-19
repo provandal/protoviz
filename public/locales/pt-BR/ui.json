@@ -13,6 +13,11 @@
     "mitLicense": "Licença MIT",
     "disclaimer": "As descrições de protocolos são baseadas em implementações de código aberto (Linux kernel, rdma-core) e RFCs públicas. As referências de especificações são citações para leitura adicional — nenhum texto proprietário foi reproduzido."
   },
+  "difficulty": {
+    "beginner": "Iniciante",
+    "intermediate": "Intermediário",
+    "advanced": "Avançado"
+  },
   "filter": {
     "searchPlaceholder": "Buscar cenários...",
     "allProtocols": "Todos os Protocolos",

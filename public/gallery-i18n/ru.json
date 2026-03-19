@@ -1,0 +1,94 @@
+{
+  "tcp-3way-handshake-data-fin": {
+    "title": "TCP: 3-Way Handshake → Передача данных → FIN Teardown",
+    "description": "Полный жизненный цикл TCP-соединения: 3-way handshake (SYN → SYN-ACK → ACK) с синхронизацией ISN, передача данных HTTP запрос/ответ с отслеживанием sequence number, и корректное завершение через 4-way FIN teardown с TIME_WAIT."
+  },
+  "pfc-ecn-dcqcn-congestion-control": {
+    "title": "Lossless Ethernet: PFC Pause → ECN-маркировка → DCQCN Rate Control",
+    "description": "Как RoCEv2 обеспечивает безпотерьный транспорт: PFC PAUSE-фреймы предотвращают переполнение буфера, ECN маркирует пакеты как Congestion Experienced вместо их сброса, а DCQCN замыкает цикл обратной связи через CNP-снижение скорости и восстановление по таймеру."
+  },
+  "nvme-rdma-discovery-io": {
+    "title": "NVMe-oF/RDMA: Discovery → Fabrics Connect → NVMe Write & Read через RoCEv2",
+    "description": "Полный поток NVMe over Fabrics с RDMA-транспортом: установка CM-соединения, Fabrics Connect к Discovery Controller, получение Discovery Log через RDMA WRITE, настройка очередей IO Controller, NVMe Write (данные через RDMA READ) и NVMe Read (данные через RDMA WRITE). Zero-copy на всём пути данных."
+  },
+  "iscsi-login-discovery-io": {
+    "title": "iSCSI: Login → Discovery → SCSI INQUIRY → WRITE(10) → READ(10)",
+    "description": "Полная сессия iSCSI: TCP-соединение, двухэтапный Login (безопасность + операционные параметры), SCSI INQUIRY для обнаружения LUN, WRITE(10) с управлением потоком R2T и READ(10). Самый распространённый SAN-протокол — стандартный TCP/IP, без специального оборудования."
+  },
+  "roce-v2-rc-connection-rdma-write-read": {
+    "title": "RoCEv2 RC: Link Training → QP Connection → RDMA WRITE → RDMA READ",
+    "description": "Полный обмен RoCEv2 Reliable Connected на 100GbE: физический канал, ARP, CM bring-up, RDMA WRITE, RDMA READ."
+  },
+  "fc-fabric-login-scsi-io": {
+    "title": "FC Fabric: FLOGI → Name Server → PLOGI → PRLI → SCSI I/O",
+    "description": "Полная последовательность входа Fibre Channel SAN через фабричный коммутатор: физический канал, FLOGI, обнаружение через Name Server, PLOGI, PRLI, затем SCSI INQUIRY, WRITE(10) и READ(10)."
+  },
+  "nvme-tcp-cdc-discovery-io": {
+    "title": "NVMe/TCP: mDNS → CDC Discovery → DIM → Subsystem Connect → I/O",
+    "description": "Полный поток NVMe over TCP с трёхуровневым обнаружением: mDNS → CDC (регистрация DIM, направления DDC) → DDC на хранилище (детали IO Controller) → подключение IOC, Identify Controller/Namespace, NVMe Write и Read."
+  },
+  "gpudirect-rdma-write-to-gpu": {
+    "title": "GPUDirect RDMA: RoCEv2 WRITE напрямую в память GPU",
+    "description": "GPUDirect RDMA: RDMA WRITE поступает напрямую в GPU HBM через nvidia-peermem, полностью минуя хостовую DRAM. Рассматриваются cuMemAlloc, экспозиция GPU BAR1, регистрация MR для памяти GPU и zero-copy DMA-путь данных."
+  },
+  "gpudirect-storage-nvme-to-gpu": {
+    "title": "GPUDirect Storage: NVMe Read напрямую в память GPU (локальный PCIe)",
+    "description": "GPUDirect Storage (GDS): чтение данных с NVMe SSD напрямую в память GPU через cuFile API и nvidia-fs, полностью минуя CPU page cache. Сравнение традиционного пути хранения (3 копии) с zero-copy P2P DMA в GDS."
+  },
+  "s3-rdma-object-put-get": {
+    "title": "S3/RDMA: Object PUT и GET через RoCEv2 (архитектура библиотеки NVIDIA)",
+    "description": "Предстандартный поток S3/RDMA с использованием библиотеки NVIDIA RDMA for S3-compatible storage: Library Init, подключение QP через UD SEND, S3 PUT (инвертированный — клиент делает RDMA WRITE на сервер), S3 GET (сервер делает RDMA WRITE на клиент). Zero-CPU путь данных."
+  },
+  "gpudirect-storage-rdma-remote": {
+    "title": "GPUDirect Storage: Удалённый NVMe-oF Read/Write в память GPU через RoCEv2",
+    "description": "GPUDirect Storage через фабрику RoCEv2: cuFileRead запускает NVMe-oF READ с RDMA WRITE, доставляющим данные напрямую в GPU HBM; cuFileWrite запускает NVMe-oF WRITE с RDMA READ, извлекающим данные из GPU HBM. Без промежуточного копирования в хостовую DRAM."
+  },
+  "arp-ndp-resolution": {
+    "title": "ARP & NDP: Разрешение адресов IPv4 и обнаружение соседей IPv6",
+    "description": "Сравнение: ARP широковещательный Request/Reply и Gratuitous ARP (IPv4) vs NDP solicited-node мультикаст Neighbor Solicitation/Advertisement и Router Advertisement с SLAAC (IPv6). Показывает, почему NDP масштабируемее и безопаснее ARP."
+  },
+  "smb-direct-negotiate-rdma-io": {
+    "title": "SMB Direct: Negotiate → RDMA-канал → File Read & Write через RoCEv2",
+    "description": "SMB Direct (MS-SMBD) через RoCEv2: согласование SMB Direct, диалект SMB 3.1.1, настройка session/tree, затем file WRITE (сервер делает RDMA READ из буфера клиента) и READ (сервер делает RDMA WRITE в буфер клиента). Zero-copy путь данных для нагрузок Hyper-V over SMB."
+  },
+  "tls-1.3-handshake": {
+    "title": "TLS 1.3: Полный Handshake → Зашифрованные данные приложения → Alert Close",
+    "description": "Полный поток TLS 1.3 (RFC 8446): TCP handshake, 1-RTT TLS handshake с обменом ключами x25519 (ClientHello key_share + ServerHello key_share), зашифрованный серверный пакет (EncryptedExtensions + Certificate + CertificateVerify + Finished), данные приложения через AES-256-GCM и корректное завершение close_notify."
+  },
+  "gpu-to-gpu-rdma-tensor-transfer": {
+    "title": "GPU-to-GPU RDMA: Передача тензоров между узлами через RoCEv2",
+    "description": "Сквозная передача тензоров GPU-to-GPU с использованием GPUDirect RDMA через RoCEv2: CUDA alloc, экспозиция nvidia-peermem BAR1, регистрация MR, bring-up QP, RDMA WRITE (push) и RDMA READ (pull) — всё из GPU HBM в GPU HBM, без копирования через хостовую DRAM."
+  },
+  "checking-email": {
+    "title": "Проверка почты: Что на самом деле происходит при клике на «Входящие»",
+    "description": "Вы кликаете на закладку Gmail. Прежде чем появится хотя бы одно письмо, менее чем за 500 мс происходит ~20 протокольных обменов: DNS-запрос, TCP 3-way handshake, шифрование TLS 1.3 и мультиплексированная загрузка HTML, JavaScript и данных почтового ящика по HTTP/2 — всё через одно соединение."
+  },
+  "nccl-allreduce-rocev2": {
+    "title": "NCCL AllReduce: Ring-алгоритм через RoCEv2 (4 GPU)",
+    "description": "NCCL Ring-AllReduce на 4 GPU-узлах через RoCEv2: фаза Reduce-Scatter (3 шага, накопление частичных сумм градиентов), затем фаза AllGather (3 шага, рассылка итогового результата). Всё перемещение данных через GPUDirect RDMA WRITE — GPU HBM в GPU HBM, ноль копий через CPU."
+  },
+  "ipv6-slaac-autoconfiguration": {
+    "title": "IPv6 SLAAC: Router Advertisement → DAD → Автоконфигурация адреса",
+    "description": "Как IPv6-хосты настраивают свои адреса без DHCP-сервера: Router Solicitation, Router Advertisement с информацией о префиксе, генерация адреса EUI-64 и privacy, Duplicate Address Detection через solicited-node мультикаст и RDNSS для DNS."
+  },
+  "ipv6-vs-ipv4-header-comparison": {
+    "title": "IPv6 vs IPv4 заголовок: Почему IPv6 быстрее на канальном уровне",
+    "description": "Сравнение: 13-полевой заголовок IPv4 переменной длины с пересчётом контрольной суммы на каждом хопе vs 8-полевой фиксированный 40-байтный заголовок IPv6 без контрольной суммы и без фрагментации на маршрутизаторе."
+  },
+  "happy-eyeballs-dual-stack": {
+    "title": "Happy Eyeballs: Как браузер выбирает между IPv4 и IPv6",
+    "description": "Алгоритм Happy Eyeballs (RFC 8305) в действии: параллельные DNS-запросы AAAA+A, гонка соединений с приоритетом IPv6 и 250 мс таймером отката, прозрачный откат на IPv4 при неработающем IPv6."
+  },
+  "dhcpv6-stateful-stateless": {
+    "title": "DHCPv6: Stateful vs Stateless — Когда RA недостаточно",
+    "description": "Три режима DHCPv6 рядом: Stateless (O=1, M=0) для DNS/NTP наряду с SLAAC, Stateful (M=1) с полным 4-сообщениевым обменом SARR для управляемого назначения адресов, и Prefix Delegation, где ISP делегирует /48 домашнему маршрутизатору."
+  },
+  "nat64-dns64-ipv6-only-to-ipv4": {
+    "title": "NAT64/DNS64: IPv6-Only клиент общается с IPv4-Only сервером",
+    "description": "Ключевая федеральная технология перехода на IPv6: DNS64 синтезирует AAAA-записи из A-записей, используя well-known префикс 64:ff9b::/96, NAT64 транслирует IPv6-пакеты в IPv4 на уровне канала, а 464XLAT обрабатывает устаревшие приложения с жёстко прописанными IPv4-адресами."
+  },
+  "ipv6-path-mtu-discovery": {
+    "title": "IPv6 Path MTU Discovery: Конец фрагментации на маршрутизаторах",
+    "description": "Почему PMTUD обязателен в IPv6: маршрутизаторы не могут фрагментировать, поэтому сообщения ICMPv6 Packet Too Big указывают источнику использовать пакеты меньшего размера."
+  }
+}

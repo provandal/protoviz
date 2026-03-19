@@ -13,6 +13,11 @@
     "mitLicense": "רישיון MIT",
     "disclaimer": "תיאורי הפרוטוקולים מבוססים על מימושי קוד פתוח (Linux kernel, rdma-core) ו-RFC ציבוריים. הפניות למפרטים הן ציטוטים לקריאה נוספת — לא שוכפל שום טקסט קנייני."
   },
+  "difficulty": {
+    "beginner": "מתחיל",
+    "intermediate": "בינוני",
+    "advanced": "מתקדם"
+  },
   "filter": {
     "searchPlaceholder": "חיפוש תרחישים...",
     "allProtocols": "כל הפרוטוקולים",

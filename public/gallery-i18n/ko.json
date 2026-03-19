@@ -1,0 +1,94 @@
+{
+  "tcp-3way-handshake-data-fin": {
+    "title": "TCP: 3-Way Handshake → 데이터 전송 → FIN Teardown",
+    "description": "TCP 연결의 전체 수명 주기: ISN 동기화를 포함한 3-way handshake(SYN → SYN-ACK → ACK), 시퀀스 번호 추적을 통한 HTTP 요청/응답 데이터 전송, TIME_WAIT를 포함한 4-way FIN teardown."
+  },
+  "pfc-ecn-dcqcn-congestion-control": {
+    "title": "Lossless Ethernet: PFC Pause → ECN 마킹 → DCQCN 속도 제어",
+    "description": "RoCEv2가 무손실 전송을 달성하는 방법: PFC PAUSE 프레임이 버퍼 오버플로를 방지하고, ECN이 패킷을 드롭하는 대신 Congestion Experienced로 마킹하며, DCQCN이 CNP 트리거 속도 감소와 타이머 기반 복구로 피드백 루프를 완성한다."
+  },
+  "nvme-rdma-discovery-io": {
+    "title": "NVMe-oF/RDMA: Discovery → Fabrics Connect → RoCEv2를 통한 NVMe Write & Read",
+    "description": "RDMA 전송을 사용한 전체 NVMe over Fabrics: CM 연결 설정, Discovery Controller에 Fabrics Connect, RDMA WRITE를 통한 Discovery Log 획득, IO Controller 큐 설정, NVMe Write(RDMA READ로 데이터 전송)와 NVMe Read(RDMA WRITE로 데이터 전송). 전 경로 제로 카피."
+  },
+  "iscsi-login-discovery-io": {
+    "title": "iSCSI: Login → Discovery → SCSI INQUIRY → WRITE(10) → READ(10)",
+    "description": "전체 iSCSI 세션: TCP 연결, 2단계 Login 협상(보안 + 운영), LUN 검색을 위한 SCSI INQUIRY, R2T 흐름 제어를 사용한 WRITE(10), READ(10). 가장 널리 배포된 SAN 프로토콜 — 표준 TCP/IP, 특수 하드웨어 불필요."
+  },
+  "roce-v2-rc-connection-rdma-write-read": {
+    "title": "RoCEv2 RC: Link Training → QP Connection → RDMA WRITE → RDMA READ",
+    "description": "100GbE 기반의 전체 RoCEv2 Reliable Connected 교환: 물리 링크, ARP, CM bring-up, RDMA WRITE, RDMA READ."
+  },
+  "fc-fabric-login-scsi-io": {
+    "title": "FC Fabric: FLOGI → Name Server → PLOGI → PRLI → SCSI I/O",
+    "description": "패브릭 스위치를 통한 전체 Fibre Channel SAN 로그인 시퀀스: 물리 링크, FLOGI, Name Server 검색, PLOGI, PRLI, 이후 SCSI INQUIRY, WRITE(10), READ(10)."
+  },
+  "nvme-tcp-cdc-discovery-io": {
+    "title": "NVMe/TCP: mDNS → CDC Discovery → DIM → Subsystem Connect → I/O",
+    "description": "3단계 검색을 포함한 전체 NVMe over TCP 흐름: mDNS → CDC(DIM 등록, DDC 참조) → 스토리지의 DDC(IO Controller 세부 정보) → IOC 연결, Identify Controller/Namespace, NVMe Write 및 Read."
+  },
+  "gpudirect-rdma-write-to-gpu": {
+    "title": "GPUDirect RDMA: RoCEv2 WRITE로 GPU 메모리에 직접 전송",
+    "description": "nvidia-peermem을 통해 GPU HBM에 RDMA WRITE가 직접 도착하는 GPUDirect RDMA. 호스트 DRAM을 완전히 우회. cuMemAlloc, GPU BAR1 노출, GPU 메모리 MR 등록, 제로 카피 DMA 데이터 경로를 다룬다."
+  },
+  "gpudirect-storage-nvme-to-gpu": {
+    "title": "GPUDirect Storage: NVMe Read를 GPU 메모리에 직접 전송 (로컬 PCIe)",
+    "description": "GPUDirect Storage(GDS): cuFile API와 nvidia-fs를 사용하여 NVMe SSD 데이터를 GPU 메모리에 직접 읽기, CPU 페이지 캐시를 완전히 우회. 기존 스토리지 경로(3회 복사)와 GDS 제로 카피 P2P DMA를 비교."
+  },
+  "s3-rdma-object-put-get": {
+    "title": "S3/RDMA: RoCEv2를 통한 Object PUT 및 GET (NVIDIA 라이브러리 아키텍처)",
+    "description": "NVIDIA RDMA for S3-compatible storage 라이브러리를 사용한 사전 표준 S3/RDMA 흐름: Library Init, UD SEND를 통한 QP 연결, S3 PUT(역전 — 클라이언트가 서버에 RDMA WRITE), S3 GET(서버가 클라이언트에 RDMA WRITE). 제로 CPU 데이터 경로."
+  },
+  "gpudirect-storage-rdma-remote": {
+    "title": "GPUDirect Storage: RoCEv2를 통한 원격 NVMe-oF Read/Write를 GPU 메모리에 직접 전송",
+    "description": "RoCEv2 패브릭 기반 GPUDirect Storage: cuFileRead가 NVMe-oF READ를 트리거하며 RDMA WRITE가 GPU HBM에 직접 데이터를 전달; cuFileWrite가 NVMe-oF WRITE를 트리거하며 RDMA READ가 GPU HBM에서 데이터를 가져옴. 호스트 DRAM 바운스 제로."
+  },
+  "arp-ndp-resolution": {
+    "title": "ARP & NDP: IPv4 주소 해석과 IPv6 이웃 탐색",
+    "description": "병렬 비교: ARP 브로드캐스트 Request/Reply 및 Gratuitous ARP(IPv4) vs NDP solicited-node 멀티캐스트 Neighbor Solicitation/Advertisement 및 SLAAC를 포함한 Router Advertisement(IPv6). NDP가 ARP보다 확장성과 보안에서 우수한 이유를 보여준다."
+  },
+  "smb-direct-negotiate-rdma-io": {
+    "title": "SMB Direct: Negotiate → RDMA 채널 → RoCEv2를 통한 File Read & Write",
+    "description": "RoCEv2 기반 SMB Direct(MS-SMBD): SMB Direct 협상, SMB 3.1.1 dialect, session/tree 설정, 이후 file WRITE(서버가 클라이언트 버퍼에서 RDMA READ)와 READ(서버가 클라이언트 버퍼에 RDMA WRITE). Hyper-V over SMB 워크로드를 위한 제로 카피 데이터 경로."
+  },
+  "tls-1.3-handshake": {
+    "title": "TLS 1.3: 전체 Handshake → 암호화된 애플리케이션 데이터 → Alert Close",
+    "description": "전체 TLS 1.3(RFC 8446) 흐름: TCP handshake, x25519 키 교환을 사용한 1-RTT TLS handshake(ClientHello key_share + ServerHello key_share), 암호화된 서버 플라이트(EncryptedExtensions + Certificate + CertificateVerify + Finished), AES-256-GCM 기반 애플리케이션 데이터, close_notify teardown."
+  },
+  "gpu-to-gpu-rdma-tensor-transfer": {
+    "title": "GPU-to-GPU RDMA: RoCEv2를 통한 노드 간 텐서 전송",
+    "description": "RoCEv2 기반 GPUDirect RDMA를 사용한 엔드투엔드 GPU-to-GPU 텐서 전송: CUDA alloc, nvidia-peermem BAR1 노출, MR 등록, QP bring-up, RDMA WRITE(푸시)와 RDMA READ(풀) — 모두 GPU HBM에서 GPU HBM으로, 호스트 DRAM 바운스 제로."
+  },
+  "checking-email": {
+    "title": "이메일 확인: 받은 편지함을 클릭하면 실제로 일어나는 일",
+    "description": "Gmail 북마크를 클릭합니다. 이메일이 하나라도 나타나기 전에 500ms 이내에 약 20회의 프로토콜 교환이 일어납니다: DNS 조회, TCP 3-way handshake, TLS 1.3 암호화, HTTP/2 멀티플렉싱으로 HTML, JavaScript, 받은 편지함 데이터 로딩 — 모두 하나의 연결로."
+  },
+  "nccl-allreduce-rocev2": {
+    "title": "NCCL AllReduce: RoCEv2 기반 Ring 알고리즘 (4 GPU)",
+    "description": "RoCEv2를 통한 4 GPU 노드 NCCL Ring-AllReduce: Reduce-Scatter 단계(3 스텝, 부분 그래디언트 합 누적) 후 AllGather 단계(3 스텝, 최종 결과 브로드캐스트). 모든 데이터 이동은 GPUDirect RDMA WRITE — GPU HBM에서 GPU HBM으로, CPU 복사 제로."
+  },
+  "ipv6-slaac-autoconfiguration": {
+    "title": "IPv6 SLAAC: Router Advertisement → DAD → 주소 자동 구성",
+    "description": "DHCP 서버 없이 IPv6 호스트가 자체 주소를 구성하는 방법: Router Solicitation, 프리픽스 정보를 포함한 Router Advertisement, EUI-64 및 프라이버시 주소 생성, solicited-node 멀티캐스트를 통한 Duplicate Address Detection, DNS용 RDNSS."
+  },
+  "ipv6-vs-ipv4-header-comparison": {
+    "title": "IPv6 vs IPv4 헤더: IPv6가 와이어에서 더 빠른 이유",
+    "description": "병렬 비교: 매 홉마다 체크섬 재계산이 필요한 IPv4의 13 필드 가변 길이 헤더 vs 체크섬 없고 라우터 단편화 없는 IPv6의 8 필드 고정 40바이트 헤더."
+  },
+  "happy-eyeballs-dual-stack": {
+    "title": "Happy Eyeballs: 브라우저가 IPv4와 IPv6 중 선택하는 방법",
+    "description": "Happy Eyeballs 알고리즘(RFC 8305) 동작: DNS AAAA+A 병렬 쿼리, 250ms 폴백 타이머를 포함한 IPv6 우선 연결 경쟁, IPv6 장애 시 투명한 IPv4 폴백."
+  },
+  "dhcpv6-stateful-stateless": {
+    "title": "DHCPv6: Stateful vs Stateless — RA만으로는 부족할 때",
+    "description": "세 가지 DHCPv6 모드 병렬 비교: SLAAC와 함께 DNS/NTP 정보를 제공하는 Stateless(O=1, M=0), 완전한 SARR 4-메시지 교환을 통한 관리형 주소 할당의 Stateful(M=1), ISP가 홈 라우터에 /48을 위임하는 Prefix Delegation."
+  },
+  "nat64-dns64-ipv6-only-to-ipv4": {
+    "title": "NAT64/DNS64: IPv6-Only 클라이언트가 IPv4-Only 서버와 통신하기",
+    "description": "핵심 연방 IPv6 전환 기술: DNS64가 well-known 프리픽스 64:ff9b::/96을 사용하여 A 레코드에서 AAAA 레코드를 합성하고, NAT64가 와이어에서 IPv6 패킷을 IPv4로 변환하며, 464XLAT가 IPv4 주소가 하드코딩된 레거시 앱을 처리한다."
+  },
+  "ipv6-path-mtu-discovery": {
+    "title": "IPv6 Path MTU Discovery: 라우터 단편화의 종말",
+    "description": "PMTUD가 IPv6에서 필수인 이유: 라우터가 단편화할 수 없으므로 ICMPv6 Packet Too Big 메시지가 출발지에 더 작은 패킷을 사용하도록 지시한다."
+  }
+}

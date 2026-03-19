@@ -13,6 +13,11 @@
     "mitLicense": "MIT 许可证",
     "disclaimer": "协议描述基于开源实现（Linux kernel、rdma-core）和公开的 RFC 标准。规范引用是供进一步阅读的参考——未复制任何专有文本。"
   },
+  "difficulty": {
+    "beginner": "初级",
+    "intermediate": "中级",
+    "advanced": "高级"
+  },
   "filter": {
     "searchPlaceholder": "搜索场景...",
     "allProtocols": "所有协议",
