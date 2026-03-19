@@ -3,10 +3,6 @@
 </p>
 
 <p align="center">
-  <img src="assets/protoviz_repo_logo.svg" alt="ProtoViz" width="480">
-</p>
-
-<p align="center">
   <strong>Interactive protocol visualization for network engineers, students, and anyone curious about what happens on the wire.</strong>
 </p>
 
