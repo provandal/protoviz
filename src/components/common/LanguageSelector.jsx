@@ -169,6 +169,7 @@ function GeoLinguaIcon({ onLanguageSelect }) {
   const [showGlobe, setShowGlobe] = useState(false);
   const base = import.meta.env.BASE_URL;
   const overlayRef = useRef(null);
+  const openedAtRef = useRef(0);
 
   useEffect(() => {
     geoLinguaReady.then(() => {
@@ -180,17 +181,23 @@ function GeoLinguaIcon({ onLanguageSelect }) {
 
   const handleSelect = (locale) => {
     onLanguageSelect(locale);
-    // Only auto-close if the globe overlay is actually open (not a mount-time detection)
-    if (showGlobe) {
+    // Auto-close only on real user interaction — browser detection fires
+    // within milliseconds of mount, so skip if the overlay just opened
+    if (showGlobe && Date.now() - openedAtRef.current > 1000) {
       setTimeout(() => setShowGlobe(false), 600);
     }
+  };
+
+  const handleOpen = () => {
+    openedAtRef.current = Date.now();
+    setShowGlobe(true);
   };
 
   return (
     <>
       {/* Globe icon button */}
       <button
-        onClick={() => setShowGlobe(true)}
+        onClick={handleOpen}
         aria-label="Open language globe"
         title="GeoLingua"
         style={{
