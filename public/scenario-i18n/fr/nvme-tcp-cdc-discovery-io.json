@@ -1,0 +1,194 @@
+{
+  "meta": {
+    "title": "NVMe/TCP : mDNS → decouverte CDC → DIM → connexion au sous-systeme → E/S",
+    "description": "Un echange NVMe over TCP (NVMe-oF/TCP) complet, de la decouverte initiale de service aux operations d'E/S. Un hote Linux executant nvme-stas decouvre un controleur de decouverte centralise (CDC) via mDNS, s'enregistre avec DIM (TP8013), recupere les pages de journal de decouverte du CDC contenant des renvois DDC, se connecte au controleur de decouverte direct (DDC) sur la baie de stockage pour apprendre les details du controleur d'E/S, puis se connecte au controleur d'E/S pour effectuer des operations NVMe Write et Read. Demontre la hierarchie de decouverte complete a trois niveaux : CDC → DDC → IOC. Couvre TP8009 (architecture CDC), TP8010 et TP8013 (DIM).",
+    "learning_objectives": [
+      "Comprendre comment nvme-stas (stafd) decouvre les CDC via l'annonce de service mDNS (_nvme-disc._tcp)",
+      "Suivre l'initialisation de la connexion NVMe-oF/TCP : echange de PDU ICReq/ICResp et negociation de parametres",
+      "Observer la commande Fabrics Connect etablissant une file Admin vers un controleur de decouverte",
+      "Voir comment DIM (Discovery Information Management, TP8013) enregistre un hote aupres d'un CDC",
+      "Comprendre les pages de journal de decouverte : comment les hotes apprennent quels sous-systemes et controleurs sont disponibles",
+      "Suivre la connexion complete au controleur d'E/S : Fabrics Connect → Identify Controller → Identify Namespace",
+      "Observer les commandes NVMe Write et Read circulant sur TCP avec les PDU CapsuleCmd, R2T, H2CData et C2HData",
+      "Comprendre la hierarchie de controleurs CDC → DDC → IOC dans l'architecture de decouverte NVMe-oF"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Requete mDNS : _nvme-disc._tcp.local",
+      "detail": "Le demon stafd de l'hote (partie de nvme-stas) interroge mDNS pour les controleurs de decouverte NVMe. Il envoie une requete DNS multicast a 224.0.0.251:5353 cherchant des enregistrements PTR correspondant au type de service _nvme-disc._tcp. C'est le mecanisme DNS-SD (DNS-Based Service Discovery, RFC 6763) specifie dans TP8009 pour la decouverte automatisee des CDC. stafd utilise Avahi (implementation Linux mDNS/DNS-SD) pour enregistrer un explorateur de service pour ce type."
+    },
+    "1": {
+      "text": "Reponse mDNS : CDC a 192.168.100.50:8009",
+      "detail": "Le CDC repond avec des enregistrements mDNS annoncant son service de decouverte. L'enregistrement PTR fait correspondre _nvme-disc._tcp.local au nom d'instance de service. L'enregistrement SRV fournit le nom d'hote cible et le port (8009). L'enregistrement TXT transporte des paires cle-valeur : p=tcp (type de transport) et nqn=nqn.2014-08.org.nvmexpress.discovery (le NQN de decouverte bien connu). Le callback Avahi de stafd analyse ces enregistrements et assemble un dictionnaire de controleur avec transport, traddr, trsvcid et subsysnqn."
+    },
+    "2": {
+      "text": "TCP SYN → port 8009 du CDC",
+      "detail": "stafd initie une connexion TCP vers le CDC a 192.168.100.50:8009. Le port 8009 est le trsvcid (Transport Service ID) par defaut pour les controleurs de decouverte NVMe. La poignee de main TCP en 3 etapes etablit le transport fiable sur lequel NVMe-oF/TCP fonctionnera."
+    },
+    "3": {
+      "text": "TCP SYN-ACK ← CDC",
+      "detail": "La pile TCP du CDC repond avec SYN-ACK, acquittant le SYN de l'hote et envoyant son propre numero de sequence."
+    },
+    "4": {
+      "text": "TCP ACK — connexion etablie vers le CDC",
+      "detail": "L'hote complete la poignee de main en 3 etapes. La connexion TCP au CDC est maintenant etablie. La couche NVMe-oF/TCP enverra ICReq ensuite."
+    },
+    "5": {
+      "text": "ICReq → CDC (initialisation de la connexion NVMe/TCP)",
+      "detail": "Premier PDU NVMe-oF/TCP apres la poignee de main TCP. L'hote envoie une requete d'initialisation de connexion (ICReq) pour negocier les parametres NVMe/TCP. Champs cles : version du format PDU (seule v0 definie), types de condensat demandes (condensats d'en-tete et/ou de donnees pour l'integrite), alignement des donnees PDU de l'hote, et R2T en attente maximaux. L'ICReq de 128 octets est la premiere chose que le pilote NVMe/TCP envoie apres la connexion TCP (nvme_tcp_init_connection)."
+    },
+    "6": {
+      "text": "ICResp ← CDC (parametres de connexion acceptes)",
+      "detail": "Le CDC repond avec ICResp confirmant les parametres negocies. Le CPDA (Controller PDU Data Alignment) du controleur et les types de condensat acceptes sont retournes. MaxData indique les donnees maximales que le controleur peut gerer par R2T. Avec ICReq/ICResp termines, la couche de transport NVMe/TCP est initialisee et prete pour les commandes NVMe."
+    },
+    "7": {
+      "text": "Fabrics Connect → CDC (file Admin, NQN de decouverte)",
+      "detail": "L'hote envoie une commande NVMe Fabrics Connect pour etablir une association de file Admin avec le CDC. La commande utilise l'opcode 0x7F (Fabrics) avec fctype=0x01 (Connect). Queue ID 0 indique la file Admin. Les donnees Connect (1024 octets) transportent l'identite de l'hote : Host ID (UUID), Host NQN, et le NQN de sous-systeme cible (nqn.2014-08.org.nvmexpress.discovery — le NQN de sous-systeme de decouverte bien connu). Controller ID est defini a 0xFFFF (dynamique) pour que le CDC en attribue un."
+    },
+    "8": {
+      "text": "Reponse Fabrics Connect ← CDC (CNTLID=65)",
+      "detail": "Le CDC accepte le Fabrics Connect et attribue le Controller ID 65 a cet hote. La file Admin est maintenant etablie — l'hote peut envoyer des commandes d'administration au CDC, y compris DIM et Get Log Page."
+    },
+    "9": {
+      "text": "DIM Register → CDC (TP8013)",
+      "detail": "L'hote envoie une commande DIM (Discovery Information Management) pour s'enregistrer aupres du CDC. DIM est defini dans TP8013 et permet aux hotes de s'enregistrer/desenregistrer aupres des controleurs de decouverte. L'enregistrement inclut le NQN de l'hote, le Host ID (UUID), le nom d'hote et la version de l'OS. Une fois enregistre, le CDC inclut cet hote dans ses calculs de zonage et enverra des notifications d'evenements asynchrones lorsque le journal de decouverte change (par ex., de nouveaux sous-systemes deviennent disponibles). Dans nvme-stas, cela est gere par la fonction nvmf_register_ctrl() de libnvme."
+    },
+    "10": {
+      "text": "Reponse DIM Register ← CDC (succes)",
+      "detail": "Le CDC confirme l'enregistrement de l'hote. L'hote est maintenant dans la base de donnees du CDC et recevra des pages de journal de decouverte filtrees par la configuration de zonage — seuls les sous-systemes auxquels cet hote est autorise a acceder apparaitront. Le CDC enverra aussi des AEN (notifications d'evenements asynchrones) si le journal de decouverte change."
+    },
+    "11": {
+      "text": "Get Log Page → CDC (journal de decouverte, LID 0x70)",
+      "detail": "L'hote demande la page de journal de decouverte (LID 0x70) au CDC. C'est une commande admin NVMe Get Log Page standard. Le journal de decouverte contient des entrees pour tous les sous-systemes accessibles a cet hote, filtrees par la configuration de zonage du CDC. Chaque entree fournit le type de transport, la famille d'adresses, l'adresse de transport (IP), le port, le NQN du sous-systeme et le type de sous-systeme (NVM ou renvoi de decouverte). L'hote lit le compteur de generation avant et apres — s'il change, le journal doit etre relu."
+    },
+    "12": {
+      "text": "Page de journal de decouverte ← CDC (2 renvois DDC)",
+      "detail": "Le CDC retourne le journal de decouverte avec 2 entrees de renvoi DDC : 1) DDC sur la baie de stockage 1 (subtype=1, sous-systeme de decouverte) a 192.168.100.51:8009 2) DDC sur la baie de stockage 2 (subtype=1, sous-systeme de decouverte) a 192.168.100.52:8009. Ce sont des renvois — le CDC dirige l'hote vers chaque DDC (controleur de decouverte direct) pour apprendre quels controleurs d'E/S sont disponibles sur cette baie. Le CDC fournit la vue a l'echelle du reseau ; les DDC fournissent les details par baie. stafd va maintenant suivre le premier renvoi et se connecter au DDC sur la baie de stockage 1."
+    },
+    "13": {
+      "text": "TCP SYN → port 8009 du DDC (baie de stockage)",
+      "detail": "stafd suit le renvoi DDC du journal de decouverte du CDC. Il initie une connexion TCP vers le controleur de decouverte direct (DDC) sur la baie de stockage 1 a 192.168.100.51:8009. Le DDC est un controleur de decouverte qui s'execute sur la baie de stockage elle-meme (contrairement au CDC qui s'execute dans le commutateur reseau). Le DDC fournit des pages de journal de decouverte specifiques aux sous-systemes d'E/S sur cette baie de stockage particuliere. C'est le deuxieme niveau de la hierarchie de decouverte a trois niveaux : CDC (a l'echelle du reseau) → DDC (par baie) → IOC (par sous-systeme)."
+    },
+    "14": {
+      "text": "TCP SYN-ACK ← DDC",
+      "detail": "Le DDC de la baie de stockage acquitte la tentative de connexion TCP."
+    },
+    "15": {
+      "text": "TCP ACK — connexion etablie vers le DDC",
+      "detail": "La poignee de main TCP vers le DDC sur la baie de stockage est terminee."
+    },
+    "16": {
+      "text": "ICReq → DDC (initialisation de la connexion NVMe/TCP)",
+      "detail": "Initialisation NVMe/TCP avec le DDC — meme echange ICReq/ICResp qu'avec le CDC."
+    },
+    "17": {
+      "text": "ICResp ← DDC (parametres de connexion acceptes)",
+      "detail": "Le DDC accepte les parametres de transport NVMe/TCP."
+    },
+    "18": {
+      "text": "Fabrics Connect → DDC (file Admin, NQN de decouverte)",
+      "detail": "L'hote envoie Fabrics Connect au DDC en utilisant le NQN de sous-systeme de decouverte bien connu (nqn.2014-08.org.nvmexpress.discovery) — le meme NQN utilise pour la connexion au CDC. Le CDC et le DDC sont tous deux des controleurs de decouverte ; ils different par leur portee (CDC = centralise/a l'echelle du reseau, DDC = local a une baie de stockage) mais utilisent le meme protocole de decouverte et le meme NQN."
+    },
+    "19": {
+      "text": "Reponse Fabrics Connect ← DDC (CNTLID=1)",
+      "detail": "Le DDC accepte la connexion et attribue CNTLID=1. La file Admin vers le DDC est etablie — l'hote peut maintenant demander le journal de decouverte du DDC pour apprendre les controleurs d'E/S sur cette baie de stockage."
+    },
+    "20": {
+      "text": "DIM Register → DDC (TP8013)",
+      "detail": "L'hote s'enregistre aupres du DDC via DIM, comme il l'a fait avec le CDC. Cela garantit que le DDC retourne des entrees de journal de decouverte filtrees par la configuration de zonage pour cet hote specifique. Le DDC enverra aussi des AEN si les sous-systemes sur cette baie de stockage changent."
+    },
+    "21": {
+      "text": "Reponse DIM Register ← DDC (succes)",
+      "detail": "Le DDC confirme l'enregistrement de l'hote. L'hote peut maintenant demander la page de journal de decouverte du DDC pour apprendre quels controleurs d'E/S sur cette baie de stockage sont accessibles."
+    },
+    "22": {
+      "text": "Get Log Page → DDC (journal de decouverte, LID 0x70)",
+      "detail": "L'hote demande la page de journal de decouverte au DDC. Contrairement au journal du CDC qui contenait des renvois DDC, le journal du DDC contient les entrees de sous-systemes NVM reels — specifiquement les controleurs d'E/S sur cette baie de stockage accessibles a cet hote. C'est l'etape ou l'hote apprend le NQN et les details de connexion du controleur d'E/S."
+    },
+    "23": {
+      "text": "Journal de decouverte DDC ← DDC (subsys-alpha a 4420)",
+      "detail": "Le DDC retourne son journal de decouverte avec 1 entree : NVM Subsystem A (nqn.2024-01.com.storage:subsys-alpha) a 192.168.100.51:4420. C'est le NQN du controleur d'E/S que stacd utilisera pour se connecter. La hierarchie de decouverte a trois niveaux est maintenant complete : CDC (a l'echelle du reseau) → DDC (par baie) → IOC (par sous-systeme). stacd possede maintenant le NQN du sous-systeme et les details de connexion necessaires pour etablir une connexion au controleur d'E/S."
+    },
+    "24": {
+      "text": "TCP SYN → port 4420 du controleur d'E/S",
+      "detail": "stacd initie une connexion TCP vers le controleur d'E/S a 192.168.100.51:4420 — l'adresse et le port appris depuis le journal de decouverte du DDC (nqn.2024-01.com.storage:subsys-alpha). Le port 4420 est le port attribue par l'IANA pour NVMe over Fabrics."
+    },
+    "25": {
+      "text": "TCP SYN-ACK ← controleur d'E/S",
+      "detail": "Le controleur d'E/S acquitte la tentative de connexion TCP."
+    },
+    "26": {
+      "text": "TCP ACK — connexion etablie vers le controleur d'E/S",
+      "detail": "La poignee de main TCP vers le controleur d'E/S est terminee."
+    },
+    "27": {
+      "text": "ICReq → controleur d'E/S",
+      "detail": "Initialisation NVMe/TCP — meme echange ICReq/ICResp qu'avec le CDC."
+    },
+    "28": {
+      "text": "ICResp ← controleur d'E/S",
+      "detail": "Le controleur d'E/S accepte les parametres de transport NVMe/TCP."
+    },
+    "29": {
+      "text": "Fabrics Connect → controleur d'E/S (subsys-alpha)",
+      "detail": "L'hote se connecte au controleur d'E/S en utilisant le NQN du sous-systeme appris depuis le journal de decouverte du DDC (nqn.2024-01.com.storage:subsys-alpha). Cela cree l'association de file Admin. Contrairement aux connexions CDC et DDC qui utilisaient le NQN de decouverte bien connu, celle-ci utilise le NQN reel du sous-systeme de stockage — completant le dernier niveau de la hierarchie CDC → DDC → IOC."
+    },
+    "30": {
+      "text": "Reponse Fabrics Connect ← controleur d'E/S (CNTLID=1)",
+      "detail": "Le controleur d'E/S accepte la connexion et attribue CNTLID=1. La file Admin est etablie — l'hote peut maintenant identifier le controleur et ses namespaces."
+    },
+    "31": {
+      "text": "Identify Controller (CNS=0x01)",
+      "detail": "L'hote envoie Identify Controller (opcode admin 0x06, CNS=1) pour apprendre les capacites du controleur : numero de serie, modele, version firmware, taille maximale de transfert de donnees (MDTS), nombre de namespaces et fonctionnalites supportees. Cette reponse de 4096 octets est essentielle pour que le pilote hote se configure correctement."
+    },
+    "32": {
+      "text": "Reponse Identify Controller (4 namespaces, MDTS=256 Ko)",
+      "detail": "Le controleur d'E/S retourne son identite : modele « NVMe-oF/TCP Storage Array », firmware v2.1.0, MDTS=6 (transfert max 256 Ko), et 4 namespaces. Le pilote hote utilise MDTS pour plafonner les tailles de requete d'E/S et nn (nombre de namespaces) pour savoir combien de namespaces enumerer."
+    },
+    "33": {
+      "text": "Identify Namespace (NSID=1, CNS=0x00)",
+      "detail": "L'hote identifie le namespace 1 pour apprendre sa taille, son format LBA et ses capacites. CNS=0 avec un NSID specifique retourne les donnees d'identite du namespace incluant la taille totale (nsze), la capacite (ncap), l'utilisation actuelle (nuse) et le format LBA (taille de secteur, metadonnees)."
+    },
+    "34": {
+      "text": "Reponse Identify Namespace (NSID=1, ~1 To, LBA de 512 octets)",
+      "detail": "Le namespace 1 a une capacite d'environ 1 To (1 953 525 168 LBA de 512 octets), utilise a 25 %. Format LBA 0 : 512 octets par LBA, pas de metadonnees, meilleures performances relatives. La couche bloc de l'hote presentera ceci comme /dev/nvmeXnY (par ex., /dev/nvme0n1)."
+    },
+    "35": {
+      "text": "Fabrics Connect file E/S 1",
+      "detail": "L'hote cree la file E/S 1 via Fabrics Connect avec QID=1. Les files E/S sont utilisees pour les commandes NVMe Read/Write (les commandes admin utilisent QID=0). La taille SQ est definie a 128 entrees. Plusieurs files E/S peuvent etre creees (typiquement une par coeur CPU pour les meilleures performances)."
+    },
+    "36": {
+      "text": "File E/S 1 etablie — prete pour les E/S",
+      "detail": "La file E/S 1 est etablie. L'hote peut maintenant soumettre des commandes NVMe Read et Write. Le peripherique bloc /dev/nvme0n1 est maintenant entierement operationnel."
+    },
+    "37": {
+      "text": "Commande NVMe Write (4 Ko au LBA 0x1000)",
+      "detail": "L'hote soumet une commande NVMe Write de 4 Ko vers le namespace 1 au LBA 0x1000. Le SQE d'ecriture (64 octets) est envoye comme PDU CapsuleCmd sur la file E/S 1. La commande specifie 8 LBA (NLB base sur 0 = 7) × 512 octets = 4096 octets. Sur NVMe/TCP, les donnees d'ecriture ne sont pas envoyees en ligne avec la commande — le controleur doit d'abord envoyer un PDU R2T (Ready to Transfer) demandant les donnees."
+    },
+    "38": {
+      "text": "R2T ← controleur (demande les 4 Ko de donnees d'ecriture)",
+      "detail": "Le controleur d'E/S envoie un PDU R2T (Ready-to-Transfer) demandant les donnees d'ecriture a l'hote. Le R2T specifie l'etiquette de transfert, l'offset de donnees (0 = debut) et la longueur (4096 octets). C'est le mecanisme de controle de flux NVMe/TCP — le controleur controle quand et combien de donnees l'hote envoie. Cela differe de RDMA ou l'hote peut pousser les donnees directement."
+    },
+    "39": {
+      "text": "H2CData → controleur (charge utile d'ecriture de 4 Ko)",
+      "detail": "L'hote envoie les 4 Ko de donnees d'ecriture dans un PDU H2CData (Host-to-Controller Data). L'etiquette de transfert correspond au R2T. Le drapeau LAST indique que c'est le dernier PDU de donnees pour cette commande. Pour les ecritures plus grandes, plusieurs echanges R2T/H2CData peuvent avoir lieu (controles par maxr2t depuis ICReq)."
+    },
+    "40": {
+      "text": "Completion d'ecriture ← controleur (succes)",
+      "detail": "Le controleur d'E/S termine l'ecriture et retourne un CapsuleResp avec l'etat 0x0000 (succes). Les 4 Ko ont ete ecrits au LBA 0x1000 sur le namespace 1. Le pilote hote complete la requete d'E/S bloc."
+    },
+    "41": {
+      "text": "Commande NVMe Read (4 Ko depuis le LBA 0x1000)",
+      "detail": "L'hote relit les memes 4 Ko depuis le LBA 0x1000. Le SQE de lecture est envoye comme CapsuleCmd sur la file E/S 1. Contrairement a l'ecriture, la commande de lecture ne necessite pas de R2T — le controleur envoie les donnees directement via les PDU C2HData."
+    },
+    "42": {
+      "text": "C2HData ← controleur (charge utile de lecture de 4 Ko)",
+      "detail": "Le controleur d'E/S envoie les 4 Ko de donnees de lecture dans un PDU C2HData (Controller-to-Host Data). Pour les lectures, les donnees circulent du controleur vers l'hote sans poignee de main R2T — le controleur envoie les donnees des qu'elles sont disponibles depuis le media. Le drapeau LAST marque ceci comme le dernier PDU de donnees."
+    },
+    "43": {
+      "text": "Completion de lecture ← controleur (succes)",
+      "detail": "Lecture terminee avec succes. Les 4 Ko de donnees du LBA 0x1000 ont ete livrees a l'hote. Le cycle de vie complet NVMe/TCP est maintenant demontre : decouverte mDNS → enregistrement CDC → journal de decouverte CDC (renvois DDC) → connexion DDC → journal de decouverte DDC (details IOC) → connexion IOC → identification du controleur → enumeration des namespaces → configuration de la file E/S → Write → Read. La hierarchie de decouverte a trois niveaux (CDC → DDC → IOC) est complete."
+    }
+  }
+}

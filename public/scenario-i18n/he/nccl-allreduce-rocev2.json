@@ -1,0 +1,29 @@
+{
+  "meta": {
+    "title": "NCCL AllReduce על גבי RoCEv2: סנכרון גרדיאנטים מבוזר",
+    "description": "פעולת NCCL AllReduce בין 4 GPUs בשני צמתים, על גבי 100GbE RoCEv2 עם GPUDirect RDMA. AllReduce הוא הפעולה הקולקטיבית הקריטית ביותר באימון AI מבוזר — כל GPU צריך את הסכום של גרדיאנטים מכל ה-GPUs. NCCL מפרק AllReduce ל-ReduceScatter ואז AllGather, ממנף אלגוריתם טבעת למקסום ניצול רוחב פס.",
+    "learning_objectives": [
+      "הבנה מדוע AllReduce קריטי לאימון AI מבוזר (data parallelism)",
+      "ראיית כיצד NCCL מפרק AllReduce ל-ReduceScatter + AllGather",
+      "מעקב אחר אלגוריתם טבעת של NCCL — כיצד הוא ממקסם ניצול רוחב פס",
+      "תצפית על העברות RDMA WRITE ישירות מ-GPU-ל-GPU בין צמתים",
+      "הבנת חפיפת חישוב ותקשורת (pipeline)",
+      "ראיית כיצד GPUDirect RDMA מבטל את המעבד מנתיב הנתונים",
+      "הבנת הגדרת NCCL עבור RoCEv2 (NCCL_IB_HCA, NCCL_NET_GDR_LEVEL)",
+      "השוואת Ring AllReduce עם Tree AllReduce ביעילות"
+    ]
+  },
+  "timeline": {
+    "0": { "text": "הגדרת NCCL: 4 GPUs, 2 צמתים, RoCEv2 + GPUDirect RDMA", "detail": "4 GPUs (2 לכל צומת) מוגדרים ב-NCCL communicator. NCCL_NET=IB, NCCL_IB_HCA מצביע ל-mlx5 RNICs. NCCL_NET_GDR_LEVEL=SYS מאפשר GPUDirect RDMA בין צמתים. טופולוגיית טבעת: GPU0 → GPU1 → GPU2 → GPU3 → GPU0." },
+    "1": { "text": "ncclAllReduce() נקרא — כל GPU מחזיק גרדיאנטים של 64MB", "detail": "כל GPU מחזיק מאגר גרדיאנטים של 64MB מהמעבר לאחור של מודל AI. AllReduce יחשב את הסכום על פני 4 GPUs וימקם את התוצאה בכולם. NCCL מפצל ל-4 נתחים של 16MB (אחד ל-GPU)." },
+    "2": { "text": "שלב ReduceScatter 1/3 — כל GPU שולח נתח ומקבל+מסכם", "detail": "בשלב הראשון של ReduceScatter: GPU0 שולח נתח 0 ל-GPU1, GPU1 שולח נתח 1 ל-GPU2, GPU2 שולח נתח 2 ל-GPU3, GPU3 שולח נתח 3 ל-GPU0. GPU1↔GPU2 חוצה את הרשת — RDMA WRITE ישירות מ-GPU-ל-GPU דרך RoCEv2. כל GPU מקבל נתח ומסכם אותו עם הנתח המקומי שלו." },
+    "3": { "text": "שלב ReduceScatter 2/3 — סכומים חלקיים ממשיכים לסבב", "detail": "סכומים חלקיים ממשיכים לנוע סביב הטבעת. כעת כל סכום חלקי מכיל תרומות משני GPUs. RDMA WRITEs ממשיכים ישירות בין מאגרי GPU HBM." },
+    "4": { "text": "שלב ReduceScatter 3/3 — ReduceScatter הושלם", "detail": "לאחר 3 שלבים (N-1 שלבים ל-N GPUs), כל GPU מחזיק סכום מלא של נתח אחד. GPU0: sum(chunk0), GPU1: sum(chunk1), GPU2: sum(chunk2), GPU3: sum(chunk3)." },
+    "5": { "text": "שלב AllGather 1/3 — כל GPU משתף את התוצאה המסוכמת שלו", "detail": "כעת כל GPU צריך את כל 4 הנתחים המסוכמים. AllGather: כל GPU שולח את הנתח המסוכם שלו ל-GPU הבא בטבעת. שוב, עוברים בין צמתים דרך RDMA WRITE ישיר מ-GPU-ל-GPU." },
+    "6": { "text": "שלב AllGather 2/3 — נתחים ממשיכים לסבב", "detail": "נתחים מסוכמים ממשיכים לנוע סביב הטבעת. כל GPU אוסף נתחים נוספים." },
+    "7": { "text": "שלב AllGather 3/3 — AllGather הושלם", "detail": "לאחר 3 שלבי AllGather (N-1), כל GPU מחזיק את כל 4 הנתחים המסוכמים. AllReduce הושלם: כל GPU מחזיק גרדיאנטים זהים (סכום על פני כל ה-GPUs)." },
+    "8": { "text": "ncclAllReduce() מחזיר — גרדיאנטים מסונכרנים על פני כל ה-GPUs", "detail": "כל GPU מחזיק כעת את הסכום המלא של גרדיאנטים מכל 4 ה-GPUs. מעדכן האופטימיזר (Adam, SGD) יכול כעת לעדכן את משקלי המודל. סה\"כ נתונים שהועברו דרך הרשת: 2 × (N-1)/N × 64MB = 96MB לכל GPU (יעילות רוחב פס מיטבית)." },
+    "9": { "text": "חפיפת חישוב ותקשורת — pipeline מעבר לאחור + AllReduce", "detail": "בפועל, NCCL מבצע AllReduce ב-pipeline: ברגע ששכבה ברשת העצבית מסיימת מעבר לאחור, הגרדיאנטים שלה מוכנים ל-AllReduce בעוד שכבות קודמות עדיין מחשבות. חפיפה זו מסתירה חלק ניכר מזמן התקשורת מאחורי חישוב." },
+    "10": { "text": "⟳ התרחיש הושלם — NCCL AllReduce על גבי RoCEv2", "detail": "AllReduce הוא הלב של אימון AI מבוזר. NCCL ממנף: • אלגוריתם טבעת לניצול רוחב פס מיטבי (2(N-1)/N) • GPUDirect RDMA להעברות GPU-ל-GPU ללא מעבד • RoCEv2 ללא אובדן (PFC + ECN/DCQCN) למניעת שידורים חוזרים • Pipeline של חישוב ותקשורת למקסום ניצולת GPU" }
+  }
+}

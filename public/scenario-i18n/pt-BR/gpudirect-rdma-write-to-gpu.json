@@ -1,0 +1,134 @@
+{
+  "meta": {
+    "title": "GPUDirect RDMA: WRITE RoCEv2 Direto na Memória da GPU",
+    "description": "Um cenário GPUDirect RDMA mostrando como um RDMA WRITE aterrissa diretamente na memória da GPU ao invés da DRAM do host, usando o módulo de kernel nvidia-peermem. O momento educacional chave é o contraste entre RDMA WRITE tradicional (para DRAM do host) e GPUDirect RDMA WRITE (diretamente para HBM da GPU via PCIe BAR, zero buffer de bounce na CPU). O fluxo começa com estabelecimento do enlace físico, passa pela alocação de memória GPU com CUDA e registro de memória peer nvidia-peermem, registro de IB Memory Region contra o endereço BAR da GPU, ativação de QP via CM REQ/REP/RTU, um RDMA WRITE que deposita um buffer de tensor de 4MB diretamente na HBM da GPU contornando completamente a CPU, e um RDMA READ que recupera esse mesmo buffer.",
+    "learning_objectives": [
+      "Entender como nvidia-peermem expõe memória GPU ao subsistema RDMA via a API peer_memory_client",
+      "Ver como cuMemAlloc aloca HBM da GPU e como a abertura BAR1 da GPU mapeia memória física da GPU para o espaço de endereços PCIe",
+      "Rastrear ibv_reg_mr() contra um endereço virtual da GPU — nvidia-peermem intercepta o registro para fixar páginas GPU ao invés de páginas do host",
+      "Observar o caminho DMA: RNIC escreve diretamente na HBM da GPU via PCIe peer-to-peer, sem nunca tocar na DRAM do host ou caches da CPU",
+      "Contrastar RDMA WRITE tradicional (RNIC → DRAM do host) vs GPUDirect RDMA WRITE (RNIC → HBM da GPU via BAR1)",
+      "Acompanhar a troca MAD do IB Connection Manager para trazer um Queue Pair de RESET a RTS",
+      "Ver como RDMA READ da memória GPU também contorna a CPU — RNIC da GPU lê HBM da GPU via PCIe P2P",
+      "Entender o papel de nvidia_peermem_get_pages() e nvidia_peermem_put_pages() no ciclo de vida da memória GPU"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Link A: sinal detectado — Nó de IA ↔ Porta do Switch A",
+      "detail": "Transceptor óptico no nó de IA detecta luz da porta A do switch. Auto-Negociação (AN) começa conforme IEEE 802.3cd cláusula 73. L1 é ponto a ponto — isso é independente do enlace switch ↔ servidor remoto."
+    },
+    "1": {
+      "text": "Link B: sinal detectado — Porta do Switch B ↔ Servidor Remoto",
+      "detail": "Transceptor óptico no servidor remoto detecta luz da porta B do switch. AN começa independentemente neste enlace."
+    },
+    "2": {
+      "text": "Link A: AN completa — 100GbE acordado, Link Training começa",
+      "detail": "AN troca páginas de capacidade tecnológica entre nó de IA e porta A do switch. Ambos concordam em 100GBASE-SR4. RS(544,514) FEC é obrigatório para 100G. Link Training começa para equalizar o canal."
+    },
+    "3": {
+      "text": "Link B: AN completa — 100GbE acordado, Link Training começa",
+      "detail": "AN completa na porta B do switch ↔ servidor remoto. Mesma negociação: 100GBASE-SR4 com RS(544,514) FEC. Link Training começa independentemente neste enlace."
+    },
+    "4": {
+      "text": "Link A ATIVO — Nó de IA ↔ Switch a 100Gbps com RS-FEC",
+      "detail": "Link Training completo no nó de IA ↔ switch. PFC (802.1Qbb) habilitado para prioridade 3 via negociação DCBX. Quadros Ethernet agora podem fluir neste segmento."
+    },
+    "5": {
+      "text": "Link B ATIVO — Switch ↔ Servidor Remoto a 100Gbps com RS-FEC",
+      "detail": "Link Training completo no switch ↔ servidor remoto. PFC habilitado. Ambos os enlaces ativos — conectividade L2 fim a fim estabelecida."
+    },
+    "6": {
+      "text": "Requisição ARP: quem tem 192.168.1.20?",
+      "detail": "RoCEv2 usa endereçamento IP. Antes de qualquer configuração de conexão, a alcançabilidade IP deve ser estabelecida."
+    },
+    "7": {
+      "text": "Resposta ARP: 192.168.1.20 está em 00:02:c9:ab:cd:ef"
+    },
+    "8": {
+      "text": "Runtime GPU/CUDA inicializado — cuInit() e cuDeviceGet()",
+      "detail": "A aplicação inicializa a API de driver CUDA. cuInit(0) carrega o driver CUDA e enumera GPUs. cuDeviceGet() seleciona a GPU alvo (ex.: NVIDIA H100). cuCtxCreate() cria um contexto CUDA no dispositivo. Neste ponto a GPU está pronta para alocação de memória, mas nenhuma memória GPU foi alocada ainda."
+    },
+    "9": {
+      "text": "Memória GPU alocada — cuMemAlloc() retorna buffer de 4MB na HBM da GPU",
+      "detail": "cuMemAlloc(&devPtr, 4194304) aloca um buffer de 4MB na High Bandwidth Memory (HBM) da GPU. O ponteiro de dispositivo retornado (devPtr) é um endereço virtual da GPU no espaço de endereços próprio da GPU. Esta memória reside no die da GPU, conectada via HBM3 a ~3,35 TB/s de largura de banda. O ponteiro não é diretamente acessível pela CPU ou RNIC — ele deve ser mapeado através da abertura PCIe BAR1 da GPU para acesso peer-to-peer. GPUs modernas (ex.: NVIDIA H100) suportam até 256GB de abertura BAR1 (BAR redimensionável / modo large BAR) para mapear toda a HBM."
+    },
+    "10": {
+      "text": "Módulo de kernel nvidia-peermem carregado — memória GPU exposta ao subsistema RDMA",
+      "detail": "modprobe nvidia-peermem carrega o módulo de kernel nvidia-peermem. Este módulo se registra como um IB peer_memory_client via ib_register_peer_memory_client(). Quando ibv_reg_mr() for chamado posteriormente com um endereço virtual da GPU, o ib_umem_get() do IB core chamará nvidia_peermem_acquire() para verificar se o endereço pertence à memória GPU. Se pertencer, nvidia_peermem_get_pages() chama nvidia_p2p_get_pages() para fixar as páginas físicas da GPU e retornar seus endereços PCIe BAR1. Esses endereços BAR1 são então armazenados na Tabela de Tradução de Memória (MTT) do RNIC, permitindo que o motor DMA do RNIC escreva/leia memória GPU diretamente via PCIe peer-to-peer sem qualquer envolvimento da CPU."
+    },
+    "11": {
+      "text": "Mapeamento GPU BAR1 estabelecido — HBM da GPU acessível em endereço PCIe",
+      "detail": "nvidia-peermem chama nvidia_p2p_get_pages() que fixa as páginas físicas da GPU que respaldam o buffer alocado com cuMemAlloc e retorna seus endereços físicos PCIe BAR1. A abertura BAR1 é a janela PCIe através da qual dispositivos externos (como o RNIC) podem acessar a memória GPU. Em GPUs modernas com large BAR habilitado, toda a HBM pode ser mapeada através de BAR1."
+    },
+    "12": {
+      "text": "Memory Region registrada contra endereço BAR da GPU via ibv_reg_mr()",
+      "detail": "ibv_reg_mr() é chamado com o endereço virtual da GPU. O ib_umem_get() do IB core detecta que é memória GPU via o peer_memory_client nvidia-peermem: 1. nvidia_peermem_acquire() confirma que o endereço pertence à memória NVIDIA GPU 2. nvidia_peermem_get_pages() obtém páginas físicas BAR1 3. Endereços físicos BAR1 são escritos na MTT do RNIC 4. MLX5_CMD_OP_CREATE_MKEY cria um MR cuja tabela de páginas aponta para endereços BAR1 da GPU. Os lkey e rkey retornados podem agora ser usados para operações RDMA."
+    },
+    "13": {
+      "text": "Servidor remoto registra Memory Region via ibv_reg_mr() (DRAM do host)",
+      "detail": "O servidor remoto registra uma Memory Region padrão respaldada pela DRAM do host. ibv_reg_mr() fixa páginas físicas do host, cria mapeamento DMA IOMMU, e escreve traduções de páginas na MTT do RNIC. Este é o caminho de registro MR padrão — sem envolvimento da GPU."
+    },
+    "14": {
+      "text": "QP criado em ambos os lados — estado: RESET",
+      "detail": "ibv_create_qp() aloca um Queue Pair. QP começa no estado RESET. O QP do nó de IA será usado com o MR respaldado pela GPU — quando o RNIC processar RDMA WRITEs de entrada visando a rkey da GPU, ele fará DMA diretamente na memória GPU via as entradas MTT."
+    },
+    "15": {
+      "text": "QP transicionado RESET → INIT via ibv_modify_qp()",
+      "detail": "modify_qp(RESET→INIT) define: índice P_Key, número da porta, flags de acesso (IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ para alvo GPUDirect). QP pode agora postar Receive WQEs."
+    },
+    "16": {
+      "text": "CM REQ enviado — Nó de IA propõe parâmetros de QP, compartilha rkey do MR da GPU",
+      "detail": "rdma_connect() aciona ib_send_cm_req(). Envia QPN do nó de IA, PSN inicial, MTU de caminho, contagens de retentativa, e dados privados contendo a rkey respaldada pela GPU e o endereço virtual BAR da GPU. O servidor remoto usará esta rkey para escrever diretamente na memória GPU sem saber que é memória GPU — a rkey é opaca e o respaldo pela GPU é transparente para o lado remoto."
+    },
+    "17": {
+      "text": "CM REP recebido — servidor remoto aceita, fornece seu QPN e PSN",
+      "detail": "Ao receber o REQ, o servidor remoto chama rdma_accept(). Ambos os QPs fazem transição para RTR. O servidor remoto armazenou a rkey da GPU dos dados privados do CM REQ."
+    },
+    "18": {
+      "text": "CM RTU enviado — ambos os QPs fazem transição para RTS. Conexão GPUDirect RDMA estabelecida.",
+      "detail": "Após RTU, ambos os QPs estão em RTS. O servidor remoto pode emitir RDMA WRITEs visando a rkey respaldada pela GPU — dados fluirão diretamente da rede para a HBM da GPU."
+    },
+    "19": {
+      "text": "Servidor remoto posta RDMA WRITE visando memória GPU no nó de IA",
+      "detail": "ibv_post_send() com opcode IBV_WR_RDMA_WRITE no servidor remoto. O WR especifica: lista SG local apontando para buffer fonte na DRAM do host (dados de treinamento), vaddr remoto = endereço BAR da GPU, rkey remoto = chave MR respaldada pela GPU. Da perspectiva do servidor remoto, isso é idêntico a um RDMA WRITE normal — o servidor remoto não sabe (nem precisa saber) que a memória alvo é HBM da GPU."
+    },
+    "20": {
+      "text": "RDMA WRITE para GPU — 4MB depositados diretamente na HBM da GPU, zero CPU no nó de IA",
+      "detail": "RNIC do servidor remoto faz DMA da DRAM do host, encapsula em BTH+RETH+UDP+IP+Eth, transmite. RNIC do nó de IA: recebe pacote → verifica ICRC → busca rkey na tabela MR → encontra entradas MTT apontando para endereços físicos BAR1 da GPU → motor DMA escreve carga diretamente na HBM da GPU via transação PCIe peer-to-peer.\nCOMPARAÇÃO CRÍTICA DE CAMINHOS: RDMA WRITE Tradicional: Rede → RNIC → PCIe → DRAM do Host → cudaMemcpy → HBM da GPU. GPUDirect RDMA WRITE: Rede → RNIC → PCIe → HBM da GPU (direto, zero cópia)\nO caminho tradicional requer: (1) DMA do RNIC para DRAM do host, (2) interrupção ou poll da CPU, (3) transferência cudaMemcpy() H2D consumindo largura de banda PCIe novamente, (4) DMA da GPU da DRAM do host. O GPUDirect elimina os passos 2-4 inteiramente."
+    },
+    "21": {
+      "text": "ACK do RNIC do nó de IA — WRITE na GPU completo, CQE postado no servidor remoto",
+      "detail": "RNIC do nó de IA gera autonomamente ACK RC após DMA na GPU completar. Sem envolvimento da CPU no nó de IA — a GPU recebeu os dados, o RNIC gerou o ACK, e a CPU do nó de IA nunca foi interrompida."
+    },
+    "22": {
+      "text": "Servidor remoto posta RDMA READ visando memória GPU no nó de IA",
+      "detail": "ibv_post_send() com opcode IBV_WR_RDMA_READ no servidor remoto. O RNIC do nó de IA irá realizar uma leitura PCIe peer-to-peer da HBM da GPU e enviar os dados de volta — sem CPU no nó de IA."
+    },
+    "23": {
+      "text": "RDMA READ Request da memória GPU — sem dados nesta direção",
+      "detail": "Servidor remoto envia BTH(opcode=0x0C) + RETH especificando o que ler da memória GPU. Sem carga. RNIC do nó de IA irá autonomamente: buscar rkey → encontrar páginas BAR1 da GPU na MTT → DMA de leitura da HBM da GPU via PCIe P2P → construir pacotes de resposta → transmitir."
+    },
+    "24": {
+      "text": "RDMA READ Response — RNIC do nó de IA faz DMA da HBM da GPU e envia dados",
+      "detail": "RNIC do nó de IA: recebe requisição READ → valida rkey → busca na MTT endereços físicos BAR1 da GPU → motor DMA faz leitura PCIe P2P da HBM da GPU → constrói pacote de resposta com AETH+carga → transmite ao servidor remoto.\nZero envolvimento da CPU no nó de IA. A GPU não foi interrompida — nenhum kernel CUDA foi pausado. O RNIC realizou toda a operação autonomamente usando a abertura PCIe BAR1."
+    },
+    "25": {
+      "text": "Cenário completo — Transferência de dados GPUDirect RDMA para memória GPU",
+      "detail": "Resumo: Dois enlaces 100GbE independentes se ativaram. O nó de IA alocou HBM da GPU via cuMemAlloc, carregou nvidia-peermem para expor memória GPU ao subsistema RDMA, registrou um IB Memory Region contra o endereço BAR1 da GPU, e estabeleceu uma conexão RC QP. O servidor remoto realizou um RDMA WRITE de 4MB que aterrissou diretamente na HBM da GPU — zero envolvimento da CPU no nó de IA, zero bounce pela DRAM do host. Depois o servidor remoto realizou um RDMA READ que recuperou dados diretamente da HBM da GPU — novamente zero envolvimento da CPU.\nPonto principal: GPUDirect RDMA elimina a CPU do caminho de dados inteiramente. No RDMA tradicional + cudaMemcpy, cada byte cruza o barramento PCIe duas vezes. Com GPUDirect RDMA, cada byte cruza PCIe apenas uma vez. Isso reduz pela metade o consumo de largura de banda PCIe e elimina a sobrecarga da CPU."
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "GPUDirect RDMA: Escrita Direta na Memória GPU",
+      "description": "Percorra como RDMA WRITE deposita dados diretamente na HBM da GPU contornando a DRAM do host e a CPU",
+      "steps": {
+        "0": "GPUDirect RDMA permite que dados da rede aterrissem diretamente na memória GPU (HBM) sem bounce pela DRAM do host. Isso é habilitado pelo módulo nvidia-peermem que expõe memória GPU ao subsistema RDMA. Os enlaces 100GbE se ativam com PFC para Ethernet sem perdas.",
+        "1": "A GPU é inicializada via CUDA, e cuMemAlloc aloca um buffer de 4MB na HBM. O nvidia-peermem mapeia esta memória GPU via BAR1 para que o RNIC possa acessá-la diretamente. ibv_reg_mr() registra a memória GPU como um Memory Region RDMA — a tabela MTT do RNIC aponta para endereços físicos BAR1 da GPU.",
+        "2": "O Connection Manager (CM REQ/REP/RTU) estabelece a conexão RC QP. A rkey respaldada pela GPU é compartilhada com o servidor remoto nos dados privados — o servidor remoto não sabe que está visando memória GPU. A rkey é opaca.",
+        "3": "O servidor remoto faz RDMA WRITE de 4MB visando a rkey da GPU. O RNIC do nó de IA recebe os dados e faz DMA diretamente na HBM da GPU via PCIe peer-to-peer. A CPU do nó de IA nunca é interrompida. Compare: RDMA tradicional exigiria DMA para DRAM do host + cudaMemcpy para GPU (2 cruzamentos PCIe). GPUDirect: apenas 1 cruzamento PCIe.",
+        "4": "RDMA READ da memória GPU também funciona sem CPU — o RNIC lê HBM da GPU via PCIe P2P e envia os dados ao servidor remoto. É assim que frameworks de treinamento de IA distribuído (NCCL, Gloo) alcançam comunicação GPU inter-nó de alta vazão."
+      }
+    }
+  }
+}

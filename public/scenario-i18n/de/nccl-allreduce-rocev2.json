@@ -1,0 +1,62 @@
+{
+  "meta": {
+    "title": "NCCL AllReduce: Ring-Algorithmus \u00fcber RoCEv2 (4 GPUs)",
+    "description": "NCCL (NVIDIA Collective Communications Library) Ring-AllReduce \u00fcber 4 GPU-Knoten, verbunden via RoCEv2. AllReduce ist das dominierende Kommunikationsmuster im verteilten KI-Training \u2014 jeder Gradienten-Synchronisationsschritt im datenparallelen Training ist ein AllReduce. Dieses Szenario zeigt den Ring-Algorithmus: jede GPU sendet einen Chunk an ihren Ring-Nachbarn via RDMA WRITE, akkumuliert Teilsummen durch eine Reduce-Scatter-Phase (N-1 Schritte), und verteilt dann das Endergebnis durch eine AllGather-Phase (N-1 Schritte). Mit 4 GPUs ist der Ring in 6 Schritten abgeschlossen. Alle Datenbewegungen verwenden GPUDirect RDMA \u2014 GPU-Speicher zu GPU-Speicher ohne Host-DRAM zu ber\u00fchren.",
+    "learning_objectives": [
+      "Verstehen, warum AllReduce f\u00fcr verteiltes KI-Training entscheidend ist (Gradienten-Synchronisation)",
+      "Sehen, wie der Ring-Algorithmus AllReduce in Reduce-Scatter + AllGather zerlegt",
+      "RDMA WRITE-Operationen verfolgen, die Gradienten-Chunks zwischen GPU-Ring-Nachbarn transportieren",
+      "Beobachten, wie jede GPU w\u00e4hrend Reduce-Scatter Teilsummen akkumuliert",
+      "Verstehen, warum Ring-AllReduce optimale Bandbreitenauslastung erreicht: 2(N-1)/N",
+      "GPUDirect RDMA in Aktion sehen \u2014 Daten bewegen sich GPU-zu-GPU ohne Host-DRAM-Bounce",
+      "Den Unterschied zwischen Ring-, Baum- und anderen AllReduce-Algorithmen erkennen",
+      "NCCLs Rolle in Frameworks wie PyTorch DDP und DeepSpeed verstehen"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Physischer Link aktiv \u2014 100GbE verlustfreies Fabric f\u00fcr alle 4 GPU-Knoten",
+      "detail": "Alle 4 GPU-Knoten verbinden sich mit dem Switch \u00fcber 100GbE mit aktiviertem PFC und ECN. In einem realen KI-Training-Cluster k\u00f6nnte die Netzwerktopologie ein Fat-Tree oder Rail-optimiertes Design mit mehreren Switch-Ebenen sein. Dieses Szenario vereinfacht auf einen einzelnen Switch der Klarheit halber.\nNCCL untersucht die Topologie (via nvidia-smi topo, NVML und IB-Ger\u00e4teabfragen), um den optimalen Kollektiv-Algorithmus zu bestimmen. F\u00fcr Inter-Node-RoCEv2 mit 4 GPUs w\u00e4hlt es typischerweise den Ring-Algorithmus."
+    },
+    "1": {
+      "text": "NCCL-Init abgeschlossen \u2014 Ring-Topologie erstellt, QPs verbunden, GPU-Buffer registriert",
+      "detail": "ncclCommInitRank() ist abgeschlossen. NCCL hat: 1. Via TCP gebootstrapt, um Adressen auszutauschen (NCCL_COMM_ID) 2. GPUDirect-RDMA-F\u00e4higkeit erkannt (nvidia-peermem geladen) 3. RDMA-QPs zwischen Ring-Nachbarn erstellt:\n   Ring: GPU 0 \u2192 GPU 1 \u2192 GPU 2 \u2192 GPU 3 \u2192 GPU 0\n4. GPU-Speicher-Buffer als RDMA Memory Regions registriert via ibv_reg_mr() mit nvidia-peermem, das GPU-BAR1-Mappings bereitstellt\n5. rkeys und Buffer-Adressen au\u00dferband ausgetauscht\nJede GPU hat Sende- und Empfangspuffer in GPU-HBM (High Bandwidth Memory). NCCL verwendet Double-Buffering und Pipelining, um Berechnung mit Kommunikation zu \u00fcberlappen \u2014 w\u00e4hrend ein Chunk transferiert wird, reduziert der GPU-Kernel den vorherigen Chunk.\nRing-Topologie f\u00fcr 4 GPUs:\n  GPU 0 \u2192 GPU 1 \u2192 GPU 2 \u2192 GPU 3 \u2192 GPU 0 (ring-next)\n  GPU 0 \u2190 GPU 3 \u2190 GPU 2 \u2190 GPU 1 \u2190 GPU 0 (ring-prev)"
+    },
+    "2": {
+      "text": "ncclAllReduce() aufgerufen \u2014 1MB Gradienten-Tensor, 4 Chunks \u00e0 256KB",
+      "detail": "Die Trainingsschleife ruft ncclAllReduce(sendbuf, recvbuf, count, ncclFloat, ncclSum, comm, stream) auf. Dies l\u00f6st den Ring-AllReduce-Algorithmus aus.\nEingabe: Jede GPU hat einen 1MB-Gradienten-Tensor (262.144 float32-Werte) aus dem Backward-Pass. Das Ziel: jede GPU endet mit der SUMME aller 4 GPU-Gradienten (f\u00fcr den SGD/Adam-Optimizer-Update).\nNCCL teilt den Tensor in N=4 Chunks zu je 256KB:\n  Chunk 0: Bytes [0, 256KB)\n  Chunk 1: Bytes [256KB, 512KB)\n  Chunk 2: Bytes [512KB, 768KB)\n  Chunk 3: Bytes [768KB, 1MB)\nDer Ring-Algorithmus hat zwei Phasen: Phase 1 \u2014 Reduce-Scatter (N-1 = 3 Schritte): Jede GPU sendet einen Chunk an ring-next, empf\u00e4ngt einen von ring-prev und akkumuliert (summiert) den empfangenen Chunk mit dem eigenen. Nach 3 Schritten h\u00e4lt jede GPU das VOLLST\u00c4NDIG REDUZIERTE Ergebnis f\u00fcr genau einen Chunk.\nPhase 2 \u2014 AllGather (N-1 = 3 Schritte): Jede GPU sendet ihren vollst\u00e4ndig reduzierten Chunk um den Ring. Nach 3 Schritten hat jede GPU alle 4 vollst\u00e4ndig reduzierten Chunks.\nGesamt transferierte Daten pro GPU: 2 \u00d7 (N-1)/N \u00d7 DataSize = 2 \u00d7 3/4 \u00d7 1MB = 1,5 MB gesendet + 1,5 MB empfangen. Dies ist optimal \u2014 die Bandbreite skaliert linear mit N."
+    },
+    "3": {
+      "text": "Reduce-Scatter Schritt 1 \u2014 Alle GPUs senden chunk[rank] an ring-next",
+      "detail": "Alle 4 GPUs senden gleichzeitig einen Chunk an ihren ring-next-Nachbarn:\n  GPU 0 sendet Chunk 0 \u2192 GPU 1 (via RDMA WRITE in GPU 1s HBM)\n  GPU 1 sendet Chunk 1 \u2192 GPU 2\n  GPU 2 sendet Chunk 2 \u2192 GPU 3\n  GPU 3 sendet Chunk 3 \u2192 GPU 0\nWir zeigen GPU 0 \u2192 GPU 1 als repr\u00e4sentativen Link. Der RDMA WRITE landet direkt in GPU 1s HBM-Empfangspuffer via GPUDirect RDMA \u2014 die RNIC-DMA-Engine schreibt in durch nvidia-peermem gemappten GPU-BAR1-Speicher. Keine CPU ist am Datentransfer beteiligt.\nNach dem Empfang startet GPU 1 einen CUDA-Kernel zur Berechnung:\n  recv_buf[chunk 0] = recv_buf[chunk 0] + local[chunk 0]\nDies addiert GPU 0s Gradienten zu GPU 1s eigenem Gradienten f\u00fcr Chunk 0."
+    },
+    "4": {
+      "text": "Reduce-Scatter Schritt 1 (Gegenrichtung) \u2014 GPU 0 empf\u00e4ngt Chunk von Rang 3",
+      "detail": "Gleichzeitig empf\u00e4ngt GPU 0 einen Chunk von Rang 3 (ihrem ring-prev). Alle Transfers laufen parallel \u2014 der Ring ist bidirektional mit Vollduplex-Links. Jede GPU sendet und empf\u00e4ngt gleichzeitig.\nGPU 0 akkumuliert: local[chunk 3] += received[chunk 3 von Rang 3]"
+    },
+    "5": {
+      "text": "Reduce-Scatter Schritt 2 \u2014 Teilsummen rotieren um den Ring",
+      "detail": "Jede GPU sendet ihren AKKUMULIERTEN Chunk (Teilsumme aus Schritt 1) an ihren ring-next-Nachbarn. Die Teilsummen rotieren um den Ring und wachsen mit jedem Schritt.\n  GPU 0 sendet akkumulierten Chunk \u2192 GPU 1 (enth\u00e4lt nun Summe von 2 GPUs)\n  GPU 1 sendet akkumulierten Chunk \u2192 GPU 2\n  GPU 2 sendet akkumulierten Chunk \u2192 GPU 3\n  GPU 3 sendet akkumulierten Chunk \u2192 GPU 0\nNach diesem Schritt enth\u00e4lt jeder Chunk die Summe der Gradienten von 3 GPUs.\nHinweis: Die Datenmenge pro Transfer bleibt konstant bei 256KB, unabh\u00e4ngig davon, wie viele GPUs teilnehmen. Das ist der Grund, warum Ring-AllReduce gut skaliert \u2014 Bandbreite pro GPU = 2(N-1)/N \u00d7 DataSize, n\u00e4hert sich 2\u00d7 DataSize wenn N w\u00e4chst. Vergleich mit naivem AllReduce (All-to-One-to-All), das einen Engpass an der Wurzel erzeugt."
+    },
+    "6": {
+      "text": "Reduce-Scatter Schritt 3 (final) \u2014 Jede GPU hat nun einen vollst\u00e4ndig reduzierten Chunk",
+      "detail": "Letzter Reduce-Scatter-Schritt. Nachdem GPU 1 empfangen und akkumuliert hat:\n  GPU 1s Chunk = Summe von GPU 0 + GPU 1 + GPU 2 + GPU 3 Gradienten\nJede GPU h\u00e4lt nun die VOLLST\u00c4NDIGE Summe f\u00fcr genau einen Chunk:\n  GPU 0: vollst\u00e4ndig reduzierter Chunk 0\n  GPU 1: vollst\u00e4ndig reduzierter Chunk 1\n  GPU 2: vollst\u00e4ndig reduzierter Chunk 2\n  GPU 3: vollst\u00e4ndig reduzierter Chunk 3\nReduce-Scatter ist abgeschlossen. Die Reduktion (Summierung) ist erledigt. Aber jede GPU hat nur 1/4 des Endergebnisses. AllGather verteilt die verbleibenden Chunks."
+    },
+    "7": {
+      "text": "AllGather Schritt 1 \u2014 GPUs verteilen ihre vollst\u00e4ndig reduzierten Chunks",
+      "detail": "Nun sendet jede GPU ihren vollst\u00e4ndig reduzierten Chunk um den Ring:\n  GPU 0 sendet vollst\u00e4ndig reduzierten Chunk 0 \u2192 GPU 1\n  GPU 1 sendet vollst\u00e4ndig reduzierten Chunk 1 \u2192 GPU 2\n  GPU 2 sendet vollst\u00e4ndig reduzierten Chunk 2 \u2192 GPU 3\n  GPU 3 sendet vollst\u00e4ndig reduzierten Chunk 3 \u2192 GPU 0\nAnders als bei Reduce-Scatter akkumuliert AllGather NICHT \u2014 es kopiert den empfangenen Chunk einfach an die korrekte Position im Ausgabepuffer. Nach Schritt 1 hat jede GPU 2 der 4 reduzierten Chunks.\nDer RDMA WRITE zielt direkt auf die finale Ausgabepuffer-Position \u2014 Chunk 0 geht auf Offset 0, Chunk 1 auf Offset 256KB usw."
+    },
+    "8": {
+      "text": "AllGather Schritt 2 \u2014 Jede GPU hat nun 3 von 4 reduzierten Chunks",
+      "detail": "Chunks rotieren weiter um den Ring. Nach diesem Schritt hat jede GPU 3 der 4 vollst\u00e4ndig reduzierten Chunks plus ihren eigenen empfangen \u2014 nur noch 1 Chunk fehlt."
+    },
+    "9": {
+      "text": "AllGather Schritt 3 (final) \u2014 Alle GPUs haben das vollst\u00e4ndige reduzierte Ergebnis",
+      "detail": "Letzter AllGather-Schritt. Jede GPU hat nun alle 4 vollst\u00e4ndig reduzierten Chunks in ihrem Ausgabepuffer zusammengesetzt. Das AllReduce ist abgeschlossen.\nErgebnis: Jede GPU hat einen identischen 1MB-Buffer, der die SUMME aller 4 GPU-Gradienten enth\u00e4lt. Der Optimizer (SGD, Adam usw.) kann nun die Modellgewichte auf jeder GPU identisch aktualisieren und die Modellkopien synchron halten."
+    },
+    "10": {
+      "text": "Szenario abgeschlossen \u2014 NCCL Ring-AllReduce \u00fcber RoCEv2",
+      "detail": "Dieses Szenario demonstrierte NCCLs Ring-AllReduce \u00fcber 4 GPU-Knoten:\nPhase 1 \u2014 REDUCE-SCATTER (3 Schritte):\n  Jede GPU sendet einen Chunk pro Schritt an ihren ring-next-Nachbarn.\n  Der Empf\u00e4nger akkumuliert (summiert) die empfangenen Daten mit seinen eigenen.\n  Nach N-1=3 Schritten h\u00e4lt jede GPU das vollst\u00e4ndig reduzierte Ergebnis\n  f\u00fcr genau einen Chunk (1/N des Gesamttensors).\nPhase 2 \u2014 ALLGATHER (3 Schritte):\n  Jede GPU sendet ihren vollst\u00e4ndig reduzierten Chunk um den Ring.\n  Der Empf\u00e4nger kopiert (keine Akkumulation) in den Ausgabepuffer.\n  Nach N-1=3 Schritten hat jede GPU alle N vollst\u00e4ndig reduzierten Chunks.\nGesamt: 2(N-1) = 6 Schritte f\u00fcr 4 GPUs.\nPerformance-Eigenschaften: \u2022 Daten pro GPU pro Schritt: DataSize/N = 256KB \u2022 Gesamt gesendete Daten pro GPU: 2 \u00d7 (N-1)/N \u00d7 DataSize = 1,5MB \u2022 Bandbreitenauslastung: 2(N-1)/N = 75% des theoretischen Maximums (n\u00e4hert sich 100% wenn N \u2192 \u221e) \u2022 Alle Transfers verwenden RDMA WRITE via GPUDirect \u2014 null CPU-Kopien\nWarum Ring-AllReduce f\u00fcr KI-Training: \u2022 Datenparalleles Training: jede GPU verarbeitet verschiedene Mini-Batches, muss aber Gradienten vor dem Optimizer-Schritt synchronisieren \u2022 AllReduce(Sum) wird nach jedem Backward-Pass aufgerufen \u2014 typischerweise tausende Male pro Epoche \u2022 Bei Skalierung (Hunderte GPUs) beeinflusst AllReduce-Latenz direkt den Trainingsdurchsatz: selbst 1ms extra pro Schritt \u00d7 100.000 Schritte = 100s\nAlternative Algorithmen, die NCCL w\u00e4hlen kann: \u2022 Tree AllReduce \u2014 besser f\u00fcr kleine Nachrichten (niedrigere Latenz) \u2022 CollNet (SHARP) \u2014 In-Network-Reduktion (Switch f\u00fchrt die Summe durch) \u2022 NVLink + RDMA-Hybrid \u2014 NVLink intra-node, RDMA inter-node\nDas verlustfreie RoCEv2-Fabric (PFC + ECN/DCQCN) ist entscheidend: verworfene Pakete w\u00fcrden RDMA-Timeouts verursachen, Fallback auf Retransmission und Zerst\u00f6rung der AllReduce-Performance."
+    }
+  }
+}

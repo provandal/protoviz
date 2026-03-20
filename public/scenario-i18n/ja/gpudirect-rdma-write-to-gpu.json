@@ -1,0 +1,117 @@
+{
+  "meta": {
+    "title": "GPUDirect RDMA: RoCEv2 WRITEでGPUメモリに直接書き込み",
+    "description": "GPUDirect RDMAによるRDMA WRITEおよびREAD操作でGPU HBMメモリに直接アクセス。100GbE物理リンク確立、CUDAランタイム初期化、nvidia-peermemによるGPU BAR1マッピング、GPUメモリに対するMemory Region登録、QP接続、RDMA WRITE/READによるゼロコピーGPUデータ転送まで。",
+    "learning_objectives": [
+      "GPUDirect RDMAがGPU HBMメモリをRDMAサブシステムに公開する仕組みを理解",
+      "nvidia-peermemカーネルモジュールとGPU BAR1マッピングの役割を見る",
+      "GPUメモリに対するRDMA WRITEのゼロコピーデータパスを観察"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "リンクA: 信号検出 — AIノード ↔ スイッチポートA",
+      "detail": "AIノードの光トランシーバがスイッチポートAからの光を検出します。IEEE 802.3cd clause 73に基づきオートネゴシエーション (AN) が開始されます。L1はポイントツーポイントであり、スイッチ↔リモートサーバ間のリンクとは独立しています。"
+    },
+    "1": {
+      "text": "リンクB: 信号検出 — スイッチポートB ↔ リモートサーバ",
+      "detail": "リモートサーバの光トランシーバがスイッチポートBからの光を検出します。このリンクでもANが独立して開始されます。"
+    },
+    "2": {
+      "text": "リンクA: AN完了 — 100GbE合意、リンクトレーニング開始",
+      "detail": "ANがAIノードとスイッチポートA間でテクノロジアビリティページを交換します。両者が100GBASE-SR4で合意します。100GではRS(544,514) FECが必須です。リンクトレーニングが開始され、チャネルのイコライゼーション (プリエンファシス、ポストカーソル) を行います。"
+    },
+    "3": {
+      "text": "リンクB: AN完了 — 100GbE合意、リンクトレーニング開始",
+      "detail": "スイッチポートB↔リモートサーバ間でANが完了します。同じネゴシエーション: 100GBASE-SR4、RS(544,514) FEC。このリンクでもリンクトレーニングが独立して開始されます。"
+    },
+    "4": {
+      "text": "リンクA UP — AIノード ↔ スイッチ 100Gbps RS-FEC付き",
+      "detail": "AIノード↔スイッチ間のリンクトレーニングが完了します。DCBXネゴシエーション (ここでは省略) により優先度3でPFC (802.1Qbb) が有効になります。このリンクセグメントでイーサネットフレームの送受信が可能になりました。"
+    },
+    "5": {
+      "text": "リンクB UP — スイッチ ↔ リモートサーバ 100Gbps RS-FEC付き",
+      "detail": "スイッチ↔リモートサーバ間のリンクトレーニングが完了します。PFCが有効。両リンクがアップし、スイッチはポート間でL2フレームを転送可能になりました。エンドツーエンドのL2接続性が確立されました。"
+    },
+    "6": {
+      "text": "ARPリクエスト: 192.168.1.20はMACアドレスは何ですか？",
+      "detail": "RoCEv2はIPアドレッシングを使用します。接続セットアップの前に、IP到達性を確立する必要があります。"
+    },
+    "7": {
+      "text": "ARP応答: 192.168.1.20は00:02:c9:ab:cd:efです",
+      "detail": ""
+    },
+    "8": {
+      "text": "GPU / CUDAランタイム初期化 — cuInit()とcuDeviceGet()",
+      "detail": "アプリケーションがCUDAドライバAPIを初期化します。cuInit(0)でCUDAドライバをロードしGPUを列挙します。cuDeviceGet()でターゲットGPU (例: NVIDIA H100) を選択します。cuCtxCreate()でデバイス上にCUDAコンテキストを作成します。この時点でGPUはメモリ割り当ての準備ができていますが、GPUメモリはまだ割り当てられていません。"
+    },
+    "9": {
+      "text": "GPUメモリ割り当て — cuMemAlloc()で4MB GPU HBMバッファを確保",
+      "detail": "cuMemAlloc(&devPtr, 4194304)でGPU High Bandwidth Memory (HBM) に4MBのバッファを割り当てます。返されるデバイスポインタ (devPtr) はGPU自身のアドレス空間内のGPU仮想アドレスです。このメモリはGPUダイ上に存在し、HBM3経由で約3.35 TB/sの帯域幅で接続されています。このポインタはCPUやRNICから直接アクセスできません — ピアツーピアアクセスにはGPUのPCIe BAR1アパーチャを通じたマッピングが必要です。最新GPU (例: NVIDIA H100) はリサイザブルBAR / ラージBARモードで最大256GBのBAR1アパーチャをサポートし、HBM全体をマッピングできます。"
+    },
+    "10": {
+      "text": "nvidia-peermemカーネルモジュールロード — GPUメモリをRDMAサブシステムに公開",
+      "detail": "modprobe nvidia-peermemでnvidia-peermemカーネルモジュールをロードします。このモジュールはib_register_peer_memory_client()でIB peer_memory_clientとして登録します。後でibv_reg_mr()がGPU仮想アドレスで呼び出されると、IBコアのib_umem_get()がnvidia_peermem_acquire()を呼び出し、そのアドレスがGPUメモリに属するかチェックします。属する場合、nvidia_peermem_get_pages()がnvidia_p2p_get_pages()を呼び出してGPU物理ページをピン留めし、PCIe BAR1アドレスを返します。これらのBAR1アドレスはRNICのMemory Translation Table (MTT) に格納され、RNICのDMAエンジンがCPUを一切介さずPCIeピアツーピアでGPUメモリに直接読み書きできるようになります。"
+    },
+    "11": {
+      "text": "GPU BAR1マッピング確立 — GPU HBMがPCIeアドレスでアクセス可能",
+      "detail": "nvidia-peermemがnvidia_p2p_get_pages()を呼び出し、cuMemAllocで割り当てたバッファのGPU物理ページをピン留めし、PCIe BAR1物理アドレスを返します。BAR1アパーチャは外部デバイス (RNICなど) がGPUメモリにアクセスするためのPCIeウィンドウです。ラージBARが有効な最新GPU (例: NVIDIA H100) では、HBM全体をBAR1経由でマッピングできます。BAR1アドレスはRNICのDMAエンジンが直接ターゲットにできるPCIe物理アドレスです — CPU TLBもP2PではIOMMUも不要です。これが根本的なハードウェアイネーブラです: PCIeはCPUのルートコンプレックスメモリコントローラを経由せずに、エンドポイント間 (RNICとGPU) のピアツーピアトランザクションを可能にします。"
+    },
+    "12": {
+      "text": "GPU BARアドレスに対してibv_reg_mr()でMemory Region登録",
+      "detail": "ibv_reg_mr(pd, gpu_va, 4194304, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ)がGPU仮想アドレスで呼び出されます。IBコアのib_umem_get()がnvidia-peermem peer_memory_client経由でGPUメモリであることを検出します: 1. nvidia_peermem_acquire()がNVIDIA GPUメモリであることを確認 2. nvidia_peermem_get_pages()がnvidia_p2p_get_pages()を呼び出しBAR1物理ページを取得 3. BAR1物理アドレスがRNICのMTT (Memory Translation Table) に書き込まれる 4. MLX5_CMD_OP_CREATE_MKEYがGPU BAR1アドレスを指すページテーブルを持つMRを作成。返されるlkeyとrkeyでRDMA操作が可能になり、RNICハードウェアがMTTのBAR1物理アドレスを使ってGPU HBMに直接DMAします。リモートサーバからは透過的で、通常のrkeyとして見えます。"
+    },
+    "13": {
+      "text": "リモートサーバがibv_reg_mr()でMemory Region登録 (ホストDRAM)",
+      "detail": "リモートサーバが標準的なホストDRAMバックのMemory Regionを登録します。ibv_reg_mr()がホスト物理ページをピン留めし、IOMMU DMAマッピングを作成し、ページ変換をRNICのMTTに書き込みます。これは標準的なMR登録パスであり、GPUは関与しません。lkeyはローカルのscatter-gatherに使用され、rkeyはリモートサーバがWRITEソース側のため不要です。"
+    },
+    "14": {
+      "text": "両側でQP作成 — ステート: RESET",
+      "detail": "ibv_create_qp()でQueue Pair (Send Queue + Receive Queue + Completion Queue) を割り当てます。QPはRESET状態で開始され、送受信不可です。AIノードのQPはGPUバックのMRで使用されます — RNICがGPU rkeyをターゲットとする受信RDMA WRITEを処理する際、MTTページテーブルを使ってGPUメモリに直接DMAします。mlx5: MLX5_CMD_OP_CREATE_QPファームウェアコマンドでQPNが割り当てられます。"
+    },
+    "15": {
+      "text": "QP遷移 RESET → INIT (ibv_modify_qp())",
+      "detail": "modify_qp(RESET→INIT)で以下を設定: P_Keyインデックス、ポート番号、アクセスフラグ (GPUDirectターゲット用にIBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ)。QPはReceive WQEをポストできるようになりますが、まだ送信はできません。Linux: ib_modify_qp() → mlx5_ib_modify_qp() → MLX5_CMD_OP_RST2INIT_QP。"
+    },
+    "16": {
+      "text": "CM REQ送信 — AIノードがQPパラメータを提案、GPU MR rkeyを共有",
+      "detail": "rdma_connect()がib_send_cm_req()をトリガーします。AIノードのQPN、開始PSN、パスMTU=4096、リトライカウント、およびGPUバックのrkeyとGPU BAR仮想アドレスを含むプライベートデータを送信します。リモートサーバはこのrkeyを使ってGPUメモリに直接書き込みます — rkeyは不透明であり、GPUバッキングはリモート側に対して透過的です。"
+    },
+    "17": {
+      "text": "CM REP受信 — リモートサーバが受け入れ、QPNとPSNを提供",
+      "detail": "REQを受信したリモートサーバがrdma_accept() → ib_send_cm_rep()を呼び出します。リモートサーバはQPをRTRに遷移させます。AIノードもQPをRTRに遷移させます。INIT→RTR遷移で宛先QPN、RQ PSN、パスMTU、AV (アドレスベクタ) を設定します。リモートサーバはCM REQのプライベートデータからGPU rkeyを保存しており、次のRDMA WRITEのRETHヘッダでこのrkeyを使用します。"
+    },
+    "18": {
+      "text": "CM RTU送信 — 両QPがRTSに遷移。GPUDirect RDMA接続確立。",
+      "detail": "RTU送信後、AIノードがQPをRTR→RTSに遷移させます。RTU受信後、リモートサーバもQPをRTR→RTSに遷移させます。RTR→RTSではSQ PSN、リトライカウント、RNRリトライ、タイムアウトを設定します。Linux: MLX5_CMD_OP_RTR2RTS_QP。QPは完全に動作可能になり、リモートサーバはGPUバックのrkeyをターゲットとするRDMA WRITEを発行できます — データはネットワークからGPU HBMに直接流れます。"
+    },
+    "19": {
+      "text": "リモートサーバがAIノードのGPUメモリをターゲットにRDMA WRITEをポスト",
+      "detail": "リモートサーバでibv_post_send()をオペコードIBV_WR_RDMA_WRITEで呼び出します。WRにはホストDRAMソースバッファ (トレーニングデータ) を指すローカルSGリスト、リモートvaddr = GPU BARアドレス、リモートrkey = GPUバックMRキーを指定します。リモートサーバの観点からは通常のRDMA WRITEと同一です — ターゲットメモリがGPU HBMであることを知る必要はありません (知ることもできません)。GPUバッキングは完全に透過的で、rkeyは不透明であり、AIノード側のRNICがMTTエントリに基づいてGPUメモリへのDMAルーティングを処理します。"
+    },
+    "20": {
+      "text": "RDMA WRITE to GPU — 4MBがGPU HBMに直接プッシュ、AIノードCPU介在なし",
+      "detail": "リモートサーバのRNICがホストDRAMからDMAし、BTH+RETH+UDP+IP+Ethでカプセル化して送信します。AIノードのRNIC: パケット受信 → ICRC検証 → rkey 0xGPU01234をMRテーブルで検索 → GPU BAR1物理アドレスを指すMTTエントリを発見 → DMAエンジンがPCIeピアツーピアトランザクションでGPU HBMにペイロードを直接書き込みます。\n重要なパス比較: 従来のRDMA WRITE: ネットワーク → RNIC → PCIe → ホストDRAM → cudaMemcpy → GPU HBM。GPUDirect RDMA WRITE: ネットワーク → RNIC → PCIe → GPU HBM (直接、ゼロコピー)。従来のパスでは: (1) RNICからホストDRAMへのDMA、(2) CPU割り込みまたはポーリング、(3) cudaMemcpy() H2D転送でPCIe帯域幅を再消費、(4) ホストDRAMからのGPU DMAが必要です。GPUDirectはステップ2-4を完全に排除します。大規模AIトレーニングデータ転送では、PCIe帯域幅消費が半減し、CPU関与が排除されます。"
+    },
+    "21": {
+      "text": "AIノードRNICからACK — GPUへのWRITE完了、リモートサーバにCQEポスト",
+      "detail": "AIノードのRNICがGPUへのDMA完了後、自律的にRC ACKを生成します。AIノードのCPUは一切関与しません — GPUがデータを受信し、RNICがACKを生成し、AIノードのCPUは割り込みされませんでした。リモートサーバのRNICが完了したWRITEのCQEをポストします。リモートサーバのアプリケーションはibv_poll_cq()で完了を確認します。"
+    },
+    "22": {
+      "text": "リモートサーバがAIノードのGPUメモリをターゲットにRDMA READをポスト",
+      "detail": "リモートサーバでibv_post_send()をオペコードIBV_WR_RDMA_READで呼び出します。受信データ用のローカルSGバッファ (ホストDRAM、lkey)、リモートvaddr = GPU BARアドレス、リモートrkey = GPUバックMRキーを指定します。AIノードのRNICがPCIeピアツーピアでGPU HBMを読み取り、データを返送します — AIノードのCPUは関与しません。"
+    },
+    "23": {
+      "text": "GPUメモリからのRDMA READ Request — この方向にデータなし",
+      "detail": "リモートサーバがBTH(opcode=0x0C) + RETHを送信し、GPUメモリから何を読み取るかを指定します。ペイロードはありません。AIノードのRNICは自律的に: rkeyを検索 → MTTでGPU BAR1ページを発見 → PCIe P2P経由でGPU HBMからDMA読み取り → レスポンスパケットを構築 → 送信します。"
+    },
+    "24": {
+      "text": "RDMA READ Response — AIノードのRNICがGPU HBMからDMAしデータを送信",
+      "detail": "AIノードのRNIC: READ要求を受信 → rkey 0xGPU01234を検証 → MTT検索でGPU BAR1物理アドレスを発見 → DMAエンジンがPCIe P2PでGPU HBMから読み取り → AETH+ペイロード付きレスポンスパケットを構築 → リモートサーバに送信します。AIノードのCPUは一切関与しません。GPUも中断されず、CUDAカーネルは一時停止しません。RNICがPCIe BAR1アパーチャを使って全操作を自律的に実行します。これが分散AIトレーニングフレームワーク (NCCL、Gloo) がCPUボトルネックなしに高スループットのノード間GPU通信を実現する方法です。"
+    },
+    "25": {
+      "text": "シナリオ完了 — GPUDirect RDMAによるGPUメモリへのデータ転送",
+      "detail": "まとめ: 2つの独立した100GbEリンクがアップしました (AIノード↔スイッチ、スイッチ↔リモートサーバ)。AIノードがcuMemAllocでGPU HBMを割り当て、nvidia-peermemをロードしてGPUメモリをRDMAサブシステムに公開し、GPU BAR1アドレスに対してIB Memory Regionを登録し、RC QP接続を確立しました。リモートサーバが4MBのRDMA WRITEを実行し、GPU HBMに直接着地 — AIノードのCPU関与ゼロ、ホストDRAMのバウンスなし。続いてリモートサーバがRDMA READを実行し、GPU HBMから直接データを取得 — こちらもCPU関与ゼロです。\n要点: GPUDirect RDMAはデータパスからCPUを完全に排除します。従来のRDMA + cudaMemcpyでは、すべてのバイトがPCIeバスを2回横断します (ネットワーク→ホストDRAM、次にホストDRAM→GPU)。GPUDirect RDMAでは各バイトがPCIeを1回だけ横断します (ネットワーク→GPU直接)。これによりPCIe帯域幅消費が半減し、CPUオーバーヘッドが排除されます — 数百のGPUにわたる分散AIトレーニングのスケーリングに不可欠です。"
+    }
+  }
+}

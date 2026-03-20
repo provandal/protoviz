@@ -1,0 +1,94 @@
+{
+  "tcp-3way-handshake-data-fin": {
+    "title": "TCP: 3-Way Handshake → Transferência de Dados → FIN Teardown",
+    "description": "Ciclo de vida completo de uma conexão TCP: 3-way handshake (SYN → SYN-ACK → ACK) com sincronização de ISN, transferência de dados HTTP request/response com rastreamento de sequence numbers, e encerramento gracioso com 4-way FIN teardown e TIME_WAIT."
+  },
+  "pfc-ecn-dcqcn-congestion-control": {
+    "title": "Lossless Ethernet: PFC Pause → ECN Marking → DCQCN Rate Control",
+    "description": "Como o RoCEv2 alcança transporte sem perdas: PFC PAUSE frames evitam buffer overflow, ECN marca pacotes com Congestion Experienced em vez de descartá-los, e DCQCN fecha o loop de feedback com redução de taxa por CNP e recuperação por timer."
+  },
+  "nvme-rdma-discovery-io": {
+    "title": "NVMe-oF/RDMA: Discovery → Fabrics Connect → NVMe Write & Read via RoCEv2",
+    "description": "NVMe over Fabrics completo usando transporte RDMA: setup de conexão CM, Fabrics Connect ao Discovery Controller, obtenção de Discovery Log via RDMA WRITE, setup de filas do IO Controller, NVMe Write (dados via RDMA READ) e NVMe Read (dados via RDMA WRITE). Caminho de dados zero-copy do início ao fim."
+  },
+  "iscsi-login-discovery-io": {
+    "title": "iSCSI: Login → Discovery → SCSI INQUIRY → WRITE(10) → READ(10)",
+    "description": "Sessão iSCSI completa: conexão TCP, Login em duas fases (segurança + operacional), SCSI INQUIRY para descobrir o LUN, WRITE(10) com controle de fluxo R2T e READ(10). O protocolo SAN mais amplamente implantado — TCP/IP padrão, sem hardware especial."
+  },
+  "roce-v2-rc-connection-rdma-write-read": {
+    "title": "RoCEv2 RC: Link Training → QP Connection → RDMA WRITE → RDMA READ",
+    "description": "Troca completa RoCEv2 Reliable Connected sobre 100GbE: link físico, ARP, bring-up CM, RDMA WRITE, RDMA READ."
+  },
+  "fc-fabric-login-scsi-io": {
+    "title": "FC Fabric: FLOGI → Name Server → PLOGI → PRLI → SCSI I/O",
+    "description": "Sequência completa de login Fibre Channel SAN através de um fabric switch: link físico, FLOGI, descoberta via Name Server, PLOGI, PRLI, seguido de SCSI INQUIRY, WRITE(10) e READ(10)."
+  },
+  "nvme-tcp-cdc-discovery-io": {
+    "title": "NVMe/TCP: mDNS → CDC Discovery → DIM → Subsystem Connect → I/O",
+    "description": "Fluxo completo NVMe over TCP com descoberta em três níveis: mDNS → CDC (registro DIM, referências DDC) → DDC no storage (detalhes do IO Controller) → conexão IOC, Identify Controller/Namespace, NVMe Write e Read."
+  },
+  "gpudirect-rdma-write-to-gpu": {
+    "title": "GPUDirect RDMA: RoCEv2 WRITE Direto na Memória GPU",
+    "description": "GPUDirect RDMA com RDMA WRITE chegando diretamente na GPU HBM via nvidia-peermem, sem passar pela DRAM do host. Cobre cuMemAlloc, exposição GPU BAR1, registro de MR na memória GPU e o caminho de dados DMA zero-copy."
+  },
+  "gpudirect-storage-nvme-to-gpu": {
+    "title": "GPUDirect Storage: NVMe Read Direto na Memória GPU (PCIe Local)",
+    "description": "GPUDirect Storage (GDS) com leitura de dados do NVMe SSD diretamente na memória GPU via cuFile API e nvidia-fs, sem passar pelo page cache da CPU. Compara o caminho de storage tradicional (3 cópias) com DMA P2P zero-copy do GDS."
+  },
+  "s3-rdma-object-put-get": {
+    "title": "S3/RDMA: Object PUT e GET via RoCEv2 (Arquitetura de Biblioteca NVIDIA)",
+    "description": "Fluxo S3/RDMA pré-padrão usando a biblioteca NVIDIA RDMA for S3-compatible storage: Library Init, conexão QP via UD SEND, S3 PUT (invertido — cliente faz RDMA WRITE no servidor), S3 GET (servidor faz RDMA WRITE no cliente). Caminho de dados zero CPU."
+  },
+  "gpudirect-storage-rdma-remote": {
+    "title": "GPUDirect Storage: NVMe-oF Read/Write Remoto na Memória GPU via RoCEv2",
+    "description": "GPUDirect Storage sobre fabric RoCEv2: cuFileRead aciona NVMe-oF READ com RDMA WRITE colocando dados diretamente na GPU HBM; cuFileWrite aciona NVMe-oF WRITE com RDMA READ puxando dados da GPU HBM. Zero bounce na DRAM do host."
+  },
+  "arp-ndp-resolution": {
+    "title": "ARP & NDP: Resolução de Endereço IPv4 e Descoberta de Vizinhança IPv6",
+    "description": "Comparação lado a lado: ARP broadcast Request/Reply e Gratuitous ARP (IPv4) vs NDP multicast solicited-node Neighbor Solicitation/Advertisement e Router Advertisement com SLAAC (IPv6). Mostra por que o NDP é mais escalável e seguro que o ARP."
+  },
+  "smb-direct-negotiate-rdma-io": {
+    "title": "SMB Direct: Negotiate → Canal RDMA → File Read & Write via RoCEv2",
+    "description": "SMB Direct (MS-SMBD) sobre RoCEv2: negociação SMB Direct, dialect SMB 3.1.1, setup de session/tree, depois file WRITE (servidor faz RDMA READ do buffer do cliente) e READ (servidor faz RDMA WRITE no buffer do cliente). Caminho de dados zero-copy para workloads Hyper-V over SMB."
+  },
+  "tls-1.3-handshake": {
+    "title": "TLS 1.3: Handshake Completo → Dados de Aplicação Criptografados → Alert Close",
+    "description": "Fluxo completo TLS 1.3 (RFC 8446): TCP handshake, TLS handshake de 1-RTT com troca de chaves x25519 (ClientHello key_share + ServerHello key_share), voo criptografado do servidor (EncryptedExtensions + Certificate + CertificateVerify + Finished), dados de aplicação sobre AES-256-GCM e encerramento gracioso com close_notify."
+  },
+  "gpu-to-gpu-rdma-tensor-transfer": {
+    "title": "GPU-to-GPU RDMA: Transferência de Tensor entre Nós via RoCEv2",
+    "description": "Transferência de tensor GPU-to-GPU ponta a ponta usando GPUDirect RDMA sobre RoCEv2: CUDA alloc, exposição nvidia-peermem BAR1, registro de MR, bring-up de QP, RDMA WRITE (push) e RDMA READ (pull) — tudo GPU HBM para GPU HBM, zero bounce na DRAM do host."
+  },
+  "checking-email": {
+    "title": "Verificando seu E-mail: O que Realmente Acontece ao Clicar na Caixa de Entrada",
+    "description": "Você clica no bookmark do Gmail. Antes de um único e-mail aparecer, ~20 trocas de protocolo acontecem em menos de 500ms: DNS lookup, TCP 3-way handshake, criptografia TLS 1.3 e carregamento multiplexado HTTP/2 de HTML, JavaScript e dados da caixa de entrada — tudo em uma única conexão."
+  },
+  "nccl-allreduce-rocev2": {
+    "title": "NCCL AllReduce: Algoritmo Ring via RoCEv2 (4 GPUs)",
+    "description": "NCCL Ring-AllReduce em 4 nós GPU via RoCEv2: fase Reduce-Scatter (3 passos, acumular somas parciais de gradientes) e fase AllGather (3 passos, propagar resultado final). Toda movimentação de dados via GPUDirect RDMA WRITE — GPU HBM para GPU HBM, zero cópias na CPU."
+  },
+  "ipv6-slaac-autoconfiguration": {
+    "title": "IPv6 SLAAC: Router Advertisement → DAD → Autoconfiguração de Endereço",
+    "description": "Como hosts IPv6 configuram seus próprios endereços sem servidor DHCP: Router Solicitation, Router Advertisement com informação de prefixo, geração de endereço EUI-64 e privacy, Duplicate Address Detection via multicast solicited-node e RDNSS para DNS."
+  },
+  "ipv6-vs-ipv4-header-comparison": {
+    "title": "IPv6 vs IPv4 Header: Por que o IPv6 É Mais Rápido no Fio",
+    "description": "Comparação lado a lado: header IPv4 de 13 campos e comprimento variável com recálculo de checksum a cada hop vs header IPv6 de 8 campos fixos em 40 bytes, sem checksum e sem fragmentação no roteador."
+  },
+  "happy-eyeballs-dual-stack": {
+    "title": "Happy Eyeballs: Como Seu Navegador Escolhe entre IPv4 e IPv6",
+    "description": "O algoritmo Happy Eyeballs (RFC 8305) em ação: consultas DNS paralelas AAAA+A, corrida de conexão com preferência IPv6 e timer de fallback de 250ms, e fallback transparente para IPv4 quando o IPv6 falha."
+  },
+  "dhcpv6-stateful-stateless": {
+    "title": "DHCPv6: Stateful vs Stateless — Quando o RA Não É Suficiente",
+    "description": "Três modos DHCPv6 lado a lado: Stateless (O=1, M=0) para informações DNS/NTP junto com SLAAC, Stateful (M=1) com troca completa SARR de 4 mensagens para atribuição gerenciada de endereços, e Prefix Delegation onde o ISP delega um /48 para o roteador doméstico."
+  },
+  "nat64-dns64-ipv6-only-to-ipv4": {
+    "title": "NAT64/DNS64: Cliente IPv6-Only Comunicando com Servidor IPv4-Only",
+    "description": "A principal tecnologia federal de transição IPv6: DNS64 sintetiza registros AAAA a partir de registros A usando o prefixo bem conhecido 64:ff9b::/96, NAT64 traduz pacotes IPv6 para IPv4 no fio, e 464XLAT lida com apps legados que têm endereços IPv4 hardcoded."
+  },
+  "ipv6-path-mtu-discovery": {
+    "title": "IPv6 Path MTU Discovery: Sem Mais Fragmentação no Roteador",
+    "description": "Por que o PMTUD é obrigatório no IPv6: roteadores não podem fragmentar, então mensagens ICMPv6 Packet Too Big informam a origem para usar pacotes menores."
+  }
+}

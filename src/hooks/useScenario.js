@@ -1,10 +1,16 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import yaml from 'js-yaml';
+import i18n from '../i18n/i18n';
 import useViewerStore from '../store/viewerStore';
 import { normalizeScenario } from '../utils/normalizeScenario';
+import { applyScenarioTranslation } from '../utils/scenarioTranslation';
 
 export default function useScenario(slug) {
   const setScenario = useViewerStore(s => s.setScenario);
+
+  // Keep the last normalized (English) scenario so we can re-translate
+  // when the language changes without re-fetching the YAML.
+  const normalizedRef = useRef(null);
 
   useEffect(() => {
     if (!slug) return;
@@ -39,10 +45,15 @@ export default function useScenario(slug) {
 
         // Parse and normalize
         const raw = yaml.load(yamlText);
-        const scenario = normalizeScenario(raw);
+        const normalized = normalizeScenario(raw);
+        normalizedRef.current = normalized;
+
+        // Apply translation overlay for the current language
+        const locale = i18n.language || 'en';
+        const translated = await applyScenarioTranslation(normalized, slug, locale);
 
         if (!cancelled) {
-          setScenario(scenario);
+          setScenario(translated);
         }
       } catch (err) {
         if (!cancelled) {
@@ -53,5 +64,24 @@ export default function useScenario(slug) {
 
     load();
     return () => { cancelled = true; };
+  }, [slug, setScenario]);
+
+  // Re-apply translation when the i18n language changes while a scenario is loaded.
+  useEffect(() => {
+    function onLanguageChanged(lng) {
+      const normalized = normalizedRef.current;
+      if (!normalized || !slug) return;
+
+      applyScenarioTranslation(normalized, slug, lng).then(translated => {
+        // Only update if we're still looking at the same scenario
+        const current = useViewerStore.getState();
+        if (current.currentSlug === slug) {
+          setScenario(translated);
+        }
+      });
+    }
+
+    i18n.on('languageChanged', onLanguageChanged);
+    return () => { i18n.off('languageChanged', onLanguageChanged); };
   }, [slug, setScenario]);
 }

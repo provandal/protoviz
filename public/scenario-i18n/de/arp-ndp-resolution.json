@@ -1,0 +1,50 @@
+{
+  "meta": {
+    "title": "ARP & NDP: IPv4-Adressaufl\u00f6sung und IPv6-Neighbor-Discovery",
+    "description": "Seite-an-Seite-Vergleich von IPv4-ARP (RFC 826) und IPv6-NDP (RFC 4861). Beide Protokolle l\u00f6sen das gleiche Problem \u2014 Zuordnung einer Netzwerkschicht-Adresse (IP) zu einer Sicherungsschicht-Adresse (MAC) \u2014 aber mit grunds\u00e4tzlich unterschiedlichen Ans\u00e4tzen. ARP verwendet Broadcast; NDP verwendet Multicast und basiert auf ICMPv6. Dieses Szenario behandelt: ARP Request/Reply, Gratuitous ARP, NDP Neighbor Solicitation/Advertisement und NDP Router Advertisement.",
+    "learning_objectives": [
+      "Verstehen, warum Adressaufl\u00f6sung ben\u00f6tigt wird: IP-Adressen vs. MAC-Adressen",
+      "Einen vollst\u00e4ndigen ARP Request \u2192 Reply-Austausch und ARP-Tabellen-Aktualisierung nachverfolgen",
+      "Sehen, warum ARP Broadcast (All-Hosts) verwendet und die Skalierbarkeitsimplikationen",
+      "Gratuitous ARP f\u00fcr IP-Konflikterkennung und Failover verstehen",
+      "NDP Neighbor Solicitation vergleichen: Solicited-Node-Multicast vs. ARP-Broadcast",
+      "Sehen, wie NDP ICMPv6 nutzt, anstatt ein separates Protokoll zu sein",
+      "NDP Router Advertisement f\u00fcr Pr\u00e4fix-/Gateway-Erkennung (SLAAC) nachverfolgen",
+      "Erkennen, warum NDP sicherer und skalierbarer als ARP ist"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Physischer Link aktiv \u2014 beide Hosts im gleichen Ethernet-Segment",
+      "detail": "Beide Hosts befinden sich im gleichen Layer-2-Netzwerk (VLAN oder flaches Ethernet). Host A hat IPv4-Adresse 192.168.1.10 und IPv6-Adresse fd00::10. Host B hat IPv4-Adresse 192.168.1.20 und IPv6-Adresse fd00::20.\nWenn Host A ein IP-Paket an Host B senden muss, muss er zuerst die MAC-Adresse von Host B ermitteln. Hier kommt ARP (IPv4) oder NDP (IPv6) ins Spiel."
+    },
+    "1": {
+      "text": "ARP Request \u2014 \u201eWer hat 192.168.1.20? Sag es 192.168.1.10\u201c",
+      "detail": "Host A muss an 192.168.1.20 senden, kennt aber dessen MAC nicht. Er sendet einen ARP Request als Broadcast an FF:FF:FF:FF:FF:FF (jeder Host im LAN).\nWichtige ARP-Eigenschaften: \u2022 Arbeitet an der Layer-2/3-Grenze mit eigenem EtherType (0x0806) \u2022 Verwendet Broadcast \u2014 jeder Host im L2-Segment muss ihn verarbeiten \u2022 Keine Authentifizierung \u2014 jeder Host kann jede IP beanspruchen (ARP-Spoofing) \u2022 Zustandslos \u2014 kein Handshake, keine Sequenznummern \u2022 28-Byte-Nutzlast (winzig, aber Broadcast-Kosten skalieren mit der Host-Anzahl)\nDer Switch flutet den Broadcast \u00fcber alle Ports. In einem 1000-Host-Subnetz empfangen und verarbeiten alle 1000 Hosts diesen Frame \u2014 obwohl nur Host B antworten muss."
+    },
+    "2": {
+      "text": "ARP Reply \u2014 \u201e192.168.1.20 ist bei AA:BB:CC:00:00:0B\u201c",
+      "detail": "Host B erkennt seine eigene IP im ARP Request und antwortet mit einem Unicast-ARP-Reply, der seine MAC-Adresse enth\u00e4lt.\nBeide Hosts aktualisieren ihre ARP-Caches: \u2022 Host A: 192.168.1.20 \u2192 AA:BB:CC:00:00:0B (aus Reply) \u2022 Host B: 192.168.1.10 \u2192 AA:BB:CC:00:00:0A (aus Request)\nARP-Cache-Eintr\u00e4ge haben ein Timeout (typischerweise 30-300 Sekunden unter Linux, konfigurierbar via net.ipv4.neigh.default.gc_stale_time). Nach dem Timeout l\u00f6st das n\u00e4chste Paket einen neuen ARP Request aus."
+    },
+    "3": {
+      "text": "Gratuitous ARP \u2014 Host A k\u00fcndigt seine IP\u2192MAC-Zuordnung an",
+      "detail": "Ein Gratuitous ARP ist ein ARP Request, bei dem Sender-IP = Ziel-IP. Er dient mehreren Zwecken:\n1. IP-KONFLIKTERKENNUNG (RFC 5227): Wenn Host A seine IP erstmals konfiguriert, sendet er GARP. Wenn ein anderer Host antwortet, gibt es einen Konflikt \u2014 die IP ist bereits in Verwendung.\n2. ARP-CACHE-AKTUALISIERUNG: Alle Hosts, die bereits einen Eintrag f\u00fcr 192.168.1.10 haben, aktualisieren ihre gecachte MAC. Dies ist entscheidend f\u00fcr: \u2022 NIC-Failover (neue MAC, gleiche IP) \u2022 VM-Live-Migration (VM wechselt zu neuem Host, andere NIC) \u2022 Floating-IP-Failover (keepalived/VRRP)\n3. SWITCH-MAC-TABELLE: Der Switch lernt die MAC von Host A auf dem richtigen Port, n\u00fctzlich nach Port\u00e4nderungen oder Neustarts.\nKeine Antwort wird erwartet (es sei denn, es gibt einen Konflikt)."
+    },
+    "4": {
+      "text": "NDP Neighbor Solicitation \u2014 \u201eWer hat fd00::20?\u201c (Solicited-Node-Multicast)",
+      "detail": "IPv6-\u00c4quivalent des ARP Request, aber grunds\u00e4tzlich anders:\n1. MULTICAST, NICHT BROADCAST: Die NS wird an die Solicited-Node-Multicast-Adresse ff02::1:ff00:0020 gesendet (Ethernet: 33:33:FF:00:00:20). Nur Hosts, deren IPv6-Adresse auf ...00:0020 endet, h\u00f6ren auf diese Gruppe. In der Praxis verarbeiten meist nur 1-2 Hosts den Frame.\n2. BASIERT AUF ICMPv6: NDP ist ICMPv6 Typ 135/136, kein separates Protokoll. Dadurch profitiert es von IPv6-Sicherheitsfeatures (IPsec, SEND) und ben\u00f6tigt keinen eigenen EtherType.\n3. HOP LIMIT = 255: Obligatorisch. Wenn ein Paket mit Hop Limit < 255 ankommt, wurde es geroutet (nicht link-lokal) und muss verworfen werden. Dies verhindert Off-Link-NDP-Spoofing \u2014 eine signifikante Sicherheitsverbesserung gegen\u00fcber ARP.\n4. SOURCE LINK-LAYER OPTION: Host A f\u00fcgt seine eigene MAC in die NS ein, sodass Host B ohne separate Aufl\u00f6sung antworten kann.\nVergleich f\u00fcr ein 1000-Host-Subnetz: \u2022 ARP: alle 1000 Hosts verarbeiten den Broadcast-Request \u2022 NDP: ~1 Host verarbeitet die Multicast-Solicitation"
+    },
+    "5": {
+      "text": "NDP Neighbor Advertisement \u2014 \u201efd00::20 ist bei AA:BB:CC:00:00:0B\u201c",
+      "detail": "Host B antwortet mit einem Neighbor Advertisement (ICMPv6 Typ 136): \u2022 Solicited-Flag (S=1): Dies ist eine Antwort auf eine NS \u2022 Override-Flag (O=1): Bestehende Cache-Eintr\u00e4ge aktualisieren \u2022 Router-Flag (R=0): Host B ist kein Router\nHost A aktualisiert seinen Neighbor-Cache:\n  fd00::20 \u2192 AA:BB:CC:00:00:0B (Zustand: REACHABLE)\nNDP-Neighbor-Cache-Zust\u00e4nde (RFC 4861 Abschnitt 7.3.2): \u2022 INCOMPLETE: NS gesendet, wartet auf NA \u2022 REACHABLE: K\u00fcrzlich best\u00e4tigt (innerhalb von ReachableTime) \u2022 STALE: Nicht k\u00fcrzlich best\u00e4tigt, nutzbar, aber wird bald abgefragt \u2022 DELAY: Wartet auf Oberschicht-Best\u00e4tigung \u2022 PROBE: Sendet aktiv Unicast-NS zur erneuten Best\u00e4tigung"
+    },
+    "6": {
+      "text": "NDP Router Advertisement \u2014 Pr\u00e4fix fd00::/64 f\u00fcr SLAAC",
+      "detail": "Router senden periodisch Router Advertisements (RA) an ff02::1 (All-Nodes-Multicast). Hosts fordern RAs auch durch Router Solicitations (RS) beim Booten an.\nDas RA teilt Hosts mit: \u2022 Standard-Gateway: die Link-Local-Adresse des Routers (fe80::1) \u2022 Netzwerk-Pr\u00e4fix: fd00::/64 mit SLAAC-Autonomous-Flag \u2022 DNS-Server (wenn RDNSS-Option enthalten) \u2022 MTU (wenn abweichend vom Standard 1500)\nSLAAC (Stateless Address Autoconfiguration, RFC 4862): Host nimmt das /64-Pr\u00e4fix + generiert eine 64-Bit-Interface-ID (aus EUI-64 oder Privacy Random) = vollst\u00e4ndige IPv6-Adresse. Kein DHCP-Server f\u00fcr grundlegende Konnektivit\u00e4t erforderlich.\nARP hat KEIN \u00c4quivalent \u2014 IPv4 ben\u00f6tigt DHCP oder statische Konfiguration f\u00fcr Adresszuweisung und Gateway-Erkennung. NDP vereint Adressaufl\u00f6sung, Router-Erkennung, Pr\u00e4fix-Ank\u00fcndigung und Redirect-Funktionalit\u00e4t in einem Protokoll."
+    },
+    "7": {
+      "text": "Szenario abgeschlossen \u2014 ARP vs. NDP-Vergleich",
+      "detail": "ARP (IPv4, RFC 826): \u2022 Separates Protokoll mit EtherType 0x0806 \u2022 Verwendet BROADCAST \u2014 alle Hosts im L2-Segment verarbeiten jeden Request \u2022 Keine Authentifizierung \u2014 anf\u00e4llig f\u00fcr ARP-Spoofing/Poisoning \u2022 F\u00fchrt nur Adressaufl\u00f6sung durch (IP \u2192 MAC) \u2022 Zustandsloser Cache mit einfachem Timeout\nNDP (IPv6, RFC 4861): \u2022 Basiert auf ICMPv6 (Typen 133-137) \u2022 Verwendet SOLICITED-NODE-MULTICAST \u2014 nur ~1 Host verarbeitet jede NS \u2022 Hop Limit 255 verhindert Off-Link-Angriffe; SEND (RFC 3971) optional \u2022 F\u00fchrt Adressaufl\u00f6sung UND Router-Erkennung, SLAAC, Redirect durch \u2022 Zustandsbehafteter Neighbor-Cache (INCOMPLETE \u2192 REACHABLE \u2192 STALE \u2192 PROBE) \u2022 Duplicate Address Detection (DAD) eingebaut\nGratuitous ARP: \u2022 Request, bei dem Sender-IP = Ziel-IP \u2022 Verwendet f\u00fcr: Konflikterkennung, Failover, Cache-Aktualisierung \u2022 NDP-\u00c4quivalent: unaufgefordertes NA mit Override-Flag\nIn Enterprise-/Rechenzentrum-Netzwerken: \u2022 ARP-Storms sind ein reales Skalierbarkeitsproblem in gro\u00dfen L2-Dom\u00e4nen \u2022 IPv6-NDPs Multicast-Ansatz reduziert Broadcast-Overhead \u2022 Beide k\u00f6nnen abgesichert werden: ARP mit Dynamic ARP Inspection (DAI), NDP mit RA Guard und SEND"
+    }
+  }
+}

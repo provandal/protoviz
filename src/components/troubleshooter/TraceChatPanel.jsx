@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { PAYLOAD_FIELD_KEYS } from '../../utils/sensitiveDataDetector';
 
 const MODELS = [
@@ -102,6 +103,7 @@ Be concise but thorough. If the user asks about a specific packet, explain its r
 }
 
 export default function TraceChatPanel({ packets, findings, selectedPacketIndex }) {
+  const { t } = useTranslation();
   const [messages, setMessages] = useState([]);
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('protoviz_api_key') || '');
   const [model, setModel] = useState(() => localStorage.getItem('protoviz_chat_model') || 'claude-sonnet-4-6');
@@ -241,7 +243,7 @@ export default function TraceChatPanel({ packets, findings, selectedPacketIndex 
         flexShrink: 0,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ color: '#60a5fa', fontSize: 11, fontWeight: 800 }}>TRACE CHAT</span>
+          <span style={{ color: '#60a5fa', fontSize: 11, fontWeight: 800 }}>{t('traceChat.title')}</span>
           <select
             value={model}
             onChange={e => saveModel(e.target.value)}
@@ -260,13 +262,13 @@ export default function TraceChatPanel({ packets, findings, selectedPacketIndex 
             onClick={() => setShowSettings(s => !s)}
             style={{ background: 'none', border: '1px solid #334155', color: '#64748b', padding: '2px 6px', borderRadius: 3, cursor: 'pointer', fontSize: 10 }}
           >
-            {apiKey ? '🔑' : 'Key'}
+            {apiKey ? '🔑' : t('traceChat.key')}
           </button>
           <button
             onClick={() => { setMessages([]); setError(null); }}
             style={{ background: 'none', border: '1px solid #334155', color: '#64748b', padding: '2px 6px', borderRadius: 3, cursor: 'pointer', fontSize: 10 }}
           >
-            Clear
+            {t('traceChat.clear')}
           </button>
         </div>
       </div>
@@ -275,12 +277,12 @@ export default function TraceChatPanel({ packets, findings, selectedPacketIndex 
       {(showSettings || needsApiKey) && (
         <div style={{ padding: 12, background: '#0f172a', borderBottom: '1px solid #1e293b', flexShrink: 0 }}>
           <div style={{ color: '#94a3b8', fontSize: 10, marginBottom: 6 }}>
-            Anthropic API Key {apiKey ? '(set)' : '(required)'}
+            {t('traceChat.apiKeyLabel')} {apiKey ? t('traceChat.apiKeySet') : t('traceChat.apiKeyRequired')}
           </div>
           <div style={{ display: 'flex', gap: 4 }}>
             <input
               type="password"
-              placeholder="sk-ant-..."
+              placeholder={t('traceChat.apiKeyPlaceholder')}
               value={keyInput}
               onChange={e => setKeyInput(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && saveApiKey(keyInput)}
@@ -297,11 +299,11 @@ export default function TraceChatPanel({ packets, findings, selectedPacketIndex 
                 fontSize: 10, padding: '4px 10px', borderRadius: 4, cursor: 'pointer',
               }}
             >
-              Save
+              {t('traceChat.save')}
             </button>
           </div>
           <div style={{ color: '#475569', fontSize: 9, marginTop: 4 }}>
-            Stored in localStorage. Sent only to api.anthropic.com.
+            {t('traceChat.apiKeyStorage')}
           </div>
         </div>
       )}
@@ -311,14 +313,14 @@ export default function TraceChatPanel({ packets, findings, selectedPacketIndex 
         {messages.length === 0 && !needsApiKey && (
           <div style={{ padding: 16, textAlign: 'center' }}>
             <div style={{ color: '#475569', fontSize: 11, marginBottom: 8 }}>
-              Ask about your trace — protocol issues, packet behavior, troubleshooting advice.
+              {t('traceChat.emptyHint')}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               {[
-                'What went wrong in this trace?',
-                'Why is there a TCP RST?',
-                'Explain the RoCE PSN gap',
-                'What should I check next?',
+                t('traceChat.suggestWrong'),
+                t('traceChat.suggestRst'),
+                t('traceChat.suggestPsn'),
+                t('traceChat.suggestNext'),
               ].map(q => (
                 <button
                   key={q}
@@ -358,7 +360,7 @@ export default function TraceChatPanel({ packets, findings, selectedPacketIndex 
               wordBreak: 'break-word',
             }}>
               {msg.content || (streaming && i === messages.length - 1 ? (
-                <span style={{ color: '#475569' }}>Thinking...</span>
+                <span style={{ color: '#475569' }}>{t('traceChat.thinking')}</span>
               ) : null)}
             </div>
           </div>
@@ -387,7 +389,7 @@ export default function TraceChatPanel({ packets, findings, selectedPacketIndex 
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={needsApiKey ? 'Set API key above...' : 'Ask about this trace...'}
+            placeholder={needsApiKey ? t('traceChat.setKeyPlaceholder') : t('traceChat.inputPlaceholder')}
             disabled={needsApiKey || streaming}
             rows={2}
             style={{
@@ -410,7 +412,7 @@ export default function TraceChatPanel({ packets, findings, selectedPacketIndex 
                 flex: 1,
               }}
             >
-              {streaming ? 'Stop' : 'Send'}
+              {streaming ? t('traceChat.stop') : t('traceChat.send')}
             </button>
           </div>
         </div>

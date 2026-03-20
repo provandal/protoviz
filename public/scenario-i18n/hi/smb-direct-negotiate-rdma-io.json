@@ -1,0 +1,34 @@
+{
+  "meta": {
+    "title": "SMB Direct: Negotiate → RDMA Channel → RoCEv2 पर File Read & Write",
+    "description": "SMB Direct (MS-SMBD) RDMA ट्रांसपोर्ट (RoCEv2, iWARP) पर SMB 3.x फ़ाइल शेयरिंग सक्षम करता है। TCP-आधारित SMB नेगोशिएशन RDMA क्षमता खोजने के बाद, कनेक्शन RDMA चैनल पर माइग्रेट होता है। फ़ाइल reads RDMA READ (सर्वर क्लाइंट बफर से pull) और फ़ाइल writes RDMA WRITE (सर्वर क्लाइंट बफर में push) उपयोग करते हैं, दोनों CPU डेटा पथ को बायपास करते हुए।",
+    "learning_objectives": [
+      "समझें कि SMB3 NEGOTIATE के दौरान RDMA क्षमता कैसे खोजता है",
+      "RDMA चैनल स्थापित करने वाला SMB Direct (MS-SMBD) नेगोशिएशन देखें",
+      "फॉलो करें कि RDMA चैनल सक्रिय होने पर फ़ाइल डेटा TCP को पूरी तरह कैसे बायपास करता है",
+      "RDMA के साथ SMB2 WRITE ट्रेस करें: क्लाइंट बफर descriptor प्रदान करता है, सर्वर RDMA READ करता है",
+      "RDMA के साथ SMB2 READ ट्रेस करें: सर्वर RDMA WRITE करता है डेटा क्लाइंट के रजिस्टर्ड बफर में",
+      "फ्लो कंट्रोल के लिए SMB Direct credit प्रबंधन समझें",
+      "CPU ऑफलोड लाभ समझें: फ़ाइल सर्वर डेटा पथ ज़ीरो-कॉपी है"
+    ]
+  },
+  "timeline": {
+    "0": { "text": "भौतिक लिंक अप — SMB Direct के लिए 100GbE लॉसलेस फैब्रिक", "detail": "दोनों होस्ट PFC सक्षम (RoCEv2 लॉसलेस ट्रांसपोर्ट के लिए आवश्यक) 100GbE के माध्यम से जुड़ते हैं। Windows पर SMB Direct सिस्टम में रजिस्टर्ड NetworkDirect (ND) providers के माध्यम से RDMA-सक्षम NICs डिटेक्ट करता है।\nSMB Direct समर्थित: • Windows Server 2012 और बाद में (built-in) • Windows 10/11 Enterprise/Pro (client RDMA) • Linux (ksmbd/Samba 4.x RDMA support)" },
+    "1": { "text": "RDMA QPs कनेक्ट — SMB Direct RDMA चैनल स्थापित करता है", "detail": "SMB Direct नेगोशिएशन से पहले, underlying RDMA कनेक्शन स्थापित होना चाहिए। क्लाइंट सर्वर के RDMA listener (पोर्ट 5445) से CM REQ/REP/RTU (या iWARP उपयोग करने पर iWARP MPA) के माध्यम से कनेक्ट करता है।\nQP RTS स्थिति पहुँचने पर, RDMA SEND/RECV पर SMB Direct नेगोशिएशन शुरू हो सकती है।" },
+    "2": { "text": "SMB Direct Negotiate Request — क्लाइंट RDMA पैरामीटर प्रस्तावित करता है", "detail": "क्लाइंट RDMA SEND पर SMB Direct Negotiate मैसेज भेजता है: • Credits: 255 (SEND-आधारित मैसेज के लिए फ्लो कंट्रोल) • Preferred Send Size: 1364 बाइट • Max Fragmented Size: 1 MB (बड़े SMB मैसेज SENDs में विभाजित) • Max Read/Write Size: 1 MB (RDMA READ/WRITE बल्क ट्रांसफर के लिए)" },
+    "3": { "text": "SMB Direct Negotiate Response — RDMA चैनल स्थापित", "detail": "सर्वर SMB Direct पैरामीटर स्वीकार करता है। RDMA चैनल अब सक्रिय है — सभी बाद के SMB2 मैसेज TCP की बजाय RDMA SEND/RECV पर ले जाए जाएँगे।\nमुख्य negotiate किए गए मान: • Credits: 255 (bidirectional) • Max RDMA Read/Write: 1 MB" },
+    "4": { "text": "SMB2 NEGOTIATE — RDMA transform क्षमता के साथ dialect 3.1.1", "detail": "मानक SMB2 NEGOTIATE एक्सचेंज, लेकिन अब SMB Direct RDMA चैनल पर (RDMA SEND के माध्यम से)। क्लाइंट SMB 3.1.1 प्रस्तावित करता है और RDMA Transform negotiate context शामिल करता है, जो SMB 3.1.1 में RDMA payloads के encryption सक्षम करता है।" },
+    "5": { "text": "SMB2 NEGOTIATE Response — SMB 3.1.1 पुष्टि", "detail": "सर्वर SMB 3.1.1 dialect चुनता है। MULTI_CHANNEL और LARGE_MTU क्षमताएँ पुष्टि।" },
+    "6": { "text": "SMB2 SESSION_SETUP + TREE_CONNECT — authenticate और share मैप करें", "detail": "मानक SMB2 session और tree connect, RDMA पर। SESSION_SETUP Kerberos (domain) या NTLM के माध्यम से authenticate करता है। TREE_CONNECT फ़ाइल एक्सेस के लिए \\\\server\\share$ मैप करता है।\nHyper-V over SMB परिदृश्य में, share VHDx वर्चुअल डिस्क फ़ाइलें होस्ट करता है। लाइव VM स्टोरेज I/O के लिए SMB Direct अनुशंसित ट्रांसपोर्ट है।" },
+    "7": { "text": "Session स्थापित, share कनेक्ट", "detail": "Session और tree connect सफल। क्लाइंट अब फ़ाइलें खोल सकता है।" },
+    "8": { "text": "SMB2 CREATE — read/write के लिए vm01.vhdx खोलें", "detail": "क्लाइंट Hyper-V वर्चुअल डिस्क फ़ाइल खोलता है। यह विशिष्ट SMB Direct वर्कलोड है: Hyper-V VM डिस्क इमेज रिमोट SMB shares पर स्टोर करता है, और सभी VM I/O SMB Direct पर बहता है।" },
+    "9": { "text": "CREATE response — vm01.vhdx के लिए file handle (100 GB)", "detail": "सर्वर persistent file handle लौटाता है।" },
+    "10": { "text": "RDMA बफर descriptor के साथ SMB2 WRITE — vm01.vhdx में 1 MB", "detail": "क्लाइंट RDMA SEND के माध्यम से SMB2 WRITE कमांड भेजता है, लेकिन inline डेटा की बजाय, SMB_DIRECT_BUFFER_DESCRIPTOR_V1 शामिल करता है जिसमें: • रजिस्टर्ड बफर का Memory offset (virtual address) • RDMA एक्सेस के लिए R_Key (remote key) • Data length\nChannel फ़ील्ड = SMB2_CHANNEL_RDMA_V1 सर्वर को बताता है कि RDMA READ के माध्यम से डेटा लाए।" },
+    "11": { "text": "RDMA READ — सर्वर क्लाइंट मेमोरी से 1 MB write डेटा लाता है", "detail": "सर्वर का RNIC क्लाइंट के रजिस्टर्ड मेमोरी बफर से सीधे 1 MB write डेटा लाने के लिए RDMA READ जारी करता है। कोई भी CPU डेटा ट्रांसफर में शामिल नहीं — लॉसलेस RoCEv2 फैब्रिक पर DMA engine से DMA engine।\nRDMA READ पूरा होने के बाद, सर्वर के पास फ़ाइल डेटा अपने लोकल बफर में है और डिस्क पर लिख सकता है।" },
+    "12": { "text": "SMB2 WRITE Response — 1 MB सफलतापूर्वक लिखा गया", "detail": "सर्वर 1 MB लिखने की पुष्टि करता है। पूरा डेटा पथ ज़ीरो-कॉपी था।" },
+    "13": { "text": "RDMA बफर descriptor के साथ SMB2 READ — vm01.vhdx से 1 MB", "detail": "क्लाइंट Channel = SMB2_CHANNEL_RDMA_V1 और बफर descriptor के साथ SMB2 READ भेजता है। सर्वर फ़ाइल डेटा सीधे क्लाइंट के रजिस्टर्ड मेमोरी बफर में RDMA WRITE करेगा।\nHyper-V over SMB के लिए, VM reads ऐसे ही काम करते हैं: hypervisor VHDx read जारी करता है, जो RDMA पर SMB READ बनता है।" },
+    "14": { "text": "RDMA WRITE — सर्वर 1 MB read डेटा क्लाइंट मेमोरी में push करता है", "detail": "सर्वर का RNIC 1 MB फ़ाइल डेटा सीधे क्लाइंट के रजिस्टर्ड बफर में RDMA WRITE करता है।\nडेटा पथ: सर्वर disk/cache → सर्वर मेमोरी → RNIC DMA → नेटवर्क → क्लाइंट RNIC DMA → क्लाइंट रजिस्टर्ड बफर\nसर्वर CPU केवल RDMA WRITE initiate करता है (WQE पोस्ट); वास्तविक डेटा मूवमेंट पूरी तरह हार्डवेयर DMA engines द्वारा।" },
+    "15": { "text": "SMB2 READ Response — डेटा पहले से क्लाइंट बफर में (ज़ीरो inline डेटा)", "detail": "READ response में केवल status — फ़ाइल डेटा पहले ही RDMA WRITE के माध्यम से डिलीवर हो चुका। response का Data Remaining = 0 पुष्टि करता है कि सभी डेटा ट्रांसफर हो गया।\nTCP पर SMB से तुलना: पूरा 1 MB फ़ाइल डेटा SMB2 READ response में inline होता, सर्वर CPU को सॉकेट बफर में डेटा कॉपी करने की आवश्यकता — SMB Direct इसे पूरी तरह बायपास करता है।" },
+    "16": { "text": "⟳ परिदृश्य पूर्ण — RoCEv2 पर SMB Direct फ़ाइल I/O", "detail": "इस परिदृश्य ने SMB Direct (MS-SMBD) प्रदर्शित किया:\nSETUP: RDMA QP कनेक्शन → SMB Direct Negotiate (credits, max R/W size) → SMB2 NEGOTIATE (3.1.1) → SESSION_SETUP → TREE_CONNECT → CREATE\nFILE WRITE: क्लाइंट WRITE कमांड + बफर descriptor (RDMA SEND) → सर्वर RDMA READ (1 MB ज़ीरो-कॉपी) → WRITE response\nFILE READ: क्लाइंट READ कमांड + बफर descriptor (RDMA SEND) → सर्वर RDMA WRITE (1 MB ज़ीरो-कॉपी) → READ response (खाली, डेटा पहले डिलीवर)" }
+  }
+}

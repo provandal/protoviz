@@ -1,6 +1,7 @@
 /* global __APP_VERSION__ */
 import { useState, useCallback, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { parsePcap } from '../../pcap/pcapReader';
 import { parseTsharkJson } from '../../pcap/tsharkReader';
 import { dissectPacket } from '../../pcap/dissect';
@@ -14,6 +15,7 @@ import FindingsPanel from './FindingsPanel';
 import FlowPicker from './FlowPicker';
 import PacketList from './PacketList';
 import TraceChatPanel from './TraceChatPanel';
+import LanguageSelector from '../common/LanguageSelector';
 
 /**
  * Detect file format from raw bytes, not file extension.
@@ -52,6 +54,7 @@ function decodeText(buffer) {
 }
 
 export default function TroubleshooterPage() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const [packets, setPackets] = useState(null);
   const [findings, setFindings] = useState(null);
@@ -295,7 +298,8 @@ export default function TroubleshooterPage() {
           </span>
         </div>
         <span style={{ color: '#334155', fontSize: 12 }}>|</span>
-        <span style={{ color: '#94a3b8', fontSize: 12, fontWeight: 600 }}>PCAP Troubleshooter</span>
+        <span style={{ color: '#94a3b8', fontSize: 12, fontWeight: 600, flex: 1 }}>{t('troubleshooter.title')}</span>
+        <LanguageSelector />
       </div>
 
       {/* Upload area or results */}
@@ -304,11 +308,10 @@ export default function TroubleshooterPage() {
           <div style={{ textAlign: 'center', maxWidth: 560 }}>
             <div style={{ fontSize: 48, marginBottom: 16, opacity: 0.3 }}>📡</div>
             <div style={{ color: '#e2e8f0', fontSize: 18, fontWeight: 700, marginBottom: 8 }}>
-              PCAP Troubleshooter
+              {t('troubleshooter.uploadHeading')}
             </div>
             <div style={{ color: '#64748b', fontSize: 12, marginBottom: 24, lineHeight: 1.6 }}>
-              Upload a PCAP file or tshark JSON export to analyze protocol compliance.
-              All parsing happens locally in your browser — nothing is uploaded to any server.
+              {t('troubleshooter.uploadDescription')}
             </div>
 
             <label
@@ -321,7 +324,7 @@ export default function TroubleshooterPage() {
                 opacity: loading ? 0.5 : 1,
               }}
             >
-              {loading ? 'Parsing...' : 'Choose File'}
+              {loading ? t('troubleshooter.parsing') : t('troubleshooter.chooseFile')}
               <input
                 ref={fileRef}
                 type="file"
@@ -341,21 +344,21 @@ export default function TroubleshooterPage() {
               </div>
             )}
 
-            <div style={{ marginTop: 32, textAlign: 'left' }}>
+            <div style={{ marginTop: 32, textAlign: 'start' }}>
               <div style={{ color: '#475569', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 8 }}>
-                Supported formats
+                {t('troubleshooter.supportedFormats')}
               </div>
               <div style={{ display: 'flex', gap: 16 }}>
                 <div style={{ flex: 1, background: '#0a0f1a', border: '1px solid #1e293b', borderRadius: 6, padding: '10px 12px' }}>
-                  <div style={{ color: '#60a5fa', fontSize: 11, fontWeight: 700, marginBottom: 4 }}>PCAP / pcapng</div>
+                  <div style={{ color: '#60a5fa', fontSize: 11, fontWeight: 700, marginBottom: 4 }}>{t('troubleshooter.pcapTitle')}</div>
                   <div style={{ color: '#475569', fontSize: 10, lineHeight: 1.5 }}>
-                    Standard packet capture (.pcap, .pcapng, .cap). Built-in dissectors for Ethernet, IPv4, TCP, UDP, and RoCEv2.
+                    {t('troubleshooter.pcapDescription')}
                   </div>
                 </div>
                 <div style={{ flex: 1, background: '#0a0f1a', border: '1px solid #1e293b', borderRadius: 6, padding: '10px 12px' }}>
-                  <div style={{ color: '#a78bfa', fontSize: 11, fontWeight: 700, marginBottom: 4 }}>tshark JSON (.json)</div>
+                  <div style={{ color: '#a78bfa', fontSize: 11, fontWeight: 700, marginBottom: 4 }}>{t('troubleshooter.tsharkTitle')}</div>
                   <div style={{ color: '#475569', fontSize: 10, lineHeight: 1.5 }}>
-                    Full protocol dissection via Wireshark. Supports 3000+ protocols.
+                    {t('troubleshooter.tsharkDescription')}
                   </div>
                   <div style={{ color: '#334155', fontSize: 9, marginTop: 4, fontFamily: 'monospace' }}>
                     tshark -r capture.pcap -T json &gt; out.json
@@ -389,7 +392,7 @@ export default function TroubleshooterPage() {
                 color: findings.some(f => f.severity === 'error') ? '#fca5a5' : '#4ade80',
                 fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 3,
               }}>
-                {findings.length} finding{findings.length !== 1 ? 's' : ''}
+                {t('troubleshooter.findingsCount', { count: findings.length })}
               </span>
             )}
             <div style={{ flex: 1 }} />
@@ -404,7 +407,7 @@ export default function TroubleshooterPage() {
                   fontWeight: selectedFlowIds ? 600 : 400,
                 }}
               >
-                Filter Flows{selectedFlowIds ? ` (${selectedFlowIds.length})` : ''}
+                {selectedFlowIds ? t('troubleshooter.filterFlowsCount', { count: selectedFlowIds.length }) : t('troubleshooter.filterFlows')}
               </button>
             )}
             <button
@@ -415,7 +418,7 @@ export default function TroubleshooterPage() {
                 padding: '3px 10px', borderRadius: 4, cursor: 'pointer', fontSize: 10,
               }}
             >
-              Chat
+              {t('troubleshooter.chatButton')}
             </button>
             <button
               onClick={openGenModal}
@@ -424,7 +427,7 @@ export default function TroubleshooterPage() {
                 padding: '3px 10px', borderRadius: 4, cursor: 'pointer', fontSize: 10,
               }}
             >
-              Generate Scenario
+              {t('troubleshooter.generateScenario')}
             </button>
             <button
               onClick={reset}
@@ -433,7 +436,7 @@ export default function TroubleshooterPage() {
                 padding: '3px 10px', borderRadius: 4, cursor: 'pointer', fontSize: 10,
               }}
             >
-              New File
+              {t('troubleshooter.newFile')}
             </button>
           </div>
 
@@ -444,9 +447,9 @@ export default function TroubleshooterPage() {
               display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
               fontSize: 11, color: '#fde68a',
             }}>
-              <span style={{ fontWeight: 700 }}>Sensitive data detected</span>
+              <span style={{ fontWeight: 700 }}>{t('troubleshooter.sensitiveDataDetected')}</span>
               <span style={{ color: '#fbbf24' }}>
-                — Payload bytes containing potential credentials or PII were found. Raw payload content is automatically excluded from AI chat context.
+                {t('troubleshooter.sensitiveDataWarning')}
               </span>
             </div>
           )}
@@ -466,7 +469,7 @@ export default function TroubleshooterPage() {
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                 {/* Packet list + findings row */}
                 <div style={{ flex: showChat ? '1 1 55%' : '1 1 100%', display: 'flex', overflow: 'hidden', minHeight: 0 }}>
-                  <div style={{ flex: 1, overflowY: 'auto', borderRight: '1px solid #1e293b' }}>
+                  <div style={{ flex: 1, overflowY: 'auto', borderInlineEnd: '1px solid #1e293b' }}>
                     <PacketList
                       packets={displayPackets}
                       findings={findings}
@@ -508,7 +511,7 @@ export default function TroubleshooterPage() {
             boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
           }}>
             <div style={{ color: '#e2e8f0', fontSize: 14, fontWeight: 700, marginBottom: 16 }}>
-              Generate Scenario
+              {t('troubleshooter.generateTitle')}
             </div>
 
             {!genResult ? (
@@ -516,7 +519,7 @@ export default function TroubleshooterPage() {
                 {/* Title */}
                 <div style={{ marginBottom: 12 }}>
                   <label style={{ display: 'block', color: '#94a3b8', fontSize: 10, fontWeight: 600, marginBottom: 4 }}>
-                    Title
+                    {t('troubleshooter.titleLabel')}
                   </label>
                   <input
                     type="text"
@@ -540,7 +543,7 @@ export default function TroubleshooterPage() {
                     style={{ accentColor: '#3b82f6' }}
                   />
                   <label htmlFor="gen-scrub" style={{ color: '#94a3b8', fontSize: 11, cursor: 'pointer' }}>
-                    Scrub sensitive data (replace real IPs and MACs)
+                    {t('troubleshooter.scrubLabel')}
                   </label>
                 </div>
 
@@ -554,7 +557,7 @@ export default function TroubleshooterPage() {
                     style={{ accentColor: '#3b82f6' }}
                   />
                   <label htmlFor="gen-payloads" style={{ color: '#94a3b8', fontSize: 11, cursor: 'pointer' }}>
-                    Include payload bytes
+                    {t('troubleshooter.includePayloads')}
                   </label>
                 </div>
 
@@ -567,7 +570,7 @@ export default function TroubleshooterPage() {
                       padding: '6px 16px', borderRadius: 4, cursor: 'pointer', fontSize: 11,
                     }}
                   >
-                    Cancel
+                    {t('troubleshooter.cancel')}
                   </button>
                   <button
                     onClick={handleGenerate}
@@ -577,7 +580,7 @@ export default function TroubleshooterPage() {
                       padding: '6px 16px', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600,
                     }}
                   >
-                    Generate
+                    {t('troubleshooter.generate')}
                   </button>
                 </div>
               </>
@@ -603,13 +606,13 @@ export default function TroubleshooterPage() {
                   background: '#052e16', border: '1px solid #166534', borderRadius: 4,
                 }}>
                   <div style={{ color: '#4ade80', fontSize: 11, fontWeight: 600 }}>
-                    Scenario generated successfully
+                    {t('troubleshooter.scenarioGenerated')}
                   </div>
                   <div style={{ color: '#86efac', fontSize: 10, marginTop: 4 }}>
                     {genResult.scenario.meta.title}
                   </div>
                   <div style={{ color: '#4ade80', fontSize: 10, marginTop: 2 }}>
-                    {genResult.scenario.frames?.length || 0} frames, {genResult.scenario.timeline?.length || 0} timeline events, {genResult.scenario.topology?.actors?.length || 0} actors
+                    {t('troubleshooter.scenarioStats', { frames: genResult.scenario.frames?.length || 0, timeline: genResult.scenario.timeline?.length || 0, actors: genResult.scenario.topology?.actors?.length || 0 })}
                   </div>
                 </div>
 
@@ -622,7 +625,7 @@ export default function TroubleshooterPage() {
                       padding: '6px 16px', borderRadius: 4, cursor: 'pointer', fontSize: 11,
                     }}
                   >
-                    Back
+                    {t('troubleshooter.back')}
                   </button>
                   <button
                     onClick={handleDownloadYaml}
@@ -631,7 +634,7 @@ export default function TroubleshooterPage() {
                       padding: '6px 16px', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600,
                     }}
                   >
-                    Download YAML
+                    {t('troubleshooter.downloadYaml')}
                   </button>
                   <button
                     onClick={handlePreview}
@@ -641,7 +644,7 @@ export default function TroubleshooterPage() {
                       padding: '6px 16px', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600,
                     }}
                   >
-                    Preview
+                    {t('troubleshooter.preview')}
                   </button>
                 </div>
               </>

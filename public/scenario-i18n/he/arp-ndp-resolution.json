@@ -1,0 +1,50 @@
+{
+  "meta": {
+    "title": "ARP ו-NDP: פענוח כתובות IPv4 לעומת IPv6",
+    "description": "השוואה זו-לצד-זו מראה כיצד מארח מפענח כתובת שכבה 2 (MAC) עבור עמית ברשת מקומית. בצד IPv4 — ARP (Address Resolution Protocol) משדר שאלת \"למי יש?\" ומקבל תשובה חד-שידורית. בצד IPv6 — NDP (Neighbor Discovery Protocol) משתמש ב-ICMPv6 Neighbor Solicitation ממוען לכתובת שידור-רב ייעודית שצומת היעד מאזין לה, ומקבל Neighbor Advertisement חד-שידורי. התרחיש מדגיש את ההבדלים: ARP הוא פרוטוקול L2 עצמאי עם Ethertype משלו; NDP רץ על גבי ICMPv6 (ולכן על גבי IPv6) ומשתמש בשידור-רב במקום שידור.",
+    "learning_objectives": [
+      "הבנה מדוע פענוח כתובות נדרש לפני שליחת מסגרות Ethernet",
+      "השוואת ARP (IPv4, שידור, L2) עם NDP (IPv6, שידור-רב, ICMPv6)",
+      "מעקב אחר חילוף ARP Request/Reply ותצפית על שדות החבילה",
+      "מעקב אחר חילוף NDP Neighbor Solicitation/Advertisement",
+      "הבנת כתובות שידור-רב של solicited-node ב-IPv6",
+      "ראיית כיצד מטמוני שכנים (ARP cache / NDP neighbor cache) נבנים ומיושנים",
+      "הבנה מדוע IPv6 ביטל ARP לטובת NDP",
+      "תצפית על ההבדלים בין MAC שידור (ff:ff:ff:ff:ff:ff) ו-MAC שידור-רב (33:33:xx:xx:xx:xx)"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "IPv4: בקשת ARP — 'למי יש 10.0.1.20?' (שידור Ethernet)",
+      "detail": "מארח A רוצה לשלוח חבילה ל-10.0.1.20 אבל צריך את כתובת ה-MAC. בודק מטמון ARP — ריק. שולח בקשת ARP עם MAC יעד ff:ff:ff:ff:ff:ff (שידור). כל מכשיר במקטע L2 מקבל מסגרת זו."
+    },
+    "1": {
+      "text": "IPv6: NDP Neighbor Solicitation — 'מי הוא fe80::20?' (שידור-רב)",
+      "detail": "מארח A רוצה לשלוח חבילה ל-fe80::20 אבל צריך את כתובת ה-MAC. בודק מטמון שכנים — ריק. שולח ICMPv6 Neighbor Solicitation לכתובת שידור-רב solicited-node ff02::1:ff00:0020. רק צמתים שכתובתם מסתיימת ב-00:0020 מאזינים לקבוצה זו — הרבה יותר יעיל משידור."
+    },
+    "2": {
+      "text": "IPv4: תגובת ARP — '10.0.1.20 נמצא ב-00:11:22:33:44:02' (חד-שידור)",
+      "detail": "מארח B מזהה את כתובת ה-IP שלו ועונה בתגובת ARP חד-שידורית ישירות למארח A. שני הצדדים מעדכנים את מטמוני ה-ARP שלהם."
+    },
+    "3": {
+      "text": "IPv6: NDP Neighbor Advertisement — 'fe80::20 נמצא ב-00:11:22:33:44:02' (חד-שידור)",
+      "detail": "מארח B מקבל את Neighbor Solicitation ועונה ב-Neighbor Advertisement חד-שידורי למארח A. הדגל S (Solicited) מוגדר, ומציין שזו תגובה לבקשה. מטמוני שכנים מעודכנים בשני הצדדים."
+    },
+    "4": {
+      "text": "IPv4: מטמון ARP — פג תוקף אחרי gc_stale_time (60 שניות ברירת מחדל)",
+      "detail": "ערכי ARP מיושנים ובסופו של דבר מפונים. Linux משתמש בשלושה מצבים: REACHABLE → STALE → FAILED. כאשר ערך מיושן, חבילת הנתונים הבאה מפעילה בקשת ARP חדשה. אין מנגנון מובנה לזיהוי שעמית לא נגיש יותר."
+    },
+    "5": {
+      "text": "IPv6: מטמון שכנים NDP — עם NUD (Neighbor Unreachability Detection)",
+      "detail": "NDP מספק NUD (Neighbor Unreachability Detection) — בודק באופן פעיל אם שכן עדיין נגיש על ידי שליחת Neighbor Solicitations ובדיקת תגובות. מצבים: REACHABLE → STALE → DELAY → PROBE → FAILED. זה מספק זיהוי כשלים אמין שחסר ב-ARP."
+    },
+    "6": {
+      "text": "הבדל מרכזי: ARP משתמש בשידור (כולם שומעים), NDP משתמש בשידור-רב (רק היעד שומע)",
+      "detail": "שידור ARP מכריח כל NIC במקטע L2 לעבד את המסגרת (גם אם לא רלוונטי). בקטעים גדולים (אלפי מארחים), סופות שידור ARP צורכות רוחב פס ומעבד. שידור-רב NDP solicited-node ממוען רק לצמתים שכתובתם תואמת — בדרך כלל רק היעד המיועד. זו אחת הסיבות ש-IPv6 מגיע עם יעילות רשת טובה יותר."
+    },
+    "7": {
+      "text": "⟳ התרחיש הושלם — ARP לעומת NDP",
+      "detail": "השוואת פענוח כתובות IPv4 ו-IPv6:\nARP (IPv4): • פרוטוקול L2 עצמאי (Ethertype 0x0806) • שידור (ff:ff:ff:ff:ff:ff) — כל המכשירים מעבדים • ללא NUD מובנה — אין דרך אמינה לזהות שכן לא נגיש • חבילות ARP אינן מאומתות — פגיע ל-ARP spoofing\nNDP (IPv6): • רץ על גבי ICMPv6 (שכבה 3+) • שידור-רב solicited-node — רק היעד מעבד • NUD מובנה — זיהוי כשלים אמין • ניתן לאבטח עם SEND (RFC 3971) • משולב גם ב-SLAAC, גילוי נתב ועוד"
+    }
+  }
+}

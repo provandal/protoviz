@@ -1,0 +1,50 @@
+{
+  "meta": {
+    "title": "ARP y NDP: Resolución de Direcciones IPv4 y Descubrimiento de Vecinos IPv6",
+    "description": "Comparación lado a lado de ARP IPv4 (RFC 826) y NDP IPv6 (RFC 4861). Ambos protocolos resuelven el mismo problema — mapear una dirección de capa de red (IP) a una dirección de capa de enlace (MAC) — pero con enfoques fundamentalmente diferentes. ARP usa difusión (broadcast); NDP usa multicast y está construido sobre ICMPv6. Este escenario cubre: Solicitud/Respuesta ARP, ARP Gratuito, Solicitud/Anuncio de Vecino NDP, y Anuncio de Router NDP.",
+    "learning_objectives": [
+      "Comprender por qué se necesita resolución de direcciones: direcciones IP vs direcciones MAC",
+      "Seguir un intercambio completo de Solicitud → Respuesta ARP y actualización de tabla ARP",
+      "Ver por qué ARP usa difusión (todos los hosts) y las implicaciones de escalabilidad",
+      "Comprender ARP Gratuito para detección de conflictos IP y conmutación por error",
+      "Comparar Solicitud de Vecino NDP: multicast de nodo solicitado vs difusión ARP",
+      "Ver cómo NDP aprovecha ICMPv6 en lugar de ser un protocolo separado",
+      "Rastrear Anuncio de Router NDP para aprendizaje de prefijo/gateway (SLAAC)",
+      "Apreciar por qué NDP es más seguro y escalable que ARP"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Enlace físico activo — ambos hosts en el mismo segmento Ethernet",
+      "detail": "Ambos hosts están en la misma red Capa 2. El Host A tiene dirección IPv4 192.168.1.10 e IPv6 fd00::10. El Host B tiene IPv4 192.168.1.20 e IPv6 fd00::20.\nCuando el Host A necesita enviar un paquete IP al Host B, primero debe descubrir la dirección MAC del Host B. Aquí es donde entra ARP (IPv4) o NDP (IPv6)."
+    },
+    "1": {
+      "text": "Solicitud ARP — \"¿Quién tiene 192.168.1.20? Dígale a 192.168.1.10\"",
+      "detail": "El Host A necesita enviar a 192.168.1.20 pero no conoce su MAC. Difunde una Solicitud ARP a FF:FF:FF:FF:FF:FF (cada host en la LAN).\nCaracterísticas clave de ARP: • Opera en el límite Capa 2/3 con su propio EtherType (0x0806) • Usa difusión — cada host en el segmento L2 debe procesarla • Sin autenticación — cualquier host puede reclamar cualquier IP (suplantación ARP) • Sin estado — sin negociación, sin números de secuencia\nEn un subred de 1000 hosts, los 1000 hosts reciben y procesan esta trama — aunque solo el Host B necesita responder."
+    },
+    "2": {
+      "text": "Respuesta ARP — \"192.168.1.20 está en AA:BB:CC:00:00:0B\"",
+      "detail": "El Host B reconoce su propia IP en la Solicitud ARP y responde con una Respuesta ARP unicast conteniendo su dirección MAC.\nAmbos hosts actualizan sus cachés ARP: • Host A: 192.168.1.20 → AA:BB:CC:00:00:0B (de la respuesta) • Host B: 192.168.1.10 → AA:BB:CC:00:00:0A (de la solicitud)\nLas entradas de caché ARP tienen un timeout (típicamente 30-300 segundos en Linux)."
+    },
+    "3": {
+      "text": "ARP Gratuito — El Host A anuncia su enlace IP→MAC",
+      "detail": "Un ARP Gratuito es una Solicitud ARP donde IP del Emisor = IP del Destino. Sirve múltiples propósitos:\n1. DETECCIÓN DE CONFLICTO IP (RFC 5227): Cuando el Host A configura inicialmente su IP, envía GARP. Si otro host responde, hay un conflicto.\n2. ACTUALIZACIÓN DE CACHÉ ARP: Todos los hosts que ya tienen una entrada para 192.168.1.10 actualizan su MAC en caché. Crítico para: conmutación por error de NIC, migración en vivo de VM, IP flotante (keepalived/VRRP).\n3. TABLA MAC DEL SWITCH: El switch aprende la MAC del Host A en el puerto correcto."
+    },
+    "4": {
+      "text": "Solicitud de Vecino NDP — \"¿Quién tiene fd00::20?\" (multicast de nodo solicitado)",
+      "detail": "Equivalente IPv6 de la Solicitud ARP, pero fundamentalmente diferente:\n1. MULTICAST, NO DIFUSIÓN: La NS se envía a la dirección multicast de nodo solicitado ff02::1:ff00:0020 (Ethernet: 33:33:FF:00:00:20). Solo hosts cuya dirección IPv6 termine en ...00:0020 escuchan en este grupo. En la práctica, generalmente solo 1-2 hosts procesan la trama.\n2. CONSTRUIDO SOBRE ICMPv6: NDP es ICMPv6 tipo 135/136, no un protocolo separado.\n3. LÍMITE DE SALTOS = 255: Obligatorio. Si un paquete llega con límite de saltos < 255, fue enrutado (no es local de enlace) y debe descartarse. Esto previene suplantación NDP fuera de enlace.\nComparación para un subred de 1000 hosts: • ARP: los 1000 hosts procesan la solicitud de difusión • NDP: ~1 host procesa la solicitud multicast"
+    },
+    "5": {
+      "text": "Anuncio de Vecino NDP — \"fd00::20 está en AA:BB:CC:00:00:0B\"",
+      "detail": "El Host B responde con un Anuncio de Vecino (ICMPv6 tipo 136): • Flag Solicitado (S=1): Esta es una respuesta a una NS • Flag de Anulación (O=1): Actualizar entradas existentes en caché • Flag de Router (R=0): El Host B no es un router\nEl Host A actualiza su caché de vecinos: fd00::20 → AA:BB:CC:00:00:0B (estado: REACHABLE)\nEstados de caché de vecinos NDP (RFC 4861 Sección 7.3.2): • INCOMPLETE: NS enviada, esperando NA • REACHABLE: Recientemente confirmado • STALE: No confirmado recientemente, utilizable pero se sondará pronto • DELAY: Esperando confirmación de capa superior • PROBE: Enviando activamente NS unicast para re-confirmar"
+    },
+    "6": {
+      "text": "Anuncio de Router NDP — prefijo fd00::/64 para SLAAC",
+      "detail": "Los routers periódicamente envían Anuncios de Router (RA) a ff02::1 (multicast a todos los nodos). Los hosts también solicitan RAs enviando Solicitudes de Router (RS) al arrancar.\nEl RA le dice a los hosts: • Gateway predeterminado: la dirección local de enlace del router (fe80::1) • Prefijo de red: fd00::/64 con flag autónomo SLAAC • Servidores DNS (si se incluye opción RDNSS) • MTU (si es diferente de 1500 predeterminado)\nSLAAC (Autoconfiguración de Dirección sin Estado, RFC 4862): El host toma el prefijo /64 + genera un ID de interfaz de 64 bits (de EUI-64 o aleatorio de privacidad) = dirección IPv6 completa. No se necesita servidor DHCP para conectividad básica.\nARP NO tiene equivalente — IPv4 requiere DHCP o configuración estática para asignación de dirección y descubrimiento de gateway."
+    },
+    "7": {
+      "text": "⟳ Escenario completo — Comparación ARP vs NDP",
+      "detail": "ARP (IPv4, RFC 826): • Protocolo separado con EtherType 0x0806 • Usa DIFUSIÓN — todos los hosts en el segmento L2 procesan cada solicitud • Sin autenticación — vulnerable a suplantación/envenenamiento ARP • Solo hace resolución de direcciones (IP → MAC)\nNDP (IPv6, RFC 4861): • Construido sobre ICMPv6 (tipos 133-137) • Usa MULTICAST DE NODO SOLICITADO — ~1 host procesa cada NS • Límite de saltos 255 previene ataques fuera de enlace; SEND (RFC 3971) opcional • Hace resolución de direcciones Y descubrimiento de router, SLAAC, redirección • Caché de vecinos con estado (INCOMPLETE → REACHABLE → STALE → PROBE) • Detección de Dirección Duplicada (DAD) integrada"
+    }
+  }
+}

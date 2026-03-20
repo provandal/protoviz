@@ -1,9 +1,11 @@
 import { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import useViewerStore from '../../store/viewerStore';
 import { PHASE_COLORS } from '../../utils/constants';
 import WalkthroughLauncher from './WalkthroughLauncher';
 
 export default function PlaybackControls({ total, phaseColor }) {
+  const { t } = useTranslation();
   const step = useViewerStore(s => s.step);
   const playing = useViewerStore(s => s.playing);
   const goToStep = useViewerStore(s => s.goToStep);

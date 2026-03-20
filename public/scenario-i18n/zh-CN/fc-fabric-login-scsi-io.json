@@ -1,0 +1,125 @@
+{
+  "meta": {
+    "title": "FC 网络登录 → 名称服务器发现 → SCSI 写入和读取",
+    "description": "完整的光纤通道 SAN 场景：物理链路建立（64GFC）、FLOGI 网络登录以获取 FCID、PLOGI 到名称服务器、GID_FT 查询以发现 SCSI 目标、PLOGI/PRLI 到存储设备以建立 FCP 会话，以及 SCSI INQUIRY、WRITE(10) 和 READ(10) I/O 操作。展示了 FC 从物理层到应用层的完整协议栈。",
+    "learning_objectives": [
+      "理解 FC 网络登录（FLOGI）如何为主机分配 FCID 地址",
+      "跟踪 PLOGI 端口登录和 PRLI 上层协议建立（FCP/SCSI）",
+      "了解 FC 名称服务器如何提供设备发现（GID_FT 查询）",
+      "追踪 SCSI INQUIRY 以发现设备类型",
+      "跟踪 FCP 数据传输：FCP_CMND → FCP_XFER_RDY → FCP_DATA → FCP_RSP",
+      "理解 FCP 写入和读取的数据流差异",
+      "将 FC/FCP 与 iSCSI 和 NVMe-oF 进行对比"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "链路 A：检测到信号 — 主机 HBA ↔ 交换机",
+      "detail": "主机 HBA 的光收发器检测到来自交换机端口的光信号。FC 链路初始化开始。"
+    },
+    "1": {
+      "text": "链路 B：检测到信号 — 交换机 ↔ 存储阵列",
+      "detail": "存储阵列的光收发器检测到来自交换机端口的光信号。"
+    },
+    "2": {
+      "text": "链路 A UP — 主机 ↔ 交换机，64GFC",
+      "detail": "主机到交换机的 FC 链路已建立，速率为 64GFC。"
+    },
+    "3": {
+      "text": "链路 B UP — 交换机 ↔ 存储，64GFC",
+      "detail": "交换机到存储的 FC 链路已建立。两条链路均已建立——交换机可以在其端口之间转发 FC 帧。"
+    },
+    "4": {
+      "text": "FLOGI — 主机请求网络登录（S_ID=0x000000 → D_ID=0xFFFFFE）",
+      "detail": "主机发送 FLOGI（Fabric Login）帧到网络控制器（井知地址 0xFFFFFE）。这是主机加入 FC 网络的第一步。主机还没有 FCID，所以使用 S_ID=0x000000。FLOGI 携带主机的 WWPN 和 WWNN，以及它支持的服务参数。"
+    },
+    "5": {
+      "text": "FLOGI ACC — 网络分配 FCID 0x010100 给主机",
+      "detail": "网络控制器接受 FLOGI 并分配 FCID 0x010100 给主机。主机现在在 FC 网络中有了唯一地址。类似于 IP 网络中的 DHCP。"
+    },
+    "6": {
+      "text": "PLOGI 到名称服务器（0xFFFFFC）",
+      "detail": "主机向名称服务器（井知地址 0xFFFFFC）发送 PLOGI（Port Login）以建立端口级别的会话，从而可以执行 CT（Common Transport）查询。"
+    },
+    "7": {
+      "text": "名称服务器接受 PLOGI — 现在允许 CT 查询",
+      "detail": "名称服务器接受了端口登录。主机现在可以查询网络中已注册的设备。"
+    },
+    "8": {
+      "text": "GID_FT 查询 — 查找网络中所有 FCP（SCSI）目标",
+      "detail": "主机发送 GID_FT（Get ID by FC-4 Type）查询以查找所有支持 FCP（SCSI）的设备。这是 FC SAN 中的设备发现机制。"
+    },
+    "9": {
+      "text": "名称服务器响应：存储在 FCID 0x010200",
+      "detail": "名称服务器返回存储阵列的 FCID。主机现在知道存储设备在网络中的地址。"
+    },
+    "10": {
+      "text": "PLOGI 到存储（0x010200）— 端口级别登录",
+      "detail": "主机向存储阵列发送 PLOGI 以建立端口级别的会话。这交换服务参数，包括最大帧大小和缓冲区分配。"
+    },
+    "11": {
+      "text": "存储接受 PLOGI — 端口级别登录已建立",
+      "detail": "存储接受了端口登录。现在两端可以交换上层协议信息。"
+    },
+    "12": {
+      "text": "PRLI — 建立 FCP（SCSI）上层协议",
+      "detail": "主机发送 PRLI（Process Login）以建立 FCP（Fibre Channel Protocol for SCSI）会话。PRLI 协商 FCP 参数，包括读写功能和确认模式。"
+    },
+    "13": {
+      "text": "PRLI ACC — FCP 已建立。SCSI I/O 可以开始。",
+      "detail": "存储接受 PRLI。FCP 会话已完全建立。主机现在可以发送 SCSI 命令。"
+    },
+    "14": {
+      "text": "SCSI INQUIRY — 发现设备类型",
+      "detail": "Linux SCSI 中间层发送 INQUIRY 命令以识别设备类型、厂商和功能。INQUIRY CDB 封装在 FCP_CMND IU 中。"
+    },
+    "15": {
+      "text": "INQUIRY 数据 — 设备是块磁盘（类型 0x00）",
+      "detail": "存储返回 INQUIRY 数据，识别为直接访问块设备。"
+    },
+    "16": {
+      "text": "FCP_RSP — INQUIRY GOOD，LUN 0 已发现",
+      "detail": "FCP 响应确认 INQUIRY 以 GOOD 状态完成。LUN 0 已被发现并可用于 I/O。"
+    },
+    "17": {
+      "text": "WRITE(10) — 在 LBA 0 写入 4KB",
+      "detail": "应用程序发起 SCSI WRITE(10)。FCP_CMND IU 携带 WRITE CDB。与 iSCSI 类似，写入数据不随命令一起发送——存储必须先发出就绪信号。"
+    },
+    "18": {
+      "text": "FCP_XFER_RDY — 存储准备好接收写入数据",
+      "detail": "存储发送 FCP_XFER_RDY IU，授权主机发送写入数据。指定偏移量和传输长度。类似于 iSCSI 的 R2T。"
+    },
+    "19": {
+      "text": "FCP_DATA (1/2) — 写入的前 2048 字节，偏移 0",
+      "detail": "主机发送第一个 FCP_DATA IU，包含 2048 字节的写入数据。FC 的最大帧大小限制了每个帧中可以携带的数据量。"
+    },
+    "20": {
+      "text": "FCP_DATA (2/2) — 写入的后 2048 字节，偏移 2048",
+      "detail": "主机发送第二个也是最后一个 FCP_DATA IU。完整的 4KB 写入数据现已传输。"
+    },
+    "21": {
+      "text": "FCP_RSP — 写入 GOOD，数据已提交",
+      "detail": "存储确认 SCSI WRITE(10) 以 GOOD 状态完成。数据已写入后端存储。"
+    },
+    "22": {
+      "text": "READ(10) — 从 LBA 0 读回 4KB 以验证写入",
+      "detail": "发起方发送 READ(10) 以读回刚写入的数据。读取无需 XFER_RDY——存储直接发送 FCP_DATA。"
+    },
+    "23": {
+      "text": "FCP_DATA (1/2) — 读取的前 2048 字节，偏移 0",
+      "detail": "存储发送第一个 FCP_DATA IU，包含 2048 字节的读取数据。"
+    },
+    "24": {
+      "text": "FCP_DATA (2/2) — 读取的后 2048 字节，偏移 2048",
+      "detail": "存储发送第二个 FCP_DATA IU。完整的 4KB 读取数据现已传输。"
+    },
+    "25": {
+      "text": "FCP_RSP — 读取 GOOD，数据已验证",
+      "detail": "存储确认读取 GOOD。数据与之前写入的一致。"
+    },
+    "26": {
+      "text": "场景完成",
+      "detail": "本场景演示了完整的 FC SAN I/O 流程：物理链路建立、FLOGI 网络登录、名称服务器发现、PLOGI/PRLI 会话建立，以及 SCSI I/O。FC 提供专用、低延迟、硬件加速的存储网络。"
+    }
+  }
+}

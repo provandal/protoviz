@@ -1,0 +1,57 @@
+{
+  "meta": {
+    "title": "NCCL AllReduce: RoCEv2를 통한 링 알고리즘(4개 GPU)",
+    "description": "4개 GPU 노드에서 RoCEv2를 통해 NCCL 링 AllReduce를 수행하는 시나리오. 1MB 그래디언트 텐서를 4개의 256KB 청크로 분할하고, Reduce-Scatter 단계에서 부분합을 계산한 후, AllGather 단계에서 완전한 결과를 모든 GPU에 복제합니다.",
+    "learning_objectives": [
+      "NCCL 링 AllReduce 알고리즘의 Reduce-Scatter + AllGather 단계 이해",
+      "분산 학습에서 그래디언트 동기화의 중요성 이해",
+      "RoCEv2를 통한 GPU 간 통신 패턴 확인"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "물리 링크 업 — 4개 GPU 노드 모두에 100GbE 무손실 패브릭",
+      "detail": "4개의 GPU 노드가 모두 100GbE 스위치에 연결되어 있으며, PFC와 ECN이 활성화되어 있습니다. 실제 AI 학습 클러스터에서는 네트워크 토폴로지가 fat-tree 또는 rail-optimized 설계일 수 있지만, 이 시나리오에서는 단일 스위치로 단순화합니다.\nNCCL은 토폴로지를 프로브(nvidia-smi topo, NVML, IB 장치 쿼리)하여 최적의 집합 통신 알고리즘을 결정합니다. 4개 GPU의 인터-노드 RoCEv2 환경에서는 일반적으로 Ring 알고리즘을 선택합니다."
+    },
+    "1": {
+      "text": "NCCL 초기화 완료 — 링 토폴로지 수립, QP 연결, GPU 버퍼 등록",
+      "detail": "NCCL이 링 토폴로지를 수립하고 인접 GPU 노드 간에 RDMA QP를 연결합니다. GPU 버퍼가 RDMA MR로 등록됩니다."
+    },
+    "2": {
+      "text": "ncclAllReduce() 호출 — 1MB 그래디언트 텐서, 4개 청크 × 256KB",
+      "detail": "학습 루프가 ncclAllReduce(sendbuf, recvbuf, count, ncclFloat, ncclSum, comm, stream)을 호출합니다. 이것이 Ring AllReduce 알고리즘을 트리거합니다.\n입력: 각 GPU는 역전파에서 생성된 1MB 그래디언트 텐서(262,144개의 float32 값)를 가지고 있습니다. 목표: 모든 GPU가 4개 GPU 그래디언트의 합계(SUM)를 가지게 되는 것(SGD/Adam 옵티마이저 업데이트용).\nNCCL은 텐서를 N=4개 청크(각 256KB)로 분할합니다:\n  청크 0: 바이트 [0, 256KB)\n  청크 1: 바이트 [256KB, 512KB)\n  청크 2: 바이트 [512KB, 768KB)\n  청크 3: 바이트 [768KB, 1MB)\n\nRing 알고리즘은 두 단계로 구성됩니다:\n1단계 — Reduce-Scatter (N-1 = 3 스텝): 각 GPU가 하나의 청크를 링 다음 노드로 보내고, 링 이전 노드에서 하나를 받아 누적(합산)합니다. 3스텝 후 각 GPU는 정확히 하나의 청크에 대한 완전히 축소된 결과를 보유합니다.\n\n2단계 — AllGather (N-1 = 3 스텝): 각 GPU가 완전히 축소된 청크를 링을 따라 전송합니다. 3스텝 후 모든 GPU가 4개의 완전히 축소된 청크를 가집니다.\n\nGPU당 총 전송 데이터: 2 × (N-1)/N × DataSize = 2 × 3/4 × 1MB = 1.5MB 송신 + 1.5MB 수신. 이것은 최적입니다 — 대역폭이 N에 따라 선형으로 확장됩니다."
+    },
+    "3": {
+      "text": "Reduce-Scatter 1단계 — 모든 GPU가 chunk[rank]를 링 다음 노드로 전송",
+      "detail": "4개의 GPU가 동시에 하나의 청크를 링 다음 이웃에게 전송합니다:\n  GPU 0이 청크 0을 → GPU 1로 전송 (RDMA WRITE로 GPU 1의 HBM에 직접)\n  GPU 1이 청크 1을 → GPU 2로 전송\n  GPU 2가 청크 2를 → GPU 3으로 전송\n  GPU 3이 청크 3을 → GPU 0으로 전송\n\nGPU 0 → GPU 1 링크를 대표로 보여줍니다. RDMA WRITE는 GPUDirect RDMA를 통해 GPU 1의 HBM 수신 버퍼에 직접 도달합니다 — RNIC DMA 엔진이 nvidia-peermem이 매핑한 GPU BAR1 메모리에 씁니다. 어느 쪽 CPU도 데이터 전송에 관여하지 않습니다.\n수신 후 GPU 1은 CUDA 커널을 실행하여 계산합니다:\n  recv_buf[청크 0] = recv_buf[청크 0] + local[청크 0]\n이것은 GPU 0의 그래디언트를 GPU 1 자체의 청크 0 그래디언트에 더합니다."
+    },
+    "4": {
+      "text": "Reduce-Scatter 1단계(역방향) — GPU 0이 Rank 3에서 청크 수신",
+      "detail": "동시에 GPU 0은 Rank 3(링 이전 노드)에서 청크를 수신합니다. 모든 전송은 병렬로 진행됩니다 — 링은 양방향이며 전이중 링크를 사용합니다. 각 GPU는 동시에 송신과 수신을 모두 수행합니다.\nGPU 0이 누적합니다: local[청크 3] += received[Rank 3에서 받은 청크 3]"
+    },
+    "5": {
+      "text": "Reduce-Scatter 2단계 — 부분합이 링을 따라 회전",
+      "detail": "각 GPU가 누적된 청크(1단계의 부분합)를 링 다음 이웃에게 전송합니다. 부분합이 링을 따라 회전하며 각 단계에서 더 커집니다.\n\n  GPU 0이 누적된 청크 → GPU 1로 전송 (이제 2개 GPU의 합계 포함)\n  GPU 1이 누적된 청크 → GPU 2로 전송\n  GPU 2가 누적된 청크 → GPU 3으로 전송\n  GPU 3이 누적된 청크 → GPU 0으로 전송\n\n이 단계 후 각 청크는 3개 GPU 그래디언트의 합계를 포함합니다.\n참고: 전송당 데이터 크기는 GPU 수에 관계없이 256KB로 일정합니다. 이것이 Ring AllReduce가 잘 확장되는 이유입니다 — GPU당 대역폭 = 2(N-1)/N × DataSize로, N이 커질수록 2× DataSize에 수렴합니다. 나이브 AllReduce(all-to-one-to-all)는 루트에서 병목이 발생하는 것과 비교됩니다."
+    },
+    "6": {
+      "text": "Reduce-Scatter 3단계(최종) — 각 GPU가 하나의 완전히 축소된 청크를 보유",
+      "detail": "마지막 Reduce-Scatter 단계입니다. GPU 1이 수신하고 누적한 후:\n  GPU 1의 청크 = GPU 0 + GPU 1 + GPU 2 + GPU 3 그래디언트의 합계\n\n각 GPU는 이제 정확히 하나의 청크에 대한 완전한 합계를 보유합니다:\n  GPU 0: 완전히 축소된 청크 0\n  GPU 1: 완전히 축소된 청크 1\n  GPU 2: 완전히 축소된 청크 2\n  GPU 3: 완전히 축소된 청크 3\n\nReduce-Scatter가 완료되었습니다. 축소(합산)가 끝났습니다. 하지만 각 GPU는 최종 결과의 1/4만 가지고 있습니다. AllGather가 나머지 청크를 분배합니다."
+    },
+    "7": {
+      "text": "AllGather 1단계 — GPU들이 완전히 축소된 청크를 브로드캐스트",
+      "detail": "이제 각 GPU가 완전히 축소된 청크를 링을 따라 전송합니다:\n  GPU 0이 완전히 축소된 청크 0 → GPU 1로 전송\n  GPU 1이 완전히 축소된 청크 1 → GPU 2로 전송\n  GPU 2가 완전히 축소된 청크 2 → GPU 3으로 전송\n  GPU 3이 완전히 축소된 청크 3 → GPU 0으로 전송\n\nReduce-Scatter와 달리 AllGather는 누적하지 않고 수신한 청크를 출력 버퍼의 올바른 위치에 단순히 복사합니다. 1단계 후 각 GPU는 4개 중 2개의 축소된 청크를 가집니다.\nRDMA WRITE는 최종 출력 버퍼 위치에 직접 대상을 지정합니다 — 청크 0은 오프셋 0에, 청크 1은 오프셋 256KB에 배치됩니다."
+    },
+    "8": {
+      "text": "AllGather 2단계 — 각 GPU가 4개 중 3개의 축소된 청크를 보유",
+      "detail": "청크가 링을 따라 계속 회전합니다. 이 단계 후 각 GPU는 4개의 완전히 축소된 청크 중 3개를 수신했으며(자기 것 포함) — 1개의 청크만 남아 있습니다."
+    },
+    "9": {
+      "text": "AllGather 3단계(최종) — 모든 GPU가 전체 축소된 결과를 보유",
+      "detail": "마지막 AllGather 단계입니다. 모든 GPU가 이제 출력 버퍼에 조합된 4개의 완전히 축소된 청크를 모두 가지고 있습니다. AllReduce가 완료되었습니다.\n결과: 모든 GPU가 4개 GPU 그래디언트의 합계(SUM)를 포함하는 동일한 1MB 버퍼를 가집니다. 옵티마이저(SGD, Adam 등)가 이제 각 GPU에서 동일하게 모델 가중치를 업데이트하여 모델 복사본을 동기화 상태로 유지할 수 있습니다."
+    },
+    "10": {
+      "text": "⟳ 시나리오 완료 — RoCEv2를 통한 NCCL 링-AllReduce",
+      "detail": "이 시나리오는 4개 GPU 노드에서 NCCL의 Ring-AllReduce를 시연했습니다:\n1단계 — REDUCE-SCATTER (3 스텝):\n  각 GPU가 스텝마다 하나의 청크를 링 다음 이웃에게 전송합니다.\n  수신자가 받은 데이터를 자신의 것과 누적(합산)합니다.\n  N-1=3 스텝 후 각 GPU가 정확히 하나의 청크(전체 텐서의 1/N)에 대한\n  완전히 축소된 결과를 보유합니다.\n\n2단계 — ALLGATHER (3 스텝):\n  각 GPU가 완전히 축소된 청크를 링을 따라 전송합니다.\n  수신자가 출력 버퍼에 복사(누적 없음)합니다.\n  N-1=3 스텝 후 모든 GPU가 N개의 완전히 축소된 청크를 모두 가집니다.\n\n총: 4개 GPU에 대해 2(N-1) = 6 스텝.\n성능 특성: • GPU당 스텝당 데이터: DataSize/N = 256KB • GPU당 총 전송 데이터: 2 × (N-1)/N × DataSize = 1.5MB • 대역폭 활용률: 2(N-1)/N = 이론적 최대의 75% (N → 무한대에서 100%에 수렴) • 모든 전송이 GPUDirect를 통한 RDMA WRITE 사용 — CPU 복사 없음\nAI 학습에서 Ring AllReduce가 중요한 이유: • 데이터 병렬 학습: 각 GPU가 다른 미니배치를 처리하지만 옵티마이저 스텝 전에 그래디언트를 동기화해야 함 • AllReduce(Sum)가 매 역전파 후 호출됨 — 에포크당 수천 번 • 대규모(수백 GPU)에서 AllReduce 지연은 학습 처리량에 직접 영향\n\nNCCL이 선택할 수 있는 대안 알고리즘: • Tree AllReduce — 작은 메시지에 유리(더 낮은 지연) • CollNet(SHARP) — 인-네트워크 축소(스위치가 합산 수행) • NVLink + RDMA 하이브리드 — 노드 내 NVLink, 노드 간 RDMA\n무손실 RoCEv2 패브릭(PFC + ECN/DCQCN)이 중요합니다: 패킷 손실은 RDMA 타임아웃을 유발하여 재전송으로 전환되고 AllReduce 성능을 크게 저하시킵니다."
+    }
+  }
+}

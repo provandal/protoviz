@@ -1,0 +1,145 @@
+{
+  "meta": {
+    "title": "NAT64/DNS64: Kliyan IPv6-Sèlman Rive nan yon Sèvè IPv4-Sèlman",
+    "description": "Yon kliyan IPv6-sèlman bezwen rive nan legacy-api.example.com, ki gen sèlman yon A record IPv4. DNS64 sentèz yon AAAA record lè li itilize prefiks byen koni 64:ff9b::/96, kliyan an konekte sou IPv6 pi, epi pasrèl NAT64 la tradwi ant IPv6 ak IPv4. Senaryo a kouvri tou tradiksyon ICMP ak 464XLAT (CLAT + PLAT) pou aplikasyon eritaj ki koddi adrès IPv4.",
+    "learning_objectives": [
+      "Konprann kijan DNS64 sentèz AAAA record soti nan A record lè pa gen AAAA natif",
+      "Aprann prefiks NAT64 byen koni 64:ff9b::/96 ak kijan adrès IPv4 ankatre nan IPv6",
+      "Swiv yon koneksyon TCP soti nan yon kliyan IPv6-sèlman atravè NAT64 bay yon sèvè IPv4-sèlman",
+      "Wè kijan NAT64 mentni apetyaj tradiksyon avèk eta ant sesyon IPv6 ak IPv4",
+      "Obsève fwontyè pwotokòl la: kliyan toujou wè IPv6, sèvè toujou wè IPv4",
+      "Konprann 464XLAT (CLAT + PLAT) pou aplikasyon eritaj ki koddi adrès IPv4",
+      "Rekonèt poukisa NAT64/DNS64 se fondasyon pou deplwaman rezo IPv6-sèlman a echèl"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Rekèt DNS AAAA — Kliyan mande adrès IPv6 legacy-api.example.com",
+      "detail": "Aplikasyon kliyan IPv6-sèlman an vle rive nan legacy-api.example.com. Li rele getaddrinfo() ki voye yon rekèt DNS AAAA bay rezòlvè DNS64 konfigire a nan 2001:db8:1::53. Kliyan an sèlman konnen IPv6 — li mande yon AAAA record epi li atann yon adrès IPv6 an retou."
+    },
+    "1": {
+      "text": "DNS64 cheke: pa gen AAAA record ki egziste pou legacy-api.example.com",
+      "detail": "Rezòlvè DNS64 la fè rekèt nan DNS otorite epi jwenn NODATA pou rekèt AAAA a — sèvè legacy-api.example.com pa gen adrès IPv6. Sa deklanche konpòtman DNS64: rezòlvè a ap kounye a fè rekèt pou yon A record olye. Selon RFC 6147, DNS64 sèlman sentèz lè pa gen AAAA natif ki egziste."
+    },
+    "2": {
+      "text": "DNS64 fè rekèt nan DNS otorite pou A record",
+      "detail": "Depi pa gen AAAA ki egziste, rezòlvè DNS64 la retounen sou rekèt pou yon A record. Rekèt sa a sòti sou entèfas IPv4 rezòlvè a pou rive nan sèvè DNS otorite a. Rezòlvè DNS64 li menm se dob-pil — li bezwen konektivite IPv4 pou rive nan sèvè DNS otorite ki sèlman IPv4."
+    },
+    "3": {
+      "text": "DNS otorite retounen A record: 198.51.100.1",
+      "detail": "Sèvè DNS otorite pou example.com retounen A record pou legacy-api.example.com: 198.51.100.1. Sa a se vrè adrès IPv4 sèvè a. Kounye a DNS64 gen materyèl premye li bezwen pou sentèz yon adrès IPv6."
+    },
+    "4": {
+      "text": "DNS64 sentèz AAAA: 64:ff9b::c633:6401 soti nan A record 198.51.100.1",
+      "detail": "DNS64 pran prefiks byen koni 64:ff9b::/96 epi ankatre adrès IPv4 la nan dènye 32 bit yo. 198.51.100.1 an egzadesimal se c6.33.64.01, donk adrès sentèz la se 64:ff9b::c633:6401. Prefiks 64:ff9b::/96 rezève pa IANA espesifikman pou tradiksyon NAT64 (RFC 6052)."
+    },
+    "5": {
+      "text": "DNS64 retounen AAAA record sentèz bay kliyan",
+      "detail": "Rezòlvè DNS64 la voye AAAA record sentèz la tounen bay kliyan an. Nan pèspektiv kliyan an, sa a sanble egzakteman yon repons AAAA nòmal. Kliyan an pa gen okenn ide adrès la te sentèz — li jis wè yon adrès IPv6 epi ap konekte sou li tankou nenpòt lòt destinasyon IPv6."
+    },
+    "6": {
+      "text": "Kliyan an kwè li ap pale ak yon sèvè IPv6. Li pa gen okenn ide vrè sèvè a se IPv4-sèlman.",
+      "detail": "Sa a se elegans DNS64: pil rezo IPv6-sèlman kliyan an konplètman inoran de monn IPv4 la dèyè sèn. Aplikasyon an te resevwa yon AAAA record epi ap kounye a connect() sou li sou IPv6 tankou nenpòt lòt destinasyon IPv6. Tradiksyon an envizib — sa a se tout prensip la."
+    },
+    "7": {
+      "text": "TCP SYN → Kliyan voye pakè IPv6 bay 64:ff9b::c633:6401 pò 443",
+      "detail": "Aplikasyon kliyan an rele connect() epi kernel an voye yon TCP SYN bay adrès sentèz la. Sa a se yon pakè IPv6 pafètman nòmal — pil TCP/IP kliyan an pa gen okenn tretman espesyal pou NAT64. Pakè a achemine bay pasrèl NAT64 la paske 64:ff9b::/96 se yon wout ki pwente sou tradiktè a."
+    },
+    "8": {
+      "text": "Pasrèl NAT64 resevwa pakè IPv6 la epi rekonèt prefiks 64:ff9b::/96",
+      "detail": "Pasrèl NAT64 la posede prefiks 64:ff9b::/96. Lè li resevwa yon pakè destine pou prefiks sa a, li ekstrè adrès IPv4 ankatre nan dènye 32 bit yo: 64:ff9b::c633:6401 → c6336401 → 198.51.100.1. Li answit kreye yon antre Binding Information Base (BIB): [2001:db8:1::10]:49200 ↔ [203.0.113.50]:49200, epi tradwi pakè a."
+    },
+    "9": {
+      "text": "NAT64 kreye yon pakè IPv4 SYN — nouvo antèt IP, menm chaj TCP",
+      "detail": "Pasrèl NAT64 la konstwi yon nouvo pakè IPv4. Li asiyen yon adrès IPv4 sous nan pil li (203.0.113.50), mete destinasyon nan adrès ekstrè a (198.51.100.1), tradwi IPv6 hop limit nan yon IPv4 TTL (dekremante pa 1), epi transmèt. Chaj TCP a — nimewo sekans, nimewo pò, MSS — pa chanje. Sèvè eritaj la ap resevwa sa ki sanble egzakteman yon koneksyon IPv4 nòmal."
+    },
+    "10": {
+      "text": "Sèvè eritaj reponn ak SYN-ACK — IPv4 nòmal, pa gen okenn ide sou IPv6",
+      "detail": "Sèvè eritaj la nan 198.51.100.1 resevwa yon TCP SYN IPv4 konplètman nòmal soti nan 203.0.113.50 (adrès pil NAT64 la). Li reponn ak yon SYN-ACK estanda. Sèvè a pa gen okenn konsyans ke vrè kliyan an sou yon rezo IPv6-sèlman — nan pèspektiv sèvè a, sa a se jis yon lòt kliyan IPv4."
+    },
+    "11": {
+      "text": "NAT64 tradwi SYN-ACK tounen an IPv6 pou kliyan an",
+      "detail": "Pasrèl NAT64 la chèche tab apetyaj li: trafik soti nan 198.51.100.1:443 bay 203.0.113.50:49200 koresponn ak antre BIB pou kliyan [2001:db8:1::10]:49200. Li konstwi yon pakè IPv6 ak sous 64:ff9b::c633:6401 ak destinasyon 2001:db8:1::10. Kliyan an resevwa sa ki sanble yon SYN-ACK IPv6 nòmal soti nan adrès sentèz la."
+    },
+    "12": {
+      "text": "TCP handshake konplè — kliyan wè IPv6 pi, sèvè wè IPv4 pi",
+      "detail": "Kliyan an voye dènye ACK la, sa konplete 3-way handshake la. Koneksyon an kounye a ESTABLISHED sou toude bò. Fwontyè pwotokòl la klè kou dlo kòk: kliyan an opere antyèman an IPv6, sèvè a opere antyèman an IPv4, epi pasrèl NAT64 la tradwi nan mitan."
+    },
+    "13": {
+      "text": "ACK tradwi an IPv4 — sèvè konfime eta ESTABLISHED",
+      "detail": "Pasrèl NAT64 la tradwi ACK kliyan an an IPv4 epi delivre li bay sèvè a. Toude bò kounye a nan eta ESTABLISHED epi done ka sikile nan toude direksyon atravè tradiktè NAT64 la."
+    },
+    "14": {
+      "text": "Kliyan voye HTTP GET sou IPv6 → NAT64 tradwi → sèvè resevwa sou IPv4",
+      "detail": "Kliyan an voye yon rekèt HTTP GET pou /api/v1/status. Rekèt la vwayaje kòm yon pakè IPv6 nòmal bay pasrèl NAT64 la, ki tradwi li an IPv4 epi transmèt li bay sèvè eritaj la. Chaj HTTP la konplètman pa touche — NAT64 sèlman tradwi antèt kouch-IP ak ajiste checksum kouch-transpò."
+    },
+    "15": {
+      "text": "HTTP GET rive nan sèvè eritaj kòm trafik IPv4 nòmal",
+      "detail": "Sèvè eritaj la resevwa yon rekèt HTTP GET IPv4 pafètman nòmal soti nan 203.0.113.50. Jounal aksè sèvè a ap montre adrès pil NAT64 sa a kòm IP kliyan. Si sèvè a bezwen vrè adrès kliyan an, rezo a ka itilize mekanis tankou Proxy Protocol oswa antèt X-Forwarded-For."
+    },
+    "16": {
+      "text": "Sèvè eritaj reponn ak HTTP 200 OK sou IPv4",
+      "detail": "Sèvè a trete rekèt API a epi voye tounen yon repons JSON sou IPv4. Repons sa a adrese bay 203.0.113.50 — adrès pil NAT64 la. Bò sèvè koneksyon an se IPv4 estanda konplètman tout pandan."
+    },
+    "17": {
+      "text": "NAT64 tradwi repons tounen an IPv6 — kliyan resevwa li san pwoblèm",
+      "detail": "Pasrèl NAT64 la tradwi pakè repons IPv4 la tounen an IPv6 lè li itilize tab apetyaj li epi delivre li bay kliyan an. Kliyan an resevwa yon repons HTTP 200 OK IPv6 nòmal. Tout tranzaksyon an — rezolisyon DNS, TCP handshake, rekèt/repons HTTP — te transparan pou kliyan an."
+    },
+    "18": {
+      "text": "ICMPv6 Echo Request — kliyan ping adrès sentèz la",
+      "detail": "NAT64 pa sèlman tradwi TCP ak UDP. Li jere tradiksyon ICMP ↔ ICMPv6 tou. Kliyan an voye yon ICMPv6 Echo Request (tip 128) bay adrès sentèz la. NAT64 dwe tradwi sa an yon ICMPv4 Echo Request (tip 8), paske ICMPv6 ak ICMPv4 itilize nimewo tip diferan."
+    },
+    "19": {
+      "text": "NAT64 tradwi ICMPv6 tip 128 → ICMPv4 tip 8 (Echo Request)",
+      "detail": "Pasrèl NAT64 la tradwi ni antèt IP la ni antèt ICMP la. ICMPv6 tip 128 (Echo Request) vin ICMPv4 tip 8 (Echo Request). Idantifyan echo ak nimewo sekans prezève pou apetyaj repons. Tradiksyon sa a defini nan RFC 6145."
+    },
+    "20": {
+      "text": "Sèvè eritaj voye ICMP Echo Reply (IPv4)",
+      "detail": "Sèvè a reponn ak yon ICMPv4 Echo Reply (tip 0) estanda bay adrès pil NAT64 la. Sa a se konpòtman ICMP IPv4 konplètman nòmal."
+    },
+    "21": {
+      "text": "NAT64 tradwi ICMPv4 tip 0 → ICMPv6 tip 129 (Echo Reply) — ping reyisi",
+      "detail": "Pasrèl NAT64 la tradwi ICMPv4 Echo Reply (tip 0) tounen an ICMPv6 Echo Reply (tip 129) epi delivre li bay kliyan an. Ping an konplete avèk siksè. Zouti ping kliyan an montre yon repons soti nan 64:ff9b::c633:6401 — li pa janm wè vrè adrès IPv4 la."
+    },
+    "22": {
+      "text": "Kèk aplikasyon eritaj koddi adrès IPv4 (pa egz., konekte dirèkteman nan '192.168.1.1')",
+      "detail": "NAT64/DNS64 mache pafètman pou aplikasyon ki byen konpòte ki itilize non machin ak DNS. Men kèk aplikasyon eritaj koddi literal adrès IPv4 — yo rele connect(\"192.168.1.1\") dirèkteman san DNS. Depi kliyan an pa gen adrès IPv4 oswa wout IPv4, koneksyon sa yo echwe imedyatman."
+    },
+    "23": {
+      "text": "CLAT (tradiktè bò-kliyan) sou kliyan an bay yon entèfas IPv4 lokal",
+      "detail": "464XLAT (RFC 6877) ajoute yon tradiktè san eta ki rele CLAT sou kliyan an. CLAT kreye yon entèfas IPv4 vityèl (pa egz., v4-wlan0) ak yon adrès IPv4 lokal nan seri 192.0.0.0/29. Lè yon aplikasyon eritaj voye yon pakè IPv4, CLAT tradwi li an IPv6 lè li itilize prefiks NAT64 la, epi pakè IPv6 la vwayaje atravè rezo IPv6-sèlman an bay pasrèl NAT64 (PLAT) kote li tradwi tounen an IPv4."
+    },
+    "24": {
+      "text": "Doub tradiksyon: App → IPv4 → CLAT → IPv6 → NAT64 (PLAT) → IPv4",
+      "detail": "Non 464XLAT dekri vwayaj la: aplikasyon an jenere yon pakè IPv4 (4), CLAT tradwi li an IPv6 (6), epi PLAT/NAT64 tradwi li tounen an IPv4 (4). Donk «464». Premye tradiksyon an san eta (CLAT, lè li itilize SIIT nan RFC 7915), dezyèm nan se tradiktè NAT64 avèk eta ki deja egziste. Rezilta final la se trafik IPv4 bout-a-bout, transpòte sou yon rezo IPv6-sèlman."
+    },
+    "25": {
+      "text": "464XLAT jere ka espesyal yo. Android itilize sa depi 2014 pou rezo mobil IPv6-sèlman.",
+      "detail": "464XLAT pa teyorik — li fonksyone a echèl masif jodia. Android gen CLAT (clatd) depi vèsyon 4.3, sa pèmèt rezo mobil IPv6-sèlman sou T-Mobile, Reliance Jio, ak dè santèn lòt operatè. Apple te ajoute sipò CLAT nan iOS 12. Ansanm, NAT64/DNS64 + 464XLAT pèmèt rezo konplètman IPv6-sèlman tout pandan yo sipòte 100% aplikasyon IPv4 eritaj yo."
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "NAT64/DNS64: Fè Pon Ant Kliyan IPv6-Sèlman ak Entènèt IPv4",
+      "description": "Travèse sentèz adrès DNS64, tradiksyon avèk eta NAT64, apetyaj ICMP, ak 464XLAT pou aplikasyon eritaj",
+      "steps": {
+        "0": "OMB M-21-07 egzije ajans federal opere rezo IPv6-sèlman anvan 2025. Men Entènèt IPv4 la pa prale byento — gen toujou dè milyon sèvè IPv4-sèlman. Kijan yon kliyan IPv6-sèlman rive nan yo? Repons la se NAT64 ak DNS64, de teknoloji ki travay ansanm pou fè sèvè IPv4 parèt tankou destinasyon IPv6.",
+        "1": "Kliyan IPv6-sèlman nou an vle rive nan legacy-api.example.com. Aplikasyon an rele getaddrinfo(), ki voye yon rekèt DNS AAAA bay rezòlvè DNS64 la. Kliyan an mande yon adrès IPv6 — li sèlman pale IPv6 epi pa gen okenn ide si sèvè a se IPv4 oswa IPv6.",
+        "2": "Rezòlvè DNS64 la cheke DNS otorite epi jwenn pa gen AAAA record pou legacy-api.example.com. Sa a se deklanchè pou konpòtman DNS64: depi pa gen adrès IPv6 natif, rezòlvè a fè rekèt pou yon A record olye. Li jwenn tounen 198.51.100.1 — vrè adrès IPv4 sèvè a.",
+        "3": "Kounye a majik DNS64: li pran prefiks byen koni 64:ff9b::/96 (RFC 6052) epi ankatre adrès IPv4 la nan dènye 32 bit yo. 198.51.100.1 an egzadesimal se c6.33.64.01, donk adrès sentèz la se 64:ff9b::c633:6401. Kliyan an resevwa sa kòm yon AAAA record nòmal — li pa gen okenn ide adrès la te fabrike.",
+        "4": "Kliyan an konekte bay adrès sentèz la tankou nenpòt destinasyon IPv6 nòmal. Li voye yon TCP SYN bay 64:ff9b::c633:6401 pò 443. Sa a se yon pakè IPv6 estanda — pil TCP/IP kliyan an gen zewo tretman espesyal pou NAT64. Rezo a achemine pakè yo bay pasrèl NAT64 la paske 64:ff9b::/96 se yon wout konfigire.",
+        "5": "Pasrèl NAT64 la resevwa SYN IPv6 la epi rekonèt prefiks 64:ff9b::/96. Li ekstrè adrès IPv4 ankatre a (198.51.100.1) nan dènye 32 bit yo, asiyen yon adrès IPv4 sous nan pil li (203.0.113.50), epi kreye yon antre Binding Information Base (BIB) ki apeye sesyon IPv6 la ak sesyon IPv4 la.",
+        "6": "Sèvè eritaj la nan 198.51.100.1 resevwa yon TCP SYN IPv4 konplètman nòmal soti nan 203.0.113.50. Li pa gen okenn ide vrè kliyan an sou yon rezo IPv6-sèlman. Li reponn ak yon SYN-ACK estanda, tankou li ta fè pou nenpòt kliyan IPv4. Sa a se bèlte NAT64 — tradiksyon an envizib pou toude bò.",
+        "7": "Pasrèl NAT64 la tradwi SYN-ACK la tounen an IPv6 lè li itilize tab apetyaj li. Sous la vin 64:ff9b::c633:6401 (adrès sentèz la), epi destinasyon an se vrè adrès IPv6 kliyan an 2001:db8:1::10. Kliyan an resevwa sa ki sanble yon SYN-ACK IPv6 nòmal — tradiksyon an pafètman transparan.",
+        "8": "Ak koneksyon an etabli, done sikile lib. Kliyan an voye yon HTTP GET sou IPv6 bay pasrèl NAT64 la, ki tradwi li an IPv4 epi transmèt li bay sèvè eritaj la. Chaj HTTP la — antèt, kò, tout bagay — pase san chanjman. NAT64 sèlman tradwi antèt kouch-IP ak ajiste checksum.",
+        "9": "Sèvè eritaj la trete rekèt la epi retounen yon HTTP 200 OK sou IPv4. Repons la sikile tounen atravè pasrèl NAT64 la, ki tradwi li an IPv6 epi delivre li bay kliyan an. Bout-a-bout, kliyan an te fè yon rekèt HTTPS IPv6 estanda epi te resevwa yon repons — li pa janm konnen yon tradiktè te nan mitan.",
+        "10": "NAT64 jere ICMP tou. Lè kliyan an ping adrès sentèz la, li voye yon ICMPv6 Echo Request (tip 128). Pasrèl NAT64 la dwe tradwi pa sèlman antèt IP la, men tou valè tip ak kòd ICMP, paske ICMPv6 ak ICMPv4 itilize nimerasyon diferan.",
+        "11": "ICMP Echo Reply la sikile tounen atravè menm tradiksyon an: ICMPv4 tip 0 (Echo Reply) vin ICMPv6 tip 129 (Echo Reply). Zouti ping kliyan an montre yon repons soti nan 64:ff9b::c633:6401 — li pa janm wè vrè adrès IPv4 la. Tradiksyon ICMP sa a kritik pou dyagnostik rezo — ping ak traceroute dwe travèse fwontyè NAT64 la.",
+        "12": "NAT64/DNS64 kouvri apeprè 95% trafik reyèl. Men kèk aplikasyon eritaj koddi literal adrès IPv4 — yo rele connect(\"192.168.1.1\") dirèkteman san DNS. Sa yo kase sou rezo IPv6-sèlman paske pa gen etap DNS pou DNS64 entèsepte.",
+        "13": "464XLAT ajoute yon CLAT (tradiktè bò-kliyan) sou aparèy kliyan an. CLAT kreye yon entèfas IPv4 vityèl epi fè tradiksyon san eta: aplikasyon eritaj la voye IPv4, CLAT konvèti li an IPv6 lè li itilize prefiks NAT64 la, pakè a travèse rezo IPv6-sèlman an, epi pasrèl NAT64 (PLAT) tradwi li tounen an IPv4. Donk non an: 4-6-4.",
+        "14": "464XLAT pa yon solisyon nich — li fonksyone a echèl enòm jodia. Android gen CLAT (clatd) depi vèsyon 4.3 (2013), epi Apple te ajoute CLAT nan iOS 12. T-Mobile, Reliance Jio, ak dè santèn lòt operatè mobil opere rezo IPv6-sèlman ak NAT64/DNS64 + 464XLAT kòm sekirite pou aplikasyon IPv4 eritaj.",
+        "15": "Ann rezime tablo konplè a. NAT64/DNS64 se kijan ou opere yon rezo IPv6-sèlman san kase aksè bay Entènèt IPv4. Kliyan an pa janm bezwen yon adrès IPv4 — sa a se operasyon vrèman IPv6-sèlman. DNS64 fè sèvè IPv4-sèlman parèt kòm destinasyon IPv6. NAT64 tradwi pakè nan fwontyè a. 464XLAT jere aplikasyon eritaj ki koddi adrès IPv4. Ansanm, yo pèmèt yon tranzisyon an dousè bay rezo IPv6-sèlman tout pandan yo mentni konpatibilite konplè ak Entènèt IPv4 la."
+      }
+    }
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "meta": {
+    "title": "Ethernet san Pèt: PFC Poz → Mak ECN → Kontwòl Debi DCQCN",
+    "description": "Kijan RoCEv2 reyalize transpò san pèt sou Ethernet san jete pakè. Senaryo sa a montre sistèm kontwòl konjesyon 3 kouch ki rann RDMA sou Ethernet posib: PFC (Kontwòl Fliks Priyorite) anpeche debòdman tanpon lè li poze ekspedisyon an op-pa-op; ECN (Notifikasyon Konjesyon Eksplisit) make pakè nan switch la pou siyale konjesyon bout-a-bout; epi DCQCN (QCN Sant Done) fèmen bouk la — reseptè a jenere yon CNP (Pakè Notifikasyon Konjesyon) retounen bay ekspedisyon an, ki redwi debi enjeksyon li. Ansanm mekanis sa yo fòme «tisi san pèt» ke tout deplwaman RoCEv2 depann sou li.",
+    "learning_objectives": [
+      "Konprann poukisa Ethernet estanda (ak tail-drop) pa apwopriye pou RDMA",
+      "Wè kijan fram PFC PAUSE (IEEE 802.1Qbb) anpeche debòdman tanpon lè yo poze priyorite trafik espesifik",
+      "Obsève mak ECN nan switch la — chan ECN nan antèt IP a chanje soti nan ECT(0) pou ale nan CE",
+      "Swiv bouk retou DCQCN: pakè make CE → jenerasyon CNP → rediksyon debi ekspedisyon",
+      "Konprann sèy XOFF/XON PFC ak poukisa yo dwe ajiste pou absòbe done an wout",
+      "Wè mekanis rekiperasyon debi DCQCN — kijan ekspedisyon an retounen dousman nan debi liy",
+      "Apresye poukisa PFC poukont li pa sifi (blokin tèt-liy, tanpèt poz) epi poukisa ECN/DCQCN esansyèl",
+      "Konprann relasyon ant gwosè tanpon switch, sèy PFC, ak sèy mak ECN"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Lyen fizik monte — 100GbE sou toude segman, PFC aktive",
+      "detail": "Toude lyen 100GbE yo monte atravè Oto-Negosyasyon. Switch la ak toude RNIC yo konfigire pou Data Center Bridging (DCBx) ak PFC aktive sou priyorite 3. Sa vle di switch la ap voye fram PFC PAUSE bay yon pò amont lè fil atant sòti pou priyorite 3 depase sèy XOFF — pou anpeche debòdman tanpon ak pèt pakè.\nKonfigirasyon kle sou chak aparèy: • PFC aktive sou priyorite 3 (klas trafik RoCEv2) • DSCP 26 (AF31) → mape nan priyorite 3 atravè tab DSCP-a-priyorite • Mak ECN aktive nan switch la ak sèy WRED • Kontwòl konjesyon DCQCN aktive sou toude RNIC yo"
+    },
+    "1": {
+      "text": "QP yo etabli (RTS), DCQCN aktive — pare pou trafik RDMA",
+      "detail": "Toude QP yo fin fè salitasyon CM (gade senaryo RoCEv2 RC a pou detay) epi yo nan eta RTS (Pare pou Voye). DCQCN aktive pou chak QP atravè modify_qp — aparèy RNIC a ap: • Mete ECT(0) sou tout pakè ki sòti (make yo kòm kapab ECN) • Siveye pakè ki antre pou mak CE • Jenere CNP lè li detekte CE • Aplike limit debi lè li resevwa CNP\nParamèt DCQCN (pa defo tipik): • Debi inisyal: debi liy (100 Gbps) • Alpha (α): 0 okòmansman — ogmante vè 1 ak konjesyon • Revèy rekiperasyon debi: 55μs • Revèy alpha: 55μs • Etap ogmantasyon debi: 5 (ipè-ogmantasyon) answit ogmantasyon aditif"
+    },
+    "2": {
+      "text": "RDMA WRITE → Trafik nòmal nan debi liy (ECT(0) nan antèt IP)",
+      "detail": "Ekspedisyon an poste operasyon RDMA WRITE nan debi liy. Chak pakè pote ECT(0) nan chan ECN antèt IP la, ki siyale bay chak switch nan chemen an: «Mwen kapab ECN — si w gen konjesyon, make m olye w jete m.»\nNan 100 Gbps ak chaj itil 1KB ak fram ~1100 oktè: • Debi fil: ~11.4 milyon pakè pa segond • Espas ant pakè: ~87.6 ns\nSwitch la transmèt pakè sa yo nòmalman. Fil atant sòti li vè reseptè a prèske vid — pa gen konjesyon ankò."
+    },
+    "3": {
+      "text": "RDMA ACK ← Reseptè konfime WRITE (pa gen siyal konjesyon)",
+      "detail": "RNIC reseptè a trete RDMA WRITE a, depoze done yo nan Rejyon Memwa a, epi jenere yon ACK. Chan ECN nan pakè li resevwa a te ECT(0) (pa CE), donk pa gen notifikasyon konjesyon ki nesesè.\nSa a se chemen kontan eta estab la: done sikile nan debi liy, ACK retounen, fil atant switch rete ba."
+    },
+    "4": {
+      "text": "⚠ Konjesyon ap ogmante — fil atant sòti switch la ap plen",
+      "detail": "Plizyè ekspedisyon kounye a ap transmèt vè menm pò reseptè a (modèl incast — komen nan depo distribye ak antrenman IA). Fil atant sòti switch la vè reseptè a kòmanse plen paske debi antre agreje a depase kapasite pò sòti a.\nSèy tanpon switch (priyorite 3): • Sèy mak ECN: 150,000 oktè (WRED kòmanse make) • Sèy PFC XOFF: 300,000 oktè (kanpe ekspedisyon amont) • Sèy PFC XON: 100,000 oktè (rekòmanse ekspedisyon amont)\nFil atant la travèse sèy mak ECN (150KB) men li poko rive nan sèy PFC XOFF (300KB). Switch la kòmanse make pakè ak CE ak pwobabilite itilize WRED (Deteksyon Aleatwa Bonè Pondire).\nSa a se premye liy defans: mak ECN kòmanse ANVAN tanpon an riske debòde. Objektif la se pou DCQCN redwi debi ekspedisyon yo anvan PFC bezwen tire."
+    },
+    "5": {
+      "text": "⚠ Mak ECN CE — Switch make pakè RDMA WRITE ak Eksperyans Konjesyon",
+      "detail": "Motè WRED switch la chwazi pakè sa a pou mak ECN. Li modifye chan ECN antèt IP la soti nan ECT(0) (0x02) pou ale nan CE (0x03) — yon chanjman yon sèl bit ki siyale «pakè sa a te travèse yon lyen konjesyone.»\nPwen kritik: PAKÈ A PA JETE. Li kontinye vè reseptè a ak tout entegrite done. Sèlman chan ECN 2-bit nan antèt IP la modifye. Sa fondamantalman diferan de konjesyon tail-drop tradisyonèl, kote pakè a ta silansman efase.\nRNIC reseptè a ap detekte mak CE a lè pakè a rive epi deklanche repons DCQCN (jenerasyon CNP)."
+    },
+    "6": {
+      "text": "🛑 PFC PAUSE → Switch voye XOFF bay ekspedisyon sou priyorite 3",
+      "detail": "Fil atant sòti switch la frape sèy PFC XOFF (300,000 oktè). Aparèy switch la jenere yon fram PFC PAUSE vè ekspedisyon an ak latans prèske zewo (tipikman < 1μs soti nan travèse sèy jiska transmisyon fram).\nFram PFC PAUSE a poze SÈLMAN priyorite 3 (trafik RoCEv2). Tout lòt priyorite trafik kontinye sikile nòmalman. Kontwòl pou chak priyorite sa a se avantaj kle sou ansyen IEEE 802.3x PAUSE (ki te poze TOUT trafik).\nDire poz la fikse a 65535 quanta (maksimòm). Nan 100Gbps, chak quantum = 512 tan-bit = 5.12ns, donk poz maksimòm ≈ 335μs. Switch la ap re-voye PFC PAUSE anvan revèy la ekspire si fil atant la pa drennen ase.\nSèy PFC XOFF dwe fikse pou absòbe tout done an wout ant switch la ak ekspedisyon an. Nan 100 Gbps ak ~2μs ale-retou (kab + tretman): oktè an wout = 100×10⁹ × 2×10⁻⁶ / 8 = 25,000 oktè. Sèy 300KB a bay anpil mawj.\n⚠ Enpòtan: PFC se op-pa-op (Kouch 2). Nan yon tisi plizyè switch, poz PFC yo ka pwopaje vè amont, ki ka lakoz «tanpèt poz» ak blokin tèt-liy — se poutèt sa ECN/DCQCN esansyèl pou redwi debi ekspedisyon an anvan PFC vin mekanis konjesyon prensipal la."
+    },
+    "7": {
+      "text": "CNP ← Reseptè jenere Pakè Notifikasyon Konjesyon apre li detekte mak CE",
+      "detail": "RNIC reseptè a detekte pakè RDMA WRITE (PSN 1500) te rive ak ECN = CE (0x03) olye ECT(0) (0x02) atandi a. Aparèy RNIC a imedyatman jenere yon CNP epi voye li retounen bay ekspedisyon an.\nCNP a itilize BTH opcode 0x81 epi li adrese bay QP ekspedisyon an (QPN 0x000080). Li pa pote done — arive CNP nan li menm se siyal la. RNIC ekspedisyon an trete CNP a nan aparèy epi deklanche algorit rediksyon debi DCQCN.\nLimit debi CNP: reseptè a pap jenere plis pase yon CNP pa evènman konjesyon pa QP pa entèval tan (tipikman 50μs) pou evite inonde rezo a ak pakè kontwòl."
+    },
+    "8": {
+      "text": "DCQCN koupe debi — Ekspedisyon redwi debi transmisyon pa 50%",
+      "detail": "RNIC ekspedisyon an resevwa CNP a epi egzekite algorit rediksyon debi DCQCN. Sou premye CNP:\n1. Mizajou Alpha (α): α = (1 − g) × α_ansyen + g × 1.0\n   Ak g = 1/256 (pa defo): α ≈ 0.004 (ti ogmantasyon inisyal)\n\n2. Koupe debi: Debi_Aktyèl = Debi_Aktyèl × (1 − α/2)\n   ≈ 100.0 × (1 − 0.004/2) ≈ 99.8 Gbps\n\nMen DCQCN aplike yon diminisyon miltiplikatif tou sou premye CNP:\n   Debi_Sib = Debi_Aktyèl\n   Debi_Aktyèl = Debi_Aktyèl / 2 = 50.0 Gbps\n\nKoupe agresif inisyal sa a volontè — li pi bon pou rete anba epi rekipere olye rete nan konjesyon. Debi a ap rekipere dousman atravè mekanis ogmantasyon ki baze sou revèy.\nRemark: Poz PFC a toujou an efè, donk ekspedisyon an aktyèlman kanpe. Lè PFC rekòmanse, ekspedisyon an ap transmèt nan nouvo debi DCQCN limite a ki se 50 Gbps, pa 100 Gbps orijinal la. Se konsa PFC ak DCQCN travay ansanm — PFC bay pwoteksyon imedyat pandan DCQCN ajiste debi soutni an."
+    },
+    "9": {
+      "text": "PFC XON — Fil atant switch la drennen anba sèy, ekspedisyon rekòmanse",
+      "detail": "Ak ekspedisyon an poze pa PFC epi reseptè a kontinye drennen fil atant sòti switch la, pwofondè fil atant la desann anba sèy XON (100,000 oktè). Revèy poz PFC a swa ekspire swa switch la voye yon fram PFC ak tan=0 pou priyorite 3 (leve poz eksplisit).\nNIC ekspedisyon an rekòmanse transmisyon, men kounye a nan debi DCQCN redwi 50 Gbps olye 100 Gbps orijinal la. Sa a se sineji kle a: • PFC te anpeche pèt pakè pandan pwent konjesyon an (fren ijans) • DCQCN asire ekspedisyon an pa imedyatman rekreye konjesyon an\n  (kontwòl vitès entelijan)\n\nSan DCQCN, ekspedisyon an ta rekòmanse nan plen 100 Gbps, fil atant la ta plen ankò nan mikwosegond, epi PFC ta tire ankò — sa kreye yon «tanpèt PFC» ki gaspiye bann pasant epi lakoz pike latans."
+    },
+    "10": {
+      "text": "RDMA WRITE → Ekspedisyon transmèt nan debi redwi (50 Gbps)",
+      "detail": "Ekspedisyon an rekòmanse operasyon RDMA WRITE nan 50 Gbps — mwatye debi orijinal la. Aparèy RNIC a aplike limit debi sa a pou chak QP lè li mete reta ant pakè. Nan 50 Gbps ak fram 1102 oktè: • Espas ant pakè: ~176 ns (vs ~88 ns nan debi liy)\nPakè yo toujou pote ECT(0) — ekspedisyon an pare pou yon lòt wonn retou ECN si konjesyon retoune. Men nan debi redwi sa a, fil atant switch la estabilize byen anba sèy mak ECN.\nRemarke PSN kontinye soti nan 1501 — pa gen pakè ki pèdi pandan tout evènman konjesyon an. Sa a se garanti «san pèt» la: PFC te anpeche jete, epi nimewo sekans RDMA pa gen twou."
+    },
+    "11": {
+      "text": "Rekiperasyon DCQCN — Revèy debi tire, debi ogmante vè sib",
+      "detail": "DCQCN itilize yon mekanis rekiperasyon debi ki baze sou revèy. Chak entèval rate_increase_timer (pa defo ~55μs), si pa gen nouvo CNP ki resevwa:\nFaz 1 — Ipè-ogmantasyon (premye 5 tire revèy):\n  Debi_Sib = Debi_Sib + R_AI (enkreman aditif, pa egz., 5 Gbps)\n  Debi_Aktyèl = (Debi_Aktyèl + Debi_Sib) / 2\n\nFaz 2 — Ogmantasyon aditif (apre 5 tire):\n  Debi_Aktyèl = Debi_Aktyèl + R_HAI (enkreman ipè-aditif)\n\nApre premye etap rekiperasyon an:\n  Debi_Sib = 100.0 + 5.0 = 105.0 Gbps (plafone nan debi liy = 100.0)\n  Debi_Aktyèl = (50.0 + 100.0) / 2 = 75.0 Gbps\n\nAlpha degrade tou: α = (1 − g) × α_ansyen ≈ 0.004 × 0.996 ≈ 0.004 Pandan alpha degrade vè 0, koupe debi nan lavni vin mwens sevè.\nKonpòtman AIMD sa a (Ogmantasyon Aditif, Diminisyon Miltiplikatif) konvèje nan yon pati jis nan bann pasant pami fliks ki ap konpetisyone."
+    },
+    "12": {
+      "text": "Rekiperasyon DCQCN kontinye — Debi ap apwoche debi liy",
+      "detail": "Tire revèy ki vin apre kontinye ogmante debi a. Apre plizyè etap ipè-ogmantasyon san nouvo CNP:\nDebi_Aktyèl ≈ 93 Gbps → 97 Gbps → 99 Gbps → 100 Gbps (plafon debi liy)\nAlpha kontinye degrade vè 0, sa fè ekspedisyon an mwens reyaktif a yon sèl CNP nan lavni. Sa anpeche osilasyon — ekspedisyon an pap reyaji twòp a konjesyon brèf, tranzitwa.\nTout epizòd konjesyon an — soti nan premye mak ECN jiska rekiperasyon plen debi — tipikman pran 200-500μs nan yon rezo sant done byen ajiste. Metrik kle a se «dire poz PFC»: yon rezo byen ajiste ta dwe wè trè piti poz PFC paske DCQCN kenbe pwofondè fil atant anba sèy PFC pifò tan an."
+    },
+    "13": {
+      "text": "RDMA WRITE → Debi fin rekipere, debi nòmal reprann",
+      "detail": "Ekspedisyon an retounen nan (prèske) debi liy. Fil atant switch la estab epi byen anba tout sèy. Epizòd konjesyon DCQCN nan fini.\nObsèvasyon kle: • Zewo pakè pèdi pandan tout evènman konjesyon an • Sekans PSN kontini (1000 → 1500 → 1501 → ... → 2000) • PFC te poze ekspedisyon an pou ~50μs (yon evènman poz) • DCQCN te redwi debi a pou ~200μs anvan rekiperasyon plen • Enpak total sou debi: minimal — bès brèf, rekiperasyon rapid\nSe poutèt sa tout deplwaman RoCEv2 bezwen ni PFC ni ECN/DCQCN: PFC se filè sekirite a (anpeche pèt), epi DCQCN se entèlijans la (ajiste konpòtman pou evite deklanche PFC okòmansman)."
+    },
+    "14": {
+      "text": "⟳ Senaryo fini — sik lavi kontwòl konjesyon PFC/ECN/DCQCN",
+      "detail": "Senaryo sa a te demontre sistèm kontwòl konjesyon 3 kouch ki rann RoCEv2 san pèt:\nKOUCH 1 — PFC (IEEE 802.1Qbb): Fren ijans la • Op-pa-op, Kouch 2, PAUSE/REKÒMANSE pa priyorite • Anpeche debòdman tanpon nan chak op switch • Tire lè fil atant depase sèy XOFF • Limitasyon: ka lakoz blokin tèt-liy ak tanpèt poz nan tisi plizyè op\nKOUCH 2 — ECN (RFC 3168): Siyal konjesyon an • Bout-a-bout, Kouch 3, mak yon sèl bit nan antèt IP • Switch chanje ECT(0) → CE lè fil atant depase sèy mak • Pakè rive nan reseptè enta — pa gen pèt done • Sèy mak PI BA pase sèy PFC (detekte konjesyon pi bonè)\nKOUCH 3 — DCQCN (IBTA Anèks A17): Repons entelijan an • Reseptè detekte CE, jenere CNP retounen bay ekspedisyon • Ekspedisyon koupe debi pa ~50% sou premye CNP (diminisyon miltiplikatif) • Rekiperasyon baze sou revèy: ipè-ogmantasyon answit ogmantasyon aditif (AIMD) • Konvèje nan pati jis pami fliks ki ap konpetisyone\nEntèraksyon an kritik: • Sèy ECN < sèy PFC → DCQCN redwi debi anvan PFC tire • Si DCQCN twò lan → PFC anpeche pèt (filè sekirite) • San DCQCN → PFC poukont li lakoz tanpèt poz • San PFC → ECN poukont li pa ka anpeche jete pandan mikwo-pwent\nGid ajisteman: • Sèy mak ECN: ~30-50% alokasyon tanpon pò • Sèy PFC XOFF: ~80-90% tanpon pò (kite mawj pou done an wout) • Sèy PFC XON: ~30% tanpon pò • Revèy DCQCN: 50-100μs (matche ak RTT rezo)"
+    }
+  }
+}

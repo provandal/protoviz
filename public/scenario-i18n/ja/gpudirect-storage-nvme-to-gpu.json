@@ -1,0 +1,81 @@
+{
+  "meta": {
+    "title": "[WIP] GPUDirect Storage: NVMe ReadからGPUメモリへの直接転送 (ローカルPCIe)",
+    "description": "GPUDirect Storage (GDS) によるNVMe SSDからGPUメモリへのゼロコピーDMA転送。従来のパス (NVMe → Page Cache → ユーザバッファ → cudaMemcpy → GPU) との対比。cuFileRead/cuFileWrite APIでP2P DMAを実現し、CPUコピーを完全にバイパスします。",
+    "learning_objectives": [
+      "従来のI/OパスとGDSのゼロコピーパスを比較する",
+      "cuFileRead()/cuFileWrite() APIによるP2P DMAの仕組みを理解",
+      "GPU BAR1マッピングとNVMe SQEの関係を観察"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "従来パス (GDSなし): NVMe → Page Cache → ユーザバッファ → cudaMemcpy → GPU",
+      "detail": "GPUDirect Storageなしでは、NVMeデータをGPUメモリに読み込むために複数のCPU介在コピーが必要です: (1) アプリケーションがread()またはpread()を呼び出し (2) NVMeドライバがページキャッシュのホストDRAMページを指すPRPエントリでNVMe Readコマンドを発行 (3) NVMe SSDがホストDRAM (ページキャッシュ) にDMA (4) カーネルがページキャッシュからユーザバッファにコピー (O_DIRECTでない場合) (5) アプリケーションがcudaMemcpyHostToDevice()でGPUメモリにコピー (6) CUDAランタイムがピン留めホストDRAMからGPUにPCIe経由でDMA。各コピーがCPUサイクル、メモリ帯域幅を消費し、レイテンシを追加します。エポックあたりTBのデータを読み込むAIトレーニングワークロードでは深刻なボトルネックになります。CPUがストレージとGPUの橋渡し役となり、CPU時間とPCIe帯域幅の両方を浪費します (データがPCIeを2回横断: SSD→ホスト、ホスト→GPU)。"
+    },
+    "1": {
+      "text": "従来パスの帯域ペナルティ: データがPCIeバスを2回横断",
+      "detail": "従来パスではNVMe読み取りデータがPCIeバスを2回横断します: (1) NVMe SSD → ホストDRAM (PCIe x4 Gen5 = 32 GB/s)、(2) ホストDRAM → GPU (cudaMemcpy経由、PCIe x16 Gen5 = 64 GB/s)。GDSではデータがPCIeを1回だけ横断: NVMe SSD → GPU直接。7 GB/sのNVMe SSDがH100 GPUにデータを供給する場合、GDSはSSDの全帯域幅をGPUメモリに届けられます。従来パスはホストDRAM帯域幅を浪費し、CPUが処理しないストリーミングI/OデータでCPU L3キャッシュを汚染します。GDSはカーネル→ユーザコピーとcudaMemcpyのスケジューリングオーバーヘッドも排除してレイテンシを削減します。多数のGPUが多数のSSDから読み取る大規模AIトレーニングでは、集約帯域幅の節約は大きなものになります。"
+    },
+    "2": {
+      "text": "cuFileDriverOpen() — GPUDirect Storageサブシステムを初期化",
+      "detail": "アプリケーション (またはDALI/kvikioなどのフレームワーク) がcuFileDriverOpen()を呼び出してGDSサブシステムを初期化します。nvidia-fsカーネルモジュールのロードがトリガーされます (未ロードの場合)。nvidia-fsはnvme_register_fs()でNVMeホストドライバにDMA操作コールバックを登録します。PCIeトポロジを照会してGPUとNVMe SSDがP2P可能か (同じルートコンプレックスまたはPCIeスイッチ接続) を検証します。P2P不可の場合、GDSはホストDRAM経由のバウンスバッファパスにフォールバックします (従来パスよりはコピーが少なく高速)。nvidia-fsモジュールはNVIDIA GPUドライバ (nvidia.ko) とも連携し、BAR1マッピングとページピン留め用のGPUメモリ管理APIにアクセスします。"
+    },
+    "3": {
+      "text": "open() — O_RDONLY | O_DIRECTでトレーニングデータファイルをオープン",
+      "detail": "標準POSIXのopen()をO_DIRECTフラグ付きで呼び出します。O_DIRECTはGDSに必須です — Linuxページキャッシュをバイパスするためで、GDSがデータをGPUメモリに直接送信するにはこれが必要です。O_DIRECTなしではカーネルがホストDRAMにページキャッシュバッファを割り当ててデータをコピーし、GDSの目的が失われます。返されるfdは次のcuFileHandleRegister()でラップされます。"
+    },
+    "4": {
+      "text": "cuFileHandleRegister() — ファイルディスクリプタをGDSに登録",
+      "detail": "POSIX fdをcuFileハンドルでラップします。nvidia-fsはファイルがサポート対象のファイルシステム (ext4、XFS、またはrawブロックデバイス) 上にあることを検証し、基盤のNVMeブロックデバイス (/dev/nvme0n1p1) に解決します。このマッピングにより、cuFileRead/cuFileWriteが正しいNVMeコントローラとネームスペースに直接NVMeコマンドを発行でき、汎用ブロックレイヤI/Oスケジューラをバイパスして最大パフォーマンスを実現します。"
+    },
+    "5": {
+      "text": "cuFileBufRegister() — GPUメモリをピン留めしBAR1 DMAマッピングを作成",
+      "detail": "これが重要なセットアップステップです。cuFileBufRegister()はGPUメモリページをピン留め (GPUドライバによる移動やエビクションを防止) し、BAR1アパーチャマッピングを作成します。GPUのBAR1はPCIe Base Address Registerであり、GPUメモリ (HBM) のウィンドウをシステム物理アドレス空間に公開します。この呼び出し後、VA 0x7f1a_0000_0000のGPUバッファは物理アドレス0x0000_3a00_0000_0000でPCIe経由アクセス可能になり、NVMeコントローラを含む任意のPCIeデバイスがこのアドレスにDMAできます。IOMMU (存在する場合) もNVMeデバイスがこのGPU BAR1範囲にアクセスできるよう設定が必要です。"
+    },
+    "6": {
+      "text": "cuFileRead() — NVMe → GPU直接読み取り開始 (4 MiB)",
+      "detail": "アプリケーションがcuFileハンドル、GPUバッファ、転送サイズを指定してcuFileRead()を呼び出します。nvidia-fsがファイルオフセットをNVMe LBAに変換し (ファイルシステムのエクステントマップ経由)、GPU BAR1物理アドレスを指すPRPエントリでNVMe Read SQEを構築し、NVMeドライバに発行します。重要な革新: nvidia-fsがNVMeドライバのDMAマッピングパス (dma_map_sg) にフックし、通常のホストDRAMのscatter-gatherエントリをGPU BAR1物理アドレスに置き換えます。NVMeドライバ自体は無変更です — PRPの物理アドレスを見てそのまま発行するだけです。"
+    },
+    "7": {
+      "text": "NVMe Read SQEサブミット — ドアベルリング",
+      "detail": "NVMeホストドライバが64バイトのSQEをホストDRAMのSubmission Queueに書き込み、NVMeコントローラのドアベルレジスタに新しいSQテールポインタをMMIO書き込み (PCIe経由) します。SQEにはopcode=0x02 (Read)、NSID=1、SLBA=0、NLB=8191 (4 MiB)、そして重要なPRP1 = GPU BAR1物理アドレス (0x0000_3a00_0000_0000) が含まれます。NVMeコントローラはPRP1がGPUメモリを指していることを知りませんし気にしません — そのアドレスにデータをDMAするだけです。"
+    },
+    "8": {
+      "text": "NVMe SSDがホストメモリからSQEをフェッチ",
+      "detail": "NVMeコントローラがドアベル書き込み (新しいSQテール) を検出し、PCIe Memory Readを発行してホストDRAMのSubmission Queueから64バイトのSQEをフェッチします。コントローラがSQEを解析し、Readオペコード、NSID、SLBA、NLB、PRPアドレスを抽出します。要求されたLBA範囲のNANDフラッシュ読み取りを開始します。"
+    },
+    "9": {
+      "text": "P2P DMA: 4 MiB NVMe SSD → GPU BAR1 (ゼロCPUコピー)",
+      "detail": "最も重要な教育ポイントです。NVMeコントローラがNANDフラッシュからデータを内部DRAMバッファに読み取り、PRP1/PRPリストのGPU BAR1アドレスをターゲットにPCIe Memory Write TLPを発行します。PCIeルートコンプレックスがBAR1アドレスをデコードしTLPをGPUに直接ルーティングします — データはホストDRAMに入らず、CPUはペイロードバイトに触れません。PCIe Gen5 x4 (32 GB/sリンク帯域幅) で、4 MiB転送は約125マイクロ秒で完了します。GPUのメモリコントローラが書き込みを受信しHBM3にデータを配置します。比較: 従来パスでは約250 us (PCIe 2回横断 + CPU memcpyオーバーヘッド + ページキャッシュ割り当て) かかります。"
+    },
+    "10": {
+      "text": "NVMe完了 — CQEポスト、MSI-X発火",
+      "detail": "全データがGPU BAR1にDMAされた後、NVMeコントローラが16バイトのCompletion Queue Entry (CQE) をホストDRAMのCQにポストし、MSI-X割り込みを発火します。CQEにはCID=0x0042 (Readコマンドに一致)、status=0 (成功)、更新されたSQヘッドポインタが含まれます。NVMeホストドライバの割り込みハンドラがCQEを処理し、この完了を待っているnvidia-fsスレッドを起こします。"
+    },
+    "11": {
+      "text": "cuFileRead()戻り — 4 MiBトレーニングデータがGPUメモリに到着",
+      "detail": "cuFileRead()が4194304 (正常に読み取ったバイト数) を返します。トレーニングデータは登録済みバッファアドレスのGPU HBM3に格納され、CUDAカーネルから即座にアクセス可能です。PyTorch DataLoader (またはDALIパイプライン) がこのテンソルをモデルのフォワードパスに直接供給できます。CPUの関与: 64バイトNVMe SQEの書き込み + ドアベル1回 + 16バイトCQEの処理のみ。CPUは4 MiBペイロードの1バイトにも触れていません。これがGPUDirect Storageの威力です: CPUデータプレーンオーバーヘッドゼロでNVMeワイヤスピードのストレージI/Oを実現します。"
+    },
+    "12": {
+      "text": "cuFileWrite() — GPUメモリからNVMeへチェックポイント保存 (4 MiB)",
+      "detail": "トレーニング計算完了後、アプリケーションがcuFileWrite()でチェックポイントを保存します。GPUメモリの内容をホストDRAMを経由せず直接NVMe SSDに書き込みます。書き込みパスは読み取りパスの逆です: nvidia-fsがGPU BAR1アドレスを指すPRPエントリでNVMe Write SQEを構築しますが、今度はNVMeコントローラがそのアドレスからDMA読み取りを行います (GPU → SSD)。モデルパラメータ (数GB規模) がGPUメモリに常駐する大規模モデルのチェックポイント保存に不可欠です。"
+    },
+    "13": {
+      "text": "NVMe Write SQEサブミット — PRP1 = GPU BAR1",
+      "detail": "NVMe Write SQEはReadコマンドと構造的に同一ですが、オペコードが0x01 (Write) です。PRP1は引き続きGPU BAR1アドレスを指しますが、今度はNVMeコントローラがこのアドレスに対してPCIe Memory READ TLPを発行 (GPUメモリの読み取り) します。PCIeルートコンプレックスが読み取りをGPUにルーティングし、GPUがデータを返します。"
+    },
+    "14": {
+      "text": "P2P DMA: 4 MiB GPU BAR1 → NVMe SSD (チェックポイント保存)",
+      "detail": "NVMeコントローラがPCIe P2P Memory Read TLP経由でGPU BAR1メモリから4 MiBを読み取ります。PCIe読み取りはスプリットトランザクションです — NVMeコントローラがMRdリクエストTLPを送信し、PCIeファブリックがGPUにルーティングし、GPUがCplD (Completion with Data) TLPを返します。NVMeコントローラが内部書き込みバッファにデータを蓄積し、NANDフラッシュをプログラムします。ここでもホストDRAMとCPUはデータパスに含まれません。"
+    },
+    "15": {
+      "text": "NVMe Write完了 — チェックポイントがNANDに永続化",
+      "detail": "NVMeコントローラがNANDフラッシュへの書き込みを完了し、status=成功のCQEをポストします。cuFileWrite()が4194304 (書き込みバイト数) を返します。チェックポイントがSSD上に安全に永続化されました。保存操作全体でCPUコピーはゼロです — CPUはNVMeコマンドの発行と完了割り込みの処理のみ行いました。"
+    },
+    "16": {
+      "text": "GDSまとめ: NVMeとGPU間のゼロコピーI/OでPCIe帯域を最大活用",
+      "detail": "GPUDirect StorageはストレージデータパスからCPUを完全に排除します。CPUの役割はコントロールプレーンのみ: 64バイトのNVMeコマンドディスクリプタの発行と16バイトの完了エントリの処理です。すべてのバルクデータ移動はNVMe SSDとGPU間のPCIeピアツーピアDMAで行われます。AIトレーニングワークロードでは: GDSによりNVMeの全帯域幅 (SSDあたり7+ GB/s) でGPUメモリにトレーニングデータを直接読み込み、同じ速度でチェックポイントを保存できます。8台のNVMe SSDが1台のH100 GPUにデータを供給する場合、GDSはCPUオーバーヘッドゼロで50+ GB/sのトレーニングデータ帯域幅を提供できます。主要コンポーネント: cuFile API (ユーザ空間)、nvidia-fsカーネルモジュール (カーネル空間)、NVMeドライバ (無変更)、PCIe P2Pルーティング (ハードウェア)。"
+    }
+  }
+}

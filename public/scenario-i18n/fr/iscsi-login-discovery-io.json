@@ -1,0 +1,78 @@
+{
+  "meta": {
+    "title": "iSCSI : login → decouverte → SCSI INQUIRY → WRITE(10) → READ(10)",
+    "description": "Cycle de vie complet d'une session iSCSI sur 10GbE TCP/IP : poignee de main TCP en 3 etapes, phase de login iSCSI (authentification et negociation de parametres), decouverte SendTargets, login sur la cible, SCSI INQUIRY pour identifier le LUN, SCSI WRITE(10) et READ(10) pour les E/S de donnees. iSCSI est le protocole SAN le plus largement deploye, transportant les commandes SCSI sur les reseaux TCP/IP standard — aucun materiel special requis. Ce scenario montre comment le stockage en mode bloc SCSI fonctionne sur Ethernet, en contraste avec Fibre Channel (reseau SAN dedie) et NVMe-oF (nouvelle generation).",
+    "learning_objectives": [
+      "Comprendre comment iSCSI fait correspondre les commandes SCSI aux connexions TCP en utilisant le cadrage PDU",
+      "Suivre la phase de login iSCSI : negociation de securite, echange de parametres operationnels",
+      "Voir la decouverte SendTargets — comment un initiateur apprend les cibles et LUN disponibles",
+      "Observer les identifiants de session et de connexion iSCSI (ISID, TSIH, CID)",
+      "Suivre SCSI INQUIRY pour decouvrir le type d'appareil, le fabricant et la capacite",
+      "Suivre un SCSI WRITE(10) a travers iSCSI : PDU de commande, PDU Data-Out, PDU de reponse",
+      "Suivre un SCSI READ(10) : PDU de commande, PDU Data-In, PDU de reponse",
+      "Comprendre les condensats d'en-tete/donnees iSCSI (CRC32C) pour l'integrite des donnees"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Liaison physique active — 10GbE sur les deux segments",
+      "detail": "Les liaisons Ethernet 10GbE standard s'activent. Contrairement a FC (reseau SAN dedie) ou RoCEv2 (necessitant PFC/Ethernet sans perte), iSCSI fonctionne sur tout reseau IP standard. Aucune configuration speciale du commutateur n'est necessaire — TCP gere la fiabilite et le controle de flux."
+    },
+    "1": {
+      "text": "Poignee de main TCP en 3 etapes → connexion au port 3260 etablie",
+      "detail": "Le demon iscsid de l'initiateur ouvre une connexion TCP vers le port iSCSI bien connu 3260 de la cible (attribue par l'IANA). La poignee de main TCP standard SYN → SYN-ACK → ACK etablit un flux d'octets fiable.\niSCSI encadre ses PDU sur cette connexion TCP. Contrairement aux protocoles qui utilisent UDP (RoCEv2) ou un cadrage dedie (FC), iSCSI s'appuie sur TCP pour la fiabilite, l'ordonnancement et le controle de flux. Cela signifie : • Aucun NIC special requis (toute pile TCP/IP fonctionne) • Fonctionne a travers les reseaux routes (pas limite au L2) • Le controle de congestion TCP limite le debit sous charge • Le traitement TCP consomme des cycles CPU\nVoir le scenario TCP pour les details de la poignee de main en 3 etapes."
+    },
+    "2": {
+      "text": "Login iSCSI → negociation de securite (AuthMethod=None)",
+      "detail": "L'initiateur envoie le premier PDU de login. Le login iSCSI comporte deux phases : 1. Negociation de securite (CSG=0) — selection de la methode d'authentification 2. Negociation operationnelle (CSG=1) — ajustement des parametres de session\nCe PDU transporte des paires cle-valeur : • InitiatorName=iqn.2024-01.com.example:host01 (IQN de l'initiateur) • AuthMethod=None (aucune authentification — CHAP est courant en production)\nL'ISID (Initiator Session ID) est une valeur de 6 octets qui, combinee au TSIH de la cible, identifie de maniere unique cette session iSCSI. Si l'initiateur se reconnecte avec le meme ISID, la cible peut reprendre la session au lieu d'en creer une nouvelle."
+    },
+    "3": {
+      "text": "Reponse de login ← securite acceptee, TSIH=0x0001 attribue",
+      "detail": "La cible accepte AuthMethod=None et attribue TSIH (Target Session Identifying Handle) = 0x0001. Le bit T (Transit) est active, passant a la phase de negociation operationnelle."
+    },
+    "4": {
+      "text": "Login → negociation des parametres operationnels",
+      "detail": "L'initiateur propose des parametres operationnels qui regissent le transfert de donnees :\n• MaxRecvDataSegmentLength = 262144 (256 Ko) — donnees max par PDU • FirstBurstLength = 262144 — donnees non sollicitees autorisees avant R2T • MaxBurstLength = 524288 — donnees totales max par sequence R2T • InitialR2T = Yes — la cible doit envoyer R2T avant les donnees d'ecriture • ImmediateData = Yes — les petites donnees d'ecriture peuvent accompagner le PDU de commande • HeaderDigest = None — pas de CRC sur les en-tetes iSCSI (courant sur les LAN fiables) • DataDigest = None — pas de CRC sur les segments de donnees\nCes parametres sont negocies — les valeurs effectives sont le minimum ou le maximum de ce que chaque cote propose, selon le parametre."
+    },
+    "5": {
+      "text": "Login termine ← Full Feature Phase — session etablie",
+      "detail": "La cible accepte les parametres operationnels et fait passer la session en Full Feature Phase (NSG=3). La session iSCSI est maintenant entierement etablie et prete pour les commandes SCSI.\nIdentifiants de session : • ISID = 0x00023d000001 (attribue par l'initiateur) • TSIH = 0x0001 (attribue par la cible) • (ISID + TSIH) identifie cette session de maniere unique a l'echelle globale\nParametres negocies : • MaxRecvDataSegmentLength = 256 Ko • FirstBurstLength = 256 Ko • MaxBurstLength = 512 Ko • InitialR2T = Yes, ImmediateData = Yes"
+    },
+    "6": {
+      "text": "SCSI INQUIRY → l'initiateur decouvre les caracteristiques du peripherique LUN 0",
+      "detail": "La couche intermediaire SCSI de Linux envoie automatiquement une INQUIRY a chaque LUN pour decouvrir le type de peripherique, le fabricant et les capacites. C'est la meme commande SCSI INQUIRY utilisee dans le scenario Fibre Channel — iSCSI la transporte simplement sur TCP au lieu de FCP.\nLa commande INQUIRY est encapsulee dans un PDU de commande SCSI iSCSI (opcode 0x01) avec le CDB de 16 octets integre dans l'en-tete du PDU."
+    },
+    "7": {
+      "text": "Reponse INQUIRY ← peripherique bloc a acces direct (LIO-ORG IBLOCK)",
+      "detail": "La cible retourne les donnees INQUIRY identifiant le peripherique comme un peripherique bloc a acces direct (type 0x00). L'initiateur Linux cree un peripherique /dev/sdX pour ce LUN.\nLa reponse est livree sous forme de PDU iSCSI SCSI Data-In avec le bit Status active — combinant la livraison de donnees et l'etat SCSI dans un seul PDU (optimisation pour les petites reponses)."
+    },
+    "8": {
+      "text": "SCSI WRITE(10) → ecriture de 4 Ko au LBA 0",
+      "detail": "L'application ecrit 4 Ko sur le peripherique bloc. L'initiateur iSCSI envoie le CDB SCSI WRITE(10) encapsule dans un PDU de commande SCSI iSCSI.\nPuisque InitialR2T=Yes a ete negocie, l'initiateur n'envoie pas encore les donnees d'ecriture — il attend que la cible signale qu'elle est prete via R2T. (Si ImmediateData etait utilise, les petites donnees d'ecriture pourraient accompagner le PDU de commande.)"
+    },
+    "9": {
+      "text": "R2T ← la cible est prete a recevoir les 4 Ko de donnees d'ecriture",
+      "detail": "La cible envoie un PDU R2T (Ready to Transfer), accordant a l'initiateur la permission d'envoyer les donnees d'ecriture. Le R2T specifie : • Buffer Offset = 0 (debut du transfert) • Desired Data Transfer Length = 4096 (envoyer les 4 Ko) • Target Transfer Tag = 0x00000001 (l'initiateur le repete dans Data-Out)\nR2T fournit un controle de flux — la cible ne sera pas submergee par des donnees d'ecriture qu'elle n'est pas prete a recevoir. C'est important pour les cibles qui peuvent avoir un espace tampon limite. Comparez avec NVMe-oF/RDMA ou la cible lit les donnees par RDMA READ a son propre rythme."
+    },
+    "10": {
+      "text": "Data-Out → l'initiateur envoie les 4 Ko de donnees d'ecriture",
+      "detail": "L'initiateur envoie les donnees d'ecriture dans un PDU iSCSI SCSI Data-Out (opcode 0x05). Les 4 Ko tiennent dans un seul PDU puisque MaxRecvDataSegmentLength = 256 Ko.\nPour les ecritures plus grandes (> MaxRecvDataSegmentLength), les donnees seraient reparties sur plusieurs PDU Data-Out, chacun referencant le meme Target Transfer Tag du R2T.\nComparaison du chemin de donnees pour une ecriture de 4 Ko : • iSCSI : app → noyau SCSI → PDU iSCSI → pile TCP/IP → DMA NIC (2 copies) • NVMe-oF/RDMA : app → MR enregistree → RDMA READ par la cible (0 copie CPU hote) • FC : app → noyau SCSI → FCP → pilote FC → DMA HBA (1 copie)"
+    },
+    "11": {
+      "text": "Reponse WRITE ← GOOD — 4 Ko ecrits au LBA 0",
+      "detail": "La cible confirme que le SCSI WRITE(10) s'est termine avec l'etat GOOD. Les donnees ont ete ecrites sur le peripherique bloc backend.\nResume du flux d'ecriture iSCSI : 1. Initiateur → Cible : PDU de commande SCSI (CDB WRITE) 2. Cible → Initiateur : PDU R2T (pret pour les donnees) 3. Initiateur → Cible : PDU Data-Out (4 Ko de donnees d'ecriture) 4. Cible → Initiateur : PDU de reponse SCSI (etat GOOD)"
+    },
+    "12": {
+      "text": "SCSI READ(10) → lecture de 4 Ko depuis le LBA 0",
+      "detail": "L'initiateur envoie un READ(10) pour le meme bloc de 4 Ko. Aucun R2T n'est necessaire pour les lectures — la cible envoie les PDU Data-In directement."
+    },
+    "13": {
+      "text": "Data-In ← 4 Ko de donnees lues avec etat GOOD",
+      "detail": "La cible lit 4 Ko depuis le LBA 0 et les retourne dans un PDU iSCSI SCSI Data-In. Le bit Status est active (S=1), integrant l'etat SCSI GOOD dans le dernier PDU de donnees — evitant un PDU de reponse separe.\nResume du flux de lecture iSCSI : 1. Initiateur → Cible : PDU de commande SCSI (CDB READ) 2. Cible → Initiateur : PDU Data-In (4 Ko + etat GOOD)\nLes lectures sont plus simples que les ecritures car il n'y a pas de poignee de main R2T. Pour les grandes lectures, les donnees seraient reparties sur plusieurs PDU Data-In."
+    },
+    "14": {
+      "text": "⟳ Scenario termine — cycle de vie d'une session iSCSI",
+      "detail": "Ce scenario a demontre une session iSCSI complete :\n1. LIAISON — Ethernet 10GbE standard, aucune configuration speciale 2. TCP — poignee de main en 3 etapes vers le port 3260 3. LOGIN — negociation en deux phases (securite → operationnelle → Full Feature Phase) 4. DECOUVERTE — SCSI INQUIRY pour identifier le LUN 0 (disque) 5. ECRITURE — Commande → R2T → Data-Out → Reponse (echange de 4 PDU) 6. LECTURE — Commande → Data-In+Etat (echange de 2 PDU)\niSCSI comparee aux autres protocoles SAN :\n┌────────────────┬──────────────┬──────────────┬────────────────┐\n│ Caracteristique│ iSCSI        │ FC           │ NVMe-oF/RDMA   │\n├────────────────┼──────────────┼──────────────┼────────────────┤\n│ Transport      │ TCP/IP       │ Reseau FC    │ RoCEv2/RDMA    │\n│ Reseau         │ Tout Ethernet│ FC dedie     │ Eth sans perte │\n│ Materiel spec. │ Non          │ HBA FC       │ NIC RDMA       │\n│ Charge CPU     │ Elevee (TCP) │ Faible (HBA) │ Quasi nulle    │\n│ Latence        │ ~100-500 μs  │ ~10-50 μs    │ ~5-20 μs       │\n│ Complexite     │ Faible       │ Elevee       │ Moyenne        │\n│ Cout           │ Faible       │ Eleve        │ Moyen          │\n│ Debit max      │ ~40 Gbit/s   │ 64 Gbit/s    │ 100+ Gbit/s    │\n└────────────────┴──────────────┴──────────────┴────────────────┘\nLa force d'iSCSI est la simplicite — il fonctionne sur les reseaux IP existants sans materiel special, ce qui en fait le protocole SAN le plus accessible et le plus largement deploye."
+    }
+  }
+}

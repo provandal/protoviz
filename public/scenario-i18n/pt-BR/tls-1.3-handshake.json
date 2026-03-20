@@ -1,0 +1,66 @@
+{
+  "meta": {
+    "title": "TLS 1.3: Handshake Completo → Dados de Aplicação Encriptados → Fechamento com Alert",
+    "description": "Handshake e troca de dados TLS 1.3 (RFC 8446) completos. O TLS 1.3 reduziu o handshake de duas viagens de ida e volta (TLS 1.2) para uma: o cliente envia key shares suportados no ClientHello, e o servidor responde com seu key share no ServerHello — ambos os lados derivam o segredo compartilhado após apenas uma viagem de ida e volta. Este cenário abrange: TCP 3-way handshake, ClientHello com extensões supported_versions e key_share (x25519), ServerHello com key_share, EncryptedExtensions + Certificate + CertificateVerify + Finished encriptados, client Finished, dados bidirecionais de aplicação sobre AES-256-GCM, e teardown gracioso com alerta close_notify. Todas as mensagens pós-ServerHello são encriptadas.\n",
+    "learning_objectives": [
+      "Entender o handshake TLS 1.3 de 1-RTT vs 2-RTT do TLS 1.2",
+      "Ver como o key_share do ClientHello (x25519) permite ao servidor derivar chaves imediatamente",
+      "Rastrear o key schedule do handshake: segredo compartilhado (EC)DHE → Handshake Secret → chaves de tráfego do handshake",
+      "Observar que EncryptedExtensions, Certificate, CertificateVerify e Finished são TODOS encriptados",
+      "Entender como o Master Secret deriva chaves de tráfego de aplicação a partir do handshake",
+      "Ver encriptação autenticada AES-256-GCM protegendo dados de aplicação",
+      "Acompanhar o alerta close_notify para encerramento gracioso do TLS",
+      "Apreciar por que o TLS 1.3 removeu transporte de chave RSA, DH estático e todas as suítes de cifra CBC"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "TCP SYN → Porta 443 (HTTPS)",
+      "detail": "O cliente inicia uma conexão TCP para a porta HTTPS (443) do servidor. O TLS 1.3 roda sobre TCP (ou QUIC/UDP no TLS 1.3 + HTTP/3, não mostrado aqui). O handshake TCP deve ser completado antes que o TLS possa começar.\n"
+    },
+    "1": {
+      "text": "TCP SYN-ACK ← Servidor confirma",
+      "detail": "O servidor responde com SYN-ACK."
+    },
+    "2": {
+      "text": "TCP ACK → Conexão estabelecida",
+      "detail": "TCP 3-way handshake completo. O handshake TLS começa imediatamente."
+    },
+    "3": {
+      "text": "TLS ClientHello — oferece TLS 1.3 + key share x25519",
+      "detail": "O cliente envia ClientHello contendo: • supported_versions: [TLS 1.3] — a ÚNICA forma de negociar TLS 1.3 • cipher_suites: [AES-256-GCM, AES-128-GCM, ChaCha20-Poly1305] • key_share: chave pública x25519 do cliente • signature_algorithms: [ECDSA, RSA-PSS, Ed25519] • server_name: www.example.com (SNI, ainda em texto claro)\nDIFERENÇA CHAVE do TLS 1.2: o cliente envia sua chave pública ECDHE nesta primeira mensagem. No TLS 1.2, o cliente tinha que esperar pelo ServerKeyExchange antes de computar o segredo compartilhado. Este key share antecipado é o que habilita o handshake de 1-RTT do TLS 1.3.\nSe o servidor não suportar o grupo de key share oferecido, ele responde com HelloRetryRequest pedindo ao cliente para tentar um grupo diferente — isso adiciona mais uma viagem de ida e volta (raro na prática já que x25519 é universalmente suportado).\n"
+    },
+    "4": {
+      "text": "TLS ServerHello — seleciona AES-256-GCM + key share x25519",
+      "detail": "O servidor responde com ServerHello contendo: • supported_versions: TLS 1.3 (confirma versão) • cipher_suite: TLS_AES_256_GCM_SHA384 • key_share: chave pública x25519 do servidor\nNeste ponto, AMBOS os lados podem computar o segredo compartilhado ECDHE:\n  shared_secret = x25519(minha_chave_privada, chave_publica_do_par)\n\nO key schedule do TLS 1.3 então deriva: 1. Early Secret = HKDF-Extract(0, 0)  [sem PSK no handshake completo] 2. Handshake Secret = HKDF-Extract(derived_secret, shared_secret) 3. Chaves de tráfego do handshake cliente/servidor (para encriptar o resto\n   do handshake)\n\nTUDO após o ServerHello é encriptado com chaves de tráfego do handshake. Isso significa que o certificado do servidor, extensões e Finished estão todos ocultos de observadores passivos — uma melhoria significativa de privacidade em relação ao TLS 1.2 onde o certificado era enviado em texto claro.\n"
+    },
+    "5": {
+      "text": "Voo encriptado do servidor — EncryptedExtensions + Certificate + CertificateVerify + Finished",
+      "detail": "O servidor envia quatro mensagens de handshake, TODAS encriptadas com chaves de tráfego do handshake derivadas do segredo compartilhado ECDHE:\n1. EncryptedExtensions — extensões não relacionadas a chaves (ALPN: h2, etc.) 2. Certificate — cadeia de certificados X.509\n   (encriptada! No TLS 1.2 isso era em texto claro)\n3. CertificateVerify — assinatura sobre a transcrição do handshake provando\n   que o servidor possui a chave privada correspondente ao certificado\n4. Finished — HMAC sobre todo o handshake provando integridade\nNo fio, estas aparecem como \"Application Data\" (content type 23). O content type real está oculto dentro do payload encriptado como o último byte (um \"inner content type\" do TLS 1.3). Isso previne middleboxes de interferir com mensagens específicas do handshake.\nApós verificar o Finished do servidor, o cliente pode derivar: 4. Master Secret = HKDF-Extract(derived_secret, 0) 5. Chaves de tráfego de aplicação cliente/servidor\n"
+    },
+    "6": {
+      "text": "Client Finished (encriptado) — handshake TLS 1.3 completo em 1-RTT",
+      "detail": "O cliente envia sua mensagem Finished (encriptada com chaves do handshake): • Verify Data = HMAC-SHA384(client_finished_key, Hash(todo_handshake))\nApós o servidor verificar isso, o handshake está completo. Ambos os lados agora derivam chaves de tráfego de aplicação do Master Secret:\n  client_app_key = HKDF-Expand(Master Secret, \"c ap traffic\", Hash)\n  server_app_key = HKDF-Expand(Master Secret, \"s ap traffic\", Hash)\n\nTotal: 1 viagem de ida e volta para o handshake TLS (após TCP). Compare: TLS 1.2 precisava de 2 viagens. Com TLS 1.3 + 0-RTT (retomada PSK), pode ser 0 viagens.\nNota: O servidor pode começar a enviar dados de aplicação imediatamente após seu próprio Finished — não precisa esperar pelo Finished do cliente. Isso é chamado \"dados 0.5-RTT\" no TLS 1.3.\n"
+    },
+    "7": {
+      "text": "HTTPS GET request — encriptado com chaves de tráfego de aplicação AES-256-GCM",
+      "detail": "O cliente envia um HTTP/2 GET request para a página. A requisição HTTP inteira (método, headers, caminho, cookies — tudo) é encriptada dentro de um registro TLS Application Data.\nEncriptação: AES-256-GCM com um nonce por registro construído a partir de:\n  nonce = write_iv XOR sequence_number (64-bit)\nO número de sequência incrementa por registro, garantindo unicidade do nonce sem IV explícito no registro (economizando 8 bytes por registro vs TLS 1.2).\nAutenticação: GCM produz uma tag de 128 bits cobrindo o texto cifrado e os dados associados (header do registro). Qualquer adulteração causa falha na decriptação.\n"
+    },
+    "8": {
+      "text": "HTTPS 200 OK response — conteúdo da página encriptado",
+      "detail": "O servidor responde com o conteúdo da página, encriptado com sua chave de tráfego de aplicação. Respostas grandes abrangem múltiplos registros TLS (máximo 16.384 bytes de texto claro por registro, mais 256 bytes para content type e padding).\nHTTP/2 multiplexa múltiplos streams dentro de uma única conexão TLS, então requisições concorrentes para CSS, JS, imagens todas compartilham este túnel encriptado.\n"
+    },
+    "9": {
+      "text": "Alerta TLS close_notify — cliente inicia encerramento gracioso",
+      "detail": "O cliente envia close_notify para sinalizar que não enviará mais dados TLS. Este alerta é encriptado (aparece como Application Data no fio).\nclose_notify previne ataques de truncamento — sem ele, um atacante poderia silenciosamente descartar dados terminando a conexão TCP. Com close_notify, ambos os lados sabem que a transferência de dados foi completada.\n"
+    },
+    "10": {
+      "text": "TLS close_notify ← Servidor responde, sessão TLS encerrada de forma limpa",
+      "detail": "O servidor confirma com seu próprio close_notify. Ambos os lados agora sabem que a sessão TLS está terminada de forma limpa. TCP FIN/ACK segue para fechar a conexão de transporte.\n"
+    },
+    "11": {
+      "text": "Cenário completo — Handshake Completo TLS 1.3",
+      "detail": "Este cenário demonstrou o handshake completo TLS 1.3 (RFC 8446):\nHANDSHAKE TCP (3 pacotes):\n  SYN → SYN-ACK → ACK\n\nHANDSHAKE TLS 1.3 (3 mensagens, 1 viagem de ida e volta):\n  ClientHello (key_share: chave pública x25519)\n  ServerHello (key_share: chave pública x25519)\n  → Ambos os lados computam segredo compartilhado ECDHE\n  Servidor: {EncryptedExtensions, Certificate, CertificateVerify, Finished}\n          ↑ TODOS encriptados com chaves de tráfego do handshake\n  Cliente: {Finished}\n\nDADOS DE APLICAÇÃO:\n  HTTP/2 bidirecional sobre AES-256-GCM\n\nFECHAMENTO TLS:\n  Alertas close_notify mútuos\n\nMelhorias chave sobre TLS 1.2: • Handshake de 1-RTT (vs 2-RTT) — cliente envia key share antecipadamente • Certificado encriptado — observadores passivos não podem ver identidade do servidor • Apenas suítes de cifra AEAD — sem oráculos de padding CBC, sem RC4, sem 3DES • Sem transporte de chave RSA — sempre forward-secret (ECDHE obrigatório) • Máquina de estados simplificada — menos partes móveis, menos ataques • Key schedule baseado em HKDF — derivação de chaves limpa e analisável • 0-RTT disponível para retomada (com ressalvas de replay)\nSuíte de cifra negociada: TLS_AES_256_GCM_SHA384 Troca de chaves: x25519 (Curve25519 ECDHE) Autenticação do servidor: certificado ECDSA (secp256r1)\n"
+    }
+  }
+}

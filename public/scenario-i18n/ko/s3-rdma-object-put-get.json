@@ -1,0 +1,97 @@
+{
+  "meta": {
+    "title": "[WIP] S3/RDMA: RoCEv2를 통한 객체 PUT 및 GET(NVIDIA 라이브러리 아키텍처)",
+    "description": "RoCEv2를 통해 S3 객체를 PUT/GET하는 시나리오. 기존 S3/TCP와 비교하여 S3/RDMA가 RDMA WRITE를 사용하여 데이터를 직접 원격 메모리에 배치하는 방식을 보여줍니다. 메타데이터만 메시지로 교환하고 실제 데이터는 RDMA로 직접 전송합니다.",
+    "learning_objectives": [
+      "S3/RDMA와 S3/TCP의 데이터 경로 차이 이해",
+      "S3/RDMA에서 메타데이터와 데이터 분리 패턴 확인",
+      "RDMA WRITE를 통한 대용량 객체 전송 추적"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "기존 S3 vs S3/RDMA — 이것이 중요한 이유",
+      "detail": "기존 S3 GET: HTTP GET 요청 → TCP 연결 → TLS 핸드셰이크 → HTTP 응답(객체 데이터 포함) → 커널이 TCP 소켓 버퍼를 통해 데이터 복사 → 애플리케이션이 소켓에서 버퍼로 복사. 모든 바이트가 CPU를 두 번 거칩니다. CPU 사용률: 높음. 지연: 수백 마이크로초에서 밀리초.\nS3/RDMA GET: QP 설정(1회) → 사전 등록된 클라이언트 버퍼에 객체 데이터를 직접 RDMA WRITE. CPU 복사 없음. 데이터 경로에 커널 개입 없음. 데이터 전송의 CPU 사용률: ~0%. 지연: 한 자릿수 마이크로초."
+    },
+    "1": {
+      "text": "링크 A: 신호 감지 — 클라이언트 ↔ 스위치 포트 A",
+      "detail": "클라이언트의 광 트랜시버가 스위치 포트 A에서 빛을 감지합니다. IEEE 802.3cd 73절에 따라 Auto-Negotiation이 시작됩니다."
+    },
+    "2": {
+      "text": "링크 B: 신호 감지 — 스위치 포트 B ↔ 서버",
+      "detail": ""
+    },
+    "3": {
+      "text": "양쪽 링크: AN 완료 — 100GbE + RS(544,514) FEC, 링크 UP",
+      "detail": "양쪽 링크가 RS(544,514) FEC를 포함한 100GBASE-SR4로 협상합니다(100G에서 필수). Link Training이 채널을 이퀄라이즈합니다. 링크가 UP되어 트래픽을 전달할 준비가 되었습니다."
+    },
+    "4": {
+      "text": "우선순위 3에 PFC 활성화 — RoCEv2용 무손실 이더넷",
+      "detail": "우선순위 클래스 3에 Priority Flow Control(IEEE 802.1Qbb)이 활성화됩니다. 이것은 혼잡 시 패킷 손실을 방지하며, RDMA에 필수적입니다. S3/RDMA는 다른 RoCEv2 워크로드와 동일한 무손실 패브릭을 사용합니다."
+    },
+    "5": {
+      "text": "ARP: 클라이언트가 서버 IP 192.168.100.20 해석",
+      "detail": ""
+    },
+    "6": {
+      "text": "ARP 응답: 서버 MAC 00:02:c9:20:00:01",
+      "detail": ""
+    },
+    "7": {
+      "text": "클라이언트: s3_rdma_client_init() — S3/RDMA 라이브러리 초기화",
+      "detail": "클라이언트가 s3_rdma_client_init()을 호출합니다. 라이브러리가 GPU/CPU 버퍼 풀을 커버하는 대형 Memory Region을 등록합니다(ibv_reg_mr() → MLX5_CMD_OP_CREATE_MKEY). S3 작업용으로 사전 할당된 RC QP 풀을 생성합니다. 이것은 이후 모든 S3 작업에 걸쳐 상각되는 1회성 비용입니다."
+    },
+    "8": {
+      "text": "서버: S3/RDMA 서버 라이브러리 사전 초기화, 연결 준비 완료",
+      "detail": "서버가 시작 시 NVIDIA S3/RDMA 서버 라이브러리를 사전 초기화했습니다. 클라이언트 연결을 수락할 준비가 된 QP 풀이 있습니다. Dell ObjectScale 스토리지 엔진과 통합되어 있습니다."
+    },
+    "9": {
+      "text": "S3/RDMA CONNECT 요청 — 클라이언트가 QP 정보, rkey, 버퍼 주소 전송",
+      "detail": "클라이언트가 서버의 잘 알려진 S3/RDMA 서비스 QP에 UD SEND를 통해 연결 요청을 전송합니다. 클라이언트 QP 번호, GID, rkey, 버퍼 가상 주소를 전달합니다. 서버는 이 rkey/vaddr를 사용하여 클라이언트의 GPU 메모리에 직접 RDMA WRITE합니다."
+    },
+    "10": {
+      "text": "S3/RDMA CONNECT 응답 — 서버가 RC QP 할당, rkey 반환",
+      "detail": "서버가 풀에서 RC QP를 할당하고 서버 QP 번호, rkey, 연결 ID로 응답합니다. 양쪽 모두 이제 QP를 RESET에서 RTS로 전이하는 데 필요한 모든 정보를 가지고 있습니다."
+    },
+    "11": {
+      "text": "QP 전이: RESET → INIT → RTR → RTS (양쪽)",
+      "detail": "클라이언트와 서버 모두 modify_qp()를 호출하여 RC QP를 표준 IB 상태 머신을 통해 전이합니다: RESET → INIT → RTR → RTS. 이것은 모든 RoCEv2 애플리케이션이 사용하는 동일한 QP 기동 시퀀스입니다. RTS 후 QP 쌍이 RDMA SEND 및 RDMA WRITE 작업을 수행할 준비가 됩니다."
+    },
+    "12": {
+      "text": "S3 PUT REQUEST — 메타데이터만(버킷, 키, 1GB 크기). 데이터 없음.",
+      "detail": "메타데이터만 메시지로 교환합니다. 실제 데이터는 RDMA WRITE로 별도 전송됩니다."
+    },
+    "13": {
+      "text": "S3 PUT READY — 서버가 RDMA WRITE용 목적지 vaddr + rkey 반환",
+      "detail": "서버가 스토리지 공간을 할당하고 수신 데이터를 위한 Memory Region을 등록한 후 목적지 주소와 rkey를 반환합니다. 이것은 PUT 역전입니다: 클라이언트가 데이터를 푸시하는 HTTP PUT과 달리, 여기서는 서버가 클라이언트에게 어디에 쓸지 알려주고 클라이언트가 해당 위치에 RDMA WRITE합니다."
+    },
+    "14": {
+      "text": "RDMA WRITE — 클라이언트가 64MB 청크(1/16)를 서버 메모리에 직접 푸시",
+      "detail": "클라이언트 RNIC가 GPU 메모리에서 64MB를 DMA 읽기하여 PUT READY에서 받은 주소의 서버 메모리에 직접 RDMA WRITE합니다. 전체 1GB 객체를 위해 이러한 RDMA WRITE가 16회 발생합니다(16 × 64MB). 서버 CPU는 데이터를 전혀 건드리지 않습니다. 클라이언트 CPU도 데이터를 복사하지 않습니다. 이것은 표준 RoCEv2 RDMA WRITE입니다 — S3/RDMA가 추가하는 것은 주소 지정을 배치한 제어 플레인뿐입니다."
+    },
+    "15": {
+      "text": "S3 PUT COMPLETE — 1GB 업로드 완료, 체크섬 검증, ETag 반환",
+      "detail": "서버가 CRC32C 체크섬을 검증한 후 PUT 성공을 확인합니다. S3 ETag와 버전 ID를 반환합니다. 객체가 이제 ObjectScale 스토리지에 영구 저장되었습니다."
+    },
+    "16": {
+      "text": "비교: S3/TCP PUT vs S3/RDMA PUT",
+      "detail": "기존 S3 PUT 동등 작업: HTTP PUT(1GB 본문) → TLS로 1GB 암호화 → TCP가 ~1400B 패킷으로 1GB 분할 → 커널이 각 패킷을 NIC에 복사 → NIC 전송 → 서버 NIC 수신 → 커널이 소켓 버퍼에 복사 → HTTP 서버가 소켓에서 읽기 → 스토리지 버퍼에 복사 → 디스크에 쓰기. CPU가 모든 바이트를 여러 번 처리합니다. 처리량이 단일 코어 메모리 대역폭(~50 GB/s)에 제한됩니다. 지연이 TCP 혼잡 제어에 의해 좌우됩니다.\nS3/RDMA PUT: 2개의 제어 메시지(PUT REQUEST + PUT READY) + 16회 RDMA WRITE(16 × 64MB). 서버 CPU가 데이터를 전혀 건드리지 않았습니다. 클라이언트 CPU가 데이터를 복사하지 않았습니다. 처리량이 CPU가 아닌 RNIC DMA 대역폭과 네트워크 대역폭에 의해 제한됩니다. 100GbE에서: ~12.5 GB/s 지속."
+    },
+    "17": {
+      "text": "S3 GET REQUEST — 클라이언트가 객체 요청, 목적지 버퍼 정보 제공",
+      "detail": "클라이언트가 버킷/키와 목적지 버퍼 주소/rkey가 포함된 GET 요청을 전송합니다. 서버가 이 버퍼에 객체 데이터를 직접 RDMA WRITE합니다."
+    },
+    "18": {
+      "text": "RDMA WRITE — 서버가 64MB 청크(1/16)를 클라이언트 GPU 메모리에 직접 푸시",
+      "detail": "서버 RNIC가 스토리지에서 객체 데이터를 DMA 읽기하여 클라이언트 GPU 메모리에 직접 RDMA WRITE합니다. 클라이언트 CPU는 관여하지 않습니다. 전체 1GB 객체를 위해 이러한 RDMA WRITE가 16회 발생합니다. 이것은 다른 RDMA WRITE와 동일한 메커니즘입니다 — S3/RDMA는 서버가 어디에 쓸지 알 수 있도록 주소 지정을 배치할 뿐입니다."
+    },
+    "19": {
+      "text": "S3 GET COMPLETE — 1GB가 클라이언트 GPU 버퍼에 완료, 학습 준비 완료",
+      "detail": "서버가 완료를 알립니다. 객체 데이터가 이제 클라이언트 GPU 버퍼(0x7f8000000000)에 있으며, 학습 순전파를 시작할 준비가 되었습니다. 클라이언트 CPU는 데이터 이동에 전혀 관여하지 않았습니다. GPUDirect Storage 모드를 사용하면 호스트 메모리로의 중간 복사가 필요하지 않습니다."
+    },
+    "20": {
+      "text": "비교: S3/TCP GET vs S3/RDMA GET",
+      "detail": "클라이언트의 AI 학습 루프가 s3_rdma_get()을 호출했습니다. 객체 데이터가 이제 GPU 버퍼(0x7f8000000000)에 있습니다. 클라이언트 CPU는 데이터 이동에 전혀 관여하지 않았습니다. 학습 순전파를 즉시 시작할 수 있습니다 — GPUDirect Storage 모드를 사용하면 호스트 메모리로의 중간 복사가 필요하지 않습니다.\n기존 S3 GET: HTTP GET → TCP → TLS 복호화 → 커널 소켓 버퍼 → 사용자 공간 복사 → PCIe를 통한 GPU 업로드. 모든 바이트가 최소 두 번 CPU를 거칩니다. S3/RDMA GET: 1개의 제어 메시지 + 16회 RDMA WRITE. CPU 없음, 복사 없음."
+    }
+  }
+}

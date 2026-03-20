@@ -1,0 +1,108 @@
+{
+  "meta": {
+    "title": "IPv6 SLAAC: Otokonfigirasyon Adrès San Eta",
+    "description": "Kijan yon machin IPv6 konfigire tèt li san yon sèvè DHCP? Senaryo sa a travèse tout pwosesis SLAAC: Solisitasyon Router, Anons Router ak enfòmasyon prefiks, jenerasyon adrès lyen-lokal ak global, Deteksyon Adrès Dipllike (DAD), ak adrès prive/tanporè (RFC 8981). Nan fen, machin nan gen yon adrès lyen-lokal, yon adrès SLAAC global, yon adrès prive, yon pasrèl pa defo, ak DNS — tout san okenn konfigirasyon manyèl oswa sèvè DHCP. Sa a se bagay #1 ki konfonn moun ki sòti nan IPv4, kote adrès toujou egzije swa konfigirasyon estatik swa DHCP.",
+    "learning_objectives": [
+      "Konprann poukisa machin IPv6 ka konfigire tèt yo san yon sèvè DHCP",
+      "Swiv echanj Solisitasyon Router / Anons Router",
+      "Wè kijan yon machin jenere yon adrès lyen-lokal (fe80::) soti nan ID entèfas li",
+      "Konprann Deteksyon Adrès Dipllike (DAD) ak poukisa li itilize adrès pa espesifye (::)",
+      "Trase jenerasyon adrès global lè li konbine prefiks RA ak yon ID entèfas",
+      "Aprann kisa adrès prive/tanporè ye ak poukisa yo egziste (RFC 8981)",
+      "Wè machin eta adrès konplè: antatif → valid → prefere",
+      "Konpare chak etap ak ekivalan IPv4 — DHCP, ARP, konfigirasyon estatik"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Lyen fizik monte sou toude bò",
+      "detail": "Kab Ethernet machin nan branche (oswa Wi-Fi asosye). Kouch fizik la (1000BASE-T) fini oto-negosyasyon epi lyen an monte. Lyen router a te deja monte epi ap fonksyone.\nNan pwen sa a, machin nan gen zewo adrès IPv6. Li pa ka kominike ak anyen ankò."
+    },
+    "1": {
+      "text": "Machin jenere yon adrès lyen-lokal antatif (fe80::)",
+      "detail": "Premye bagay yon machin IPv6 fè lè lyen monte se jenere yon adrès lyen-lokal. Adrès sa a fòme lè li konbine prefiks byen koni fe80::/10 ak yon idantifyan entèfas (IID). IID a ka soti nan: EUI-64 (derive soti nan MAC), owaza estab (RFC 7217, pi komen kounye a), oswa manyèlman konfigire."
+    },
+    "2": {
+      "text": "DAD: Machin voye NS pou verifye adrès lyen-lokal inik",
+      "detail": "Anvan li ka itilize adrès la, machin nan dwe verifye okenn lòt aparèy pa deja itilize li. Li voye yon Solisitasyon Vwazen (NS) ak adrès sous :: (adrès pa espesifye) epi sib nan adrès milticast nè-solisitè ki sòti nan dènye 24 bit adrès antatif la.\nSi yon lòt machin gen deja adrès sa a, li ap reponn ak yon Anons Vwazen — epi machin nou an konnen gen yon konfli."
+    },
+    "3": {
+      "text": "DAD reyisi — adrès lyen-lokal valid!",
+      "detail": "Apre li tann yon segond (revèy retransmisyon), pa gen Anons Vwazen ki retounen. Sa vle di pèsonn lòt sou lyen an pa itilize adrès sa a. Adrès lyen-lokal la fè tranzisyon soti nan «antatif» pou ale nan «prefere» — machin nan ka kounye a itilize li pou kominikasyon lokal."
+    },
+    "4": {
+      "text": "Machin voye Solisitasyon Router — 'Èske gen router isit la?'",
+      "detail": "Machin nan voye yon Solisitasyon Router (RS) nan ff02::2, adrès milticast tout-router. Sa a tankou rele «Èske gen router isit la?» Sèlman router yo koute sou gwoup milticast sa a. RS la itilize nouvo adrès lyen-lokal machin nan kòm sous — premye fwa li itilize li."
+    },
+    "5": {
+      "text": "Router reponn ak RA: prefiks 2001:db8:1::/64, A=1, L=1, M=0, O=0",
+      "detail": "Router a reponn ak yon Anons Router (RA) ki plen enfòmasyon: prefiks rezo (2001:db8:1::/64), drapo otonòm A=1 (itilize prefiks sa a pou SLAAC), drapo lyen L=1 (prefiks la sou lyen), M=0 (pa bezwen DHCPv6 pou adrès), O=0 (pa bezwen DHCPv6 pou lòt konfigirasyon), dire lavi router, dire aksesibilite, epi limit san."
+    },
+    "6": {
+      "text": "Machin jenere adrès global: prefiks + ID entèfas",
+      "detail": "Machin nan kounye a jenere adrès global li lè li konbine prefiks nan RA a (2001:db8:1::/64) ak ID entèfas li. Rezilta a se 2001:db8:1::5054:ff:fea1:b2c3 — yon adrès IPv6 global konplè ki ka achemine sou entènèt."
+    },
+    "7": {
+      "text": "DAD: Machin voye NS pou verifye adrès global inik",
+      "detail": "Menm pwosedaj DAD ke lyen-lokal la: NS soti nan :: nan milticast nè-solisitè adrès global antatif la. Machin nan tann yon segond pou nenpòt repons."
+    },
+    "8": {
+      "text": "DAD reyisi — adrès SLAAC global valid!",
+      "detail": "Pa gen repons — adrès global la inik sou lyen an. Adrès la fè tranzisyon soti nan antatif pou ale nan prefere. Machin nan kounye a gen yon adrès ki ka achemine globalman."
+    },
+    "9": {
+      "text": "Machin jenere yon adrès prive/tanporè (RFC 8981)",
+      "detail": "Gen yon pwoblèm konfidansyalite ak adrès SLAAC: li gen ID entèfas ki derive nan MAC — sa a se menm ID sou tout rezo ou vizite, sa pèmèt swiv. Pou rezoud sa, machin nan jenere yon adrès prive ak yon IID owaza. Adrès sa a gen yon dire lavi ki pi kout epi yo rejenere peryodikman."
+    },
+    "10": {
+      "text": "DAD: Machin voye NS pou verifye adrès prive inik",
+      "detail": "Yon lòt wonn DAD pou adrès prive a. Adrès milticast nè-solisitè a diferan fwa sa a paske ID entèfas owaza a diferan."
+    },
+    "11": {
+      "text": "DAD reyisi — adrès prive valid!",
+      "detail": "Adrès prive a konfime inik. Machin nan ap prefere itilize adrès sa a pou koneksyon ki sòti pou pi bon konfidansyalite."
+    },
+    "12": {
+      "text": "Machin fin konfigire — adrès lyen-lokal, global, prive, pasrèl, DNS",
+      "detail": "Machin nan kounye a gen: 1. Adrès lyen-lokal (fe80::...) pou kominikasyon lokal 2. Adrès SLAAC global (2001:db8:1::...) pou koneksyon ki antre 3. Adrès prive (2001:db8:1::owaza) pou koneksyon ki sòti 4. Pasrèl pa defo (adrès lyen-lokal router a) 5. Opsyonèlman DNS (si opsyon RDNSS te nan RA a)\nTout sa a OTOMATIK — zewo konfigirasyon manyèl, zewo sèvè DHCP."
+    },
+    "13": {
+      "text": "Machin ping adrès lyen-lokal router pou verifye konektivite",
+      "detail": "Machin nan voye yon ICMPv6 Echo Request bay adrès lyen-lokal router a pou verifye konektivite. Sa a itilize adrès lyen-lokal — menm si machin nan gen adrès global, kominikasyon ak router a sou lyen lokal la toujou itilize adrès lyen-lokal."
+    },
+    "14": {
+      "text": "Router reponn — konektivite konfime!",
+      "detail": "Router a reponn ak ICMPv6 Echo Reply. Machin nan gen konektivite IPv6 fonksyonèl."
+    },
+    "15": {
+      "text": "Router voye RA peryodik san demann (chak 200-600 segond)",
+      "detail": "Router yo voye Anons Router peryodikman menm san solisitasyon. Sa asire machin ki te rate yon RA (pa egzanp, yo te dòmi) toujou resevwa enfòmasyon konfigirasyon. RA peryodik yo renouvle tou dire lavi adrès ak rout yo."
+    },
+    "16": {
+      "text": "Kontras: Nan IPv4, tout sa egzije yon sèvè DHCP",
+      "detail": "Nan IPv4, machin yo pa ka konfigire tèt yo san asistans. Ou bezwen swa: 1. Yon sèvè DHCP (DORA: Discover-Offer-Request-Ack) 2. Konfigirasyon estatik manyèl\nIPv6 SLAAC bay machin yo kapasite pou: konfigire adrès otonòm (pa bezwen sèvè), dekouvri router ak prefiks (atravè RA), detekte konfli adrès (DAD), jenere adrès prive (RFC 8981), ak renouvle konfigirasyon otomatikman (RA peryodik).\nSa a se yon chanjman achitektiral fondamantal: IPv6 te desine depi kòmansman pou machin yo ka «ploge epi mache» san enfrastrikti adisyonèl."
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "Otokonfigirasyon Adrès IPv6 San Eta",
+      "description": "Yon vizit gide atravè pwosesis konplè SLAAC — soti nan lyen monte jis nan konfime konektivite",
+      "steps": {
+        "0": "Imajine ou fèk branche laptop ou nan yon rezo. Nan IPv4, òdinatè w ta chita san defans ap voye difizyon DHCP Discover, ap espere yon sèvè DHCP reponn. San sèvè DHCP? Pa gen adrès. Pa gen konektivite. IPv6 fè bagay diferan nèt. Ann gade kijan.",
+        "1": "Lyen fizik la monte — oto-negosyasyon Ethernet fini epi LED lyen an limen vèt. Nan pwen sa a, machin nan gen zewo adrès IPv6. Li pa ka kominike ak anyen ankò. Premyè priyorite: jwenn yon adrès ki mache omwen sou lyen lokal la.",
+        "2": "Premye bagay machin nan fè se jenere yon adrès lyen-lokal. Sa a se yon adrès ki kòmanse ak fe80:: epi ki mache sèlman sou segman rezo lokal la — li pa janm achemine. Machin nan bati li lè li konbine prefiks fe80::/64 ak yon ID entèfas derive nan adrès MAC li (oswa yon valè owaza estab). Men adrès la «antatif» — li pa ka itilize li toujou.",
+        "3": "DAD mache lè li voye yon Solisitasyon Vwazen (NS) pou adrès antatif la. Remake adrès sous la se :: (adrès pa espesifye, tout zewo). Machin nan pa ka itilize adrès la kòm sous toujou paske li poko konnen si li inik. Sib la se adrès milticast nè-solisitè a — sèlman machin ki gen yon adrès ki fini ak menm 24 dènye bit yo ap resevwa sa a.",
+        "4": "Silans se lò! Apre li tann yon segond (revèy retransmisyon an), pa gen Anons Vwazen ki retounen. Sa vle di pèsonn lòt sou lyen an pa itilize adrès sa a. Adrès lyen-lokal la fè tranzisyon soti nan «antatif» pou ale nan «prefere» — machin nan ka kounye a itilize li pou kominikasyon lyen-lokal.",
+        "5": "Machin nan voye yon Solisitasyon Router (RS) nan ff02::2, adrès milticast tout-router. Sa a tankou rele «Èske gen router isit la?» Sèlman router yo koute sou gwoup milticast sa a. RS la itilize nouvo adrès lyen-lokal machin nan kòm sous — premye fwa li itilize li.",
+        "6": "Router a reponn ak yon Anons Router (RA) ki plen enfòmasyon. Gade kisa ki nan yon sèl mesaj sa a: prefiks rezo (2001:db8:1::/64), drapo otonòm A=1 (sa a di machin nan «bati yon adrès ak prefiks sa a»), dire lavi prefiks (30 jou valid, 7 jou prefere), pasrèl pa defo (adrès lyen-lokal router a otomatikman), ak opsyonèlman sèvè DNS.",
+        "7": "Machin nan kounye a jenere adrès global li lè li konbine prefiks nan RA a (2001:db8:1::/64) ak ID entèfas li (5054:ff:fea1:b2c3). Rezilta a se 2001:db8:1::5054:ff:fea1:b2c3 — yon adrès IPv6 global konplè ki ka achemine sou Entènèt. Men li antatif jiskaske DAD fini.",
+        "8": "DAD pou adrès global: yon lòt NS soti nan :: nan milticast nè-solisitè. Menm pwosedaj, menm atant. Apre yon segond san repons, adrès global la ofisyèlman valid epi prefere.",
+        "9": "Men tann — gen yon pwoblèm konfidansyalite. Adrès SLAAC global la gen ID entèfas ki derive nan adrès MAC. ID sa a se menm sou tout rezo ou vizite, sa pèmèt sit wèb ak anonsè swiv mouvman ou. Solisyon: adrès prive (RFC 8981) ki gen yon ID entèfas konplètman owaza. Yo rejenere chak kèk èdtan, sa fè swivi prèske enposib.",
+        "10": "Yon dènye wonn DAD pou adrès prive a. Adrès milticast nè-solisitè a diferan fwa sa a (ff02::1:ff7e:92d4) paske ID entèfas owaza a diferan. Apre yon segond silans, adrès prive a valid.",
+        "11": "Machin nan kounye a fin konfigire nèt ak twa adrès IPv6, yon pasrèl pa defo, ak DNS. Ann verifye tout bagay mache ak yon senp ping. Machin nan voye ICMPv6 Echo Request bay adrès lyen-lokal router a — epi li resevwa yon repons. Konektivite konfime!",
+        "12": "Tan pase. Finalman, router a voye yon lòt Anons Router san li mande. Router yo fè sa chak 200-600 segond. RA peryodik sa yo renouvle dire lavi prefiks ak rout pou evite yo ekspire, epi yo asire tout machin ki te rate RA orijinal la (pa egzanp, yo te dòmi) toujou resevwa enfòmasyon konfigirasyon.",
+        "13": "Ann pran wotè epi apresye kisa ki fèk rive. Yon machin IPv6 te ale soti nan «pa gen adrès, pa gen konektivite» rive nan «twa adrès, pasrèl pa defo, ak DNS» — TOUT OTOMATIK. Pa gen sèvè DHCP. Pa gen konfigirasyon manyèl. Jis branche epi li mache.\nNan IPv4, menm rezilta a ta bezwen: yon sèvè DHCP konfigire ak pil adrès ak opsyon, echanj DORA 4 mesaj, renouvèlman bail, ak konfigirasyon DNS separe. SLAAC IPv6 bati tout sa nan pwotokòl rezo a li menm."
+      }
+    }
+  }
+}

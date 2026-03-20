@@ -1,0 +1,50 @@
+{
+  "meta": {
+    "title": "ARP و NDP: حل عناوين IPv4 واكتشاف الجيران بـ IPv6",
+    "description": "مقارنة جنب لجنب بين ARP تبع IPv4 (RFC 826) وNDP تبع IPv6 (RFC 4861). البروتوكولين بيحلّو نفس المشكلة — ربط عنوان طبقة الشبكة (IP) بعنوان طبقة الرابط (MAC) — بس بطرق مختلفة جذرياً. ARP بيستعمل broadcast؛ NDP بيستعمل multicast ومبني على ICMPv6. هالسيناريو بيغطّي: ARP Request/Reply، Gratuitous ARP، NDP Neighbor Solicitation/Advertisement، وNDP Router Advertisement.",
+    "learning_objectives": [
+      "فهم ليش حل العناوين ضروري: عناوين IP مقابل عناوين MAC",
+      "تابع تبادل ARP Request → Reply كامل وتحديث جدول ARP",
+      "شوف ليش ARP بيستعمل broadcast (كل الأجهزة) وتأثيرات القابلية للتوسع",
+      "فهم Gratuitous ARP لاكتشاف تعارض IP والـ failover",
+      "قارن NDP Neighbor Solicitation: solicited-node multicast مقابل ARP broadcast",
+      "شوف كيف NDP بيستفيد من ICMPv6 بدل ما يكون بروتوكول منفصل",
+      "تتبّع NDP Router Advertisement لتعلّم الـ prefix/gateway (SLAAC)",
+      "فهم ليش NDP أكثر أماناً وقابلية للتوسع من ARP"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "الرابط الفيزيائي طلع — الجهازين على نفس قطعة Ethernet",
+      "detail": "الجهازين على نفس شبكة Layer 2 (VLAN أو Ethernet مسطّح). Host A عندو عنوان IPv4 192.168.1.10 وعنوان IPv6 fd00::10. Host B عندو عنوان IPv4 192.168.1.20 وعنوان IPv6 fd00::20.\nلمّا Host A بدّو يبعت باكيت IP لـ Host B، لازم أولاً يكتشف عنوان MAC تبع Host B. هون بيدخل ARP (IPv4) أو NDP (IPv6)."
+    },
+    "1": {
+      "text": "ARP Request — 'مين عندو 192.168.1.20؟ قولو لـ 192.168.1.10'",
+      "detail": "Host A بدّو يبعت لـ 192.168.1.20 بس ما بيعرف عنوان MAC تبعو. فبيبعت ARP Request broadcast لـ FF:FF:FF:FF:FF:FF (كل جهاز على الـ LAN).\nخصائص ARP الأساسية: • بيشتغل على حدود Layer 2/3 مع EtherType خاص فيه (0x0806) • بيستعمل broadcast — كل جهاز على القطعة L2 لازم يعالجو • بدون مصادقة — أي جهاز بيقدر يدّعي أي IP (ARP spoofing) • stateless — بدون handshake، بدون أرقام تسلسل • 28 بايت حمولة (صغيرة، بس كلفة الـ broadcast بتزيد مع عدد الأجهزة)\nالسويتش بيوزّع الـ broadcast على كل المنافذ. بشبكة فيها 1000 جهاز، كل الـ 1000 جهاز بيستلمو ويعالجو هالإطار — حتى لو بس Host B لازم يجاوب."
+    },
+    "2": {
+      "text": "ARP Reply — '192.168.1.20 عنوان MAC تبعو AA:BB:CC:00:00:0B'",
+      "detail": "Host B بيتعرّف على عنوان IP تبعو بالـ ARP Request وبيردّ بـ ARP Reply unicast فيه عنوان MAC تبعو.\nالطرفين بيحدّثو الـ ARP cache تبعون:\n• Host A: 192.168.1.20 → AA:BB:CC:00:00:0B (من الجواب)\n• Host B: 192.168.1.10 → AA:BB:CC:00:00:0A (من الطلب)\n\nمدخلات ARP cache عندها timeout (عادةً 30-300 ثانية على Linux، قابل للتعديل عبر net.ipv4.neigh.default.gc_stale_time). بعد الـ timeout، أول باكيت بيشغّل ARP Request جديد."
+    },
+    "3": {
+      "text": "Gratuitous ARP — Host A بيعلن عن ربط IP→MAC تبعو",
+      "detail": "Gratuitous ARP هو ARP Request وين Sender IP = Target IP. عندو عدة أهداف:\n1. اكتشاف تعارض IP (RFC 5227): لمّا Host A أول ما يهيّئ IP تبعو، بيبعت GARP. إذا جهاز تاني ردّ، في تعارض.\n2. تحديث ARP cache: كل الأجهزة اللي عندها مدخل لـ 192.168.1.10 بتحدّث الـ MAC المخزّن. هيدا مهم لـ:\n   • NIC failover (MAC جديد، نفس IP)\n   • VM live migration\n   • Floating IP failover (keepalived/VRRP)\n3. جدول MAC تبع السويتش: السويتش بيتعلّم عنوان MAC تبع Host A على المنفذ الصحيح."
+    },
+    "4": {
+      "text": "NDP Neighbor Solicitation — 'مين عندو fd00::20؟' (solicited-node multicast)",
+      "detail": "المكافئ IPv6 لـ ARP Request، بس مختلف جذرياً:\n1. MULTICAST مش BROADCAST: الـ NS مبعوت لعنوان solicited-node multicast ff02::1:ff00:0020 (Ethernet: 33:33:FF:00:00:20). بس الأجهزة اللي عنوان IPv6 تبعها بينتهي بـ ...00:0020 بتسمع على هالمجموعة. عملياً، عادةً جهاز أو 2 بس بيعالجو الإطار.\n2. مبني على ICMPv6: NDP هو ICMPv6 type 135/136، مش بروتوكول منفصل.\n3. HOP LIMIT = 255: إجباري. إذا باكيت وصل مع hop limit < 255، بينرفض.\n4. خيار SOURCE LINK-LAYER: Host A بيحط عنوان MAC تبعو بالـ NS، فـ Host B بيقدر يردّ بدون حل عنوان منفصل.\n\nمقارنة لشبكة 1000 جهاز:\n• ARP: كل الـ 1000 جهاز بيعالجو الـ broadcast\n• NDP: ~1 جهاز بيعالج الـ multicast"
+    },
+    "5": {
+      "text": "NDP Neighbor Advertisement — 'fd00::20 عنوان MAC تبعو AA:BB:CC:00:00:0B'",
+      "detail": "Host B بيجاوب بـ Neighbor Advertisement (ICMPv6 type 136):\n• Solicited flag (S=1): هيدا جواب لـ NS\n• Override flag (O=1): حدّث المدخلات الموجودة\n• Router flag (R=0): Host B مش راوتر\n\nHost A بيحدّث الـ neighbor cache تبعو:\n  fd00::20 → AA:BB:CC:00:00:0B (حالة: REACHABLE)\n\nحالات NDP neighbor cache (RFC 4861 Section 7.3.2):\n• INCOMPLETE: NS مبعوت، عم نستنّى NA\n• REACHABLE: تأكّد مؤخراً\n• STALE: ما تأكّد مؤخراً، قابل للاستعمال بس رح يتفحّص قريباً\n• DELAY: عم نستنّى تأكيد من الطبقة العليا\n• PROBE: عم نبعت NS unicast للتأكيد مجدداً"
+    },
+    "6": {
+      "text": "NDP Router Advertisement — prefix fd00::/64 لـ SLAAC",
+      "detail": "الراوترات بتبعت Router Advertisements (RA) بشكل دوري لـ ff02::1 (all-nodes multicast). الأجهزة كمان بتطلب RAs عبر Router Solicitations (RS) لمّا تشتغل.\nالـ RA بيقول للأجهزة:\n• Default gateway: عنوان الراوتر المحلي (fe80::1)\n• prefix الشبكة: fd00::/64 مع علم SLAAC autonomous\n• خوادم DNS (إذا خيار RDNSS موجود)\n• MTU (إذا مختلف عن الافتراضي 1500)\n\nSLAAC (Stateless Address Autoconfiguration، RFC 4862): الجهاز بياخد الـ prefix /64 + بيولّد 64-bit interface ID (من EUI-64 أو عشوائي للخصوصية) = عنوان IPv6 كامل. بدون حاجة لخادم DHCP.\nARP ما عندو مكافئ — IPv4 بيحتاج DHCP أو تهيئة يدوية لتعيين العنوان واكتشاف الـ gateway. NDP بيوحّد حل العناوين، اكتشاف الراوتر، إعلان الـ prefix، ووظيفة الـ redirect ببروتوكول واحد."
+    },
+    "7": {
+      "text": "السيناريو خلص — مقارنة ARP مقابل NDP",
+      "detail": "ARP (IPv4، RFC 826):\n• بروتوكول منفصل مع EtherType 0x0806\n• بيستعمل BROADCAST — كل الأجهزة على القطعة L2 بتعالج كل طلب\n• بدون مصادقة — عرضة لـ ARP spoofing/poisoning\n• بس بيعمل حل عناوين (IP → MAC)\n• cache stateless مع timeout بسيط\n\nNDP (IPv6، RFC 4861):\n• مبني على ICMPv6 (types 133-137)\n• بيستعمل SOLICITED-NODE MULTICAST — ~1 جهاز بيعالج كل NS\n• hop limit 255 بيمنع هجمات off-link؛ SEND (RFC 3971) اختياري\n• بيعمل حل عناوين وكمان اكتشاف راوتر، SLAAC، redirect\n• neighbor cache مع حالات (INCOMPLETE → REACHABLE → STALE → PROBE)\n• Duplicate Address Detection (DAD) مدمج\n\nGratuitous ARP:\n• طلب وين Sender IP = Target IP\n• بيستعمل لـ: اكتشاف تعارض، failover، تحديث cache\n• مكافئ NDP: NA غير مطلوب مع علم Override\n\nبشبكات المؤسسات/data center:\n• ARP storms مشكلة حقيقية بالقابلية للتوسع بنطاقات L2 كبيرة\n• نهج multicast تبع IPv6 NDP بيقلّل حمل الـ broadcast\n• الاتنين ممكن يتأمّنو: ARP بـ Dynamic ARP Inspection (DAI)، NDP بـ RA Guard وSEND"
+    }
+  }
+}

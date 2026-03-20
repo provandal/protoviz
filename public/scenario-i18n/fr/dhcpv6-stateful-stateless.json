@@ -1,0 +1,125 @@
+{
+  "meta": {
+    "title": "DHCPv6 : sans etat (drapeau O) vs avec etat (drapeau M) + delegation de prefixe",
+    "description": "Demontre les deux modes de DHCPv6 et comment les drapeaux M et O du Router Advertisement selectionnent entre eux. La partie 1 montre le DHCPv6 sans etat (O=1, M=0) ou le client obtient une adresse via SLAAC et ne demande au DHCPv6 que le DNS/NTP. La partie 2 montre le DHCPv6 avec etat (M=1) avec l'echange complet en 4 messages SARR (Solicit-Advertise-Request-Reply). La partie 3 montre la delegation de prefixe (IA_PD), qui est la facon dont les routeurs domestiques obtiennent un prefixe IPv6 de leur FAI — eliminant le besoin de NAT.",
+    "learning_objectives": [
+      "Comprendre le role des drapeaux M et O du RA dans la selection entre DHCPv6 sans etat et avec etat",
+      "Voir comment le DHCPv6 sans etat (Information-Request / Reply) fournit DNS et NTP sans suivre les adresses",
+      "Suivre l'echange en 4 messages SARR du DHCPv6 avec etat (Solicit → Advertise → Request → Reply)",
+      "Identifier les types de messages DHCPv6, les identifiants DUID et les options cles (IA_NA, IA_Address, serveurs DNS)",
+      "Comprendre la delegation de prefixe DHCPv6 (IA_PD) et pourquoi elle elimine le besoin de NAT IPv6",
+      "Comparer le SARR DHCPv6 avec le DORA DHCPv4 et comprendre les differences architecturales",
+      "Reconnaitre qu'IPv6 separe l'attribution d'adresses (SLAAC) et la configuration (DHCPv6) par conception"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "RA → le routeur annonce le prefixe 2001:db8:1::/64 avec M=0, O=1, A=1",
+      "detail": "Le routeur envoie periodiquement des Router Advertisements a ff02::1 (tous les noeuds). Ce RA transporte trois drapeaux critiques : M=0 signifie « N'utilisez PAS DHCPv6 pour votre adresse — utilisez SLAAC a la place. » O=1 signifie « UTILISEZ DHCPv6 pour d'autres configurations comme DNS et NTP. » L'option Prefix Information inclut 2001:db8:1::/64 avec A=1 (autonome), qui indique aux hotes de generer une adresse SLAAC a partir de ce prefixe. Cette combinaison M=0/O=1 est le modele de deploiement le plus courant — elle donne aux hotes la simplicite du SLAAC pour l'adressage tout en fournissant une configuration DNS centralisee via DHCPv6."
+    },
+    "1": {
+      "text": "SLAAC → le client auto-configure 2001:db8:1::211:22ff:fe33:4401/64",
+      "detail": "Parce que le RA avait A=1 sur le prefixe et M=0, le client utilise l'autoconfiguration sans etat des adresses (Stateless Address Autoconfiguration, RFC 4862). Il combine le prefixe /64 avec son identifiant d'interface (derive de son MAC via EUI-64 ou un identifiant stable aleatoire selon le RFC 7217) pour former une adresse routable globalement. Le DAD (Detection d'Adresse Dupliquee) est effectue avant que l'adresse ne soit utilisee. Pour les details complets du SLAAC, voir le scenario IPv6 SLAAC. Le client a maintenant une adresse IPv6 fonctionnelle mais pas de serveurs DNS — c'est la que DHCPv6 intervient."
+    },
+    "2": {
+      "text": "Le client voit O=1 : « Je dois demander a DHCPv6 une configuration supplementaire »",
+      "detail": "La pile reseau du client traite les drapeaux du RA. O=1 declenche l'envoi par le client DHCPv6 d'un message Information-Request. Contrairement a un Solicit (qui demande une adresse), un Information-Request ne demande que des parametres de configuration — c'est du DHCPv6 « sans etat » car le serveur n'a pas besoin de maintenir un etat par client ni de liaison d'adresses. Le client a deja son adresse via SLAAC."
+    },
+    "3": {
+      "text": "DHCPv6 Information-Request → le client demande DNS, liste de recherche, NTP",
+      "detail": "Le client envoie un Information-Request (type de message 11) a ff02::1:2 (All_DHCP_Relay_Agents_and_Servers) en utilisant le port source UDP 546 et le port destination 547. Le message inclut un Client Identifier (DUID) et une Option Request Option (ORO) listant les options souhaitees : DNS Recursive Name Server (23), DNS Search List (24) et SNTP Servers (31). Note : aucune option IA_NA n'est presente — le client NE demande PAS d'adresse. C'est la difference cle entre le DHCPv6 sans etat et avec etat."
+    },
+    "4": {
+      "text": "DHCPv6 Reply ← le serveur fournit DNS 2001:db8:1::53, domaine de recherche, SNTP",
+      "detail": "Le serveur repond avec un Reply (type 7) contenant les options demandees. Serveurs DNS : 2001:db8:1::53 et 2001:4860:4860::8888. Liste de recherche DNS : example.com, lab.example.com. Serveur SNTP : 2001:db8:1::123. Le serveur N'enregistre aucune liaison — il distribue simplement la meme configuration a chaque client qui le demande. C'est pourquoi cela s'appelle « sans etat ». Le serveur pourrait etre redemarre et perdre toute sa memoire, et il fonctionnerait toujours parfaitement car il n'y a rien a memoriser."
+    },
+    "5": {
+      "text": "Client entierement configure : adresse SLAAC + DNS fourni par DHCPv6",
+      "detail": "Le client a maintenant tout ce dont il a besoin : une adresse IPv6 routable globalement (2001:db8:1::211:22ff:fe33:4401 via SLAAC), une passerelle par defaut (fe80::211:22ff:fe33:44ff du RA), des serveurs DNS et un domaine de recherche (de DHCPv6), et un serveur NTP (de DHCPv6). C'est le modele de deploiement IPv6 le plus courant : SLAAC pour les adresses, DHCPv6 pour DNS/NTP."
+    },
+    "6": {
+      "text": "DHCPv6 sans etat — le serveur ne suit pas qui a quoi. Il distribue simplement les informations de configuration a quiconque les demande.",
+      "detail": "En IPv4, DHCP fait tout — adresses, DNS, NTP, passerelle, masque de sous-reseau. En IPv6, le travail est reparti : les Router Advertisements fournissent la passerelle et le prefixe, SLAAC genere l'adresse, et DHCPv6 complete avec DNS et NTP. Cette separation des responsabilites est un choix de conception intentionnel d'IPv6. O=1 est de loin le reglage de drapeau RA le plus courant dans les reseaux d'entreprise et de FAI."
+    },
+    "7": {
+      "text": "RA → le routeur annonce M=1, O=1 — « Utilisez DHCPv6 pour votre adresse »",
+      "detail": "Un segment reseau different (ou un routeur reconfigure) envoie un RA avec M=1. Cela dit aux hotes : « N'auto-configurez PAS d'adresses via SLAAC — obtenez votre adresse d'un serveur DHCPv6 a la place. » L'option d'information de prefixe a A=0, confirmant que SLAAC ne doit pas etre utilise. C'est le modele d'entreprise ou les administrateurs IT ont besoin d'un controle strict sur les attributions d'adresses pour les pistes d'audit, le controle d'acces et l'enregistrement DNS. Quand M=1, le drapeau O est effectivement implique (vous obtiendrez la configuration avec l'adresse), mais il est generalement defini explicitement."
+    },
+    "8": {
+      "text": "Le client voit M=1 : « Je dois utiliser DHCPv6 pour obtenir mon adresse »",
+      "detail": "Le drapeau M declenche un echange DHCPv6 complet. Contrairement au cas sans etat (Information-Request / Reply), le client va maintenant passer par l'echange en 4 messages SARR : Solicit → Advertise → Request → Reply. C'est analogue au DORA de DHCPv4 (Discover → Offer → Request → Ack). Le serveur maintiendra une base de donnees de liaisons qui suit quel DUID a quelle adresse, avec des durees de bail et des temporisateurs de renouvellement — d'ou « avec etat »."
+    },
+    "9": {
+      "text": "DHCPv6 Solicit → le client recherche des serveurs DHCPv6 (type msg 1)",
+      "detail": "Le client envoie un Solicit a ff02::1:2. Il inclut son Client Identifier (DUID-LLT — adresse de couche liaison + heure, le type de DUID le plus courant), une option IA_NA (Identity Association for Non-temporary Addresses) demandant une adresse stable, une Option Request pour DNS, et une option Elapsed Time. L'IAID (Identity Association ID) de l'IA_NA est typiquement derive de l'index d'interface. T1 et T2 sont definis a 0, signifiant « laissez le serveur decider du calendrier de renouvellement ». Tout serveur DHCPv6 sur le lien repondra avec un Advertise."
+    },
+    "10": {
+      "text": "DHCPv6 Advertise ← le serveur offre 2001:db8:1::100 (type msg 2)",
+      "detail": "Le serveur repond avec un Advertise, offrant l'adresse 2001:db8:1::100 avec une duree de vie preferred de 86400s (24h) et une duree de vie valid de 172800s (48h). L'IA_NA inclut T1=43200s (12h) et T2=69120s (19,2h) — T1 est le moment ou le client devrait commencer le renouvellement (Renew en unicast vers ce serveur), et T2 est le moment ou il devrait commencer la reliaison (Rebind en multicast vers n'importe quel serveur, au cas ou celui-ci serait indisponible). L'option Preference est definie a 255 (maximum), ce qui indique au client d'accepter cette offre immediatement sans attendre d'autres serveurs. Les serveurs DNS et la liste de recherche sont egalement inclus."
+    },
+    "11": {
+      "text": "DHCPv6 Request → le client accepte : « Je prends 2001:db8:1::100 du serveur ...53 » (type msg 3)",
+      "detail": "Le client envoie un Request a ff02::1:2 (toujours en multicast, pour que les autres serveurs sachent que ce client a choisi). De maniere cruciale, le Request inclut A LA FOIS le Client Identifier ET le Server Identifier — le Server ID copie de l'Advertise indique au serveur choisi de valider la liaison, et aux autres serveurs de liberer toute offre provisoire. L'IA_NA reprend l'adresse offerte. C'est le « R » dans SARR, analogue au « R » dans DORA pour DHCPv4."
+    },
+    "12": {
+      "text": "DHCPv6 Reply ← le serveur confirme 2001:db8:1::100 — liaison active (type msg 7)",
+      "detail": "Le serveur envoie un Reply confirmant l'attribution de l'adresse. Le serveur a maintenant cree une liaison persistante : DUID du client → 2001:db8:1::100, avec des durees de vie et des temporisateurs de renouvellement. Cette liaison survit aux redemarrages du serveur (stockee dans un fichier de bail ou une base de donnees). Le client enverra un Renew a T1 (12h) pour prolonger le bail. Si le serveur ne repond pas avant T2 (19,2h), le client envoie un Rebind en multicast a tout serveur disponible. Si la duree de vie valid expire, l'adresse est liberee."
+    },
+    "13": {
+      "text": "DAD → le client verifie 2001:db8:1::100 pour les doublons (NS depuis ::)",
+      "detail": "Meme si l'adresse provient de DHCPv6, le client DOIT effectuer la Detection d'Adresse Dupliquee avant de l'utiliser. Le client envoie un Neighbor Solicitation avec source :: (non specifiee) a l'adresse multicast noeud sollicite ff02::1:ff00:100. Si aucun Neighbor Advertisement n'est recu dans la seconde, l'adresse est consideree comme unique et passe de « tentative » a « preferred ». Si un doublon EST detecte, le client envoie un message DHCPv6 Decline et reessaie."
+    },
+    "14": {
+      "text": "Client configure : adresse DHCPv6 2001:db8:1::100 + DNS",
+      "detail": "Le client est pleinement operationnel avec une adresse attribuee par le serveur et une configuration DNS. Contrairement au cas sans etat, le serveur maintient une liaison pour ce client et attendra un renouvellement. Ce modele donne aux administrateurs une visibilite complete sur les attributions d'adresses — essentiel pour les reseaux d'entreprise qui ont besoin de pistes d'audit, de listes de controle d'acces basees sur l'IP et d'enregistrement DNS dynamique."
+    },
+    "15": {
+      "text": "Echange en 4 messages (SARR), comme DHCP DORA en IPv4, mais sur UDP 546/547 avec multicast",
+      "detail": "Le SARR DHCPv6 (Solicit-Advertise-Request-Reply) correspond au DORA DHCPv4 (Discover-Offer-Request-Ack). Differences cles : DHCPv6 utilise les ports UDP 546 (client) et 547 (serveur) au lieu de 67/68. DHCPv6 utilise le multicast IPv6 (ff02::1:2) au lieu du broadcast IPv4 (255.255.255.255). DHCPv6 identifie les clients par DUID (globalement unique) plutot que par adresse MAC — c'est plus robuste quand un hote a plusieurs interfaces. DHCPv6 ne fournit PAS de passerelle par defaut — elle vient toujours du RA."
+    },
+    "16": {
+      "text": "DHCPv6 Solicit + IA_PD → le routeur domestique demande un prefixe au FAI",
+      "detail": "Le routeur domestique (CPE — Customer Premises Equipment) envoie un Solicit avec une option IA_PD (Identity Association for Prefix Delegation, option 25). C'est different de IA_NA — le routeur ne demande PAS une seule adresse pour lui-meme, il demande un prefixe entier qu'il peut subdiviser en sous-reseaux et annoncer aux peripheriques de son LAN. L'indication suggere /48, ce qui donnerait au routeur domestique 65536 sous-reseaux /64 avec lesquels travailler (un par VLAN, reseau invite, segment IoT, etc.). Les FAI deleguent couramment des /48, /56 ou /60."
+    },
+    "17": {
+      "text": "DHCPv6 Reply ← le FAI delegue 2001:db8:abcd::/48 au routeur domestique",
+      "detail": "Le serveur DHCPv6 du FAI repond avec un Reply contenant IA_PD avec l'option IA_Prefix 26 : prefixe delegue 2001:db8:abcd::/48 avec une duree de vie preferred de 7 jours et une duree de vie valid de 30 jours. Le routeur domestique « possede » maintenant ce /48 et peut le subdiviser comme il le souhaite. Un /48 fournit 65536 sous-reseaux /64 — plus que ce dont un foyer ou une petite entreprise n'aura jamais besoin. Le serveur enregistre cette delegation et attendra un renouvellement. Si le FAI a utilise rapid-commit ou preference 255, les etapes Advertise/Request ont ete sautees (echange en 2 messages)."
+    },
+    "18": {
+      "text": "RA → le routeur domestique annonce 2001:db8:abcd:1::/64 sur son LAN",
+      "detail": "Le routeur domestique prend le /48 delegue, decoupe le premier sous-reseau /64 (2001:db8:abcd:1::/64) et commence a l'annoncer via des Router Advertisements sur son interface LAN. Les clients LAN recoivent ce RA, effectuent SLAAC et obtiennent des adresses IPv6 routables globalement. Pas de NAT implique — chaque peripherique sur le LAN a une adresse reelle et routable. Le pare-feu du routeur domestique assure la securite (filtrage de paquets a etat), pas la traduction d'adresses. C'est une difference fondamentale avec le reseau domestique IPv4."
+    },
+    "19": {
+      "text": "C'est ainsi que votre routeur domestique obtient un prefixe IPv6 de votre FAI — pas de NAT necessaire",
+      "detail": "La delegation de prefixe est le mecanisme qui fait fonctionner la connectivite de bout en bout IPv6 a grande echelle. Votre FAI delegue un /48 ou /56 a votre routeur domestique, qui le subdivise et annonce des /64 sur chaque segment LAN. Chaque peripherique obtient une adresse globalement unique et routable. Pas de NAT signifie pas de tracas de redirection de ports, pas de protocoles pair-a-pair casses, pas de tables d'etat NAT qui debordent. La securite vient du pare-feu a etat du routeur, qui bloque les connexions entrantes non sollicitees par defaut — la meme protection que le NAT fournissait accidentellement, mais sans les inconvenients. C'est IPv6 fonctionnant comme prevu."
+    },
+    "20": {
+      "text": "Scenario termine — DHCPv6 sans etat, avec etat et delegation de prefixe",
+      "detail": "Ce scenario a demontre trois modes de fonctionnement DHCPv6 :\n1. SANS ETAT (M=0, O=1) — le client obtient l'adresse via SLAAC, DNS/NTP via\n   DHCPv6 Information-Request. Le serveur ne suit rien. Configuration la plus courante.\n\n2. AVEC ETAT (M=1) — le client obtient l'adresse ET la configuration de DHCPv6 via\n   l'echange en 4 messages SARR. Le serveur maintient une base de donnees de liaisons.\n   Utilise dans les reseaux d'entreprise necessitant la responsabilite des adresses.\n\n3. DELEGATION DE PREFIXE — le routeur obtient un prefixe entier de DHCPv6 et\n   le subdivise pour son LAN. C'est ainsi qu'IPv6 evite le NAT — chaque peripherique\n   obtient une adresse routable globalement.\n\nEn IPv4, DHCP fait tout. En IPv6, SLAAC et DHCPv6 se partagent le travail. Les drapeaux M et O du RA sont le plan de controle qui decide comment ce partage fonctionne."
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "DHCPv6 : sans etat, avec etat et delegation de prefixe",
+      "description": "Parcourez les trois modes de DHCPv6 et comment les drapeaux du RA controlent le comportement du client",
+      "steps": {
+        "0": "En IPv4, DHCP fait tout — il distribue les adresses, les serveurs DNS, les passerelles par defaut et les masques de sous-reseau, le tout dans un seul protocole. En IPv6, le travail est reparti : les Router Advertisements fournissent la passerelle et le prefixe, SLAAC peut generer les adresses, et DHCPv6 complete le reste. Les drapeaux M et O du RA sont les boutons de controle qui decident comment ce partage fonctionne. Voyons les trois modes en action.",
+        "1": "Le routeur envoie un Router Advertisement avec M=0 et O=1. M=0 signifie « n'utilisez pas DHCPv6 pour votre adresse — utilisez SLAAC ». O=1 signifie « utilisez DHCPv6 pour d'autres configurations comme DNS et NTP ». Le RA inclut aussi le prefixe 2001:db8:1::/64 avec le drapeau A (Autonomous) defini, qui indique aux hotes qu'ils peuvent utiliser ce prefixe pour SLAAC. Cette combinaison M=0/O=1 est le modele de deploiement le plus courant sur Internet aujourd'hui.",
+        "2": "Le client prend le prefixe /64 du RA et y ajoute son identifiant d'interface pour former une adresse /128 complete via SLAAC. En utilisant EUI-64, le MAC 00:11:22:33:44:01 devient l'identifiant d'interface 0211:22ff:fe33:4401, donnant au client l'adresse 2001:db8:1::211:22ff:fe33:4401. Le DAD confirme que personne d'autre n'a cette adresse. Le client a maintenant une adresse IPv6 fonctionnelle mais pas de serveurs DNS — c'est la que DHCPv6 intervient.",
+        "3": "Parce que le RA avait O=1, le client envoie un DHCPv6 Information-Request (type de message 11) a l'adresse multicast ff02::1:2 sur le port UDP 547. C'est le message cle du DHCPv6 sans etat — remarquez qu'il n'y a pas d'option IA_NA, ce qui signifie que le client NE demande PAS d'adresse. Il veut seulement les serveurs DNS (option 23), une liste de recherche DNS (option 24) et des serveurs SNTP (option 31). Le message inclut le DUID du client pour l'identification.",
+        "4": "Le serveur DHCPv6 repond avec un Reply contenant les serveurs DNS, une liste de recherche et un serveur SNTP. Le serveur n'enregistre aucune liaison — il donne les memes informations a chaque client qui le demande. C'est pourquoi cela s'appelle « sans etat ». Le serveur pourrait etre redemarre et fonctionnerait toujours parfaitement car il n'y a rien a memoriser. Le client est maintenant entierement configure : adresse SLAAC plus DNS fourni par DHCPv6. O=1 est de loin la configuration la plus courante — elle est simple, evolutive et fonctionne bien.",
+        "5": "Examinons maintenant le DHCPv6 avec etat. Un RA different arrive avec M=1, disant aux clients « obtenez votre adresse de DHCPv6, pas de SLAAC ». L'information de prefixe a A=0, confirmant que SLAAC est desactive pour l'adressage. C'est le modele d'entreprise — les administrateurs IT doivent savoir exactement quelle adresse appartient a quel peripherique pour les audits de securite, le controle d'acces et l'enregistrement DNS dynamique. M=1 declenche un echange DHCPv6 completement different.",
+        "6": "Le client envoie un DHCPv6 Solicit (type de message 1) — le « S » dans SARR, analogue au DHCP Discover en IPv4. Il inclut le DUID du client (DUID-LLT, base sur le MAC + horodatage), une option IA_NA demandant une adresse non temporaire, et une Option Request pour DNS. Le Solicit est envoye a ff02::1:2, pour que tous les serveurs DHCPv6 sur le lien l'entendent. L'option Elapsed Time commence a 0, indiquant que c'est la premiere transmission.",
+        "7": "Le serveur repond avec un Advertise (type de message 2), offrant l'adresse 2001:db8:1::100. L'IA_NA inclut T1 (temps de renouvellement, 12 heures) et T2 (temps de reliaison, 19,2 heures). La sous-option IA_Address transporte l'adresse reelle avec la duree de vie preferred (24h) et la duree de vie valid (48h). L'option Preference est definie a 255 (maximum), indiquant au client d'accepter immediatement sans attendre que d'autres serveurs repondent. Les serveurs DNS sont inclus dans l'offre.",
+        "8": "Le client envoie un Request (type de message 3) — « J'accepte l'offre du serveur ...53 ». Ce message est envoye a ff02::1:2 (multicast), pas en unicast au serveur, pour que les autres serveurs sur le lien le voient et liberent toute offre provisoire. Le Request inclut a la fois le Client ID et le Server ID — le Server ID copie de l'Advertise est la facon dont le client dit « je vous ai choisi ». C'est le « R » dans SARR.",
+        "9": "Le serveur envoie un Reply (type de message 7) confirmant l'attribution de l'adresse. Le serveur a maintenant cree une liaison persistante : le DUID de ce client correspond a 2001:db8:1::100. La liaison survivra aux redemarrages du serveur. Le client doit renouveler a T1 (12h) en envoyant un message Renew. Si le serveur est injoignable a T2 (19,2h), le client envoie un Rebind en multicast. L'echange en 4 messages SARR est termine — comme DORA en IPv4, mais sur UDP 546/547 avec multicast au lieu de broadcast.",
+        "10": "Meme si l'adresse provient d'un serveur, le client effectue quand meme le DAD (Detection d'Adresse Dupliquee). Il envoie un Neighbor Solicitation depuis l'adresse non specifiee (::) vers le groupe multicast noeud sollicite pour 2001:db8:1::100. Si personne ne repond dans la seconde, l'adresse est confirmee unique. Si un doublon est trouve, le client envoie un DHCPv6 Decline et demande une adresse differente. Le DAD est obligatoire en IPv6 quelle que soit la facon dont l'adresse a ete obtenue.",
+        "11": "Passons a la delegation de prefixe — c'est ainsi que votre routeur domestique obtient l'IPv6 de votre FAI. Le routeur domestique (CPE) envoie un Solicit avec une option IA_PD au lieu de IA_NA. Il ne demande pas une seule adresse — il demande un prefixe entier qu'il peut subdiviser et annoncer sur son LAN. L'indication demande un /48, ce qui donnerait 65536 sous-reseaux /64. Les FAI deleguent couramment des /48, /56 ou /60 selon leur politique d'allocation.",
+        "12": "Le serveur DHCPv6 du FAI repond avec un Reply contenant le prefixe delegue 2001:db8:abcd::/48. Le routeur domestique possede maintenant ce prefixe et peut le decouper en sous-reseaux /64 comme il le souhaite — un pour le LAN principal, un pour un reseau invite, un pour les peripheriques IoT. Un /48 fournit 65536 sous-reseaux /64. Le serveur enregistre cette delegation avec des durees de vie et attendra un renouvellement.",
+        "13": "Le routeur domestique commence immediatement a annoncer l'un de ses nouveaux sous-reseaux /64 (2001:db8:abcd:1::/64) sur son LAN via des Router Advertisements. Les peripheriques LAN recoivent le RA, effectuent SLAAC et obtiennent des adresses IPv6 routables globalement. Pas de NAT implique — chaque ordinateur portable, telephone et thermostat intelligent obtient une adresse reelle, publiquement routable. La securite vient du pare-feu a etat du routeur, qui bloque le trafic entrant non sollicite.",
+        "14": "La delegation de prefixe est la facon dont tout l'Internet IPv6 evite le NAT. Votre FAI donne a votre routeur son propre prefixe. Pas de NAT signifie pas de tracas de redirection de ports, pas de protocoles pair-a-pair casses, pas de debordements de tables d'etat NAT. Chaque peripherique obtient une adresse routable globalement — c'est par conception, pas un bug. La securite vient du pare-feu a etat, pas du masquage d'adresses.",
+        "15": "Recapitulons. Nous avons vu trois modes DHCPv6, tous controles par deux bits dans le Router Advertisement. O=1 seul signifie « obtenez le DNS de DHCPv6, l'adresse de SLAAC » — la configuration la plus courante. M=1 signifie « obtenez votre adresse de DHCPv6 » — utilise dans les reseaux d'entreprise qui ont besoin du suivi des adresses. Et la delegation de prefixe donne aux routeurs des prefixes entiers a subdiviser pour leurs LAN, ce qui est la facon dont IPv6 elimine le NAT. En IPv4, DHCP fait tout. En IPv6, SLAAC et DHCPv6 se partagent le travail — et ce partage est ce qui rend IPv6 plus flexible et evolutif."
+      }
+    }
+  }
+}

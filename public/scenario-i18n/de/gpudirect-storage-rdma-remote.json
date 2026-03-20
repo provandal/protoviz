@@ -1,0 +1,114 @@
+{
+  "meta": {
+    "title": "[WIP] GPUDirect Storage: Remote NVMe-oF Read/Write in GPU-Speicher \u00fcber RoCEv2",
+    "description": "Ein GPUDirect-Storage-Szenario, das zeigt, wie eine GPU Daten auf einem entfernten NVMe-oF/RDMA-Speicherziel liest und schreibt, wobei die Daten direkt in GPU-HBM landen \u2014 unter vollst\u00e4ndiger Umgehung von Host-DRAM. Der traditionelle Remote-Speicherpfad leitet Daten zweimal um (Speicher \u2192 RDMA \u2192 Host-DRAM \u2192 CPU-memcpy \u2192 GPU). GDS \u00fcber RDMA eliminiert beide Umleitungen: Der RDMA WRITE des Speicherziels liefert Daten direkt an das PCIe-BAR1-Aperture der GPU, und cuFileWrite-Daten werden direkt aus GPU-HBM via RDMA READ gezogen. Der Ablauf umfasst physischen Verbindungsaufbau, ARP, IB CM QP-Aufbau, NVMe-oF Fabrics Connect (Admin- + I/O-Queues), GDS-Initialisierung (cuFileDriverOpen, cuFileHandleRegister, cuFileBufRegister), einen cuFileRead, der NVMe READ \u00fcber RDMA ausl\u00f6st, wobei Daten direkt in GPU-Speicher geschrieben werden, und einen cuFileWrite, der NVMe WRITE ausl\u00f6st, wobei Daten direkt aus GPU-Speicher gelesen werden.",
+    "learning_objectives": [
+      "Verstehen, wie GPUDirect Storage (GDS) den Host-DRAM-Bounce-Buffer f\u00fcr Remote-Speicher-I/O eliminiert",
+      "Sehen, wie cuFileRead einen NVMe-oF READ ausl\u00f6st, dessen RDMA WRITE Daten direkt in GPU-HBM via BAR1 liefert",
+      "Sehen, wie cuFileWrite einen NVMe-oF WRITE ausl\u00f6st, dessen Daten direkt aus GPU-HBM via RDMA READ gezogen werden",
+      "Das NVMe-oF/RDMA-Transport-Binding nachverfolgen: NVMe-Befehle via RDMA SEND, Daten via RDMA WRITE/READ",
+      "NVMe-oF Fabrics Connect folgen, um Admin- und I/O-Queue-Pairs \u00fcber RDMA aufzubauen",
+      "Beobachten, wie nvidia-fs und nvidia-peermem zusammenarbeiten, um GPU-Speicher f\u00fcr RDMA zu registrieren",
+      "Traditionellen Pfad (Speicher \u2192 DRAM \u2192 GPU) mit GDS-Pfad (Speicher \u2192 GPU direkt) kontrastieren",
+      "Dem IB Connection Manager MAD-Austausch folgen, um ein Queue Pair von RESET zu RTS zu bringen"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Link A: Signal erkannt \u2014 GPU-Knoten \u2194 Switch",
+      "detail": "Optischer Transceiver am GPU-Knoten erkennt Licht von Switch-Port A. Auto-Negotiation beginnt gem\u00e4\u00df IEEE 802.3cd Clause 73."
+    },
+    "1": {
+      "text": "Link B: Signal erkannt \u2014 Switch \u2194 Speicherziel",
+      "detail": "Optischer Transceiver am Speicherziel erkennt Licht von Switch-Port B."
+    },
+    "2": {
+      "text": "Link A AKTIV \u2014 GPU-Knoten \u2194 Switch bei 100 Gbps mit RS-FEC",
+      "detail": "AN und Link Training abgeschlossen. PFC auf Priorit\u00e4t 3 f\u00fcr RoCEv2 aktiviert."
+    },
+    "3": {
+      "text": "Link B AKTIV \u2014 Switch \u2194 Speicherziel bei 100 Gbps mit RS-FEC",
+      "detail": "Beide Links aktiv. Ende-zu-Ende-L2-Konnektivit\u00e4t hergestellt."
+    },
+    "4": {
+      "text": "ARP-Anfrage: Wer hat 192.168.1.20?",
+      "detail": "GPU-Knoten l\u00f6st Speicherziel-IP zu MAC auf f\u00fcr RoCEv2 GID-zu-MAC-Mapping."
+    },
+    "5": {
+      "text": "ARP-Antwort: 192.168.1.20 ist bei 00:02:c9:ab:cd:ef",
+      "detail": "Speicherziel antwortet. GPU-Knoten hat nun L2-Erreichbarkeit zum Speicher."
+    },
+    "6": {
+      "text": "CM REQ \u2014 GPU-Knoten schl\u00e4gt QP f\u00fcr NVMe-oF/RDMA-Transport vor",
+      "detail": "IB Connection Manager Request. GPU-Knoten schl\u00e4gt RC-QP-Parameter f\u00fcr die NVMe-oF/RDMA-Verbindung vor. Privatdaten tragen das NVMe-oF-RDMA-CM-Request-Format gem\u00e4\u00df TP8010 (Queue-ID, SQ/RQ-Gr\u00f6\u00dfen)."
+    },
+    "7": {
+      "text": "CM REP \u2014 Speicherziel akzeptiert, liefert QPN und PSN",
+      "detail": "Speicherziel akzeptiert die Verbindung und liefert seine QP-Nummer (0x00B002) und Start-PSN (8765432)."
+    },
+    "8": {
+      "text": "CM RTU \u2014 beide QPs wechseln zu RTS, RDMA-Transport bereit",
+      "detail": "Beide QPs wechseln zu RTS. Die NVMe-oF/RDMA-Transportschicht kann nun NVMe-Befehlskapseln via RDMA SEND senden und Daten via RDMA WRITE/READ transferieren."
+    },
+    "9": {
+      "text": "Fabrics Connect \u2014 Admin Queue (QID=0)",
+      "detail": "NVMe-oF Fabrics Connect-Befehl via RDMA SEND gesendet, um die Admin-Queue-Assoziation herzustellen. Die Connect-Daten (via SGL gesendet) enthalten hostnqn, subnqn und hostid. Das Speicherziel weist eine Controller-ID zu."
+    },
+    "10": {
+      "text": "Fabrics Connect-Antwort \u2014 Controller ID=1 zugewiesen",
+      "detail": "Speicherziel akzeptiert den Fabrics Connect und weist Controller-ID 1 zu. Admin Queue ist nun hergestellt \u2014 Identify, Get Log Page und andere Admin-Befehle k\u00f6nnen flie\u00dfen."
+    },
+    "11": {
+      "text": "Fabrics Connect \u2014 I/O Queue (QID=1)",
+      "detail": "Fabrics Connect f\u00fcr I/O Queue 1. Danach k\u00f6nnen NVMe Read/Write-Befehle gesendet werden. Die I/O Queue ist der Ort, an dem cuFileRead/cuFileWrite-Befehle verarbeitet werden."
+    },
+    "12": {
+      "text": "cuFileDriverOpen() \u2014 GDS-Treiber initialisiert, nvidia-fs geladen",
+      "detail": "Anwendung ruft cuFileDriverOpen() auf, um GPUDirect Storage zu initialisieren. Dies l\u00e4dt das nvidia-fs-Kernelmodul, das NVMe-I/O-Pfade abf\u00e4ngt und DMA auf GPU-Speicher statt Host-DRAM umleitet. nvidia-peermem registriert sich als IB Peer-Memory-Client, sodass RDMA-MRs durch GPU-Pages hinterlegt werden k\u00f6nnen."
+    },
+    "13": {
+      "text": "cuFileHandleRegister() \u2014 Remote-NVMe-oF-Namespace bei GDS registriert",
+      "detail": "Anwendung registriert den File-Handle (hinterlegt durch den Remote-NVMe-oF-Namespace) bei GDS. Dies weist nvidia-fs an, I/O auf diesem Dateideskriptor abzufangen und den GPUDirect-Pfad zu verwenden."
+    },
+    "14": {
+      "text": "cuFileBufRegister() \u2014 GPU-Buffer f\u00fcr RDMA registriert, Bounce-Buffer umgangen",
+      "detail": "Anwendung registriert einen GPU-Speicher-Buffer bei GDS. nvidia-peermem pinnt die GPU-Pages via BAR1 und erstellt eine RDMA Memory Region, die durch GPU-HBM hinterlegt ist. Die RNIC kann nun direkt DMA zu/von diesem GPU-Buffer durchf\u00fchren. Der Host-DRAM-Bounce-Buffer wird umgangen \u2014 dies ist der Schl\u00fcssel-Enabler f\u00fcr Zero-Copy-Speicher-I/O in GPU-Speicher."
+    },
+    "15": {
+      "text": "cuFileRead() aufgerufen \u2014 GDS sendet NVMe READ mit GPU-Speicher als RDMA-Ziel",
+      "detail": "Anwendung ruft cuFileRead() auf. GDS erstellt einen NVMe-Read-Befehl mit einem SGL-Deskriptor, der auf die GPU-Memory-Region zeigt (rkey=0xGPU01234). Wenn das Speicherziel Daten von der Disk liest, wird es die Daten per RDMA WRITE direkt an diese GPU-Adresse schreiben \u2014 die Daten ber\u00fchren nie Host-DRAM."
+    },
+    "16": {
+      "text": "cuFileRead \u2192 NVMe Read-Befehl an Speicher gesendet (SGL \u2192 GPU-Speicher)",
+      "detail": "NVMe-Read-Befehlskapsel via RDMA SEND gesendet. Der SGL-Deskriptor tr\u00e4gt den rkey und die Virtualadresse der GPU-Memory-Region. Das Speicherziel wird diese verwenden, um gelesene Daten per RDMA WRITE direkt in GPU-HBM zu schreiben."
+    },
+    "17": {
+      "text": "Speicher RDMA-WRITE liefert gelesene Daten direkt in GPU-HBM \u2014 null Host-DRAM-Bounce",
+      "detail": "DIES IST DER SCHL\u00dcSSELMOMENT: Das Speicherziel liest Daten von seiner NVMe-SSD und f\u00fchrt dann einen RDMA WRITE durch, der auf die GPU-Memory-Region zielt. Der RETH-Header tr\u00e4gt die GPU-BAR1-Virtualadresse und den rkey. Die RNIC des GPU-Knotens empf\u00e4ngt diesen RDMA WRITE und f\u00fchrt DMA der Nutzlast direkt in GPU-HBM via PCIe P2P durch \u2014 die Daten passieren NIE Host-DRAM oder CPU-Caches.\nTraditioneller Pfad: Speicher \u2192 RDMA WRITE \u2192 Host-DRAM \u2192 CPU-memcpy \u2192 GPU. GDS-Pfad: Speicher \u2192 RDMA WRITE \u2192 RNIC \u2192 PCIe BAR1 \u2192 GPU-HBM (null Bounce)."
+    },
+    "18": {
+      "text": "NVMe Read-Abschluss \u2014 cuFileRead() kehrt zur\u00fcck, Daten sind in GPU-HBM",
+      "detail": "NVMe-Completion best\u00e4tigt, dass der Read abgeschlossen ist. Die Daten befinden sich nun in GPU-HBM und sind sofort f\u00fcr CUDA-Kernels verf\u00fcgbar \u2014 keine zus\u00e4tzliche Kopie erforderlich."
+    },
+    "19": {
+      "text": "cuFileWrite() aufgerufen \u2014 GDS sendet NVMe WRITE, Daten aus GPU-HBM",
+      "detail": "Anwendung ruft cuFileWrite() auf. GDS erstellt einen NVMe-Write-Befehl mit einem SGL-Deskriptor, der auf GPU-Speicher zeigt. Das Speicherziel wird die Write-Daten per RDMA READ direkt aus GPU-HBM ziehen \u2014 die Daten werden nie durch Host-DRAM geleitet."
+    },
+    "20": {
+      "text": "cuFileWrite \u2192 NVMe Write-Befehl gesendet (SGL \u2192 GPU-Speicher f\u00fcr RDMA READ)",
+      "detail": "NVMe-Write-Befehlskapsel via RDMA SEND gesendet. Der SGL liefert den rkey und die Virtualadresse des GPU-Buffers. Das Speicherziel wird per RDMA READ von dieser Adresse lesen, um die Write-Daten abzurufen."
+    },
+    "21": {
+      "text": "RDMA READ Response \u2014 GPU-Daten direkt aus HBM zum Speicher gesendet",
+      "detail": "Das Speicherziel hat einen RDMA READ Request gesendet, der auf die GPU-Memory-Region zielt. Die RNIC des GPU-Knotens liest autonom aus GPU-HBM via PCIe BAR1 P2P-DMA und sendet diese RDMA READ Response mit den Daten. Null CPU-Beteiligung auf dem GPU-Knoten \u2014 die RNIC erledigt alles.\nTraditioneller Pfad: GPU \u2192 CPU-memcpy \u2192 Host-DRAM \u2192 RDMA SEND \u2192 Speicher. GDS-Pfad: GPU-HBM \u2192 RNIC (via BAR1 P2P) \u2192 RDMA READ Response \u2192 Speicher."
+    },
+    "22": {
+      "text": "NVMe Write-Abschluss \u2014 cuFileWrite() kehrt zur\u00fcck, Daten im Speicher persistiert",
+      "detail": "NVMe-Completion best\u00e4tigt, dass der Write abgeschlossen ist. Daten aus GPU-HBM wurden auf dem Remote-NVMe-Speicher persistiert, ohne jemals Host-DRAM zu ber\u00fchren."
+    },
+    "23": {
+      "text": "Szenario abgeschlossen \u2014 GPUDirect Storage \u00fcber RoCEv2",
+      "detail": "Zusammenfassung: Zwei 100GbE-Links kamen hoch. RDMA-QP via IB CM hergestellt. NVMe-oF Fabrics Connect erstellte Admin- und I/O-Queues \u00fcber RDMA. GDS mit cuFileDriverOpen, cuFileHandleRegister und cuFileBufRegister initialisiert \u2014 GPU-Speicher f\u00fcr RDMA registriert und Host-DRAM-Bounce-Buffer umgangen. cuFileRead l\u00f6ste einen NVMe READ aus, dessen Daten via RDMA WRITE direkt in GPU-HBM geliefert wurden. cuFileWrite l\u00f6ste einen NVMe WRITE aus, dessen Daten via RDMA READ direkt aus GPU-HBM gezogen wurden. In beiden F\u00e4llen: null Host-DRAM-Bounce, null CPU-Beteiligung im Datenpfad."
+    }
+  }
+}

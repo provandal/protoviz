@@ -1,0 +1,50 @@
+{
+  "meta": {
+    "title": "ARP ak NDP: Rezolisyon Adrès IPv4 ak Dekouvèt Vwazen IPv6",
+    "description": "Konparezon bò-a-bò IPv4 ARP (RFC 826) ak IPv6 NDP (RFC 4861). Toude pwotokòl rezoud menm pwoblèm nan — mape yon adrès kouch-rezo (IP) nan yon adrès kouch-lyen (MAC) — men ak apwòch fondamantalman diferan. ARP itilize difizyon; NDP itilize milticast epi li bati sou ICMPv6. Senaryo sa a kouvri: Demann/Repons ARP, ARP Gratwit, Solisitasyon/Anons Vwazen NDP, ak Anons Router NDP.",
+    "learning_objectives": [
+      "Konprann poukisa rezolisyon adrès nesesè: adrès IP vs adrès MAC",
+      "Swiv yon echanj Demann → Repons ARP konplè ak mizajou tab ARP",
+      "Wè poukisa ARP itilize difizyon (tout machin) ak konsekans pou devlopman echèl",
+      "Konprann ARP Gratwit pou deteksyon konfli IP ak baskriksyon",
+      "Konpare Solisitasyon Vwazen NDP: milticast nè-solisitè vs difizyon ARP",
+      "Wè kijan NDP itilize ICMPv6 olye li yon pwotokòl separe",
+      "Trase Anons Router NDP pou aprantisaj prefiks/pasrèl (SLAAC)",
+      "Apresye poukisa NDP pi sekirize ak pi devlopab pase ARP"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Lyen fizik monte — toude machin sou menm segman Ethernet",
+      "detail": "Toude machin yo sou menm rezo Kouch 2 (VLAN oswa Ethernet plat). Machin A gen adrès IPv4 192.168.1.10 ak adrès IPv6 fd00::10. Machin B gen adrès IPv4 192.168.1.20 ak adrès IPv6 fd00::20.\nLè Machin A bezwen voye yon pakè IP bay Machin B, li dwe premyèman dekouvri adrès MAC Machin B. Se la ARP (IPv4) oswa NDP (IPv6) antre an jeu."
+    },
+    "1": {
+      "text": "Demann ARP — 'Kiyès ki gen 192.168.1.20? Di 192.168.1.10'",
+      "detail": "Machin A bezwen voye bay 192.168.1.20 men li pa konnen MAC li. Li difize yon Demann ARP bay FF:FF:FF:FF:FF:FF (chak machin sou LAN an).\nKarakteristik kle ARP: • Opere nan limit Kouch 2/3 ak pwòp EtherType pa li (0x0806) • Itilize difizyon — chak machin sou segman L2 a dwe trete li • Pa gen otantifikasyon — nenpòt machin ka reklame nenpòt IP (falsifikasyon ARP) • San eta — pa gen salitasyon, pa gen nimewo sekans • Chaj itil 28 oktè (piti, men pri difizyon ogmante ak kantite machin)\nNan yon sou-rezo 1000 machin, tout 1000 machin resevwa epi trete fram sa a — menm si sèlman Machin B bezwen reponn."
+    },
+    "2": {
+      "text": "Repons ARP — '192.168.1.20 se nan AA:BB:CC:00:00:0B'",
+      "detail": "Machin B rekonèt pwòp IP li nan Demann ARP la epi reponn ak yon Repons ARP unicast ki gen adrès MAC li.\nToude machin mete ajou kach ARP yo: • Machin A: 192.168.1.20 → AA:BB:CC:00:00:0B (nan repons) • Machin B: 192.168.1.10 → AA:BB:CC:00:00:0A (nan demann)\nAntre kach ARP gen yon delè ekspire (tipikman 30-300 segond sou Linux, konfigirab atravè net.ipv4.neigh.default.gc_stale_time). Apre delè, pwochen pakè a deklanche yon lòt Demann ARP."
+    },
+    "3": {
+      "text": "ARP Gratwit — Machin A anonse asosyasyon IP→MAC li",
+      "detail": "Yon ARP Gratwit se yon Demann ARP kote IP Ekspedisyon = IP Sib. Li gen plizyè rezon:\n1. DETEKSYON KONFLI IP (RFC 5227): Lè Machin A premyèman\n   konfigire IP li, li voye GARP. Si yon lòt machin reponn, gen\n   yon konfli — IP la deja an itilizasyon.\n\n2. MIZAJOU KACH ARP: Tout machin ki deja gen yon antre pou\n   192.168.1.10 mete ajou MAC yo an kach. Sa kritik pou:\n   • Baskiripsyon NIC (nouvo MAC, menm IP)\n   • Migrasyon vivan VM (VM deplase nan nouvo machin, NIC diferan)\n   • Baskiripsyon IP flote (keepalived/VRRP)\n\nPa gen repons atandi (sof si gen yon konfli)."
+    },
+    "4": {
+      "text": "Solisitasyon Vwazen NDP — 'Kiyès ki gen fd00::20?' (milticast nè-solisitè)",
+      "detail": "Ekivalan IPv6 Demann ARP, men fondamantalman diferan:\n1. MILTICAST, PA DIFIZYON: NS la voye nan adrès milticast\n   nè-solisitè ff02::1:ff00:0020 (Ethernet: 33:33:FF:00:00:20).\n   Sèlman machin ki gen adrès IPv6 ki fini ak ...00:0020 koute sou\n   gwoup sa a. Nan pratik, anjeneral sèlman 1-2 machin trete fram nan.\n\n2. BATI SOU ICMPv6: NDP se ICMPv6 tip 135/136, pa yon pwotokòl\n   separe. Sa vle di li benefisye fonksyonalite sekirite IPv6\n   (IPsec, SEND) epi li pa bezwen pwòp EtherType pa li.\n\n3. LIMIT SAN = 255: Obligatwa. Si yon pakè rive ak limit san\n   < 255, li te achemine (pa lyen-lokal) epi li dwe rejte.\n   Sa anpeche falsifikasyon NDP soti deyò lyen — yon amelyorasyon\n   sekirite enpòtan sou ARP.\n\nKonparezon pou yon sou-rezo 1000 machin: • ARP: tout 1000 machin trete demann difizyon an • NDP: ~1 machin trete solisitasyon milticast la"
+    },
+    "5": {
+      "text": "Anons Vwazen NDP — 'fd00::20 se nan AA:BB:CC:00:00:0B'",
+      "detail": "Machin B reponn ak yon Anons Vwazen (ICMPv6 tip 136): • Drapo Solisitè (S=1): Sa a se yon repons a yon NS • Drapo Ranplase (O=1): Mete ajou antre kach ki egziste • Drapo Router (R=0): Machin B pa yon router\nMachin A mete ajou kach vwazen li:\n  fd00::20 → AA:BB:CC:00:00:0B (eta: AKSESIB)\n\nEta kach vwazen NDP (RFC 4861 Seksyon 7.3.2): • ENKONPLÈ: NS voye, ap tann NA • AKSESIB: Resamman konfime (nan ReachableTime) • PERIME: Pa resamman konfime, itilizab men ap sonde byento • RETA: Ap tann konfimasyon kouch siperyè • SONDAJ: Ap aktivman voye NS unicast pou re-konfime"
+    },
+    "6": {
+      "text": "Anons Router NDP — prefiks fd00::/64 pou SLAAC",
+      "detail": "Router yo peryodikman voye Anons Router (RA) bay ff02::1 (milticast tout-nè). Machin yo mande RA tou lè yo voye Solisitasyon Router (RS) lè yo demere.\nRA a di machin yo: • Pasrèl pa defo: adrès lyen-lokal router a (fe80::1) • Prefiks rezo: fd00::/64 ak drapo otonòm SLAAC • Sèvè DNS (si opsyon RDNSS enkli) • MTU (si diferan de 1500 pa defo)\nSLAAC (Otokonfigirasyon Adrès San Eta, RFC 4862): Machin pran prefiks /64 + jenere yon ID entèfas 64-bit (soti nan EUI-64 oswa prive owaza) = adrès IPv6 konplè. Pa bezwen sèvè DHCP pou konektivite debaz.\nARP PA GEN ekivalan — IPv4 egzije DHCP oswa konfigirasyon estatik pou asiyasyon adrès ak dekouvèt pasrèl. NDP inifye rezolisyon adrès, dekouvèt router, anons prefiks, ak fonksyonalite redirekyon nan yon sèl pwotokòl."
+    },
+    "7": {
+      "text": "Senaryo fini — konparezon ARP vs NDP",
+      "detail": "ARP (IPv4, RFC 826): • Pwotokòl separe ak EtherType 0x0806 • Itilize DIFIZYON — tout machin sou segman L2 trete chak demann • Pa gen otantifikasyon — vilnerab a falsifikasyon/pwazon ARP • Sèlman fè rezolisyon adrès (IP → MAC) • Kach san eta ak senp delè ekspire\nNDP (IPv6, RFC 4861): • Bati sou ICMPv6 (tip 133-137) • Itilize MILTICAST NÈ-SOLISITÈ — sèlman ~1 machin trete chak NS • Limit san 255 anpeche atak soti deyò lyen; SEND (RFC 3971) opsyonèl • Fè rezolisyon adrès AK dekouvèt router, SLAAC, redirekyon • Kach vwazen ak eta (ENKONPLÈ → AKSESIB → PERIME → SONDAJ) • Deteksyon Adrès Dipllike (DAD) entegre\nARP Gratwit: • Demann kote IP Ekspedisyon = IP Sib • Itilize pou: deteksyon konfli, baskiripsyon, refrechi kach • Ekivalan NDP: NA san solisitasyon ak drapo Ranplase"
+    }
+  }
+}

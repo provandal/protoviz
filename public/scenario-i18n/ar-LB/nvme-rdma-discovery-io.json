@@ -1,0 +1,102 @@
+{
+  "meta": {
+    "title": "NVMe-oF/RDMA: Discovery → Fabrics Connect → NVMe Write و Read فوق RoCEv2",
+    "description": "NVMe over Fabrics كامل باستخدام RDMA (RoCEv2) transport. بدءاً من تأسيس الرابط الفيزيائي وحل عناوين ARP، مروراً بإعداد اتصال RDMA عبر CM، NVMe-oF Fabrics Connect لـ Discovery Controller، استرجاع Discovery Log Page، اتصال IO Controller، Identify Controller/Namespace، وعمليات NVMe Write وRead. يقارن مع سيناريو NVMe/TCP — هون أوامر NVMe بتمشي عبر RDMA SEND، البيانات عبر RDMA WRITE (controller→host) وRDMA READ (host→controller)، والإتمامات عبر RDMA SEND. الـ CPU مش مشترك بمسار البيانات.",
+    "learning_objectives": [
+      "فهم كيف NVMe-oF بيستعمل RDMA كـ transport binding — الأوامر عبر SEND، البيانات عبر WRITE/READ",
+      "شوف إعداد اتصال RDMA CM اللي بيسبق NVMe-oF Fabrics Connect",
+      "تابع أمر Fabrics Connect لتأسيس Admin وIO queues فوق RDMA",
+      "راقب Discovery Log Pages المسترجعة عبر RDMA لاكتشاف IO Controllers",
+      "تتبّع NVMe Write: الـ host بيبعت الأمر عبر RDMA SEND، الـ controller بيجيب البيانات عبر RDMA READ",
+      "تتبّع NVMe Read: الـ host بيبعت الأمر عبر RDMA SEND، الـ controller بيوصّل البيانات عبر RDMA WRITE",
+      "فهم استعمال SGL (Scatter-Gather List) لوضع بيانات RDMA",
+      "قارن RDMA transport binding مع TCP — zero-copy مقابل مسار بيانات بتدخّل الـ kernel"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "الرابط الفيزيائي طلع — 100GbE مع PFC مفعّل على القطعتين",
+      "detail": "الرابطين تبع 100GbE طلعو عبر Auto-Negotiation مع RS-FEC. PFC مفعّل على priority 3 لنقل RoCEv2 بدون خسارة. هيدا نفس أساس الـ lossless fabric الموضّح بسيناريو PFC/ECN/DCQCN."
+    },
+    "1": {
+      "text": "ARP Request — الـ host بيحل عنوان MAC تبع هدف التخزين",
+      "detail": "الـ NVMe host بيحتاج عنوان MAC تبع الهدف قبل ما يأسّس اتصال RDMA. طلب ARP broadcast؛ السويتش بيوزّع على كل المنافذ."
+    },
+    "2": {
+      "text": "ARP Reply — الهدف بيردّ بـ MAC 00:02:c9:ab:cd:ef",
+      "detail": "الـ ARP cache تحدّث على الطرفين. الـ host بيقدر يأسّس اتصالات RDMA."
+    },
+    "3": {
+      "text": "CM REQ → الـ host بيبلّش اتصال RDMA لـ NVMe Admin Queue",
+      "detail": "درايفر nvme-rdma بينادي rdma_connect() فبيشغّل IB CM (Connection Manager) ليبعت CM REQ. هيدا مبعوت عبر UD (Unreliable Datagram) لـ QP1 المعروف (GSI).\nالـ CM REQ فيه NVMe-oF RDMA private data: • HRQSIZE = 128 (حجم receive queue تبع host) • HSQSIZE = 128 (حجم send queue تبع host)\nهيدا فرق أساسي عن NVMe/TCP: RDMA transport بيتطلّب إعداد اتصال QP صريح عبر IB CM قبل أي أوامر NVMe. NVMe/TCP ببساطة بيفتح اتصال TCP."
+    },
+    "4": {
+      "text": "CM REP ← الهدف بيقبل اتصال RDMA، بيخصّص QP",
+      "detail": "درايفر nvme-rdma تبع الهدف بيقبل الاتصال. بيخصّص QP، بيحط receive WQEs (لكبسولات أوامر NVMe الواصلة)، وبيبعت CM REP مع CRQSIZE = 128.\nالـ QP بيتحوّل: RESET → INIT → RTR (Ready to Receive)."
+    },
+    "5": {
+      "text": "CM RTU → اتصال RDMA تأسّس — Admin Queue جاهز",
+      "detail": "الـ host بيبعت CM RTU (Ready To Use)، الـ QPs على الطرفين بيتحوّلو لـ RTS (Ready To Send). اتصال RDMA مؤسّس بالكامل.\nNVMe-oF/RDMA بيستعمل RDMA QP واحد لكل NVMe queue:\n• Admin Queue (QID 0) → QP pair 0x000080 ↔ 0x000100\n• IO Queue 1 (QID 1) → QP pair منفصل (بيتصل لاحقاً)"
+    },
+    "6": {
+      "text": "Fabrics Connect → الـ host بيتصل بـ Discovery Controller",
+      "detail": "مع اتصال RDMA مؤسّس، الـ host بيبعت أمر NVMe Fabrics Connect عبر RDMA SEND (BTH opcode 0x04). كبسولة الأمر بتوصل مباشرة بـ receive WQE محضّر سلفاً على الهدف — zero-copy بـ command buffer تبع الهدف.\nالـ host بيتصل بـ Discovery Controller NQN المعروف: nqn.2014-08.org.nvmexpress.discovery"
+    },
+    "7": {
+      "text": "Fabrics Connect Response ← Discovery Controller جاهز",
+      "detail": "الهدف بيقبل Fabrics Connect وبيرجّع controller ID ديناميكي (0xFFFF لـ Discovery Controllers). Admin Queue تبع الـ host هلق مربوط بـ Discovery Controller."
+    },
+    "8": {
+      "text": "Get Log Page → الـ host بيطلب Discovery Log عبر RDMA SEND",
+      "detail": "الـ host بيبعت أمر Get Log Page (LID 0x70) عبر RDMA SEND. الأمر فيه Keyed SGL descriptor بيقول للهدف وين بالضبط يعمل RDMA WRITE لبيانات log page بذاكرة الـ host: rkey=0x0000ABCD, va=0x7f8000100000, len=4096.\nهيدا نمط نقل بيانات NVMe-oF/RDMA الأساسي لبيانات controller-to-host:\n1. الـ host بيبعت الأمر عبر RDMA SEND (مع SGL بيشير لـ host buffer)\n2. الهدف بيعمل RDMA WRITE مباشرة بـ host buffer (باستعمال SGL rkey/va)\n3. الهدف بيبعت الإتمام عبر RDMA SEND"
+    },
+    "9": {
+      "text": "RDMA WRITE ← الهدف بيوصّل Discovery Log Page بذاكرة الـ host",
+      "detail": "الهدف بيقرا Discovery Log Page من تهيئتو وبيعمل RDMA WRITE مباشرة بالـ buffer المسجّل تبع الـ host باستعمال rkey وعنوان افتراضي من SGL الأمر.\nالـ log page فيه مدخل واحد:\n• SubNQN: nqn.2024-01.com.example:subsys-array01\n• Transport: RDMA (0x01)\n• Address: 192.168.100.20\n• Service ID: 4420"
+    },
+    "10": {
+      "text": "Completion ← Discovery Log Page استرجعت بنجاح",
+      "detail": "الهدف بيبعت إتمام NVMe عبر RDMA SEND. ترتيب RDMA بيضمن إنو RDMA WRITE (البيانات) ظاهر بذاكرة الـ host قبل ما SEND (الإتمام) يوصل. الـ host بيقدر فوراً يوصل لبيانات Discovery Log Page."
+    },
+    "11": {
+      "text": "Fabrics Connect → الـ host بيوصل IO Queue لنظام التخزين الفرعي",
+      "detail": "الـ host بيأسّس اتصال RDMA تاني (CM REQ/REP/RTU منفصل) وبيبعت Fabrics Connect لـ IO Queue 1 (QID=1) لـ subsystem NQN المكتشف بالـ log page.\nكل NVMe IO queue بيربط بـ RDMA QP منفصل. بالإنتاج، الـ host عادةً بيأنشئ IO queue واحد لكل CPU core (مثلاً 32 QPs لـ 32 cores) لأقصى توازي."
+    },
+    "12": {
+      "text": "Fabrics Connect Response ← IO Controller جاهز، CNTLID=0x0041",
+      "detail": "الهدف بيعيّن controller ID 0x0041 والـ IO queue جاهز لعمليات NVMe I/O.\nبهالنقطة كل NVMe-oF/RDMA stack مؤسّس:\n• Admin Queue: QP 0x000080 ↔ 0x000100 (لأوامر admin، discovery)\n• IO Queue 1: QP 0x000082 ↔ 0x000102 (لـ NVMe Read/Write I/O)"
+    },
+    "13": {
+      "text": "NVMe Write → الـ host بيبعت أمر كتابة 4KB (RDMA SEND)",
+      "detail": "تطبيق الـ host بيعمل كتابة 4KB على LBA 0. درايفر nvme-rdma:\n1. بيسجّل buffer بيانات الكتابة كـ MR (Memory Region)\n2. بيبني أمر NVMe Write مع Keyed SGL بيشير للـ buffer\n3. بيبعت الأمر عبر RDMA SEND\n\nالـ SGL بيقول للهدف: \"بيانات كتابتي على va=0x7f8000200000, rkey=0x0000BCDE, length=4096. اعمل RDMA READ منها.\"\nهيدا عكس مسار بيانات NVMe Read: للكتابة، الهدف بيجيب البيانات من الـ host عبر RDMA READ. للقراءة، الهدف بيوصّل البيانات للـ host عبر RDMA WRITE."
+    },
+    "14": {
+      "text": "RDMA READ ← الهدف بيجيب بيانات الكتابة من ذاكرة الـ host",
+      "detail": "درايفر NVMe تبع الهدف بيعمل RDMA READ ليجيب 4KB بيانات كتابة من buffer الـ host. RNIC الهدف بيبعت RDMA READ Request (BTH opcode 0x0c) مع rkey وعنوان افتراضي تبع الـ host.\nRNIC الـ host بيستلم هالطلب، بيعمل DMA-read من الـ memory region المسجّل، وبيرجّعو كـ RDMA READ Response — كلو بالـ HARDWARE. CPU الـ host ما بينقطع.\nهيدي ميزة أساسية لـ RDMA transport على TCP: بـ NVMe/TCP، kernel الـ host لازم ينسخ بيانات الكتابة من user buffers لـ kernel socket buffers. بـ NVMe-oF/RDMA، البيانات بتروح مباشرة من ذاكرة user-space للسلك بدون أي نسخ CPU."
+    },
+    "15": {
+      "text": "RDMA READ Response → 4KB بيانات كتابة وصلت للهدف",
+      "detail": "RNIC الـ host بيرجّع حمولة 4KB. الهدف بيستلمها، ودرايفر NVMe target بيكتبها على NVMe SSD الخلفي على LBA 0."
+    },
+    "16": {
+      "text": "NVMe Write Completion ← 4KB انكتبت على LBA 0 بنجاح",
+      "detail": "الهدف بيأكّد إنو NVMe Write خلص. إتمام NVMe بيتوصّل عبر RDMA SEND لـ completion queue تبع الـ host.\n\nملخص مسار بيانات NVMe Write (RDMA transport):\n1. Host → Target: RDMA SEND (أمر NVMe Write مع SGL)\n2. Target → Host: RDMA READ Request (جيب بيانات الكتابة)\n3. Host → Target: RDMA READ Response (4KB بيانات، zero-copy)\n4. Target → Host: RDMA SEND (إتمام NVMe)\nالمجموع: 4 عمليات RDMA، 0 نسخ CPU على الـ host."
+    },
+    "17": {
+      "text": "NVMe Read → الـ host بيبعت أمر قراءة 4KB (RDMA SEND)",
+      "detail": "الـ host بيبعت أمر NVMe Read لنفس LBA 0 (4KB). الأمر فيه Keyed SGL بيقول للهدف وين يعمل RDMA WRITE لبيانات القراءة بذاكرة الـ host: rkey=0x0000CDEF, va=0x7f8000300000, len=4096."
+    },
+    "18": {
+      "text": "RDMA WRITE ← الهدف بيوصّل 4KB بيانات قراءة بذاكرة الـ host",
+      "detail": "الهدف بيقرا 4KB من NVMe SSD على LBA 0 وبيعمل RDMA WRITE مباشرة بـ buffer الـ host المسجّل. CPU الـ host مش مشترك — البيانات بتوصل بصمت بذاكرة user-space."
+    },
+    "19": {
+      "text": "NVMe Read Completion ← 4KB انقرأت من LBA 0 بنجاح",
+      "detail": "الهدف بيبعت الإتمام عبر RDMA SEND. ترتيب RDMA بيضمن إنو بيانات WRITE ظاهرة قبل ما هالإتمام يوصل.\n\nملخص مسار بيانات NVMe Read (RDMA transport):\n1. Host → Target: RDMA SEND (أمر NVMe Read مع SGL)\n2. Target → Host: RDMA WRITE (4KB بيانات، zero-copy بـ host buffer)\n3. Target → Host: RDMA SEND (إتمام NVMe)\nالمجموع: 3 عمليات RDMA، 0 نسخ CPU على الـ host.\n\nمقارنة مع NVMe/TCP:\n• NVMe/TCP Read: أمر (TCP SEND) → بيانات (TCP C2HData PDU، kernel copy) → إتمام\n• NVMe-oF/RDMA Read: أمر (RDMA SEND) → بيانات (RDMA WRITE، zero-copy) → إتمام\nمسار RDMA بيلغي كل نسخ CPU وتحوّلات kernel."
+    },
+    "20": {
+      "text": "⟳ السيناريو خلص — NVMe-oF/RDMA discovery وI/O",
+      "detail": "هالسيناريو وضّح NVMe over Fabrics باستخدام RDMA transport binding:\n1. LINK — تأسيس فيزيائي 100GbE مع PFC لـ lossless fabric\n2. ARP — حل عناوين MAC\n3. CM — إعداد QP عبر IB Connection Manager (REQ/REP/RTU) لـ Admin Queue\n4. FABRICS CONNECT — اتصال Discovery Controller، استرجاع Discovery Log Page\n5. IO CONNECT — إعداد IO Controller queue فوق RDMA QP منفصل\n6. NVMe WRITE — الأمر عبر SEND، البيانات بتنجاب عبر RDMA READ (3 عمليات)\n7. NVMe READ — الأمر عبر SEND، البيانات بتتوصّل عبر RDMA WRITE (عمليتين)\n\nملخص RDMA Transport Binding:\n│ العملية          │ اتجاه الأمر      │ اتجاه البيانات    │\n│ NVMe Read        │ Host→Target (SEND)│ Target→Host (WRITE)│\n│ NVMe Write       │ Host→Target (SEND)│ Target←Host (READ) │\n│ Admin (Get Log)  │ Host→Target (SEND)│ Target→Host (WRITE)│\n│ Completion       │ Target→Host (SEND)│ —                  │\n\nميزات أساسية على NVMe/TCP:\n• صفر نسخ بيانات CPU\n• تأخير أقل\n• إنتاجية أعلى\n• عزل لكل queue\nالمقابل: بيتطلّب lossless Ethernet fabric وRDMA-capable NICs."
+    }
+  }
+}

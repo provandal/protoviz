@@ -1,0 +1,66 @@
+{
+  "meta": {
+    "title": "TLS 1.3 : poignee de main complete → donnees applicatives chiffrees → fermeture par alerte",
+    "description": "Poignee de main TLS 1.3 (RFC 8446) complete et echange de donnees. TLS 1.3 a reduit la poignee de main de deux allers-retours (TLS 1.2) a un seul : le client envoie les partages de cles supportes dans le ClientHello, et le serveur repond avec son partage de cle dans le ServerHello — les deux cotes derivent le secret partage apres un seul aller-retour. Ce scenario couvre : la poignee de main TCP en 3 etapes, le ClientHello avec les extensions supported_versions et key_share (x25519), le ServerHello avec key_share, les messages chiffres EncryptedExtensions + Certificate + CertificateVerify + Finished, le Finished du client, puis les donnees applicatives bidirectionnelles sur AES-256-GCM, et la fermeture gracieuse par alerte close_notify. Tous les messages apres ServerHello sont chiffres.",
+    "learning_objectives": [
+      "Comprendre la poignee de main TLS 1.3 en 1-RTT contre 2-RTT pour TLS 1.2",
+      "Voir comment le key_share du ClientHello (x25519) permet au serveur de deriver les cles immediatement",
+      "Suivre le calendrier de cles de la poignee de main : secret partage (EC)DHE → Handshake Secret → cles de trafic de poignee de main",
+      "Observer que EncryptedExtensions, Certificate, CertificateVerify et Finished sont TOUS chiffres",
+      "Comprendre comment le Master Secret derive les cles de trafic applicatif a partir de la poignee de main",
+      "Voir le chiffrement authentifie AES-256-GCM protegeant les donnees applicatives",
+      "Suivre l'alerte close_notify pour la fermeture gracieuse de TLS",
+      "Apprecier pourquoi TLS 1.3 a supprime le transport de cle RSA, le DH statique et toutes les suites de chiffrement CBC"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "TCP SYN → port 443 (HTTPS)",
+      "detail": "Le client initie une connexion TCP vers le port HTTPS (443) du serveur. TLS 1.3 fonctionne au-dessus de TCP (ou QUIC/UDP pour TLS 1.3 + HTTP/3, non montre ici). La poignee de main TCP doit etre terminee avant que TLS puisse commencer."
+    },
+    "1": {
+      "text": "TCP SYN-ACK ← le serveur acquitte",
+      "detail": "Le serveur repond avec SYN-ACK."
+    },
+    "2": {
+      "text": "TCP ACK → connexion etablie",
+      "detail": "Poignee de main TCP en 3 etapes terminee. La poignee de main TLS commence immediatement."
+    },
+    "3": {
+      "text": "TLS ClientHello — propose TLS 1.3 + partage de cle x25519",
+      "detail": "Le client envoie le ClientHello contenant : • supported_versions : [TLS 1.3] — la SEULE facon de negocier TLS 1.3 • cipher_suites : [AES-256-GCM, AES-128-GCM, ChaCha20-Poly1305] • key_share : cle publique x25519 du client • signature_algorithms : [ECDSA, RSA-PSS, Ed25519] • server_name : www.example.com (SNI, toujours en clair)\nDIFFERENCE CLE avec TLS 1.2 : le client envoie sa cle publique ECDHE dans ce premier message. Avec TLS 1.2, le client devait attendre le ServerKeyExchange avant de calculer le secret partage. Ce partage de cle anticipe est ce qui permet la poignee de main en 1-RTT de TLS 1.3.\nSi le serveur ne supporte pas le groupe de partage de cle propose, il repond avec un HelloRetryRequest demandant au client d'essayer un groupe different — cela ajoute un aller-retour supplementaire (rare en pratique car x25519 est universellement supporte)."
+    },
+    "4": {
+      "text": "TLS ServerHello — selectionne AES-256-GCM + partage de cle x25519",
+      "detail": "Le serveur repond avec le ServerHello contenant : • supported_versions : TLS 1.3 (confirme la version) • cipher_suite : TLS_AES_256_GCM_SHA384 • key_share : cle publique x25519 du serveur\nA ce stade, LES DEUX cotes peuvent calculer le secret partage ECDHE :\n  secret_partage = x25519(ma_cle_privee, cle_publique_du_pair)\n\nLe calendrier de cles TLS 1.3 derive ensuite : 1. Early Secret = HKDF-Extract(0, 0) [pas de PSK dans une poignee de main complete] 2. Handshake Secret = HKDF-Extract(secret_derive, secret_partage) 3. Cles de trafic de poignee de main client/serveur (pour chiffrer le reste de la poignee de main)\n\nTOUT apres le ServerHello est chiffre avec les cles de trafic de poignee de main. Cela signifie que le certificat du serveur, les extensions et le Finished sont tous caches aux observateurs passifs — une amelioration significative de la confidentialite par rapport a TLS 1.2 ou le certificat etait envoye en clair."
+    },
+    "5": {
+      "text": "Envoi chiffre du serveur — EncryptedExtensions + Certificate + CertificateVerify + Finished",
+      "detail": "Le serveur envoie quatre messages de poignee de main, TOUS chiffres avec les cles de trafic de poignee de main derivees du secret partage ECDHE :\n1. EncryptedExtensions — extensions non liees aux cles (ALPN : h2, etc.) 2. Certificate — chaine de certificats X.509\n   (chiffree ! Avec TLS 1.2, elle etait en clair)\n3. CertificateVerify — signature sur le transcript de la poignee de main prouvant\n   que le serveur detient la cle privee correspondant au certificat\n4. Finished — HMAC sur l'ensemble de la poignee de main prouvant l'integrite\nSur le fil, ces messages apparaissent comme des « Application Data » (type de contenu 23). Le vrai type de contenu est cache a l'interieur de la charge utile chiffree comme dernier octet (un « type de contenu interne » TLS 1.3). Cela empeche les intermediaires d'interferer avec des messages de poignee de main specifiques.\nApres verification du Finished du serveur, le client peut deriver : 4. Master Secret = HKDF-Extract(secret_derive, 0) 5. Cles de trafic applicatif client/serveur"
+    },
+    "6": {
+      "text": "Client Finished (chiffre) — poignee de main TLS 1.3 terminee en 1-RTT",
+      "detail": "Le client envoie son message Finished (chiffre avec les cles de poignee de main) : • Verify Data = HMAC-SHA384(cle_finished_client, Hash(toute_la_poignee_de_main))\nApres la verification par le serveur, la poignee de main est terminee. Les deux cotes derivent maintenant les cles de trafic applicatif a partir du Master Secret :\n  cle_app_client = HKDF-Expand(Master Secret, \"c ap traffic\", Hash)\n  cle_app_serveur = HKDF-Expand(Master Secret, \"s ap traffic\", Hash)\n\nTotal : 1 aller-retour pour la poignee de main TLS (apres TCP). Comparaison : TLS 1.2 necessitait 2 allers-retours. Avec TLS 1.3 + 0-RTT (reprise PSK), cela peut etre 0 aller-retour.\nNote : le serveur peut commencer a envoyer des donnees applicatives immediatement apres son propre Finished — il n'a pas besoin d'attendre le Finished du client. C'est ce qu'on appelle les « donnees 0.5-RTT » dans TLS 1.3."
+    },
+    "7": {
+      "text": "Requete HTTPS GET — chiffree avec les cles de trafic applicatif AES-256-GCM",
+      "detail": "Le client envoie une requete HTTP/2 GET pour la page. L'integralite de la requete HTTP (methode, en-tetes, chemin, cookies — tout) est chiffree dans un enregistrement TLS Application Data.\nChiffrement : AES-256-GCM avec un nonce par enregistrement construit a partir de :\n  nonce = write_iv XOR numero_de_sequence (64 bits)\nLe numero de sequence s'incremente par enregistrement, garantissant l'unicite du nonce sans IV explicite dans l'enregistrement (economisant 8 octets par enregistrement par rapport a TLS 1.2).\nAuthentification : GCM produit une etiquette de 128 bits couvrant le texte chiffre et les donnees associees (en-tete d'enregistrement). Toute falsification cause un echec de dechiffrement."
+    },
+    "8": {
+      "text": "Reponse HTTPS 200 OK — contenu de la page chiffre",
+      "detail": "Le serveur repond avec le contenu de la page, chiffre avec sa cle de trafic applicatif. Les grandes reponses s'etendent sur plusieurs enregistrements TLS (maximum 16 384 octets de texte clair par enregistrement, plus 256 octets pour le type de contenu et le remplissage).\nHTTP/2 multiplexe plusieurs flux au sein d'une seule connexion TLS, donc les requetes simultanees pour CSS, JS, images partagent toutes ce tunnel chiffre."
+    },
+    "9": {
+      "text": "Alerte TLS close_notify — le client initie la fermeture gracieuse",
+      "detail": "Le client envoie close_notify pour signaler qu'il n'enverra plus de donnees TLS. Cette alerte est chiffree (apparait comme Application Data sur le fil).\nclose_notify empeche les attaques par troncature — sans elle, un attaquant pourrait silencieusement supprimer des donnees en terminant la connexion TCP. Avec close_notify, les deux cotes savent que le transfert de donnees est termine."
+    },
+    "10": {
+      "text": "TLS close_notify ← le serveur repond, session TLS proprement fermee",
+      "detail": "Le serveur acquitte avec son propre close_notify. Les deux cotes savent maintenant que la session TLS est proprement terminee. Les FIN/ACK TCP suivent pour fermer la connexion de transport."
+    },
+    "11": {
+      "text": "Scenario termine — poignee de main complete TLS 1.3",
+      "detail": "Ce scenario a demontre la poignee de main complete TLS 1.3 (RFC 8446) :\nPOIGNEE DE MAIN TCP (3 paquets) :\n  SYN → SYN-ACK → ACK\n\nPOIGNEE DE MAIN TLS 1.3 (3 messages, 1 aller-retour) :\n  ClientHello (key_share : cle publique x25519)\n  ServerHello (key_share : cle publique x25519)\n  → Les deux cotes calculent le secret partage ECDHE\n  Serveur : {EncryptedExtensions, Certificate, CertificateVerify, Finished}\n            ↑ TOUS chiffres avec les cles de trafic de poignee de main\n  Client : {Finished}\n\nDONNEES APPLICATIVES :\n  HTTP/2 bidirectionnel sur AES-256-GCM\n\nFERMETURE TLS :\n  Alertes close_notify mutuelles\n\nAmeliorations cles par rapport a TLS 1.2 : • Poignee de main en 1-RTT (contre 2-RTT) — le client envoie le partage de cle en avance • Certificat chiffre — les observateurs passifs ne voient pas l'identite du serveur • Uniquement des suites de chiffrement AEAD — pas d'oracles de remplissage CBC, pas de RC4, pas de 3DES • Pas de transport de cle RSA — toujours avec confidentialite persistante (ECDHE requis) • Machine a etats simplifiee — moins de pieces mobiles, moins d'attaques • Calendrier de cles base sur HKDF — derivation de cles propre et analysable • 0-RTT disponible pour la reprise (avec des reserves sur la rejouabilite)\nSuite de chiffrement negociee : TLS_AES_256_GCM_SHA384 Echange de cles : x25519 (ECDHE Curve25519) Authentification du serveur : certificat ECDSA (secp256r1)"
+    }
+  }
+}

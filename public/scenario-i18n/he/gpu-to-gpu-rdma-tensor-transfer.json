@@ -1,0 +1,27 @@
+{
+  "meta": {
+    "title": "העברת טנזור RDMA מ-GPU ל-GPU (בין-צמתים)",
+    "description": "העברת טנזור RDMA ישירה מ-GPU ל-GPU בין שני צמתי AI על גבי 100GbE RoCEv2. GPU במערכת 1 שולח מאגר טנזור של 16MB ישירות ל-GPU HBM במערכת 2 — ללא ביניים דרך DRAM מארח בשום צד. זהו אבן הבניין של אימון AI מבוזר: כל פעולת AllReduce, All-to-All ו-broadcast מורכבת מהעברות GPU-ל-GPU כאלה.",
+    "learning_objectives": [
+      "הבנה כיצד GPUDirect RDMA מאפשר העברת נתונים ישירה GPU-ל-GPU דרך הרשת",
+      "ראיית כיצד nvidia-peermem רושם זיכרון GPU בשני הצדדים לגישת RDMA",
+      "מעקב אחר RDMA WRITE שנוסע מ-GPU HBM מקומי ל-GPU HBM מרוחק ישירות",
+      "הבנת תפקיד PCIe BAR1 בהנגשת זיכרון GPU למכשירי RDMA",
+      "ראיית כיצד מעבד המארח לא מעורב בהעברת הנתונים כלל",
+      "הערכת רוחב פס אפקטיבי ואופטימיזציית pipeline של מספר העברות",
+      "הבנה מדוע זה קריטי לפריימוורקי אימון מבוזר כמו NCCL",
+      "תצפית על הקמת חיבור RC QP עם חילופי rkey של זיכרון GPU משני הצדדים"
+    ]
+  },
+  "timeline": {
+    "0": { "text": "שני צמתי AI מחוברים דרך 100GbE + PFC (RoCEv2 ללא אובדן)", "detail": "קישורי 100GbE עם PFC מופעל. שני הצמתים מצוידים ב-NVIDIA GPUs ו-RNICs תומכי RDMA. nvidia-peermem טעון בשניהם." },
+    "1": { "text": "צומת 1: cuMemAlloc() — הקצאת מאגר טנזור GPU של 16MB (מקור)", "detail": "צומת 1 מקצה מאגר GPU HBM של 16MB לאחסון טנזור שחושב (גרדיאנטים למשל). כתובת GPU וירטואלית מוחזרת." },
+    "2": { "text": "צומת 2: cuMemAlloc() — הקצאת מאגר טנזור GPU של 16MB (יעד)", "detail": "צומת 2 מקצה מאגר GPU HBM של 16MB לקבלת טנזור. nvidia-peermem ייצור מיפוי BAR1 לאפשור RDMA WRITE ישיר." },
+    "3": { "text": "שני הצדדים: ibv_reg_mr() — רישום Memory Region מול GPU BAR1", "detail": "שני הצדדים רושמים את מאגרי GPU שלהם כ-MRs של RDMA דרך nvidia-peermem. RNIC MTT מכיל כתובות BAR1 GPU פיזיות. rkeys מוחלפים דרך נתוני CM פרטיים." },
+    "4": { "text": "חיבור RC QP הוקם (CM REQ → REP → RTU)", "detail": "חיבור RDMA RC הוקם. rkeys של GPU משני הצדדים הוחלפו. שני ה-QPs ב-RTS." },
+    "5": { "text": "צומת 1: ibv_post_send(RDMA_WRITE) — 16MB מ-GPU מקומי ל-GPU מרוחק", "detail": "צומת 1 מפרסם RDMA WRITE: מקור = GPU HBM מקומי (lkey), יעד = GPU HBM מרוחק (rkey של צומת 2). RNIC מקומי יבצע DMA מ-GPU מקומי דרך PCIe P2P, ישלח דרך RoCEv2, ו-RNIC מרוחק יכתוב ישירות ל-GPU מרוחק דרך PCIe P2P." },
+    "6": { "text": "RDMA WRITE בדרך — 16MB זורמים: GPU₁ HBM → PCIe → RNIC₁ → 100GbE → RNIC₂ → PCIe → GPU₂ HBM", "detail": "הנתונים זורמים: GPU1 HBM → BAR1 → PCIe P2P → RNIC1 → Ethernet → RNIC2 → PCIe P2P → BAR1 → GPU2 HBM. ללא נגיעה ב-DRAM מארח בשום צד. ללא מעורבות מעבד בשום צד. ב-100Gbps: 16MB לוקח ~1.3ms." },
+    "7": { "text": "ACK מ-RNIC צומת 2 — WRITE ל-GPU הושלם", "detail": "RNIC צומת 2 מייצר ACK. CQE מפורסם ב-CQ של צומת 1. טנזור של 16MB כעת ב-GPU HBM של צומת 2, זמין מיד לליבות CUDA." },
+    "8": { "text": "⟳ התרחיש הושלם — העברת טנזור GPU-ל-GPU דרך RDMA", "detail": "סיכום: 16MB טנזור הועבר ישירות מ-GPU HBM בצומת 1 ל-GPU HBM בצומת 2 דרך 100GbE RoCEv2. אפס מעורבות מעבד בשני הצדדים. אפס ביניים דרך DRAM מארח. זהו אבן הבניין הבסיסי של אימון AI מבוזר — NCCL AllReduce מורכב מאלפי העברות GPU-ל-GPU כאלה, מותאמות ב-pipeline ומשולבות עם חישובים." }
+  }
+}

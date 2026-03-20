@@ -1,0 +1,98 @@
+{
+  "meta": {
+    "title": "[WIP] S3/RDMA: PUT ak GET Objè sou RoCEv2 (Achitekti Bibliyotèk NVIDIA)",
+    "description": "Yon echanj S3/RDMA sou 100GbE RoCEv2, ki demontre kijan travay IA ka fè operasyon S3 PUT ak GET ak zewo enplikasyon CPU nan chemen done a. Senaryo a kòmanse ak etablisman lyen fizik ak ARP, pase nan inisyalizasyon bibliyotèk S3/RDMA ak konfigirasyon koneksyon QP atravè mesaj kontwòl UD, answit montre yon S3 PUT konplè (telechaje pwen kontwòl IA 1GB) ak S3 GET (telechajman 1GB) itilize RDMA WRITE pou transfè done an kantite.",
+    "learning_objectives": [
+      "Konprann poukisa S3 tradisyonèl sou TCP/HTTP egzije anpil CPU ak kijan S3/RDMA elimine depans sa a",
+      "Wè kijan bibliyotèk S3/RDMA NVIDIA chita anwo kouch transpò RoCEv2 ak anba API aplikasyon S3",
+      "Obsève konfigirasyon koneksyon QP ke S3/RDMA itilize anvan nenpòt transfè objè",
+      "Trase yon operasyon S3 PUT: kijan metadata objè echanje sou chemen kontwòl pandan done deplase sou RDMA WRITE",
+      "Trase yon operasyon S3 GET: kijan sèvè a itilize RDMA WRITE pou pouse done objè dirèkteman nan memwa kliyan",
+      "Konpare chemen done S3/RDMA (zewo CPU sou transfè done) ak S3 tradisyonèl sou TCP (CPU jere chak oktè)",
+      "Konprann wòl anrejistreman Rejyon Memwa pou otorize sèvè a ekri dirèkteman nan tanpon kliyan alwe"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "S3 Tradisyonèl vs S3/RDMA — Poukisa Sa Enpòtan",
+      "detail": "S3 GET tradisyonèl: demann HTTP GET → koneksyon TCP → salitasyon TLS → repons HTTP ak done objè → kernel kopye done atravè tanpon socket TCP → aplikasyon kopye soti nan socket nan tanpon. Chak oktè touche CPU de fwa. Itilizasyon CPU: wo. Latans: santèn de mikwosegond a milisegond.\nS3/RDMA GET: konfigirasyon QP (yon sèl fwa) → RDMA WRITE done objè dirèkteman nan tanpon pre-anrejistre kliyan. Zewo kopi CPU. Zewo enplikasyon kernel nan chemen done. Itilizasyon CPU pou transfè done: ~0%. Latans: mikwosegond yon sèl chif."
+    },
+    "1": {
+      "text": "Lyen A: siyal detekte — Kliyan ↔ Switch pò A",
+      "detail": "Transeptè optik sou kliyan detekte limyè soti nan switch pò A. Oto-Negosyasyon kòmanse dapre IEEE 802.3cd klòz 73."
+    },
+    "2": {
+      "text": "Lyen B: siyal detekte — Switch pò B ↔ Sèvè"
+    },
+    "3": {
+      "text": "Toude lyen: AN fini — 100GbE + RS(544,514) FEC, lyen MONTE",
+      "detail": "Toude lyen negosye 100GBASE-SR4 ak RS(544,514) FEC (obligatwa pou 100G). Fòmasyon Lyen egalise kanal yo. Lyen yo MONTE epi pare pou trafik."
+    },
+    "4": {
+      "text": "PFC aktive sou priyorite 3 — Ethernet san pèt pou RoCEv2",
+      "detail": "Kontwòl Fliks Priyorite (IEEE 802.1Qbb) aktive sou klas priyorite 3. Sa anpeche pèt pakè anba konjesyon, ki kritik pou RDMA."
+    },
+    "5": {
+      "text": "ARP: Kliyan rezoud IP sèvè 192.168.100.20"
+    },
+    "6": {
+      "text": "Repons ARP: MAC Sèvè 00:02:c9:20:00:01"
+    },
+    "7": {
+      "text": "Kliyan: s3_rdma_client_init() — Bibliyotèk S3/RDMA inisyalize",
+      "detail": "Kliyan rele s3_rdma_client_init(). Bibliyotèk la anrejistre yon gwo Rejyon Memwa ki kouvri pil tanpon GPU/CPU (ibv_reg_mr() → MLX5_CMD_OP_CREATE_MKEY). Kreye yon pil QP RC pre-alwe pou operasyon S3. Sa a se yon pri yon sèl fwa amòti sou tout operasyon S3 ki vin apre."
+    },
+    "8": {
+      "text": "Sèvè: Bibliyotèk sèvè S3/RDMA pre-inisyalize, pare pou koneksyon",
+      "detail": "Sèvè a te pre-inisyalize bibliyotèk sèvè NVIDIA S3/RDMA li sou demaraj. Pil QP pare pou aksepte koneksyon kliyan. Entegre ak motè depo Dell ObjectScale."
+    },
+    "9": {
+      "text": "Demann S3/RDMA CONNECT — kliyan voye enfòmasyon QP, rkey, adrès tanpon",
+      "detail": "Kliyan voye demann koneksyon atravè UD SEND bay QP sèvis S3/RDMA byen koni sou sèvè a. Pote nimewo QP kliyan, GID, rkey, ak adrès vityèl tanpon. Sèvè a ap itilize rkey/adrès sa a pou RDMA WRITE done dirèkteman nan memwa GPU kliyan."
+    },
+    "10": {
+      "text": "Repons S3/RDMA CONNECT — sèvè asiyen QP RC, retounen rkey",
+      "detail": "Sèvè asiyen yon QP RC nan pil li epi reponn ak nimewo QP sèvè, rkey, ak ID koneksyon. Toude bò yo kounye a gen tout enfòmasyon nesesè pou fè QP yo fè tranzisyon soti nan RESET nan RTS."
+    },
+    "11": {
+      "text": "Tranzisyon QP: RESET → INIT → RTR → RTS sou toude bò",
+      "detail": "Ni kliyan ni sèvè rele modify_qp() pou mennen QP RC yo atravè machin eta IB estanda: RESET → INIT → RTR → RTS. Sa a se menm sekans konfigirasyon QP ke tout aplikasyon RoCEv2 itilize. Apre RTS, pè QP a pare pou operasyon RDMA SEND ak RDMA WRITE."
+    },
+    "12": {
+      "text": "DEMANN S3 PUT — metadata sèlman (bucket, kle, gwosè 1GB). Pa gen done nan mesaj sa a.",
+      "detail": "Kliyan voye metadata PUT atravè RDMA SEND. Ti mesaj kontwòl sa a gen detay operasyon S3 (bucket, kle, gwosè, algorit checksum) ak lokalizasyon tanpon kliyan. Nan S3 tradisyonèl sa a ta yon HTTP PUT ak tout kò 1GB. Nan S3/RDMA, transfè done a fèt separeman atravè RDMA WRITE."
+    },
+    "13": {
+      "text": "S3 PUT PARE — sèvè retounen adrès vityèl destinasyon + rkey pou RDMA WRITE",
+      "detail": "Sèvè alwe espas depo, anrejistre yon Rejyon Memwa pou done ki antre, epi voye retounen adrès destinasyon ak rkey. Sa a se envèsyon PUT: kontrèman ak HTTP PUT kote kliyan pouse done, isit la sèvè di kliyan KI KOTE pou ekri, epi kliyan RDMA WRITE nan lokalizasyon sa a."
+    },
+    "14": {
+      "text": "RDMA WRITE — kliyan pouse moso 64MB (1 sou 16) dirèkteman nan memwa sèvè",
+      "detail": "RNIC kliyan DMA-li 64MB soti nan memwa GPU epi RDMA WRITE dirèkteman nan memwa sèvè nan adrès soti nan PUT PARE. Pou tout objè 1GB, 16 RDMA WRITE konsa rive (16 × 64MB). CPU sèvè pa janm touche done yo. CPU kliyan pa janm kopye done yo."
+    },
+    "15": {
+      "text": "S3 PUT KONPLÈ — 1GB telechaje, checksum verifye, ETag retounen",
+      "detail": "Sèvè konfime siksè PUT apre verifye checksum CRC32C. Retounen ETag ak ID vèsyon S3. Objè a kounye a dirab nan depo ObjectScale."
+    },
+    "16": {
+      "text": "Kontras: S3/TCP PUT vs S3/RDMA PUT",
+      "detail": "Ekivalan S3 PUT tradisyonèl: HTTP PUT ak kò 1GB → chifreman TLS 1GB → TCP segmante 1GB an pakè ~1400B → kernel kopye chak pakè nan NIC → NIC transmèt → NIC sèvè resevwa → kernel kopye nan tanpon socket → sèvè HTTP li nan socket → kopye nan tanpon depo → ekri nan disk. CPU touche chak oktè plizyè fwa.\nS3/RDMA PUT: 2 mesaj kontwòl (DEMANN PUT + PUT PARE) + 16 RDMA WRITE (16 × 64MB). CPU sèvè pa janm touche done yo. CPU kliyan pa janm kopye done yo. Nan 100GbE: ~12.5 GB/s soutni."
+    },
+    "17": {
+      "text": "DEMANN S3 GET — kliyan mande objè, bay enfòmasyon tanpon destinasyon",
+      "detail": "Kliyan voye demann GET ak bucket/kle ak adrès tanpon destinasyon/rkey. Sèvè a ap RDMA WRITE done objè dirèkteman nan tanpon sa a."
+    },
+    "18": {
+      "text": "RDMA WRITE — sèvè pouse moso 64MB (1 sou 16) dirèkteman nan memwa GPU kliyan",
+      "detail": "RNIC sèvè DMA-li done objè nan depo epi RDMA WRITE dirèkteman nan memwa GPU kliyan. CPU kliyan pa enplike. Pou tout objè 1GB, 16 RDMA WRITE konsa rive."
+    },
+    "19": {
+      "text": "S3 GET KONPLÈ — 1GB nan tanpon GPU kliyan, pare pou antrenman",
+      "detail": "Sèvè siyale konpleyon. Done objè kounye a nan tanpon GPU kliyan nan 0x7f8000000000, pare pou pas avanse antrenman an. CPU kliyan pa te janm enplike nan mouvman done."
+    },
+    "20": {
+      "text": "Kontras: S3/TCP GET vs S3/RDMA GET",
+      "detail": "Bouk antrenman IA kliyan an te rele s3_rdma_get(). Done objè a kounye a nan tanpon GPU nan 0x7f8000000000. CPU kliyan pa te janm enplike nan mouvman done a.\nS3 GET tradisyonèl: HTTP GET → TCP → dechifre TLS → tanpon socket kernel → kopi espas itilizatè → telechajman GPU atravè PCIe. Chak oktè travèse CPU de fwa minimòm.\nS3/RDMA GET: 1 mesaj kontwòl + 16 RDMA WRITE. Zewo CPU, zewo kopi."
+    }
+  }
+}

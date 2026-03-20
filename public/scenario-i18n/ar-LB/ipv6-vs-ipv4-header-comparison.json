@@ -1,0 +1,104 @@
+{
+  "meta": {
+    "title": "مقارنة IPv6 مع IPv4 Header: أبسط، أسرع، أكتر قابلية للتوسّع",
+    "description": "مقارنة جنب لجنب بين headers تبع IPv4 و IPv6 بتوضّح ليش IPv6 أبسط، أسرع لل routers، وأكتر قابلية للتوسّع. بنمشّي عبر IPv4 packet عم يمرّ بـ router (مع إعادة حساب checksum ومخاوف fragmentation)، بعدين بنبعت نفس ال data عبر IPv6 (بلا per-hop checksum، بلا router fragmentation، header ثابت 40 bytes). بنختم بـ IPv6 extension header chaining — بنوضّح كيف Hop-by-Hop options, Fragment headers, و Routing headers منفصلين عن ال base header باستعمال آلية Next Header.",
+    "learning_objectives": [
+      "قارن IPv4 header (13 حقل، حجم متغيّر) بـ IPv6 header (8 حقول، ثابت 40 bytes)",
+      "فهم ليش شيل ال header checksum من IPv6 بيسرّع ال router forwarding",
+      "اشرح ليش IPv6 بيمنع router fragmentation وبيفرض Path MTU Discovery",
+      "وصف حقل IPv6 Flow Label ودوره بتحديد traffic flows بدون deep packet inspection",
+      "فهم آلية Next Header chaining لـ IPv6 extension headers",
+      "حدّد ال extension headers الشائعة: Hop-by-Hop Options (0), Routing (43), Fragment (44)",
+      "اشرح ليش source-only fragmentation بيلغي فئة كاملة من الهجمات ومشاكل الأداء"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "الجزء 1 — IPv4 packet: Host A بيبعت لـ Host B عبر ال router",
+      "detail": "Host A بيبني IPv4 packet مع 20-byte TCP payload وجهته Host B على 192.168.2.20. ال IPv4 header فيه 13 حقل، بما فيهم IHL المتغيّر الحجم، حقول ال fragmentation (Identification, Flags, Fragment Offset)، وال Header Checksum. حتى لو حطّينا DF (Don't Fragment)، حقول ال fragmentation لسا موجودة بكل packet — ما بتقدر تشيلهم من ال fixed format. ال header حجمه 20 bytes بلا options، بس ممكن يوصل 60 bytes إذا في options."
+    },
+    "1": {
+      "text": "تفاصيل IPv4 header: 13 حقل، حجم متغيّر، checksum مطلوب",
+      "detail": "ال IPv4 header (RFC 791) عنده 13 حقل: Version (4 bits), IHL (4 bits), DSCP (6 bits), ECN (2 bits), Total Length (16 bits), Identification (16 bits), Flags (3 bits), Fragment Offset (13 bits), TTL (8 bits), Protocol (8 bits), Header Checksum (16 bits), Source IP (32 bits), Destination IP (32 bits), زائد Options متغيّرة الحجم.\nمشاكل أساسية لل high-speed forwarding:\n1. حجم header متغيّر (لازم تقرا IHL قبل ما تعرف وين ال payload بيبدأ)\n2. Header Checksum لازم يتفحّص عند الاستلام ويتعاد حسابه عند ال forwarding\n3. حقول fragmentation دايماً موجودة حتى لما ما عم يصير fragmentation\n4. ال Options بتخلّي ال hardware implementation صعبة — كل packet ممكن تكون مختلفة"
+    },
+    "2": {
+      "text": "ال Router بيستلم IPv4 packet: لازم يعيد حساب checksum (TTL تغيّر)، ممكن يحتاج يعمل fragment",
+      "detail": "ال router بيستلم IPv4 packet ولازم يعمل عدة عمليات:\n1. يتحقّق من Header Checksum — يحسب ones' complement sum تبع ال header ويتأكّد إنه يساوي 0xFFFF. إذا لأ، ال packet بتنرمي بصمت.\n2. ينقّص TTL من 64 لـ 63. إذا TTL وصل 0، ارمي وابعت ICMP Time Exceeded.\n3. يعيد حساب Header Checksum — لأنه TTL تغيّر، ال checksum هلّق باطل. ال router لازم يعيد يحسبه قبل ال forwarding. هيدا overhead صافي يلّي IPv6 بيلغيه بالكامل.\n4. يفحص MTU — إذا ال outgoing interface عندها MTU أصغر من حجم ال packet و DF مش محطوط، ال router بيعمل FRAGMENT لل packet. مع DF، بيبعت ICMP Fragmentation Needed.\n5. يعيد كتابة Layer 2 — MAC addresses جداد لل next hop.\nعلى 10 Gbps مع minimum-size packets (64 bytes)، ال router ممكن يعالج ~14.88 مليون packet بالثانية. إعادة حساب ال checksum بتضيف latency ملموس."
+    },
+    "3": {
+      "text": "ال Router بيبعت IPv4 packet: TTL=63, checksum جديد 0x4e3c",
+      "detail": "ال router بيبعت ال packet بـ TTL منخفض (63) و header checksum معاد حسابه (0x4e3c). عناوين Layer 2 اتعدّلت لل segment بين ال router و Host B. كل حقل بال IPv4 header ما تغيّر ما عدا TTL و ال checksum — بس ال checksum كان لازم يتعاد حسابه بالكامل لأنه ما في آلية incremental checksum بال standard. بعض ال router implementations بتستعمل incremental update (RFC 1141)، بس لسا شغل يلّي IPv6 بيتفاداه بالكامل."
+    },
+    "4": {
+      "text": "13 حقل، حجم متغيّر، إعادة حساب checksum عند كل hop",
+      "detail": "ملخّص IPv4 header: 13 حقل، 20-60 bytes (متغيّر بسبب Options)، وال Header Checksum لازم يتعاد حسابه عند كل hop لأنه TTL بيتغيّر. آلية ال fragmentation (Identification, Flags, Fragment Offset) بتاخد 32 bits بكل packet حتى لما ال fragmentation مش مستعمل. حقل Options المتغيّر الحجم يعني ال hardware ما بيقدر يفترض offset ثابت لل payload. هال design choices كانت منطقية سنة 1981 (RFC 791) لما ال routers كانت software implementations بطيئة. على سرعات حديثة (100 Gbps+)، هم عبء على الأداء."
+    },
+    "5": {
+      "text": "الجزء 2 — IPv6 packet: نفس ال data، نفس المسار، header أبسط",
+      "detail": "Host A هلّق بيبعت نفس TCP payload بالضبط لـ Host B، بس باستعمال IPv6. ال IPv6 header أبسط بشكل ملحوظ: بس 8 حقول، دايماً بالضبط 40 bytes. ما في حقل IHL (لأنه الحجم ما بيتغيّر)، ما في Header Checksum (لأنه TCP/UDP من قبل بيعملوا checksum لل data تبعهم)، ما في حقول fragmentation (لأنه بس ال source بيقدر يعمل fragment بـ IPv6).\nلاحظ ال EtherType تغيّر من 0x0800 (IPv4) لـ 0x86DD (IPv6)، والعناوين هلّق 128 bits بدل 32 bits. بالرغم من العناوين الأكبر، ال header مصمّم للسرعة: كل حقل على offset معروف وثابت."
+    },
+    "6": {
+      "text": "تفاصيل IPv6 header: 8 حقول، ثابت 40 bytes، بلا checksum",
+      "detail": "ال IPv6 header (RFC 8200) عنده بس 8 حقول: Version (4 bits), Traffic Class (8 bits), Flow Label (20 bits), Payload Length (16 bits), Next Header (8 bits), Hop Limit (8 bits), Source Address (128 bits), Destination Address (128 bits).\nشو انشال مقارنة بـ IPv4:\n- IHL — راح لأنه ال header دايماً 40 bytes\n- Identification, Flags, Fragment Offset — انتقلوا لـ Fragment extension header\n- Header Checksum — انلغى بالكامل (TCP/UDP من قبل عندهم checksums)\n- Options — انبدلوا بآلية extension header chain\nشو انضاف:\n- Flow Label (20 bits) — بيخلّي ال routers يحدّدوا ال flows بدون فحص transport headers، حاسم لل encrypted traffic\nشو تغيّر اسمه:\n- TTL → Hop Limit (اسم صادق — دايماً كان hop counter مش timer)\n- Protocol → Next Header (هلّق بيدعم extension header chaining)"
+    },
+    "7": {
+      "text": "ال Router بيستلم IPv6 packet: بلا checksum لإعادة حسابه، بلا fragmentation — بس نقّص Hop Limit",
+      "detail": "ال router بيستلم IPv6 packet وشغله أبسط بشكل دراماتيكي:\n1. بلا تحقّق من checksum — ما في header checksum يتحقّق منه أو يتعاد حسابه.\n2. نقّص Hop Limit من 64 لـ 63. إذا وصل 0، ارمي وابعت ICMPv6 Time Exceeded.\n3. بلا قرار fragmentation — إذا ال packet كبيرة كتير لل outgoing MTU، ال router بيبعت ICMPv6 Packet Too Big (مع قيمة MTU) وبيرمي ال packet. ال SOURCE لازم يعالج ال fragmentation عبر Path MTU Discovery.\n4. يعيد كتابة Layer 2 — MAC addresses جداد لل next hop.\nهيدا كل شي. بلا حساب checksum. بلا منطق fragmentation. ال router بيقدر يبعت على line rate بأقل معالجة لكل packet. هيدا ليش IPv6 اتصمّم بـ header ثابت الحجم وبلا checksum — بيخلّي ال hardware implementation أبسط وأسرع."
+    },
+    "8": {
+      "text": "ال Router بيبعت IPv6 — معالجة أسرع بكتير من IPv4",
+      "detail": "ال router بيبعت IPv6 packet مع Hop Limit منخفض لـ 63. ما تعاد حساب ولا checksum لأنه ما في checksum. مسار ال forwarding تبع ال router لمس حقل واحد بالضبط بال IP header (Hop Limit) مقارنة بحقلين لـ IPv4 (TTL و Header Checksum)، وحساب ال checksum نفسه أغلى بكتير من مجرد decrement.\nعلى نطاق واسع، هالفرق مهم. Router بيبعت 100 مليون packet بالثانية بيوفّر 100 مليون عملية checksum بالثانية لما يبعت IPv6 بدل IPv4."
+    },
+    "9": {
+      "text": "8 حقول، ثابت 40 bytes، بلا per-hop checksum — ال routers أسرع",
+      "detail": "ملخّص IPv6 header: 8 حقول، دايماً بالضبط 40 bytes، وصفر حساب checksum على أي hop. التعديل الوحيد الإلزامي لكل packet هو تنقيص Hop Limit بـ 1. قارن هيدا بـ IPv4 وين ال router لازم ينقّص TTL ويعيد حساب header checksum لكل packet بينبعت.\nحجم ال header الثابت يعني ال hardware بيقدر يستعمل constant offsets ليوصل لأي حقل. ما في حاجة يحلّل حقل Options متغيّر الحجم. ال Extension headers، لما تكون موجودة، بتتسلسل بعد ال base header وعادةً بس ال destination بيفحصها (ما عدا Hop-by-Hop Options)."
+    },
+    "10": {
+      "text": "الجزء 3 — Extension header chaining: Hop-by-Hop Options مع Router Alert",
+      "detail": "IPv6 extension headers هي الآلية يلّي بتبدّل IPv4 inline Options. بدل ما تحشر ميزات اختيارية بـ header متغيّر الحجم، IPv6 بيسلسل headers منفصلة باستعمال حقل Next Header.\nبهال المثال، Host A بيبعت packet مع Hop-by-Hop Options header فيها Router Alert option (مستعملة من MLD لإدارة multicast group). السلسلة هي:\nIPv6 header (Next Header = 0) → Hop-by-Hop Options (Next Header = 6) → TCP\nكل header حقل Next Header تبعه بيشير لشو بييجي بعده. ال Hop-by-Hop Options header خاص: هو ال extension header الوحيد يلّي كل router على المسار لازم يفحصه. كل ال extension headers التانية بس ال destination بيعالجها.\nال Router Alert option (type 5) بيخبّر كل router: \"طلّع على هال packet أكتر — فيها معلومات control-plane.\" بدونها، ال routers كانوا يمرّروا ال packet بسرعة بدون تفحّص."
+    },
+    "11": {
+      "text": "Extension header chain: IPv6 (Next Header=0) → Hop-by-Hop (Next Header=6) → TCP",
+      "detail": "آلية Next Header chaining أنيقة ببساطتها:\n1. IPv6 base header: Next Header = 0 (Hop-by-Hop Options)\n   \"بعدي بييجي Hop-by-Hop Options header\"\n2. Hop-by-Hop Options header: Next Header = 6 (TCP)\n   \"بعدي بييجي TCP\"\n3. TCP header: هيدا ال upper-layer protocol الأخير\nهالسلسلة ممكن تنمد بلا حدود. قيم Next Header الشائعة:\n- 0: Hop-by-Hop Options (لازم تكون أولى إذا موجودة)\n- 6: TCP\n- 17: UDP\n- 43: Routing Header\n- 44: Fragment Header\n- 50: ESP (Encapsulating Security Payload)\n- 51: AH (Authentication Header)\n- 58: ICMPv6\n- 59: No Next Header (ما في شي بعد)\nترتيب extension headers محدد بـ RFC 8200 section 4.1: Hop-by-Hop → Destination Options → Routing → Fragment → AH → ESP → Destination Options (لل final destination) → Upper-layer header."
+    },
+    "12": {
+      "text": "IPv6 fragmentation: بس ال SOURCE بيقدر يعمل fragment — أبداً router",
+      "detail": "هيدا واحد من أهم الفروقات بين IPv4 و IPv6. بـ IPv4، أي router على المسار بيقدر يعمل fragment لـ packet إذا بتتعدّى ال outgoing MTU. بـ IPv6، ال fragmentation بيعملها بس ال source host.\nإذا router لاقى packet كبيرة كتير لـ outgoing link تبعه:\n1. بيرمي ال packet\n2. بيبعت ICMPv6 Packet Too Big (Type 2) مع MTU تبع ال link\n3. ال source بيستلم هيدا، بينقّص حجم ال packet، وبيعيد يبعت\nهيدا Path MTU Discovery (RFC 8201)، وهو إلزامي لـ IPv6.\nال Fragment Header هو extension header منفصل (Next Header = 44) يلّي فيه:\n- Fragment Offset (13 bits): موقع هال fragment بال datagram الأصلي\n- M flag (1 bit): 1 = في fragments تانية\n- Identification (32 bits): ID فريد لإعادة التجميع (32-bit مقابل 16-bit تبع IPv4)\nالسلسلة هون: IPv6 (Next Header=44) → Fragment Header (Next Header=6) → TCP"
+    },
+    "13": {
+      "text": "Fragment chain: IPv6 (Next Header=44) → Fragment Header (Next Header=6) → TCP payload",
+      "detail": "سلسلة Fragment extension header:\n1. IPv6 base header: Next Header = 44 (Fragment Header)\n   \"بعدي بييجي Fragment Header\"\n2. Fragment Header: Next Header = 6 (TCP)\n   Fragment Offset = 0 (هيدا أول fragment)\n   M = 1 (في fragments تانية)\n   Identification = 0x0000abcd\n3. TCP header + payload (محتوى ال fragment)\nال destination بيجمع كل ال fragments بنفس Source Address + Destination Address + Identification، بيرتّبهم حسب Fragment Offset، وبيعيد تجميع ال datagram الأصلي. بس عند هيك بيتحلّل TCP header.\nفوائد source-only fragmentation:\n- ال routers ما بيحتاجوا منطق fragmentation بال fast path تبعهم\n- بيلغي هجمات مبنية على fragmentation (مثلاً tiny fragment attacks يلّي بتقسم TCP headers عبر fragments لتتخطّى firewalls)\n- حقل Identification 32-bit (مقابل 16-bit بـ IPv4) بينقّص ID collisions على خطوط عالية السرعة\n- بيفرض استعمال Path MTU Discovery، يلّي هو أكتر كفاءة من الاعتماد على router fragmentation"
+    },
+    "14": {
+      "text": "بـ IPv4، أي router بيقدر يعمل fragment. بـ IPv6، بس ال source بيقدر. هيدا ليش Path MTU Discovery إلزامي.",
+      "detail": "Path MTU Discovery (PMTUD) بـ IPv6 (RFC 8201) بيشتغل هيك:\n1. ال source بيبعت packets على local link MTU تبعه (عادةً 1280-1500 bytes)\n2. إذا router على المسار عنده MTU أصغر، بيرمي ال packet وبيبعت ICMPv6 Packet Too Big مع قيمة MTU الأصغر\n3. ال source بيخزّن هال Path MTU وبيعيد حجم ال packets اللاحقة\n4. بشكل دوري، ال source بيجرّب packets أكبر ليكشف إذا MTU زاد\nأقل IPv6 MTU هو 1280 bytes (مقابل 68 bytes لـ IPv4). هيدا يعني IPv6 fragments ما بتكون أصغر من 1280 bytes، بيبسّط إدارة ال buffers.\nعملياً، أكتر مسارات IPv6 بتدعم 1500 bytes (standard Ethernet MTU)، و jumbo frames (9000+ bytes) شائعة بشبكات data center. PMTUD بيضمن ال source دايماً بيستعمل أفضل حجم packet للمسار."
+    },
+    "15": {
+      "text": "ملخّص: IPv6 أبسط (8 مقابل 13 حقل)، أسرع (بلا checksum)، وأكتر قابلية للتوسّع (extension header chain)",
+      "detail": "مقارنة IPv4 مقابل IPv6 Header:\n| الخاصية | IPv4 | IPv6 |\n|---|---|---|\n| حقول ال header | 13 | 8 |\n| حجم ال header | 20-60 bytes (متغيّر) | 40 bytes (ثابت) |\n| Header checksum | نعم (يتعاد حسابه كل hop) | ما في |\n| Fragmentation | أي router بيقدر يعمل fragment | بس ال source (PMTUD إلزامي) |\n| حجم العنوان | 32 bits (4.3 مليار) | 128 bits (3.4 × 10^38) |\n| تحديد ال flow | 5-tuple deep inspection | Flow Label (20 bits) |\n| Options/extensions | Inline (header متغيّر) | Extension header chain |\n| أقل MTU | 68 bytes | 1280 bytes |\nIPv6 ما كان بس \"IPv4 بعناوين أكبر.\" كان إعادة تصميم جوهرية لل IP header لل high-speed hardware forwarding وال extensibility والأمان. شيل per-hop checksum recalculation لحاله كان انتصار كبير لأداء ال router. آلية extension header بتسمح للبروتوكول يتطوّر بدون ما يتغيّر شكل ال base header."
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "مقارنة IPv6 مقابل IPv4 Header",
+      "description": "تابع ليش IPv6 header أبسط، أسرع لل routers، وأكتر قابلية للتوسّع من IPv4",
+      "steps": {
+        "0": "رح نقارن IPv4 و IPv6 headers جنب لجنب. البروتوكولين الاتنين بينقلوا IP datagrams عبر الشبكات، بس IPv6 اتصمّم 17 سنة بعد IPv4 مع فائدة النظر للوراء. السؤال مش بس \"عناوين أكبر\" — هو \"شو تعلّمنا عن شو بيخلّي ال routers بطيئة، وكيف منصلّح هيدا?\" رح نبعت نفس ال data عبر نفس الشبكة باستعمال البروتوكولين ونشوف شو ال router لازم يعمل مختلف لكل واحد.",
+        "1": "أولاً، IPv4 packet. Host A بيبعت TCP segment لـ Host B عبر router. طلّع على IPv4 header: فيه 13 حقل. حقل IHL (Internet Header Length) بيخبّرك قديش طول ال header — ممكن يكون من 20 لـ 60 bytes حسب إذا في Options. ال Hardware ما بيقدر يفترض offset ثابت لل payload؛ لازم يقرا IHL أولاً. هال design المتغيّر الحجم كان منطقي سنة 1981 بس هو عبء على ال routers الحديثة العالية السرعة.",
+        "2": "لاحظ حقول ال fragmentation: Identification, Flags (DF/MF), و Fragment Offset. هال 32 bits موجودين بكل IPv4 packet، حتى لما ما في fragmentation عم يصير. موجودين لأنه بـ IPv4، أي router على المسار بيقدر يقرّر يعمل fragment لـ packet إذا بتتعدّى MTU تبع ال link الجاي. حقل Header Checksum هو القاتل الحقيقي للأداء — لازم يتعاد حسابه عند كل hop لأنه TTL بيتغيّر.",
+        "3": "ال router بيستلم IPv4 packet وعنده قائمة مهام: تحقّق من header checksum، نقّص TTL من 64 لـ 63، عيد حساب header checksum (لأنه TTL تغيّر)، فحص إذا بيحتاج fragmentation، وعيد كتابة عناوين Layer 2. إعادة حساب ال checksum overhead صافي — هو ones' complement sum على كامل ال header، ولازم يصير لكل packet على كل hop. على 10 Gbps line rate، هيدي ممكن 14.88 مليون عملية checksum بالثانية.",
+        "4": "ال router بيبعت ال packet بـ TTL=63 و checksum جديد كلّياً (0x4e3c). كل شي تاني ما تغيّر. بس إعادة حساب ال checksum هيدي? بتصير مرة تانية عند ال router الجاي. وبعده. وكل router لحد ما ال packet توصل Host B. ضرّب هيدا ببلايين ال packets بالثانية عبر آلاف ال routers، وبتفهم ليش مصمّمين IPv6 قرّروا: \"هال checksum لازم يروح.\"",
+        "5": "خلّينا نوقف ونعد شو IPv4 بيطلب من كل router: 13 حقل ليحلّلهم، حجم header متغيّر ليتعامل معه، checksum ليتحقّق منه ويعيد حسابه، وإمكانية الحاجة لعمل fragment لأي packet. IPv4 اتصمّم لما ال routers كانوا يعالجوا packets بالـ software على سرعات kilobit. على 100 Gbps وفوق، كل عملية غير ضرورية لكل packet بتهم. IPv6 اتصمّم ليلغي أكتر قدر ممكن من هال overhead.",
+        "6": "هلّق نفس ال data بتسافر عبر IPv6. فوراً لاحظ: بس 8 حقول بدل 13. ثابت 40 bytes — دايماً. ما في حقل IHL لأنه حجم ال header ما بيتغيّر أبداً. ال Flow Label جديد — 20 bits بتحدّد traffic flow فال routers يقدروا يعملوا per-flow load balancing بدون ما يفحصوا TCP/UDP ports. هيدا مهم خاصة لل encrypted traffic (IPsec, QUIC) وين ال port numbers ممكن تكون مخبّية.",
+        "7": "طلّع شو ناقص مقارنة بـ IPv4. ما في IHL — ال header دايماً 40 bytes، فال hardware بيعرف بالضبط وين ال payload بيبدأ. ما في Identification, Flags, أو Fragment Offset — ال fragmentation بيتعامل معها extension header منفصل، بس لما يلزم. والأهم: ما في Header Checksum. TCP و UDP من قبل عندهم checksums خاصة بتغطّي ال data. ال IPv4 header checksum كان شغل زايد على كل hop. IPv6 ببساطة شاله.",
+        "8": "ال router بيستلم IPv6 packet وشغله أبسط بشكل دراماتيكي: نقّص Hop Limit من 64 لـ 63 — وابعت. هيدا كل شي. ما في checksum ليتحقّق منه. ما في checksum ليعيد حسابه. ما في قرار fragmentation (إذا ال packet كبيرة كتير، ابعت ICMPv6 Packet Too Big وخلّي ال source يتعامل). ال router بيلمس حقل واحد بال IP header. ال Hardware بيقدر يعالج هيدا على full line rate بأقل منطق لكل packet.",
+        "9": "IPv6 packet المبعوتة بتوصل Host B بـ Hop Limit=63. قارن شو ال router عمل لـ IPv4 (نقّص TTL + عاد حساب checksum + فحص fragmentation) مقابل IPv6 (نقّص Hop Limit). 8 حقول بدل 13 — أبسط لل parsing. ثابت 40 bytes — ال hardware بيقدر يعالج على line rate. بلا checksum — TCP و UDP من قبل عندهم checksums، ال IPv4 header checksum كان شغل زايد على كل hop. بلا router fragmentation — بيلغي فئة كاملة من الهجمات ومشاكل الأداء.",
+        "10": "هلّق خلّينا نشوف كيف IPv6 بيتعامل مع ال extensibility. بدل ما يحشر ميزات اختيارية بـ base header متغيّر الحجم (متل IPv4 Options)، IPv6 بيستعمل extension header chaining. كل header فيه حقل Next Header بيشير لشو بييجي بعده. هون، Host A بيبعت packet مع Hop-by-Hop Options header فيها Router Alert لـ MLD. السلسلة: IPv6 (Next Header=0) بتوصل لـ Hop-by-Hop Options (Next Header=6) بتوصل لـ TCP.",
+        "11": "ال Hop-by-Hop Options header خاص — هو ال extension header الوحيد يلّي كل router لازم يفحصه. كل ال extension headers التانية (Routing, Fragment, ESP, AH) بس ال destination بيعالجها. هيدا يعني ال routers بيقدروا يمرّروا الأغلبية الساحقة من ال packets بسرعة بمجرد ما يطلّعوا على ال 40-byte base header. ال Router Alert option (type 5) بيخبّر ال routers \"هال packet فيها معلومات control-plane — طلّعوا عليها أكتر.\" بدونها، ال routers بيتخطّوا extension headers بالكامل.",
+        "12": "أخيراً، IPv6 fragmentation. بـ IPv4، أي router بيقدر يعمل fragment لـ packet — حقول Identification, Flags, و Fragment Offset بـ base header تبع كل packet. بـ IPv6، ال fragmentation بيستعمل Fragment extension header مخصص (Next Header=44)، وبس ال source host بيقدر يعمل fragment. إذا router لاقى packet كبيرة كتير لـ link تبعه، بيبعت ICMPv6 Packet Too Big وال source لازم يعيد الحجم. هيدا Path MTU Discovery (RFC 8201)، وهو إلزامي بـ IPv6.",
+        "13": "Source-only fragmentation عندها فوائد عميقة. بتلغي فئة كاملة من هجمات fragmentation (tiny fragment attacks يلّي بتقسم TCP headers لتتخطّى firewalls). بتشيل منطق fragmentation من fast path تبع ال router. حقل Identification 32-bit (مقابل 16-bit تبع IPv4) بينقّص ID collisions على خطوط عالية السرعة. وبتفرض Path MTU Discovery، يلّي هو أكتر كفاءة من الاعتماد على إنو ال routers يعملوا fragment صح. Flow Label بيخلّي ال routers يحدّدوا flows بدون ما يطلّعوا على TCP/UDP ports — مهم لل encrypted traffic.",
+        "14": "خلّينا نلخّص شو تعلّمنا. IPv6 مش بس \"IPv4 بعناوين أكبر.\" هو إعادة تصميم جوهرية لل high-speed forwarding. 8 حقول بدل 13 — أبسط لل parsing. ثابت 40 bytes — ال hardware بيقدر يعالج على line rate. بلا header checksum — TCP/UDP من قبل عندهم checksums، فإعادة الحساب على كل hop انلغت. بلا router fragmentation — Path MTU Discovery إلزامي. ال Flow Label بيمكّن per-flow routing بدون deep packet inspection. و extension header chain بتعطي extensibility نظيفة ومنظّمة بدون ما تأثّر على شكل ال base header. كل تغيير من هيدي كان مدفوع بتجربة حقيقية مع محدوديات IPv4 على نطاق واسع."
+      }
+    }
+  }
+}

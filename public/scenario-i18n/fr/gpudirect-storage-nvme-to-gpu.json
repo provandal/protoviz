@@ -1,0 +1,86 @@
+{
+  "meta": {
+    "title": "[WIP] GPUDirect Storage : lecture NVMe directe vers la memoire GPU (PCIe local)",
+    "description": "Un echange GPUDirect Storage (GDS) complet montrant comment les donnees sont lues depuis un SSD NVMe directement dans la memoire GPU (BAR1) en contournant entierement le cache de pages CPU. C'est un scenario de protocole LOCAL — tous les transferts restent dans un seul serveur sur le bus PCIe. Le flux commence par le contraste avec le chemin traditionnel (NVMe → cache de pages → cudaMemcpy → GPU, 2 traversees PCIe), puis montre le chemin GDS : initialisation de l'API cuFile, enregistrement des fichiers et tampons GPU, et DMA pair-a-pair NVMe→GPU via BAR1 pour les lectures et ecritures.",
+    "learning_objectives": [
+      "Comprendre pourquoi le chemin d'E/S de stockage traditionnel (NVMe → cache de pages → cudaMemcpy) est inefficace pour les charges de travail GPU",
+      "Apprendre comment GPUDirect Storage elimine les tampons de rebond CPU en ciblant le DMA NVMe directement sur la memoire BAR1 GPU",
+      "Suivre le cycle de vie de l'API cuFile : cuFileDriverOpen → cuFileHandleRegister → cuFileBufRegister → cuFileRead/cuFileWrite",
+      "Comprendre le role du module noyau nvidia-fs comme intermediaire entre le pilote NVMe et la gestion de memoire GPU",
+      "Voir comment le DMA pair-a-pair (P2P) PCIe permet aux controleurs NVMe d'ecrire directement dans le BAR1 GPU sans intervention CPU",
+      "Observer la soumission de commandes NVMe avec des entrees PRP/SGL pointant vers des adresses physiques GPU au lieu de la DRAM hote",
+      "Comprendre pourquoi GDS necessite l'enregistrement de la memoire BAR1 GPU — le module nvidia-fs doit verrouiller et mapper les pages GPU pour le DMA",
+      "Voir comment cuFileWrite inverse le chemin : memoire GPU → SSD NVMe pour les sauvegardes de points de controle IA"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Chemin traditionnel (sans GDS) : NVMe → cache de pages → tampon utilisateur → cudaMemcpy → GPU",
+      "detail": "SANS GPUDirect Storage, lire des donnees NVMe dans la memoire GPU necessite plusieurs copies mediees par le CPU : (1) L'application appelle read() ou pread(). (2) Le pilote NVMe fait du DMA des donnees du SSD vers le cache de pages du noyau dans la DRAM hote. (3) Le noyau copie du cache de pages vers le tampon espace utilisateur. (4) L'application appelle cudaMemcpy(H2D) pour transferer de la DRAM hote vers la HBM GPU. Chaque etape consomme de la bande passante PCIe et des cycles CPU."
+    },
+    "1": {
+      "text": "Penalite de bande passante du chemin traditionnel : les donnees traversent le bus PCIe DEUX FOIS",
+      "detail": "Dans le chemin traditionnel, les donnees lues par NVMe traversent le bus PCIe deux fois : (1) SSD NVMe → DRAM hote (PCIe x4 Gen5 = 32 Go/s), (2) DRAM hote → GPU via cudaMemcpy (PCIe x16 Gen5 = 64 Go/s). La double traversee PCIe divise par deux la bande passante effective et ajoute de la latence. GDS elimine la deuxieme traversee entierement."
+    },
+    "2": {
+      "text": "cuFileDriverOpen() — initialisation du sous-systeme GPUDirect Storage",
+      "detail": "L'application (ou le framework comme DALI/kvikio) appelle cuFileDriverOpen() pour initialiser le sous-systeme GDS. Cela declenche le chargement du module noyau nvidia-fs qui s'enregistre aupres du sous-systeme NVMe pour intercepter les operations DMA. nvidia-fs fonctionne comme un intermediaire entre le pilote NVMe et le systeme de gestion memoire GPU."
+    },
+    "3": {
+      "text": "open(\"/data/training/imagenet_shard_0042.bin\", O_RDONLY | O_DIRECT)",
+      "detail": "open() POSIX standard avec le drapeau O_DIRECT. O_DIRECT est requis pour GDS — il contourne le cache de pages Linux, ce qui est exactement ce que nous voulons puisque GDS envoie les donnees directement au GPU sans passer par la DRAM hote."
+    },
+    "4": {
+      "text": "cuFileHandleRegister() — enregistrer le descripteur de fichier avec GDS",
+      "detail": "Encapsule le fd POSIX dans un handle cuFile. nvidia-fs valide que le fichier reside sur un systeme de fichiers supporte (ext4, XFS ou peripherique bloc brut) et resout le chemin vers le peripherique NVMe sous-jacent."
+    },
+    "5": {
+      "text": "cuFileBufRegister() — verrouiller la memoire GPU et creer la correspondance DMA BAR1",
+      "detail": "C'est l'etape critique de configuration. cuFileBufRegister() verrouille les pages memoire GPU (empechant le pilote GPU de les migrer ou de les evincer) et cree les correspondances DMA BAR1 pour que le controleur NVMe puisse cibler directement la memoire GPU via le pair-a-pair PCIe."
+    },
+    "6": {
+      "text": "cuFileRead() — debut de la lecture directe NVMe → GPU (4 Mio)",
+      "detail": "L'application appelle cuFileRead() avec le handle cuFile, le tampon GPU et la taille de transfert. nvidia-fs traduit l'offset fichier en LBA NVMe (via la correspondance d'etendues du systeme de fichiers) et construit les commandes NVMe avec les PRP/SGL pointant vers les adresses physiques BAR1 GPU au lieu de la DRAM hote."
+    },
+    "7": {
+      "text": "SQE NVMe Read soumis — sonnette actionnee",
+      "detail": "Le pilote hote NVMe ecrit le SQE de 64 octets dans la file de soumission en DRAM hote et ecrit le nouveau pointeur de queue SQ dans le registre de sonnette du controleur NVMe. Le SQE contient des entrees PRP pointant vers les adresses physiques BAR1 GPU."
+    },
+    "8": {
+      "text": "Le SSD NVMe recupere le SQE depuis la memoire hote",
+      "detail": "Le controleur NVMe detecte l'ecriture de sonnette (nouvelle queue SQ) et emet une lecture memoire PCIe pour recuperer le SQE de 64 octets depuis la file de soumission en DRAM hote. Il analyse la commande et prepare le transfert DMA."
+    },
+    "9": {
+      "text": "DMA P2P : 4 Mio circulant du SSD NVMe → BAR1 GPU (zero copie CPU)",
+      "detail": "LE MOMENT PEDAGOGIQUE CLE. Le controleur NVMe lit les donnees depuis la NAND flash dans son tampon DRAM interne, puis emet des TLP PCIe Memory Write ciblant les adresses physiques BAR1 GPU. Le controleur NVMe ne fait pas la difference entre la DRAM hote et la memoire BAR1 GPU — les deux sont simplement des adresses PCIe. Les donnees circulent : NAND → tampon DRAM du controleur → PCIe → BAR1 GPU → HBM GPU. Le CPU n'est jamais dans le chemin de donnees."
+    },
+    "10": {
+      "text": "Completion NVMe — CQE poste, MSI-X declenche",
+      "detail": "Apres que toutes les donnees ont ete transfeees par DMA vers BAR1 GPU, le controleur NVMe poste une entree de file de completion (CQE) de 16 octets dans la CQ en DRAM hote et declenche une interruption MSI-X. Le pilote NVMe traite la completion et signale nvidia-fs."
+    },
+    "11": {
+      "text": "cuFileRead() retourne — 4 Mio de donnees d'entrainement sont dans la memoire GPU",
+      "detail": "cuFileRead() retourne 4194304 (octets lus avec succes). Les donnees d'entrainement sont maintenant dans la HBM3 GPU a l'adresse du tampon enregistre, immediatement accessibles par les noyaux CUDA. Aucune copie CPU supplementaire necessaire."
+    },
+    "12": {
+      "text": "cuFileWrite() — sauvegarder le point de controle de la memoire GPU vers NVMe (4 Mio)",
+      "detail": "Apres la completion du calcul d'entrainement, l'application sauvegarde un point de controle en appelant cuFileWrite(). Cela ecrit le contenu de la memoire GPU directement sur le SSD NVMe via le DMA pair-a-pair PCIe inverse."
+    },
+    "13": {
+      "text": "SQE NVMe Write soumis — PRP1 = BAR1 GPU",
+      "detail": "Le SQE de la commande NVMe Write est identique en structure a la commande Read mais avec l'opcode 0x01 (Write). PRP1 pointe toujours vers l'adresse BAR1 GPU — mais maintenant le controleur NVMe va lire les donnees depuis BAR1 GPU au lieu d'y ecrire."
+    },
+    "14": {
+      "text": "DMA P2P : 4 Mio circulant du BAR1 GPU → SSD NVMe (sauvegarde de point de controle)",
+      "detail": "Le controleur NVMe lit 4 Mio depuis la memoire BAR1 GPU via des TLP PCIe P2P Memory Read. Les lectures PCIe sont des transactions divisees — le controleur NVMe envoie des requetes MRd et recoit les donnees en completions."
+    },
+    "15": {
+      "text": "Completion NVMe Write — point de controle persiste sur NAND",
+      "detail": "Le controleur NVMe termine l'ecriture sur NAND flash et poste un CQE avec status=succes. cuFileWrite() retourne 4194304 (octets ecrits). Le point de controle est maintenant durable sur le stockage non volatile."
+    },
+    "16": {
+      "text": "Resume GDS : E/S zero-copie entre NVMe et GPU a pleine bande passante PCIe",
+      "detail": "GPUDirect Storage elimine entierement le CPU du chemin de donnees de stockage. Le seul role du CPU est le plan de controle : soumettre des descripteurs de commande NVMe de 64 octets et traiter des CQE de 16 octets. Tout le mouvement de donnees (megaoctets a gigaoctets) est du DMA pair-a-pair PCIe materiel entre le controleur NVMe et le BAR1 GPU."
+    }
+  }
+}

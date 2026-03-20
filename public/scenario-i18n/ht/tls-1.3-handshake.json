@@ -1,0 +1,66 @@
+{
+  "meta": {
+    "title": "TLS 1.3: Salitasyon Konplè → Done Aplikasyon Chifre → Fèmti ak Alèt",
+    "description": "Salitasyon ak echanj done TLS 1.3 (RFC 8446) konplè. TLS 1.3 te redwi salitasyon an soti nan de ale-retou (TLS 1.2) nan yon sèl: kliyan an voye pataj kle sipòte nan ClientHello, epi sèvè a reponn ak pataj kle pa li nan ServerHello — toude bò derive sekrè pataje a apre yon sèl ale-retou. Senaryo sa a kouvri: salitasyon TCP 3 etap, ClientHello ak ekstansyon supported_versions ak key_share (x25519), ServerHello ak key_share, EncryptedExtensions + Certificate + CertificateVerify + Finished chifre, kliyan Finished, answit done aplikasyon bidireksyonèl sou AES-256-GCM, ak fèmti pwòp close_notify.",
+    "learning_objectives": [
+      "Konprann salitasyon TLS 1.3 1-RTT vs 2-RTT TLS 1.2",
+      "Wè kijan key_share ClientHello (x25519) pèmèt sèvè a derive kle imedyatman",
+      "Trase orè kle salitasyon: sekrè pataje (EC)DHE → Sekrè Salitasyon → kle trafik salitasyon",
+      "Obsève ke EncryptedExtensions, Certificate, CertificateVerify, ak Finished TOUT chifre",
+      "Konprann kijan Sekrè Mèt la derive kle trafik aplikasyon soti nan salitasyon an",
+      "Wè chifreman otantifye AES-256-GCM ki pwoteje done aplikasyon",
+      "Swiv alèt close_notify pou fèmti pwòp TLS",
+      "Apresye poukisa TLS 1.3 te retire transpò kle RSA, DH estatik, ak tout swit chif CBC"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "TCP SYN → Pò 443 (HTTPS)",
+      "detail": "Kliyan kòmanse yon koneksyon TCP nan pò HTTPS sèvè a (443). TLS 1.3 mache sou TCP (oswa QUIC/UDP nan TLS 1.3 + HTTP/3, pa montre isit la). Salitasyon TCP a dwe fini anvan TLS ka kòmanse."
+    },
+    "1": {
+      "text": "TCP SYN-ACK ← Sèvè konfime",
+      "detail": "Sèvè reponn ak SYN-ACK."
+    },
+    "2": {
+      "text": "TCP ACK → Koneksyon etabli",
+      "detail": "Salitasyon TCP 3 etap fini. Salitasyon TLS kòmanse imedyatman."
+    },
+    "3": {
+      "text": "TLS ClientHello — ofri TLS 1.3 + pataj kle x25519",
+      "detail": "Kliyan voye ClientHello ki gen: • supported_versions: [TLS 1.3] — SÈL fason pou negosye TLS 1.3 • cipher_suites: [AES-256-GCM, AES-128-GCM, ChaCha20-Poly1305] • key_share: kle piblik kliyan x25519 • signature_algorithms: [ECDSA, RSA-PSS, Ed25519] • server_name: www.example.com (SNI, toujou an klè)\nDIFERANS KLE ak TLS 1.2: kliyan voye kle piblik ECDHE li nan premye mesaj sa a. Nan TLS 1.2, kliyan te dwe tann ServerKeyExchange anvan li kalkile sekrè pataje a. Pataj kle antousyas sa a se sa ki pèmèt salitasyon 1-RTT TLS 1.3."
+    },
+    "4": {
+      "text": "TLS ServerHello — chwazi AES-256-GCM + pataj kle x25519",
+      "detail": "Sèvè reponn ak ServerHello ki gen: • supported_versions: TLS 1.3 (konfime vèsyon) • cipher_suite: TLS_AES_256_GCM_SHA384 • key_share: kle piblik sèvè x25519\nNan pwen sa a, TOUDE BÒ ka kalkile sekrè pataje ECDHE:\n  sekrè_pataje = x25519(kle_prive_mwen, kle_piblik_parè)\n\nOrè kle TLS 1.3 answit derive: 1. Sekrè Bonè = HKDF-Extract(0, 0) [pa gen PSK nan salitasyon konplè] 2. Sekrè Salitasyon = HKDF-Extract(sekrè_derive, sekrè_pataje) 3. Kle trafik salitasyon kliyan/sèvè (pou chifre rès salitasyon an)\nTOUT BAGAY apre ServerHello chifre ak kle trafik salitasyon. Sa vle di sètifika sèvè a, ekstansyon, ak Finished tout kache pou obsèvatè pasif — yon amelyorasyon konfidansyalite enpòtan sou TLS 1.2 kote sètifika a te voye an klè."
+    },
+    "5": {
+      "text": "Vol chifre sèvè — EncryptedExtensions + Certificate + CertificateVerify + Finished",
+      "detail": "Sèvè voye kat mesaj salitasyon, TOUT chifre ak kle trafik salitasyon derive nan sekrè pataje ECDHE:\n1. EncryptedExtensions — ekstansyon ki pa kle (ALPN: h2, elatriye) 2. Certificate — chèn sètifika X.509 (chifre! Nan TLS 1.2 sa te an klè) 3. CertificateVerify — siyati sou transkripsyon salitasyon ki pwouve sèvè a gen kle prive ki matche ak sètifika a 4. Finished — HMAC sou tout salitasyon an ki pwouve entegrite\nSou fil la, sa yo parèt kòm «Done Aplikasyon» (tip kontni 23). Vrè tip kontni a kache anndan chaj itil chifre a kòm dènye oktè (yon «tip kontni entèn» TLS 1.3)."
+    },
+    "6": {
+      "text": "Kliyan Finished (chifre) — salitasyon TLS 1.3 fini nan 1-RTT",
+      "detail": "Kliyan voye mesaj Finished li (chifre ak kle salitasyon):\n• Done Verifikasyon = HMAC-SHA384(kle_fini_kliyan, Hash(tout_salitasyon))\nApre sèvè a verifye sa, salitasyon an fini. Toude bò kounye a derive kle trafik aplikasyon soti nan Sekrè Mèt la:\n  kle_app_kliyan = HKDF-Expand(Sekrè Mèt, \"c ap traffic\", Hash)\n  kle_app_sèvè = HKDF-Expand(Sekrè Mèt, \"s ap traffic\", Hash)\n\nTotal: 1 ale-retou pou salitasyon TLS (apre TCP). Konpare: TLS 1.2 te bezwen 2 ale-retou. Ak TLS 1.3 + 0-RTT (reprann PSK), li ka 0 ale-retou.\nRemark: Sèvè a ka kòmanse voye done aplikasyon imedyatman apre pwòp Finished pa li — li pa bezwen tann Finished kliyan an. Sa rele «done 0.5-RTT» nan TLS 1.3."
+    },
+    "7": {
+      "text": "Demann HTTPS GET — chifre ak kle trafik aplikasyon AES-256-GCM",
+      "detail": "Kliyan voye yon demann HTTP/2 GET pou paj la. Tout demann HTTP a (metòd, antèt, chemen, kouki — tout bagay) chifre anndan yon anrejistreman Done Aplikasyon TLS.\nChifreman: AES-256-GCM ak yon nonce pa anrejistreman konstwi soti nan:\n  nonce = write_iv XOR nimewo_sekans (64-bit)\nNimewo sekans la ogmante pa anrejistreman, sa asire inikite nonce san IV eksplisit nan anrejistreman an."
+    },
+    "8": {
+      "text": "Repons HTTPS 200 OK — kontni paj chifre",
+      "detail": "Sèvè reponn ak kontni paj la, chifre ak kle trafik aplikasyon li. Gwo repons kouvri plizyè anrejistreman TLS (maks 16,384 oktè tèks klè pa anrejistreman).\nHTTP/2 miltiplekse plizyè fliks nan yon sèl koneksyon TLS, donk demann simultane pou CSS, JS, imaj tout pataje tinèl chifre sa a."
+    },
+    "9": {
+      "text": "Alèt TLS close_notify — kliyan kòmanse fèmti pwòp",
+      "detail": "Kliyan voye close_notify pou siyale li pap voye plis done TLS. Alèt sa a chifre (parèt kòm Done Aplikasyon sou fil la).\nclose_notify anpeche atak tronkasyon — san li, yon atakan ta ka silansman lage done lè li temine koneksyon TCP a. Ak close_notify, toude bò konnen transfè done a fini."
+    },
+    "10": {
+      "text": "TLS close_notify ← Sèvè reponn, sesyon TLS fèmen pwòpman",
+      "detail": "Sèvè konfime ak pwòp close_notify pa li. Toude bò kounye a konnen sesyon TLS la fèmen pwòpman. FIN/ACK TCP swiv pou fèmen koneksyon transpò a."
+    },
+    "11": {
+      "text": "Senaryo fini — Salitasyon Konplè TLS 1.3",
+      "detail": "Senaryo sa a te demontre salitasyon konplè TLS 1.3 (RFC 8446):\nSALITASYON TCP (3 pakè): SYN → SYN-ACK → ACK\nSALITASYON TLS 1.3 (3 mesaj, 1 ale-retou):\n  ClientHello (key_share: kle piblik x25519)\n  ServerHello (key_share: kle piblik x25519)\n  → Toude bò kalkile sekrè pataje ECDHE\n  Sèvè: {EncryptedExtensions, Certificate, CertificateVerify, Finished}\n         ↑ TOUT chifre ak kle trafik salitasyon\n  Kliyan: {Finished}\nDONE APLIKASYON: HTTP/2 bidireksyonèl sou AES-256-GCM\nFÈMTI TLS: Alèt close_notify mityèl\nAmelyorasyon kle sou TLS 1.2: • Salitasyon 1-RTT (vs 2-RTT) — kliyan voye pataj kle antousyas • Sètifika chifre — obsèvatè pasif pa ka wè idantite sèvè • Sèlman swit chif AEAD — pa gen atalin tanponaj CBC, pa gen RC4, pa gen 3DES • Pa gen transpò kle RSA — toujou sekrè-alavans (ECDHE obligatwa) • Machin eta senplifye — mwens pyès mouvman, mwens atak • Orè kle baze sou HKDF — derive kle pwòp, analizab"
+    }
+  }
+}

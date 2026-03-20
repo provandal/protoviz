@@ -1,0 +1,99 @@
+{
+  "meta": {
+    "title": "RoCEv2 RC: 링크 트레이닝 → QP 연결 → RDMA WRITE → RDMA READ",
+    "description": "완전한 RoCEv2 Reliable Connection(RC) 수명주기: 물리 링크 트레이닝, ARP 해석, Memory Region 등록, QP 상태 전이(RESET → INIT → RTR → RTS), CM(Connection Manager) 핸드셰이크, RDMA WRITE(제로카피 원격 메모리 쓰기) 및 RDMA READ(원격 메모리 읽기) 작업을 포함합니다.",
+    "learning_objectives": [
+      "RoCEv2 RC QP의 상태 전이 과정 이해: RESET → INIT → RTR → RTS",
+      "RDMA CM(Connection Manager) 핸드셰이크: REQ → REP → RTU 확인",
+      "RDMA WRITE가 타겟 CPU 개입 없이 원격 메모리에 쓰는 방식 관찰",
+      "RDMA READ가 원격 메모리에서 데이터를 가져오는 방식 관찰",
+      "Memory Region 등록과 원격 액세스 키 관리 이해"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "링크 A: 신호 감지 — 이니시에이터 ↔ 스위치 포트 A",
+      "detail": "이니시에이터의 광 트랜시버가 스위치 포트 A에서 오는 빛을 감지합니다. IEEE 802.3cd 절 73에 따라 Auto-Negotiation(AN)이 시작됩니다. L1은 포인트 투 포인트입니다 — 스위치↔타겟 링크와 독립적입니다."
+    },
+    "1": {
+      "text": "링크 B: 신호 감지 — 스위치 포트 B ↔ 타겟",
+      "detail": "타겟의 광 트랜시버가 스위치 포트 B에서 오는 빛을 감지합니다. 이 링크에서 독립적으로 AN이 시작됩니다."
+    },
+    "2": {
+      "text": "링크 A: AN 완료 — 100GbE 합의, 링크 트레이닝 시작",
+      "detail": "AN이 이니시에이터와 스위치 포트 A 간에 기술 능력 페이지를 교환합니다. 양쪽이 100GBASE-SR4에 합의합니다. RS(544,514) FEC는 100G에서 필수입니다. 채널 이퀄라이제이션(프리 엠퍼시스, 포스트 커서)을 위한 Link Training이 시작됩니다."
+    },
+    "3": {
+      "text": "링크 B: AN 완료 — 100GbE 합의, 링크 트레이닝 시작",
+      "detail": "스위치 포트 B ↔ 타겟에서 AN이 완료됩니다. 동일한 협상: RS(544,514) FEC를 사용한 100GBASE-SR4. 이 링크에서 독립적으로 Link Training이 시작됩니다."
+    },
+    "4": {
+      "text": "링크 A UP — 이니시에이터 ↔ 스위치 100Gbps, RS-FEC 적용",
+      "detail": "이니시에이터↔스위치에서 Link Training이 완료됩니다. DCBX 협상(여기서는 생략)을 통해 PFC(802.1Qbb)가 우선순위 3에 활성화됩니다. 이제 이 링크 세그먼트에서 Ethernet 프레임이 흐를 수 있습니다."
+    },
+    "5": {
+      "text": "링크 B UP — 스위치 ↔ 타겟 100Gbps, RS-FEC 적용",
+      "detail": "스위치↔타겟에서 Link Training이 완료됩니다. PFC가 활성화됩니다. 두 링크 모두 활성화되었으며 — 스위치가 포트 간 L2 프레임을 전달할 수 있습니다. 엔드 투 엔드 L2 연결이 수립되었습니다."
+    },
+    "6": {
+      "text": "ARP 요청: 192.168.1.20은 누구인가요?",
+      "detail": "이니시에이터가 타겟의 MAC 주소를 해석하기 위해 ARP 요청을 브로드캐스트합니다."
+    },
+    "7": {
+      "text": "ARP 응답: 192.168.1.20은 00:02:c9:ab:cd:ef입니다",
+      "detail": "타겟이 MAC 주소로 응답합니다. 양쪽이 ARP 캐시를 업데이트합니다."
+    },
+    "8": {
+      "text": "양쪽이 ibv_reg_mr()로 Memory Region 등록",
+      "detail": "RDMA 작업에 사용할 메모리 영역을 NIC에 등록합니다. 등록된 메모리만 RDMA 작업의 소스/목적지로 사용할 수 있습니다. lkey(local key)와 rkey(remote key)가 발급됩니다."
+    },
+    "9": {
+      "text": "QP 생성 — 상태: RESET",
+      "detail": "Queue Pair가 생성됩니다. 초기 상태는 RESET입니다. 데이터를 보내거나 받으려면 QP를 RTS(Ready-to-Send) 상태로 전이해야 합니다."
+    },
+    "10": {
+      "text": "QP 전이 RESET → INIT (ibv_modify_qp())",
+      "detail": "QP를 INIT 상태로 전이합니다. 포트 번호, 패킷 키, 액세스 플래그를 설정합니다."
+    },
+    "11": {
+      "text": "CM REQ 전송 — QP 매개변수 제안",
+      "detail": "이니시에이터가 CM REQ 메시지를 전송하여 QP 번호, PSN(Packet Sequence Number), RDMA 연결 매개변수를 제안합니다."
+    },
+    "12": {
+      "text": "CM REP 수신 — 타겟이 수락, QPN 및 PSN 제공",
+      "detail": "타겟이 CM REP로 응답하여 연결을 수락하고 자신의 QPN과 PSN을 제공합니다."
+    },
+    "13": {
+      "text": "CM RTU 전송 — 양쪽 QP가 RTS로 전이. 연결 수립.",
+      "detail": "이니시에이터가 CM RTU를 전송합니다. 양쪽 QP가 RTS(Ready-to-Send)로 전이되고 RDMA 연결이 수립됩니다."
+    },
+    "14": {
+      "text": "애플리케이션이 RDMA WRITE Work Request를 Send Queue에 게시",
+      "detail": "애플리케이션이 ibv_post_send()로 RDMA WRITE WR을 게시합니다. 원격 주소와 rkey를 지정하여 타겟 메모리에 직접 쓸 위치를 알려줍니다."
+    },
+    "15": {
+      "text": "RDMA WRITE — 4KB가 원격 메모리에 푸시, 타겟 CPU 개입 없음",
+      "detail": "이니시에이터 NIC가 4KB 데이터를 RDMA WRITE로 타겟 메모리에 직접 쓸니다. 타겟의 CPU는 전혀 관여하지 않습니다 — NIC이 DMA로 메모리에 직접 배치합니다."
+    },
+    "16": {
+      "text": "타겟 RNIC ACK — WRITE 완료, 이니시에이터에 CQE 게시",
+      "detail": "타겟 RNIC가 RDMA WRITE 완료를 확인하는 ACK를 보냅니다. 이니시에이터의 CQ(Completion Queue)에 CQE(Completion Queue Entry)가 게시됩니다."
+    },
+    "17": {
+      "text": "애플리케이션이 RDMA READ Work Request 게시",
+      "detail": "애플리케이션이 ibv_post_send()로 RDMA READ WR을 게시합니다. 원격 주소와 rkey를 지정하여 타겟 메모리에서 읽을 위치를 알려줍니다."
+    },
+    "18": {
+      "text": "RDMA READ 요청 — 이 방향에는 데이터 없음",
+      "detail": "이니시에이터 NIC가 RDMA READ 요청을 타겟으로 전송합니다. 이 요청 패킷에는 데이터가 포함되지 않습니다 — 원격 주소와 길이만 포함됩니다."
+    },
+    "19": {
+      "text": "RDMA READ 응답 — 타겟 RNIC가 메모리를 DMA하여 데이터 전송",
+      "detail": "타겟 RNIC가 지정된 메모리 영역에서 DMA로 데이터를 읽고 RDMA READ 응답으로 이니시에이터에 전송합니다. 타겟 CPU 개입 없이 수행됩니다."
+    },
+    "20": {
+      "text": "⟳ 시나리오 완료 — RoCEv2 RC RDMA WRITE 및 READ",
+      "detail": "이 시나리오는 완전한 RoCEv2 RC 수명주기를 보여주었습니다: 물리 링크 트레이닝, ARP 해석, MR 등록, QP 상태 전이, CM 핸드셰이크, RDMA WRITE(원격 푸시) 및 RDMA READ(원격 풀) 작업."
+    }
+  }
+}

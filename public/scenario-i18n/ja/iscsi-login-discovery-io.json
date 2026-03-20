@@ -1,0 +1,74 @@
+{
+  "meta": {
+    "title": "iSCSI: ログイン → Discovery → SCSI INQUIRY → WRITE(10) → READ(10)",
+    "description": "10GbE TCP/IP上の完全なiSCSIセッションライフサイクル: TCP 3ウェイハンドシェイク、iSCSIログインフェーズ (認証とパラメータネゴシエーション)、SendTargetsディスカバリ、ターゲットログイン、LUN識別のためのSCSI INQUIRY、SCSI WRITE(10)とREAD(10)によるデータ転送。NVMe-oFと比較 — iSCSIはTCPを使用し、データパスにカーネルが介在します。",
+    "learning_objectives": [
+      "iSCSIログインフェーズ (セキュリティネゴシエーションと操作パラメータネゴシエーション) を理解する",
+      "iSCSI PDU構造とTCP上のSCSIコマンドのカプセル化を観察する",
+      "R2T (Ready to Transfer) フロー制御とData-Outシーケンスを追跡する",
+      "NVMe-oFのRDMAトランスポートとTCPトランスポートを比較する"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "物理リンクアップ — 両セグメントで 10GbE",
+      "detail": "両方の10GbEリンクがオートネゴシエーションでアップします。iSCSIは標準イーサネット上で動作し、PFCやDCBは不要です。"
+    },
+    "1": {
+      "text": "TCP 3ウェイハンドシェイク → ポート3260への接続確立",
+      "detail": "iSCSIイニシエータがiSCSIターゲットのウェルノウンポート3260にTCP接続を確立します。すべてのiSCSI PDUはこのTCP接続上で運ばれます。"
+    },
+    "2": {
+      "text": "iSCSIログイン → セキュリティネゴシエーション (AuthMethod=None)",
+      "detail": "イニシエータがログインプロセスを開始します。最初のPDUでセキュリティパラメータをネゴシエーションします。この例ではAuthMethod=None (認証なし) です。"
+    },
+    "3": {
+      "text": "ログイン応答 ← セキュリティ承認、TSIH=0x0001割り当て",
+      "detail": "ターゲットがセキュリティパラメータを承認し、Target Session Identifying Handle (TSIH) を割り当てます。"
+    },
+    "4": {
+      "text": "ログイン → 操作パラメータネゴシエーション",
+      "detail": "イニシエータが操作パラメータ (MaxRecvDataSegmentLength、MaxBurstLength、FirstBurstLengthなど) をネゴシエーションします。これらはデータ転送のセグメントサイズを制御します。"
+    },
+    "5": {
+      "text": "ログイン完了 ← Full Feature Phase — セッション確立",
+      "detail": "ログインが完了し、セッションがFull Feature Phaseに入ります。イニシエータはSCSIコマンドを発行できるようになりました。"
+    },
+    "6": {
+      "text": "SCSI INQUIRY → イニシエータがLUN 0のデバイス特性を検出",
+      "detail": "イニシエータがSCSI INQUIRYコマンドを送信してLUN 0のデバイスタイプ、ベンダー、製品情報を取得します。"
+    },
+    "7": {
+      "text": "INQUIRY応答 ← ダイレクトアクセスブロックデバイス (LIO-ORG IBLOCK)",
+      "detail": "ターゲットがINQUIRYデータを返します。デバイスタイプは0x00 (ダイレクトアクセスブロック) で、LIO-ORG IBLOCKバックエンドです。"
+    },
+    "8": {
+      "text": "SCSI WRITE(10) → LBA 0に4KB書き込み",
+      "detail": "イニシエータがSCSI WRITE(10)コマンドを送信します。iSCSIでは、データは別のPDUで送信されます (R2Tフロー制御使用時)。"
+    },
+    "9": {
+      "text": "R2T ← ターゲットが4KB書き込みデータ受信準備完了",
+      "detail": "ターゲットがR2T (Ready To Transfer) PDUを送信し、イニシエータにデータ送信を許可します。これはiSCSIのフロー制御メカニズムです。"
+    },
+    "10": {
+      "text": "Data-Out → イニシエータが4KB書き込みデータを送信",
+      "detail": "イニシエータがR2Tに応じてData-Out PDUで書き込みデータを送信します。TCP上でSCSIデータがカプセル化されます。"
+    },
+    "11": {
+      "text": "WRITE応答 ← GOOD — 4KBがLBA 0に書き込まれました",
+      "detail": "ターゲットがSCSIステータスGOODでWRITE完了を確認します。データがバックエンドストレージに正常に書き込まれました。"
+    },
+    "12": {
+      "text": "SCSI READ(10) → LBA 0から4KB読み取り",
+      "detail": "イニシエータがSCSI READ(10)コマンドを送信し、先ほど書き込んだデータを読み戻します。"
+    },
+    "13": {
+      "text": "Data-In ← 4KB読み取りデータとGOODステータス",
+      "detail": "ターゲットがData-In PDUで4KB読み取りデータをイニシエータに返します。SCSIステータスGOODが付いています。"
+    },
+    "14": {
+      "text": "⟳ シナリオ完了 — iSCSIセッションライフサイクル",
+      "detail": "このシナリオでは完全なiSCSIセッションを実演しました: TCP接続、ログインフェーズ、SCSI INQUIRY、WRITE(10)とREAD(10)によるデータ転送。"
+    }
+  }
+}

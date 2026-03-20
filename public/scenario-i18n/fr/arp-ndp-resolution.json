@@ -1,0 +1,50 @@
+{
+  "meta": {
+    "title": "ARP et NDP : resolution d'adresse IPv4 et decouverte de voisinage IPv6",
+    "description": "Comparaison cote a cote de ARP IPv4 (RFC 826) et NDP IPv6 (RFC 4861). Les deux protocoles resolvent le meme probleme — faire correspondre une adresse de couche reseau (IP) a une adresse de couche liaison (MAC) — mais avec des approches fondamentalement differentes. ARP utilise la diffusion (broadcast) ; NDP utilise la multidiffusion (multicast) et repose sur ICMPv6. Ce scenario couvre : requete/reponse ARP, ARP gratuit, sollicitation/annonce de voisinage NDP, et annonce de routeur NDP.",
+    "learning_objectives": [
+      "Comprendre pourquoi la resolution d'adresse est necessaire : adresses IP contre adresses MAC",
+      "Suivre un echange complet requete ARP → reponse ARP et la mise a jour de la table ARP",
+      "Voir pourquoi ARP utilise la diffusion (tous les hotes) et les implications en termes de passage a l'echelle",
+      "Comprendre l'ARP gratuit pour la detection de conflit IP et le basculement",
+      "Comparer la sollicitation de voisinage NDP : multidiffusion du noeud sollicite contre diffusion ARP",
+      "Voir comment NDP s'appuie sur ICMPv6 au lieu d'etre un protocole separe",
+      "Suivre l'annonce de routeur NDP pour l'apprentissage du prefixe et de la passerelle (SLAAC)",
+      "Apprecier pourquoi NDP est plus securise et plus evolutif que ARP"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Liaison physique active — les deux hotes sur le meme segment Ethernet",
+      "detail": "Les deux hotes sont sur le meme reseau de couche 2 (VLAN ou Ethernet plat). L'hote A possede l'adresse IPv4 192.168.1.10 et l'adresse IPv6 fd00::10. L'hote B possede l'adresse IPv4 192.168.1.20 et l'adresse IPv6 fd00::20.\nLorsque l'hote A doit envoyer un paquet IP a l'hote B, il doit d'abord decouvrir l'adresse MAC de l'hote B. C'est la qu'intervient ARP (IPv4) ou NDP (IPv6)."
+    },
+    "1": {
+      "text": "Requete ARP — « Qui a 192.168.1.20 ? Dites-le a 192.168.1.10 »",
+      "detail": "L'hote A doit envoyer a 192.168.1.20 mais ne connait pas son MAC. Il diffuse une requete ARP a FF:FF:FF:FF:FF:FF (chaque hote sur le LAN).\nCaracteristiques cles d'ARP : • Fonctionne a la frontiere couche 2/3 avec son propre EtherType (0x0806) • Utilise la diffusion — chaque hote du segment L2 doit la traiter • Aucune authentification — n'importe quel hote peut revendiquer n'importe quelle IP (usurpation ARP) • Sans etat — pas de poignee de main, pas de numeros de sequence • Charge utile de 28 octets (minuscule, mais le cout de la diffusion croit avec le nombre d'hotes)\nLe commutateur inonde la diffusion sur tous les ports. Dans un sous-reseau de 1000 hotes, les 1000 hotes recoivent et traitent cette trame — meme si seul l'hote B doit repondre."
+    },
+    "2": {
+      "text": "Reponse ARP — « 192.168.1.20 est a AA:BB:CC:00:00:0B »",
+      "detail": "L'hote B reconnait sa propre IP dans la requete ARP et repond par une reponse ARP unicast contenant son adresse MAC.\nLes deux hotes mettent a jour leurs caches ARP : • Hote A : 192.168.1.20 → AA:BB:CC:00:00:0B (depuis la reponse) • Hote B : 192.168.1.10 → AA:BB:CC:00:00:0A (depuis la requete)\nLes entrees du cache ARP ont un delai d'expiration (typiquement 30 a 300 secondes sous Linux, configurable via net.ipv4.neigh.default.gc_stale_time). Apres expiration, le prochain paquet declenche une nouvelle requete ARP."
+    },
+    "3": {
+      "text": "ARP gratuit — l'hote A annonce sa correspondance IP→MAC",
+      "detail": "Un ARP gratuit est une requete ARP ou l'IP de l'emetteur = l'IP cible. Il sert plusieurs objectifs :\n1. DETECTION DE CONFLIT IP (RFC 5227) : quand l'hote A configure\n   son IP pour la premiere fois, il envoie un ARP gratuit. Si un autre\n   hote repond, il y a conflit — l'IP est deja utilisee.\n\n2. MISE A JOUR DU CACHE ARP : tous les hotes qui ont deja une entree\n   pour 192.168.1.10 mettent a jour leur MAC en cache. C'est critique pour :\n   • Basculement de NIC (nouveau MAC, meme IP)\n   • Migration a chaud de VM (la VM se deplace vers un nouvel hote, NIC differente)\n   • Basculement d'IP flottante (keepalived/VRRP)\n\n3. TABLE MAC DU COMMUTATEUR : le commutateur apprend le MAC de l'hote A\n   sur le bon port, utile apres des changements de port ou des redemarrages.\n\nAucune reponse n'est attendue (sauf en cas de conflit)."
+    },
+    "4": {
+      "text": "Sollicitation de voisinage NDP — « Qui a fd00::20 ? » (multidiffusion du noeud sollicite)",
+      "detail": "Equivalent IPv6 de la requete ARP, mais fondamentalement different :\n1. MULTIDIFFUSION, PAS DIFFUSION : la NS est envoyee a l'adresse de\n   multidiffusion du noeud sollicite ff02::1:ff00:0020 (Ethernet : 33:33:FF:00:00:20).\n   Seuls les hotes dont l'adresse IPv6 se termine par ...00:0020 ecoutent ce\n   groupe. En pratique, generalement 1 a 2 hotes traitent la trame.\n\n2. BASE SUR ICMPv6 : NDP est ICMPv6 type 135/136, pas un protocole\n   separe. Il beneficie donc des fonctionnalites de securite IPv6\n   (IPsec, SEND) et n'a pas besoin de son propre EtherType.\n\n3. HOP LIMIT = 255 : obligatoire. Si un paquet arrive avec un hop limit\n   < 255, il a ete route (pas local au lien) et doit etre rejete.\n   Cela empeche l'usurpation NDP depuis l'exterieur du lien — une amelioration\n   de securite significative par rapport a ARP.\n\n4. OPTION D'ADRESSE DE COUCHE LIAISON SOURCE : l'hote A inclut son propre\n   MAC dans la NS, pour que l'hote B puisse repondre sans resolution separee.\n\nComparaison pour un sous-reseau de 1000 hotes : • ARP : les 1000 hotes traitent la requete en diffusion • NDP : ~1 hote traite la sollicitation en multidiffusion"
+    },
+    "5": {
+      "text": "Annonce de voisinage NDP — « fd00::20 est a AA:BB:CC:00:00:0B »",
+      "detail": "L'hote B repond avec une annonce de voisinage (ICMPv6 type 136) : • Drapeau Sollicite (S=1) : c'est une reponse a une NS • Drapeau Override (O=1) : mettre a jour les entrees de cache existantes • Drapeau Routeur (R=0) : l'hote B n'est pas un routeur\nL'hote A met a jour son cache de voisinage :\n  fd00::20 → AA:BB:CC:00:00:0B (etat : REACHABLE)\n\nEtats du cache de voisinage NDP (RFC 4861 Section 7.3.2) : • INCOMPLETE : NS envoye, en attente de NA • REACHABLE : confirme recemment (dans ReachableTime) • STALE : pas confirme recemment, utilisable mais va bientot sonder • DELAY : en attente de confirmation de la couche superieure • PROBE : envoie activement des NS unicast pour re-confirmer"
+    },
+    "6": {
+      "text": "Annonce de routeur NDP — prefixe fd00::/64 pour SLAAC",
+      "detail": "Les routeurs envoient periodiquement des annonces de routeur (RA) a ff02::1 (multidiffusion tous-noeuds). Les hotes demandent aussi des RA en envoyant des sollicitations de routeur (RS) au demarrage.\nLe RA indique aux hotes : • Passerelle par defaut : l'adresse lien-local du routeur (fe80::1) • Prefixe reseau : fd00::/64 avec le drapeau autonome SLAAC • Serveurs DNS (si l'option RDNSS est incluse) • MTU (si different du defaut 1500)\nSLAAC (autoconfiguration d'adresse sans etat, RFC 4862) : l'hote prend le prefixe /64 + genere un identifiant d'interface de 64 bits (a partir de EUI-64 ou aleatoire pour la confidentialite) = adresse IPv6 complete. Aucun serveur DHCP necessaire pour la connectivite de base.\nARP n'a AUCUN equivalent — IPv4 necessite DHCP ou une configuration statique pour l'attribution d'adresse et la decouverte de passerelle. NDP unifie la resolution d'adresse, la decouverte de routeur, l'annonce de prefixe et la fonctionnalite de redirection en un seul protocole."
+    },
+    "7": {
+      "text": "Scenario termine — comparaison ARP contre NDP",
+      "detail": "ARP (IPv4, RFC 826) : • Protocole separe avec EtherType 0x0806 • Utilise la DIFFUSION — tous les hotes du segment L2 traitent chaque requete • Aucune authentification — vulnerable a l'usurpation/empoisonnement ARP • Ne fait que la resolution d'adresse (IP → MAC) • Cache sans etat avec simple expiration\nNDP (IPv6, RFC 4861) : • Base sur ICMPv6 (types 133-137) • Utilise la MULTIDIFFUSION DU NOEUD SOLLICITE — seul ~1 hote traite chaque NS • Hop limit 255 empeche les attaques hors-lien ; SEND (RFC 3971) optionnel • Fait la resolution d'adresse ET la decouverte de routeur, SLAAC, redirection • Cache de voisinage a etats (INCOMPLETE → REACHABLE → STALE → PROBE) • Detection d'adresse dupliquee (DAD) integree\nARP gratuit : • Requete ou l'IP de l'emetteur = l'IP cible • Utilise pour : detection de conflit, basculement, rafraichissement du cache • Equivalent NDP : NA non sollicite avec drapeau Override\nDans les reseaux d'entreprise/centre de donnees : • Les tempetes ARP sont un vrai probleme de passage a l'echelle dans les grands domaines L2 • L'approche multicast de NDP IPv6 reduit la surcharge de diffusion • Les deux peuvent etre securises : ARP avec Dynamic ARP Inspection (DAI),\n  NDP avec RA Guard et SEND"
+    }
+  }
+}

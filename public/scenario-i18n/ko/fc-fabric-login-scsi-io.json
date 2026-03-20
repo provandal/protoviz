@@ -1,0 +1,122 @@
+{
+  "meta": {
+    "title": "FC 패브릭 로그인 → 네임 서버 검색 → SCSI Write & Read",
+    "description": "완전한 Fibre Channel 패브릭 수명주기: 물리 링크 수립, FLOGI(패브릭 로그인), Name Server 검색, PLOGI(포트 레벨 로그인), PRLI(FCP 프로토콜 설정), SCSI INQUIRY, WRITE(10), READ(10) 작업을 포함합니다.",
+    "learning_objectives": [
+      "FC 패브릭 로그인 절차 이해: FLOGI → PLOGI → PRLI",
+      "FC Name Server를 통한 타겟 검색 확인",
+      "FCP(Fibre Channel Protocol)를 통한 SCSI I/O 작업 추적",
+      "FCP_XFER_RDY 흐름 제어와 FCP_DATA 전송 관찰"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "링크 A: 신호 감지 — 호스트 HBA ↔ 스위치",
+      "detail": "호스트 HBA의 광 트랜시버가 FC 스위치 포트에서 빛을 감지합니다. FC 링크 초기화가 시작됩니다. 물리 링크는 점대점입니다."
+    },
+    "1": {
+      "text": "링크 B: 신호 감지 — 스위치 ↔ 스토리지 어레이",
+      "detail": "스토리지 어레이 포트가 스위치에서 빛을 감지합니다. 독립적인 물리 링크입니다."
+    },
+    "2": {
+      "text": "링크 A UP — 호스트 ↔ 스위치 64GFC",
+      "detail": "속도 협상 완료: 64GFC(64.0 Gbps). 64b/66b 인코딩 활성화. FC 프리미티브를 교환할 수 있습니다. BB_Credit 흐름 제어가 초기화되었습니다."
+    },
+    "3": {
+      "text": "링크 B UP — 스위치 ↔ 스토리지 64GFC",
+      "detail": "양쪽 물리 링크가 모두 가동되었습니다. 스위치가 포트 간에 FC 프레임을 전달할 수 있습니다. 스토리지 어레이는 이전에 패브릭에 로그인되었습니다(FCID 0x010200 사전 할당)."
+    },
+    "4": {
+      "text": "FLOGI — 호스트가 패브릭 로그인 요청(S_ID=0x000000 → D_ID=0xFFFFFE)",
+      "detail": "호스트 HBA가 FLOGI(Fabric Login)를 패브릭 컨트롤러(D_ID=0xFFFFFE)에 전송합니다. 아직 FCID가 할당되지 않았으므로 S_ID=0x000000입니다."
+    },
+    "5": {
+      "text": "FLOGI ACC — 패브릭이 호스트에 FCID 0x010100 할당",
+      "detail": "패브릭 컨트롤러가 FLOGI를 수락하고 호스트에 FCID 0x010100을 할당합니다."
+    },
+    "6": {
+      "text": "Name Server(0xFFFFFC)에 PLOGI",
+      "detail": "호스트가 Name Server에 PLOGI를 전송하여 포트 레벨 로그인을 수행합니다."
+    },
+    "7": {
+      "text": "Name Server가 PLOGI 수락 — CT 조회 허용",
+      "detail": "Name Server 로그인이 완료되었습니다. 호스트가 이제 Common Transport(CT) 요청을 전송할 수 있습니다."
+    },
+    "8": {
+      "text": "GID_FT 조회 — 패브릭의 모든 FCP(SCSI) 타겟 검색",
+      "detail": "호스트가 GID_FT(Get Port IDs by FC-4 Type) 조회를 전송하여 패브릭에서 FCP 타겟을 검색합니다."
+    },
+    "9": {
+      "text": "Name Server 응답: 스토리지가 FCID 0x010200에 있음",
+      "detail": "Name Server가 FCP를 지원하는 FCID 목록을 반환합니다. 이 패브릭에는 하나의 타겟이 있습니다: FCID 0x010200의 스토리지 어레이. 호스트가 이제 이 FCID에 PLOGI하여 포트 레벨 통신을 수립합니다. Linux: lpfc_cmpl_ct_cmd_gid_ft()가 응답을 처리하고 PLOGI를 시작합니다."
+    },
+    "10": {
+      "text": "스토리지(0x010200)에 PLOGI — 포트 레벨 로그인",
+      "detail": "호스트가 스토리지 어레이에 PLOGI를 전송합니다. 이 프레임은 스위치를 통과합니다(D_ID 기반 라우팅). PLOGI는 포트 매개변수를 협상합니다: BB_Credit, 최대 프레임 크기, 서비스 클래스."
+    },
+    "11": {
+      "text": "스토리지가 PLOGI 수락 — 포트 레벨 로그인 수립",
+      "detail": "스토리지가 포트 로그인을 수락합니다. 호스트와 스토리지가 이제 직접 FC 프레임을 교환할 수 있습니다. 하지만 FCP(SCSI) I/O에는 한 단계가 더 필요합니다: Process Login(PRLI)."
+    },
+    "12": {
+      "text": "PRLI — FCP(SCSI) 상위 계층 프로토콜 설정",
+      "detail": "호스트가 PRLI(Process Login)를 전송하여 FCP(SCSI) 프로토콜을 설정합니다."
+    },
+    "13": {
+      "text": "PRLI ACC — FCP 설정 완료. SCSI I/O 가능.",
+      "detail": "스토리지가 PRLI를 수락하고 자신을 타겟으로 선언합니다. FCP 프로세스 연관이 이제 수립되었습니다. SCSI 명령을 FCP_CMND 프레임으로 전송할 수 있습니다. Linux: lpfc_cmpl_els_prli() → lpfc_issue_disc_scsi()가 SCSI LUN 검색을 트리거합니다."
+    },
+    "14": {
+      "text": "SCSI INQUIRY — 장치 유형 검색",
+      "detail": "호스트가 LUN 0의 장치를 식별하기 위해 SCSI INQUIRY(opcode 0x12)를 전송합니다. INQUIRY는 장치 유형, 벤더, 제품, 지원 기능을 반환합니다. Linux: scsi_scan.c scsi_probe_lun() → scsi_execute_cmd(INQUIRY)"
+    },
+    "15": {
+      "text": "INQUIRY 데이터 — 블록 디스크(type 0x00)",
+      "detail": "스토리지가 직접 접근 블록 장치(type 0x00, SBC)로 자신을 식별하는 INQUIRY 응답을 반환합니다."
+    },
+    "16": {
+      "text": "FCP_RSP — INQUIRY GOOD, LUN 0 발견",
+      "detail": "SCSI 상태 GOOD. 호스트의 SCSI 미들레이어가 이제 이것이 블록 장치임을 알고 있습니다. scsi_add_lun()이 SCSI 장치를 생성하고 sd_mod가 /dev/sdX 블록 장치를 연결합니다."
+    },
+    "17": {
+      "text": "WRITE(10) — LBA 0에 4KB 쓰기",
+      "detail": "애플리케이션이 LBA 0부터 4KB(8 × 512바이트 블록)를 씁니다. FCP_CMND가 SCSI CDB를 전달합니다. 호스트는 데이터를 보내기 전에 FCP_XFER_RDY를 기다려야 합니다 — 이것이 FC 쓰기 흐름 제어입니다."
+    },
+    "18": {
+      "text": "FCP_XFER_RDY — 스토리지가 쓰기 데이터 수신 준비 완료",
+      "detail": "FCP_XFER_RDY는 FC의 흐름 제어 메커니즘입니다. iSCSI의 R2T와 유사하게 타겟이 데이터를 받을 준비가 되었음을 알립니다."
+    },
+    "19": {
+      "text": "FCP_DATA (1/2) — 쓰기 첫 번째 2048바이트(오프셋 0)",
+      "detail": "FLOGI 중 협상된 FC Recv_Size가 2112바이트이므로 4KB 쓰기는 두 개의 FCP_DATA 프레임으로 분할되어야 합니다. SEQ_CNT=0, 상대 오프셋 0."
+    },
+    "20": {
+      "text": "FCP_DATA (2/2) — 쓰기 마지막 2048바이트(오프셋 2048)",
+      "detail": "두 번째 FCP_DATA 프레임이 4KB 전송을 완료합니다. SEQ_CNT=1, 상대 오프셋 0x800(2048). F_CTL에 시퀀스 종료 비트가 설정됩니다."
+    },
+    "21": {
+      "text": "FCP_RSP — 쓰기 GOOD, 데이터 커밋됨",
+      "detail": "스토리지가 SCSI 상태 GOOD으로 쓰기 완료를 확인합니다. 데이터가 비휘발성 스토리지에 커밋되었습니다. 교환 완료: OX_ID 0x0020이 해제됩니다."
+    },
+    "22": {
+      "text": "READ(10) — 쓰기 검증을 위해 LBA 0에서 4KB 읽기",
+      "detail": "호스트가 쓰기를 검증하기 위해 동일한 4KB를 다시 읽습니다. 읽기에는 XFER_RDY가 필요하지 않습니다 — 타겟이 명령을 수신한 후 즉시 FCP_DATA를 전송합니다."
+    },
+    "23": {
+      "text": "FCP_DATA (1/2) — 읽기 첫 번째 2048바이트(오프셋 0)",
+      "detail": "스토리지가 즉시 읽기 데이터를 전송합니다 — 쓰기와 달리 읽기에는 XFER_RDY 핸드셰이크가 필요하지 않습니다. 동일한 Recv_Size 제약이 적용됩니다: 4KB가 두 프레임으로 분할됩니다. SEQ_CNT=0, 상대 오프셋 0."
+    },
+    "24": {
+      "text": "FCP_DATA (2/2) — 읽기 마지막 2048바이트(오프셋 2048)",
+      "detail": "두 번째 FCP_DATA 프레임이 4KB 읽기를 완료합니다. SEQ_CNT=1, 상대 오프셋 0x800(2048). 데이터가 쓰기한 것과 일치해야 합니다."
+    },
+    "25": {
+      "text": "FCP_RSP — 읽기 GOOD, 데이터 검증 완료",
+      "detail": "SCSI 상태 GOOD. 읽기 데이터가 쓰기 데이터와 일치하여 FC 패브릭을 통한 엔드투엔드 데이터 무결성을 확인합니다."
+    },
+    "26": {
+      "text": "⟳ 시나리오 완료 — FC 패브릭 SCSI I/O",
+      "detail": "요약: 호스트가 64GFC 물리 링크를 수립하고, Fabric Login(FLOGI, FCID 할당)을 수행하고, Name Server를 통해 스토리지를 검색(GID_FT)하고, Port Login(PLOGI)과 Process Login(PRLI)을 완료하여 FCP를 설정하고, SCSI INQUIRY를 통해 LUN 0을 검색하고, LBA 0에 4KB를 쓰고, 검증을 위해 다시 읽었습니다. 총 로그인 프레임: 10(FLOGI×2, PLOGI×4, GID_FT×2, PRLI×2). 총 I/O 프레임: 9(INQUIRY×3, WRITE×4, READ×3, XFER_RDY 포함)."
+    }
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "meta": {
+    "title": "ARP e NDP: Resolução de Endereços IPv4 e Descoberta de Vizinhos IPv6",
+    "description": "Comparação lado a lado do ARP IPv4 (RFC 826) e do NDP IPv6 (RFC 4861). Ambos os protocolos resolvem o mesmo problema — mapear um endereço de camada de rede (IP) para um endereço de camada de enlace (MAC) — mas com abordagens fundamentalmente diferentes. O ARP usa broadcast; o NDP usa multicast e é construído sobre ICMPv6. Este cenário abrange: ARP Request/Reply, Gratuitous ARP, NDP Neighbor Solicitation/Advertisement e NDP Router Advertisement.\n",
+    "learning_objectives": [
+      "Entender por que a resolução de endereços é necessária: endereços IP vs endereços MAC",
+      "Acompanhar uma troca completa de ARP Request → Reply e atualização da tabela ARP",
+      "Ver por que o ARP usa broadcast (todos os hosts) e as implicações de escalabilidade",
+      "Entender o Gratuitous ARP para detecção de conflito de IP e failover",
+      "Comparar o NDP Neighbor Solicitation: multicast de nó solicitado vs broadcast do ARP",
+      "Ver como o NDP utiliza ICMPv6 em vez de ser um protocolo separado",
+      "Acompanhar o NDP Router Advertisement para aprendizado de prefixo/gateway (SLAAC)",
+      "Apreciar por que o NDP é mais seguro e escalável que o ARP"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Link físico ativo — ambos os hosts no mesmo segmento Ethernet",
+      "detail": "Ambos os hosts estão na mesma rede Layer 2 (VLAN ou Ethernet plana). O Host A tem endereço IPv4 192.168.1.10 e endereço IPv6 fd00::10. O Host B tem endereço IPv4 192.168.1.20 e endereço IPv6 fd00::20.\nQuando o Host A precisa enviar um pacote IP para o Host B, ele deve primeiro descobrir o endereço MAC do Host B. É aqui que o ARP (IPv4) ou NDP (IPv6) entra em ação.\n"
+    },
+    "1": {
+      "text": "ARP Request — 'Quem tem 192.168.1.20? Diga a 192.168.1.10'",
+      "detail": "O Host A precisa enviar para 192.168.1.20 mas não conhece seu MAC. Ele faz broadcast de um ARP Request para FF:FF:FF:FF:FF:FF (todos os hosts na LAN).\nCaracterísticas principais do ARP: • Opera na fronteira Layer 2/3 com seu próprio EtherType (0x0806) • Usa broadcast — todos os hosts no segmento L2 devem processá-lo • Sem autenticação — qualquer host pode reivindicar qualquer IP (ARP spoofing) • Stateless — sem handshake, sem números de sequência • Payload de 28 bytes (pequeno, mas o custo do broadcast escala com o número de hosts)\nO switch faz flood do broadcast em todas as portas. Em uma sub-rede de 1000 hosts, todos os 1000 hosts recebem e processam este frame — mesmo que apenas o Host B precise responder.\n"
+    },
+    "2": {
+      "text": "ARP Reply — '192.168.1.20 está em AA:BB:CC:00:00:0B'",
+      "detail": "O Host B reconhece seu próprio IP no ARP Request e responde com um ARP Reply unicast contendo seu endereço MAC.\nAmbos os hosts atualizam seus caches ARP: • Host A: 192.168.1.20 → AA:BB:CC:00:00:0B (da resposta) • Host B: 192.168.1.10 → AA:BB:CC:00:00:0A (da requisição)\nAs entradas do cache ARP têm um timeout (tipicamente 30-300 segundos no Linux, configurável via net.ipv4.neigh.default.gc_stale_time). Após o timeout, o próximo pacote dispara outro ARP Request.\n"
+    },
+    "3": {
+      "text": "Gratuitous ARP — Host A anuncia sua associação IP→MAC",
+      "detail": "Um Gratuitous ARP é um ARP Request onde IP de Origem = IP de Destino. Ele serve a múltiplos propósitos:\n1. DETECÇÃO DE CONFLITO DE IP (RFC 5227): Quando o Host A configura\n   seu IP pela primeira vez, ele envia GARP. Se outro host responder,\n   há um conflito — o IP já está em uso.\n\n2. ATUALIZAÇÃO DO CACHE ARP: Todos os hosts que já possuem uma entrada para\n   192.168.1.10 atualizam seu MAC em cache. Isso é crítico para:\n   • Failover de NIC (novo MAC, mesmo IP)\n   • Migração ao vivo de VM (VM move para novo host, NIC diferente)\n   • Failover de IP flutuante (keepalived/VRRP)\n\n3. TABELA MAC DO SWITCH: O switch aprende o MAC do Host A na\n   porta correta, útil após mudanças de porta ou reinicializações.\n\nNenhuma resposta é esperada (a menos que haja um conflito).\n"
+    },
+    "4": {
+      "text": "NDP Neighbor Solicitation — 'Quem tem fd00::20?' (multicast de nó solicitado)",
+      "detail": "Equivalente IPv6 do ARP Request, mas fundamentalmente diferente:\n1. MULTICAST, NÃO BROADCAST: O NS é enviado para o endereço multicast\n   de nó solicitado ff02::1:ff00:0020 (Ethernet: 33:33:FF:00:00:20).\n   Apenas hosts cujo endereço IPv6 termina em ...00:0020 ouvem neste\n   grupo. Na prática, geralmente apenas 1-2 hosts processam o frame.\n\n2. CONSTRUÍDO SOBRE ICMPv6: O NDP é ICMPv6 tipo 135/136, não um protocolo\n   separado. Isso significa que ele se beneficia dos recursos de segurança\n   do IPv6 (IPsec, SEND) e não precisa de seu próprio EtherType.\n\n3. HOP LIMIT = 255: Obrigatório. Se um pacote chegar com hop limit\n   < 255, ele foi roteado (não link-local) e deve ser descartado.\n   Isso previne NDP spoofing off-link — uma melhoria significativa de\n   segurança em relação ao ARP.\n\n4. OPÇÃO SOURCE LINK-LAYER: O Host A inclui seu próprio MAC no\n   NS, para que o Host B possa responder sem precisar de uma resolução separada.\n\nComparação para uma sub-rede de 1000 hosts: • ARP: todos os 1000 hosts processam o broadcast request • NDP: ~1 host processa a solicitação multicast\n"
+    },
+    "5": {
+      "text": "NDP Neighbor Advertisement — 'fd00::20 está em AA:BB:CC:00:00:0B'",
+      "detail": "O Host B responde com um Neighbor Advertisement (ICMPv6 tipo 136): • Flag Solicited (S=1): Esta é uma resposta a um NS • Flag Override (O=1): Atualizar entradas existentes no cache • Flag Router (R=0): O Host B não é um roteador\nO Host A atualiza seu cache de vizinhos:\n  fd00::20 → AA:BB:CC:00:00:0B (estado: REACHABLE)\n\nEstados do cache de vizinhos NDP (RFC 4861 Seção 7.3.2): • INCOMPLETE: NS enviado, aguardando NA • REACHABLE: Confirmado recentemente (dentro do ReachableTime) • STALE: Não confirmado recentemente, utilizável mas será verificado em breve • DELAY: Aguardando confirmação da camada superior • PROBE: Enviando ativamente NS unicast para re-confirmar\n"
+    },
+    "6": {
+      "text": "NDP Router Advertisement — prefixo fd00::/64 para SLAAC",
+      "detail": "Roteadores enviam periodicamente Router Advertisements para ff02::1 (multicast de todos os nós). Hosts também solicitam RAs enviando Router Solicitations (RS) quando inicializam.\nO RA informa aos hosts: • Gateway padrão: o endereço link-local do roteador (fe80::1) • Prefixo de rede: fd00::/64 com flag autônoma SLAAC • Servidores DNS (se a opção RDNSS estiver incluída) • MTU (se diferente do padrão 1500)\nSLAAC (Stateless Address Autoconfiguration, RFC 4862): O host pega o prefixo /64 + gera um ID de interface de 64 bits (do EUI-64 ou aleatório de privacidade) = endereço IPv6 completo. Nenhum servidor DHCP necessário para conectividade básica.\nO ARP NÃO tem equivalente — o IPv4 requer DHCP ou configuração estática para atribuição de endereço e descoberta de gateway. O NDP unifica resolução de endereços, descoberta de roteador, anúncio de prefixo e funcionalidade de redirecionamento em um único protocolo.\n"
+    },
+    "7": {
+      "text": "Cenário completo — comparação ARP vs NDP",
+      "detail": "ARP (IPv4, RFC 826): • Protocolo separado com EtherType 0x0806 • Usa BROADCAST — todos os hosts no segmento L2 processam cada request • Sem autenticação — vulnerável a ARP spoofing/poisoning • Faz apenas resolução de endereços (IP → MAC) • Cache stateless com timeout simples\nNDP (IPv6, RFC 4861): • Construído sobre ICMPv6 (tipos 133-137) • Usa MULTICAST DE NÓ SOLICITADO — apenas ~1 host processa cada NS • Hop limit 255 previne ataques off-link; SEND (RFC 3971) opcional • Faz resolução de endereços E descoberta de roteador, SLAAC, redirecionamento • Cache de vizinhos stateful (INCOMPLETE → REACHABLE → STALE → PROBE) • Detecção de Endereço Duplicado (DAD) integrada\nGratuitous ARP: • Request onde IP de Origem = IP de Destino • Usado para: detecção de conflito, failover, atualização de cache • Equivalente NDP: NA não solicitado com flag Override\nEm redes empresariais/data center: • Tempestades ARP são um problema real de escalabilidade em grandes domínios L2 • A abordagem multicast do IPv6 NDP reduz a sobrecarga de broadcast • Ambos podem ser protegidos: ARP com Dynamic ARP Inspection (DAI),\n  NDP com RA Guard e SEND\n"
+    }
+  }
+}

@@ -1,0 +1,125 @@
+{
+  "meta": {
+    "title": "DHCPv6: Stateless (O-Flag) vs. Stateful (M-Flag) + Prefix Delegation",
+    "description": "Demonstriert die zwei Modi von DHCPv6 und wie die Router-Advertisement-Flags M und O zwischen ihnen ausw\u00e4hlen. Teil 1 zeigt zustandsloses DHCPv6 (O=1, M=0), bei dem der Client seine Adresse via SLAAC erh\u00e4lt und DHCPv6 nur f\u00fcr DNS/NTP anfragt. Teil 2 zeigt zustandsbehaftetes DHCPv6 (M=1) mit dem vollst\u00e4ndigen 4-Nachrichten-SARR-Austausch (Solicit-Advertise-Request-Reply). Teil 3 zeigt Prefix Delegation (IA_PD) \u2014 so erh\u00e4lt ein Heimrouter ein IPv6-Pr\u00e4fix von einem ISP und eliminiert damit die Notwendigkeit f\u00fcr NAT.\n",
+    "learning_objectives": [
+      "Die Rolle der RA-Flags M und O bei der Auswahl von zustandslosem vs. zustandsbehaftetem DHCPv6 verstehen",
+      "Sehen, wie zustandsloses DHCPv6 (Information-Request / Reply) DNS und NTP liefert, ohne Adressen zu verfolgen",
+      "Den zustandsbehafteten DHCPv6-4-Nachrichten-SARR-Austausch nachverfolgen (Solicit \u2192 Advertise \u2192 Request \u2192 Reply)",
+      "DHCPv6-Nachrichtentypen, DUID-Identifier und wichtige Optionen (IA_NA, IA_Address, DNS-Server) identifizieren",
+      "DHCPv6 Prefix Delegation (IA_PD) verstehen und warum sie IPv6-NAT \u00fcberfl\u00fcssig macht",
+      "DHCPv6 SARR mit DHCPv4 DORA vergleichen und die architektonischen Unterschiede verstehen",
+      "Erkennen, dass IPv6 Adresszuweisung (SLAAC) und Konfiguration (DHCPv6) absichtlich trennt"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "RA \u2192 Router k\u00fcndigt Pr\u00e4fix 2001:db8:1::/64 an mit M=0, O=1, A=1",
+      "detail": "Der Router sendet periodisch Router Advertisements an ff02::1 (alle Knoten). Dieses RA tr\u00e4gt drei kritische Flags: M=0 bedeutet \u201eVerwende DHCPv6 NICHT f\u00fcr deine Adresse \u2014 verwende stattdessen SLAAC.\u201c O=1 bedeutet \u201eVerwende DHCPv6 f\u00fcr andere Konfiguration wie DNS und NTP.\u201c Die Prefix-Information-Option enth\u00e4lt 2001:db8:1::/64 mit A=1 (autonomous), was Hosts anweist, eine SLAAC-Adresse aus diesem Pr\u00e4fix zu generieren. Diese M=0/O=1-Kombination ist das g\u00e4ngigste Deployment-Modell \u2014 sie gibt Hosts die Einfachheit von SLAAC f\u00fcr die Adressierung und bietet gleichzeitig zentralisierte DNS-Konfiguration via DHCPv6.\n"
+    },
+    "1": {
+      "text": "SLAAC \u2192 Client autokonfiguriert 2001:db8:1::211:22ff:fe33:4401/64",
+      "detail": "Da das RA A=1 beim Pr\u00e4fix und M=0 hatte, verwendet der Client Stateless Address Autoconfiguration (RFC 4862). Er kombiniert das /64-Pr\u00e4fix mit seinem Interface Identifier (abgeleitet aus seiner MAC via EUI-64 oder einer zuf\u00e4lligen stabilen ID gem\u00e4\u00df RFC 7217), um eine global routbare Adresse zu bilden. DAD (Duplicate Address Detection) wird durchgef\u00fchrt, bevor die Adresse verwendet wird. F\u00fcr vollst\u00e4ndige SLAAC-Details siehe das IPv6-SLAAC-Szenario. Der Client hat nun eine funktionierende IPv6-Adresse, aber keine DNS-Server \u2014 hier kommt DHCPv6 ins Spiel.\n"
+    },
+    "2": {
+      "text": "Client sieht O=1: \u201eIch muss DHCPv6 nach zus\u00e4tzlicher Konfiguration fragen\u201c",
+      "detail": "Der Netzwerk-Stack des Clients verarbeitet die RA-Flags. O=1 veranlasst den DHCPv6-Client, eine Information-Request-Nachricht zu senden. Anders als ein Solicit (der eine Adresse anfordert), fragt ein Information-Request nur nach Konfigurationsparametern \u2014 dies ist \u201ezustandsloses\u201c DHCPv6, weil der Server keinen clientspezifischen Zustand oder Adress-Bindungen verfolgen muss. Der Client hat seine Adresse bereits von SLAAC.\n"
+    },
+    "3": {
+      "text": "DHCPv6 Information-Request \u2192 Client fragt nach DNS, Suchliste, NTP",
+      "detail": "Der Client sendet einen Information-Request (Nachrichtentyp 11) an ff02::1:2 (All_DHCP_Relay_Agents_and_Servers) mit UDP-Quellport 546 und Zielport 547. Die Nachricht enth\u00e4lt einen Client Identifier (DUID) und eine Option Request Option (ORO), die die gew\u00fcnschten Optionen auflistet: DNS Recursive Name Server (23), DNS Search List (24) und SNTP Servers (31). Beachten Sie: Keine IA_NA-Option ist vorhanden \u2014 der Client fragt NICHT nach einer Adresse. Dies ist der entscheidende Unterschied zwischen zustandslosem und zustandsbehaftetem DHCPv6.\n"
+    },
+    "4": {
+      "text": "DHCPv6 Reply \u2190 Server liefert DNS 2001:db8:1::53, Suchdom\u00e4ne, SNTP",
+      "detail": "Der Server antwortet mit einem Reply (Typ 7), der die angeforderten Optionen enth\u00e4lt. DNS-Server: 2001:db8:1::53 und 2001:4860:4860::8888. DNS-Suchliste: example.com, lab.example.com. SNTP-Server: 2001:db8:1::123. Der Server zeichnet KEINE Bindung auf \u2014 er gibt einfach dieselbe Konfiguration an jeden Client weiter, der fragt. Deshalb hei\u00dft es \u201ezustandslos\u201c. Der Server k\u00f6nnte neu gestartet werden und allen Speicher verlieren, und er w\u00fcrde immer noch perfekt funktionieren, weil es nichts zu merken gibt.\n"
+    },
+    "5": {
+      "text": "Client vollst\u00e4ndig konfiguriert: SLAAC-Adresse + DNS von DHCPv6",
+      "detail": "Der Client hat nun alles, was er braucht: eine global routbare IPv6-Adresse (2001:db8:1::211:22ff:fe33:4401 von SLAAC), ein Default-Gateway (fe80::211:22ff:fe33:44ff aus dem RA), DNS-Server und Suchdom\u00e4ne (von DHCPv6) und einen NTP-Server (von DHCPv6). Dies ist das g\u00e4ngigste IPv6-Deployment-Modell: SLAAC f\u00fcr Adressen, DHCPv6 f\u00fcr DNS/NTP.\n"
+    },
+    "6": {
+      "text": "Zustandsloses DHCPv6 \u2014 der Server verfolgt nicht, wer was hat. Er gibt einfach Konfigurationsinfos an jeden weiter, der fragt.",
+      "detail": "In IPv4 macht DHCP alles \u2014 Adressen, DNS, NTP, Gateway, Subnetzmaske. In IPv6 wird die Arbeit aufgeteilt: Router Advertisements liefern das Gateway und Pr\u00e4fix, SLAAC generiert die Adresse, und DHCPv6 erg\u00e4nzt DNS und NTP. Diese Aufgabentrennung ist eine bewusste IPv6-Designentscheidung. O=1 ist bei weitem die h\u00e4ufigste RA-Flag-Einstellung sowohl in Unternehmens- als auch in ISP-Netzwerken.\n"
+    },
+    "7": {
+      "text": "RA \u2192 Router k\u00fcndigt M=1, O=1 an \u2014 \u201eVerwende DHCPv6 f\u00fcr deine Adresse\u201c",
+      "detail": "Ein anderes Netzwerksegment (oder ein umkonfigurierter Router) sendet ein RA mit M=1. Dies teilt Hosts mit: \u201eAutokonfiguriere KEINE Adressen aus SLAAC \u2014 hole deine Adresse stattdessen von einem DHCPv6-Server.\u201c Die Prefix-Information-Option hat A=0, was best\u00e4tigt, dass SLAAC nicht verwendet werden soll. Dies ist das Unternehmensmodell, bei dem IT-Administratoren strenge Kontrolle \u00fcber Adresszuweisungen f\u00fcr Audit-Trails, Zugriffskontrolle und DNS-Registrierung ben\u00f6tigen. Wenn M=1 ist, ist das O-Flag effektiv impliziert (man erh\u00e4lt Konfiguration zusammen mit der Adresse), wird aber normalerweise explizit gesetzt.\n"
+    },
+    "8": {
+      "text": "Client sieht M=1: \u201eIch muss DHCPv6 verwenden, um meine Adresse zu erhalten\u201c",
+      "detail": "Das M-Flag l\u00f6st einen vollst\u00e4ndigen DHCPv6-Austausch aus. Anders als im zustandslosen Fall (Information-Request / Reply) durchl\u00e4uft der Client nun den 4-Nachrichten-SARR-Austausch: Solicit \u2192 Advertise \u2192 Request \u2192 Reply. Dies ist analog zu DHCPv4s DORA (Discover \u2192 Offer \u2192 Request \u2192 Ack). Der Server pflegt eine Binding-Datenbank, die verfolgt, welche DUID welche Adresse hat, mit Lease-Lebenszeiten und Erneuerungstimern \u2014 daher \u201ezustandsbehaftet\u201c.\n"
+    },
+    "9": {
+      "text": "DHCPv6 Solicit \u2192 Client sucht nach DHCPv6-Servern (Nachrichtentyp 1)",
+      "detail": "Der Client sendet einen Solicit an ff02::1:2. Er enth\u00e4lt seinen Client Identifier (DUID-LLT \u2014 Link-Layer-Adresse + Zeit, der g\u00e4ngigste DUID-Typ), eine IA_NA (Identity Association for Non-temporary Addresses), die eine stabile Adresse anfordert, eine Option Request f\u00fcr DNS und eine Elapsed-Time-Option. Die IAID (Identity Association ID) der IA_NA wird typischerweise aus dem Interface-Index abgeleitet. T1 und T2 sind auf 0 gesetzt, was bedeutet \u201elass den Server den Erneuerungsplan festlegen\u201c. Jeder DHCPv6-Server im Link wird mit einem Advertise antworten.\n"
+    },
+    "10": {
+      "text": "DHCPv6 Advertise \u2190 Server bietet 2001:db8:1::100 an (Nachrichtentyp 2)",
+      "detail": "Der Server antwortet mit einem Advertise und bietet die Adresse 2001:db8:1::100 an mit einer Preferred Lifetime von 86400s (24h) und Valid Lifetime von 172800s (48h). Die IA_NA enth\u00e4lt T1=43200s (12h) und T2=69120s (19,2h) \u2014 T1 ist, wann der Client mit der Erneuerung beginnen soll (Unicast-Renew an diesen Server), und T2 ist, wann er mit dem Rebinding beginnen soll (Multicast-Rebind an jeden Server, falls dieser nicht mehr verf\u00fcgbar ist). Die Preference-Option ist auf 255 (Maximum) gesetzt, was dem Client mitteilt, dieses Angebot sofort anzunehmen, ohne auf andere Server zu warten. DNS-Server und Suchliste sind ebenfalls enthalten.\n"
+    },
+    "11": {
+      "text": "DHCPv6 Request \u2192 Client akzeptiert: \u201eIch nehme 2001:db8:1::100 von Server ...53\u201c (Nachrichtentyp 3)",
+      "detail": "Der Client sendet einen Request an ff02::1:2 (immer noch Multicast, damit andere Server wissen, dass dieser Client gew\u00e4hlt hat). Entscheidend ist: Der Request enth\u00e4lt SOWOHL den Client Identifier ALS AUCH den Server Identifier \u2014 die aus dem Advertise kopierte Server-ID teilt dem gew\u00e4hlten Server mit, die Bindung zu \u00fcbernehmen, und teilt anderen Servern mit, etwaige vorl\u00e4ufige Angebote freizugeben. Die IA_NA wiederholt die angebotene Adresse. Dies ist das \u201eR\u201c in SARR, analog zum \u201eR\u201c in DORA bei DHCPv4.\n"
+    },
+    "12": {
+      "text": "DHCPv6 Reply \u2190 Server best\u00e4tigt 2001:db8:1::100 \u2014 Bindung aktiv (Nachrichtentyp 7)",
+      "detail": "Der Server sendet einen Reply, der die Adresszuweisung best\u00e4tigt. Der Server hat nun eine persistente Bindung erstellt: Client-DUID \u2192 2001:db8:1::100, mit Lebenszeiten und Erneuerungstimern. Diese Bindung \u00fcberlebt Server-Neustarts (gespeichert in einer Lease-Datei oder Datenbank). Der Client wird bei T1 (12h) einen Renew senden, um den Lease zu verl\u00e4ngern. Wenn der Server bis T2 (19,2h) nicht antwortet, sendet der Client einen Multicast-Rebind an jeden verf\u00fcgbaren Server. Wenn die Valid Lifetime abl\u00e4uft, wird die Adresse freigegeben.\n"
+    },
+    "13": {
+      "text": "DAD \u2192 Client pr\u00fcft 2001:db8:1::100 auf Duplikate (NS von ::)",
+      "detail": "Auch wenn die Adresse von DHCPv6 kam, MUSS der Client Duplicate Address Detection durchf\u00fchren, bevor er sie verwendet. Der Client sendet eine Neighbor Solicitation mit Quelle :: (unspezifiziert) an die Solicited-Node-Multicast-Adresse ff02::1:ff00:100. Wenn innerhalb von 1 Sekunde kein Neighbor Advertisement empfangen wird, gilt die Adresse als eindeutig und wechselt von \u201etentative\u201c zu \u201epreferred\u201c. Falls ein Duplikat ERKANNT wird, sendet der Client eine DHCPv6-Decline-Nachricht und versucht es erneut.\n"
+    },
+    "14": {
+      "text": "Client konfiguriert: DHCPv6-zugewiesene Adresse 2001:db8:1::100 + DNS",
+      "detail": "Der Client ist voll betriebsbereit mit einer serverzugewiesenen Adresse und DNS-Konfiguration. Anders als im zustandslosen Fall pflegt der Server eine Bindung f\u00fcr diesen Client und erwartet Erneuerung. Dieses Modell gibt Administratoren volle Sichtbarkeit \u00fcber Adresszuweisungen \u2014 essenziell f\u00fcr Unternehmensnetzwerke, die Audit-Trails, IP-basierte Zugriffskontrolllisten und dynamische DNS-Registrierung ben\u00f6tigen.\n"
+    },
+    "15": {
+      "text": "4-Nachrichten-Austausch (SARR), wie DHCP DORA in IPv4, aber \u00fcber UDP 546/547 mit Multicast",
+      "detail": "DHCPv6 SARR (Solicit-Advertise-Request-Reply) entspricht DHCPv4 DORA (Discover-Offer-Request-Ack). Wichtige Unterschiede: DHCPv6 verwendet UDP-Ports 546 (Client) und 547 (Server) statt 67/68. DHCPv6 verwendet IPv6-Multicast (ff02::1:2) statt IPv4-Broadcast (255.255.255.255). DHCPv6 identifiziert Clients durch DUID (global eindeutig) statt MAC-Adresse \u2014 das ist robuster, wenn ein Host mehrere Interfaces hat. DHCPv6 liefert KEIN Default-Gateway \u2014 das kommt immer aus dem RA.\n"
+    },
+    "16": {
+      "text": "DHCPv6 Solicit + IA_PD \u2192 Heimrouter fragt ISP nach einem Pr\u00e4fix",
+      "detail": "Der Heimrouter (CPE \u2014 Customer Premises Equipment) sendet einen Solicit mit einer IA_PD-Option (Identity Association for Prefix Delegation, Option 25). Dies unterscheidet sich von IA_NA \u2014 der Router fragt NICHT nach einer einzelnen Adresse f\u00fcr sich selbst, sondern nach einem ganzen Pr\u00e4fix, das er subnetzen und an Ger\u00e4te in seinem LAN weitergeben kann. Der Hinweis schl\u00e4gt /48 vor, was dem Heimrouter 65.536 /64-Subnetze zum Arbeiten g\u00e4be (eines pro VLAN, Gastnetzwerk, IoT-Segment usw.). ISPs delegieren \u00fcblicherweise /48, /56 oder /60.\n"
+    },
+    "17": {
+      "text": "DHCPv6 Reply \u2190 ISP delegiert 2001:db8:abcd::/48 an den Heimrouter",
+      "detail": "Der DHCPv6-Server des ISP antwortet mit einem Reply, der IA_PD mit IA_Prefix-Option 26 enth\u00e4lt: delegiertes Pr\u00e4fix 2001:db8:abcd::/48 mit einer Preferred Lifetime von 7 Tagen und Valid Lifetime von 30 Tagen. Der Heimrouter \u201ebesitzt\u201c nun dieses /48 und kann es nach Belieben subnetzen. Ein /48 bietet 65.536 /64-Subnetze \u2014 mehr als jedes Heim oder Kleinunternehmen je brauchen wird. Der Server zeichnet diese Delegation auf und erwartet Erneuerung. Wenn der ISP Rapid-Commit oder Preference 255 verwendet hat, wurden die Advertise/Request-Schritte \u00fcbersprungen (2-Nachrichten-Austausch).\n"
+    },
+    "18": {
+      "text": "RA \u2192 Heimrouter bewirbt 2001:db8:abcd:1::/64 in seinem LAN",
+      "detail": "Der Heimrouter nimmt das delegierte /48, schneidet das erste /64-Subnetz heraus (2001:db8:abcd:1::/64) und beginnt, es via Router Advertisements auf seinem LAN-Interface zu bewerben. LAN-Clients empfangen dieses RA, f\u00fchren SLAAC durch und erhalten global routbare IPv6-Adressen. Kein NAT ist beteiligt \u2014 jedes Ger\u00e4t im LAN hat eine echte, routbare Adresse. Die Firewall des Heimrouters bietet Sicherheit (Stateful Packet Filtering), nicht Adress\u00fcbersetzung. Dies ist ein fundamentaler Unterschied zum IPv4-Heimnetzwerk.\n"
+    },
+    "19": {
+      "text": "So erh\u00e4lt Ihr Heimrouter ein IPv6-Pr\u00e4fix von Ihrem ISP \u2014 kein NAT n\u00f6tig",
+      "detail": "Prefix Delegation ist der Mechanismus, der Ende-zu-Ende-IPv6-Konnektivit\u00e4t im gro\u00dfen Ma\u00dfstab erm\u00f6glicht. Ihr ISP delegiert ein /48 oder /56 an Ihren Heimrouter, der es subnetzen und /64s auf jedem LAN-Segment bewerben kann. Jedes Ger\u00e4t erh\u00e4lt eine global eindeutige, routbare Adresse. Kein NAT bedeutet keine Port-Forwarding-\u00c4rgernisse, keine defekten Peer-to-Peer-Protokolle, keine \u00fcberlaufenden NAT-State-Tables. Sicherheit kommt von der Stateful Firewall des Routers, die unaufgeforderte eingehende Verbindungen standardm\u00e4\u00dfig blockiert \u2014 derselbe Schutz, den NAT zuf\u00e4llig bot, aber ohne die Nachteile. So ist IPv6 konzipiert.\n"
+    },
+    "20": {
+      "text": "Szenario abgeschlossen \u2014 DHCPv6 zustandslos, zustandsbehaftet und Prefix Delegation",
+      "detail": "Dieses Szenario demonstrierte drei DHCPv6-Betriebsmodi:\n1. ZUSTANDSLOS (M=0, O=1) \u2014 Client erh\u00e4lt Adresse von SLAAC, DNS/NTP\n   von DHCPv6 Information-Request. Server verfolgt nichts. H\u00e4ufigstes Setup.\n\n2. ZUSTANDSBEHAFTET (M=1) \u2014 Client erh\u00e4lt Adresse UND Konfiguration von\n   DHCPv6 \u00fcber den 4-Nachrichten-SARR-Austausch. Server pflegt\n   Binding-Datenbank. Verwendet in Unternehmensnetzwerken, die\n   Adress-Nachvollziehbarkeit ben\u00f6tigen.\n\n3. PREFIX DELEGATION \u2014 Router erh\u00e4lt ein ganzes Pr\u00e4fix von DHCPv6 und\n   subnetzen es f\u00fcr sein LAN. So vermeidet IPv6 NAT \u2014 jedes Ger\u00e4t\n   erh\u00e4lt eine global routbare Adresse.\n\nIn IPv4 macht DHCP alles. In IPv6 teilen sich SLAAC und DHCPv6 die Arbeit. Die RA-Flags M und O sind die Steuerungsebene, die festlegt, wie diese Aufteilung funktioniert.\n"
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "DHCPv6: Zustandslos, Zustandsbehaftet und Prefix Delegation",
+      "description": "Eine gef\u00fchrte Tour durch die drei Modi von DHCPv6 und wie RA-Flags das Verhalten des Clients steuern",
+      "steps": {
+        "0": "In IPv4 macht DHCP alles \u2014 es verteilt Adressen, DNS-Server, Default-Gateways und Subnetzmasken in einem einzigen Protokoll. In IPv6 wird die Arbeit aufgeteilt: Router Advertisements liefern das Gateway und Pr\u00e4fix, SLAAC kann Adressen generieren, und DHCPv6 erg\u00e4nzt den Rest. Die M- und O-Flags des RA sind die Stellschrauben, die festlegen, wie diese Aufteilung funktioniert. Sehen wir alle drei Modi in Aktion.\n",
+        "1": "Der Router sendet ein Router Advertisement mit M=0 und O=1. M=0 bedeutet \u201eVerwende DHCPv6 nicht f\u00fcr deine Adresse \u2014 verwende SLAAC.\u201c O=1 bedeutet \u201eVerwende DHCPv6 f\u00fcr andere Konfiguration wie DNS und NTP.\u201c Das RA enth\u00e4lt au\u00dferdem Pr\u00e4fix 2001:db8:1::/64 mit gesetztem A-Flag (Autonomous), das Hosts mitteilt, dass sie dieses Pr\u00e4fix f\u00fcr SLAAC verwenden k\u00f6nnen. Diese M=0/O=1-Kombination ist heute das g\u00e4ngigste Deployment-Modell im Internet.\n",
+        "2": "Der Client nimmt das /64-Pr\u00e4fix aus dem RA und h\u00e4ngt seinen Interface Identifier an, um via SLAAC eine vollst\u00e4ndige /128-Adresse zu bilden. Mit EUI-64 wird die MAC 00:11:22:33:44:01 zum Interface-ID 0211:22ff:fe33:4401, was dem Client die Adresse 2001:db8:1::211:22ff:fe33:4401 gibt. DAD best\u00e4tigt, dass niemand sonst diese Adresse hat. Der Client hat nun eine funktionierende IPv6-Adresse, aber keine DNS-Server \u2014 hier kommt DHCPv6 ins Spiel.\n",
+        "3": "Da das RA O=1 hatte, sendet der Client einen DHCPv6 Information-Request (Nachrichtentyp 11) an die Multicast-Adresse ff02::1:2 auf UDP-Port 547. Dies ist die Schl\u00fcsselnachricht f\u00fcr zustandsloses DHCPv6 \u2014 beachten Sie, dass keine IA_NA-Option vorhanden ist, was bedeutet, dass der Client NICHT nach einer Adresse fragt. Er m\u00f6chte nur DNS-Server (Option 23), eine DNS-Suchliste (Option 24) und SNTP-Server (Option 31). Die Nachricht enth\u00e4lt die DUID des Clients zur Identifizierung.\n",
+        "4": "Der DHCPv6-Server antwortet mit einem Reply, der DNS-Server, eine Suchliste und einen SNTP-Server enth\u00e4lt. Der Server zeichnet keine Bindung auf \u2014 er gibt jedem Client, der fragt, dieselben Informationen. Deshalb hei\u00dft es \u201ezustandslos\u201c. Der Server k\u00f6nnte neu gestartet werden und w\u00fcrde immer noch perfekt funktionieren, weil es nichts zu merken gibt. Der Client ist nun vollst\u00e4ndig konfiguriert: SLAAC-Adresse plus DNS von DHCPv6. O=1 ist bei weitem das h\u00e4ufigste Setup \u2014 es ist einfach, skalierbar und funktioniert gut.\n",
+        "5": "Nun betrachten wir zustandsbehaftetes DHCPv6. Ein anderes RA trifft ein mit M=1, das Clients mitteilt: \u201eHole deine Adresse von DHCPv6, nicht von SLAAC.\u201c Die Prefix-Information hat A=0, was best\u00e4tigt, dass SLAAC f\u00fcr die Adressierung deaktiviert ist. Dies ist das Unternehmensmodell \u2014 IT-Administratoren m\u00fcssen genau wissen, welche Adresse welchem Ger\u00e4t geh\u00f6rt, f\u00fcr Sicherheits-Audits, Zugriffskontrolle und dynamische DNS-Registrierung. M=1 l\u00f6st einen v\u00f6llig anderen DHCPv6-Austausch aus.\n",
+        "6": "Der Client sendet einen DHCPv6 Solicit (Nachrichtentyp 1) \u2014 das \u201eS\u201c in SARR, analog zu DHCP Discover in IPv4. Er enth\u00e4lt die DUID des Clients (DUID-LLT, basierend auf MAC + Zeitstempel), eine IA_NA-Option, die eine nicht-tempor\u00e4re Adresse anfordert, und eine Option Request f\u00fcr DNS. Der Solicit geht an ff02::1:2, damit alle DHCPv6-Server im Link ihn h\u00f6ren. Die Elapsed-Time-Option startet bei 0, was anzeigt, dass dies die erste \u00dcbertragung ist.\n",
+        "7": "Der Server antwortet mit einem Advertise (Nachrichtentyp 2) und bietet die Adresse 2001:db8:1::100 an. Die IA_NA enth\u00e4lt T1 (Erneuerungszeit, 12 Stunden) und T2 (Rebinding-Zeit, 19,2 Stunden). Die IA_Address-Unteroption tr\u00e4gt die tats\u00e4chliche Adresse mit Preferred Lifetime (24h) und Valid Lifetime (48h). Die Preference-Option ist auf 255 (Maximum) gesetzt, was dem Client mitteilt, sofort anzunehmen, ohne auf Antworten anderer Server zu warten. DNS-Server sind im Angebot enthalten.\n",
+        "8": "Der Client sendet einen Request (Nachrichtentyp 3) \u2014 \u201eIch akzeptiere das Angebot von Server ...53.\u201c Diese Nachricht geht an ff02::1:2 (Multicast), nicht Unicast an den Server, damit andere Server im Link es sehen und etwaige vorl\u00e4ufige Angebote freigeben. Der Request enth\u00e4lt sowohl die Client-ID als auch die Server-ID \u2014 die aus dem Advertise kopierte Server-ID ist, wie der Client sagt: \u201eIch habe dich gew\u00e4hlt.\u201c Dies ist das \u201eR\u201c in SARR.\n",
+        "9": "Der Server sendet einen Reply (Nachrichtentyp 7), der die Adresszuweisung best\u00e4tigt. Der Server hat nun eine persistente Bindung erstellt: die DUID dieses Clients wird 2001:db8:1::100 zugeordnet. Die Bindung \u00fcberlebt Server-Neustarts. Der Client muss bei T1 (12h) durch Senden einer Renew-Nachricht erneuern. Wenn der Server bei T2 (19,2h) nicht erreichbar ist, sendet der Client einen Multicast-Rebind. Der 4-Nachrichten-SARR ist abgeschlossen \u2014 wie DORA in IPv4, aber \u00fcber UDP 546/547 mit Multicast statt Broadcast.\n",
+        "10": "Obwohl die Adresse von einem Server kam, f\u00fchrt der Client dennoch DAD (Duplicate Address Detection) durch. Er sendet eine Neighbor Solicitation von der unspezifizierten Adresse (::) an die Solicited-Node-Multicast-Gruppe f\u00fcr 2001:db8:1::100. Wenn innerhalb von 1 Sekunde niemand antwortet, ist die Adresse als eindeutig best\u00e4tigt. Falls ein Duplikat gefunden wird, sendet der Client einen DHCPv6 Decline und fordert eine andere Adresse an. DAD ist in IPv6 obligatorisch, unabh\u00e4ngig davon, wie die Adresse bezogen wurde.\n",
+        "11": "Nun zu Prefix Delegation \u2014 so bekommt Ihr Heimrouter IPv6 von Ihrem ISP. Der Heimrouter (CPE) sendet einen Solicit mit einer IA_PD-Option statt IA_NA. Er fragt nicht nach einer einzelnen Adresse \u2014 er fragt nach einem ganzen Pr\u00e4fix, das er subnetzen und in seinem LAN bewerben kann. Der Hinweis fordert ein /48 an, was 65.536 /64-Subnetze erg\u00e4be. ISPs delegieren \u00fcblicherweise /48, /56 oder /60 je nach ihrer Zuteilungsrichtlinie.\n",
+        "12": "Der DHCPv6-Server des ISP antwortet mit einem Reply, der das delegierte Pr\u00e4fix 2001:db8:abcd::/48 enth\u00e4lt. Der Heimrouter besitzt nun dieses Pr\u00e4fix und kann es in /64-Subnetze aufteilen, wie er m\u00f6chte \u2014 eines f\u00fcr das Haupt-LAN, eines f\u00fcr ein Gastnetzwerk, eines f\u00fcr IoT-Ger\u00e4te. Ein /48 bietet 65.536 /64-Subnetze. Der Server zeichnet diese Delegation mit Lebenszeiten auf und erwartet Erneuerung.\n",
+        "13": "Der Heimrouter beginnt sofort, eines seiner neuen /64-Subnetze (2001:db8:abcd:1::/64) in seinem LAN \u00fcber Router Advertisements zu bewerben. LAN-Ger\u00e4te empfangen das RA, f\u00fchren SLAAC durch und erhalten global routbare IPv6-Adressen. Kein NAT ist beteiligt \u2014 jeder Laptop, jedes Telefon und jedes smarte Thermostat erh\u00e4lt eine echte, \u00f6ffentlich routbare Adresse. Sicherheit kommt von der Stateful Firewall des Routers, die unaufgeforderten eingehenden Verkehr blockiert.\n",
+        "14": "Prefix Delegation ist, wie das gesamte IPv6-Internet NAT vermeidet. Ihr ISP gibt Ihrem Router sein eigenes Pr\u00e4fix. Kein NAT bedeutet keine Port-Forwarding-\u00c4rgernisse, keine defekten Peer-to-Peer-Protokolle, keine \u00fcberlaufenden NAT-State-Tables. Jedes Ger\u00e4t erh\u00e4lt eine global routbare Adresse \u2014 das ist absichtlich so, kein Fehler. Sicherheit kommt durch Stateful Firewalling, nicht durch Adressverschleierung.\n",
+        "15": "Fassen wir zusammen. Wir haben drei DHCPv6-Modi gesehen, alle gesteuert durch zwei Bits im Router Advertisement. O=1 allein bedeutet \u201eHole DNS von DHCPv6, Adresse von SLAAC\u201c \u2014 das h\u00e4ufigste Setup. M=1 bedeutet \u201eHole deine Adresse von DHCPv6\u201c \u2014 verwendet in Unternehmensnetzwerken, die Adressverfolgung ben\u00f6tigen. Und Prefix Delegation gibt Routern ganze Pr\u00e4fixe zum Subnetzen f\u00fcr ihre LANs, und so eliminiert IPv6 NAT. In IPv4 macht DHCP alles. In IPv6 teilen sich SLAAC und DHCPv6 die Arbeit \u2014 und diese Aufteilung macht IPv6 flexibler und skalierbarer.\n"
+      }
+    }
+  }
+}

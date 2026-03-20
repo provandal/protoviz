@@ -1,0 +1,66 @@
+{
+  "meta": {
+    "title": "TLS 1.3: フルハンドシェイク → 暗号化アプリケーションデータ → Alertクローズ",
+    "description": "完全なTLS 1.3 (RFC 8446) ハンドシェイクとデータ交換。TLS 1.3はハンドシェイクを2往復 (TLS 1.2) から1往復に短縮しました: クライアントがClientHelloでサポートする鍵共有を送信し、サーバがServerHelloで鍵共有を返信 — 1往復で共有シークレットが導出されます。このシナリオでは、TCP 3ウェイハンドシェイク、supported_versionsとkey_share拡張 (x25519) 付きClientHello、key_share付きServerHello、暗号化されたEncryptedExtensions + Certificate + CertificateVerify + Finished、クライアントFinished、AES-256-GCM上の双方向アプリケーションデータ、グレースフルclose_notifyアラートによる切断をカバーします。ServerHello以降のすべてのメッセージが暗号化されます。",
+    "learning_objectives": [
+      "TLS 1.3の1-RTTハンドシェイクとTLS 1.2の2-RTTの違いを理解する",
+      "ClientHelloのkey_share (x25519) がサーバの即時鍵導出を可能にする仕組みを見る",
+      "ハンドシェイク鍵スケジュールを追跡する: (EC)DHE共有シークレット → ハンドシェイクシークレット → ハンドシェイクトラフィック鍵",
+      "EncryptedExtensions、Certificate、CertificateVerify、Finishedがすべて暗号化されることを観察する",
+      "マスターシークレットがハンドシェイクからアプリケーショントラフィック鍵を導出する方法を理解する",
+      "AES-256-GCM認証暗号化がアプリケーションデータを保護する様子を見る",
+      "グレースフルTLSシャットダウンのためのclose_notifyアラートを追跡する",
+      "TLS 1.3がRSA鍵トランスポート、静的DH、すべてのCBC暗号スイートを削除した理由を理解する"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "TCP SYN → ポート443 (HTTPS)",
+      "detail": "クライアントがサーバのHTTPSポート (443) へのTCP接続を開始します。TLS 1.3はTCP上で動作します (TLS 1.3 + HTTP/3ではQUIC/UDP上で動作しますが、ここでは扱いません)。TLSを開始する前にTCPハンドシェイクを完了する必要があります。"
+    },
+    "1": {
+      "text": "TCP SYN-ACK ← サーバが確認",
+      "detail": "サーバがSYN-ACKで応答します。"
+    },
+    "2": {
+      "text": "TCP ACK → 接続確立",
+      "detail": "TCP 3ウェイハンドシェイク完了。TLSハンドシェイクが即座に開始されます。"
+    },
+    "3": {
+      "text": "TLS ClientHello — TLS 1.3 + x25519鍵共有を提示",
+      "detail": "クライアントが以下を含むClientHelloを送信します:\n• supported_versions: [TLS 1.3] — TLS 1.3をネゴシエーションする唯一の方法\n• cipher_suites: [AES-256-GCM, AES-128-GCM, ChaCha20-Poly1305]\n• key_share: x25519クライアント公開鍵\n• signature_algorithms: [ECDSA, RSA-PSS, Ed25519]\n• server_name: www.example.com (SNI、依然として平文)\n\nTLS 1.2との重要な違い: クライアントがこの最初のメッセージでECDHE公開鍵を送信します。TLS 1.2では、クライアントは共有シークレットの計算前にServerKeyExchangeを待つ必要がありました。この先行的な鍵共有がTLS 1.3の1-RTTハンドシェイクを可能にしています。\nサーバが提示された鍵共有グループをサポートしていない場合、HelloRetryRequestで別のグループを試すよう要求します — これは1往復追加されます (x25519はほぼ普遍的にサポートされているため実際にはまれです)。"
+    },
+    "4": {
+      "text": "TLS ServerHello — AES-256-GCM + x25519鍵共有を選択",
+      "detail": "サーバが以下を含むServerHelloで応答します:\n• supported_versions: TLS 1.3 (バージョン確認)\n• cipher_suite: TLS_AES_256_GCM_SHA384\n• key_share: x25519サーバ公開鍵\n\nこの時点で、両側がECDHE共有シークレットを計算できます:\n  shared_secret = x25519(my_private_key, peer_public_key)\n\nTLS 1.3鍵スケジュールが以下を導出します:\n1. Early Secret = HKDF-Extract(0, 0) [フルハンドシェイクではPSKなし]\n2. Handshake Secret = HKDF-Extract(derived_secret, shared_secret)\n3. クライアント/サーバのハンドシェイクトラフィック鍵 (残りのハンドシェイクの暗号化用)\n\nServerHello以降のすべてがハンドシェイクトラフィック鍵で暗号化されます。つまり、サーバの証明書、拡張、Finishedはすべて受動的な観察者から隠されます — TLS 1.2では証明書が平文で送信されていたため、プライバシーが大幅に改善されました。"
+    },
+    "5": {
+      "text": "サーバ暗号化フライト — EncryptedExtensions + Certificate + CertificateVerify + Finished",
+      "detail": "サーバがECDHE共有シークレットから導出されたハンドシェイクトラフィック鍵で暗号化された4つのハンドシェイクメッセージを送信します:\n1. EncryptedExtensions — 非鍵関連の拡張 (ALPN: h2など)\n2. Certificate — X.509証明書チェーン (暗号化! TLS 1.2では平文でした)\n3. CertificateVerify — 証明書に一致する秘密鍵をサーバが保持していることを証明するハンドシェイクトランスクリプトへの署名\n4. Finished — 整合性を証明するハンドシェイク全体のHMAC\n\nワイヤ上では、これらは「Application Data」(コンテンツタイプ23) として表示されます。実際のコンテンツタイプは暗号化ペイロードの最終バイトとして隠されます (TLS 1.3の「インナーコンテンツタイプ」)。これによりミドルボックスが特定のハンドシェイクメッセージに干渉することを防ぎます。\nサーバのFinishedを検証後、クライアントは以下を導出できます:\n4. Master Secret = HKDF-Extract(derived_secret, 0)\n5. クライアント/サーバのアプリケーショントラフィック鍵"
+    },
+    "6": {
+      "text": "Client Finished (暗号化) — TLS 1.3ハンドシェイク 1-RTTで完了",
+      "detail": "クライアントがFinishedメッセージ (ハンドシェイク鍵で暗号化) を送信します:\n• Verify Data = HMAC-SHA384(client_finished_key, Hash(all_handshake))\n\nサーバがこれを検証後、ハンドシェイクは完了です。両側がマスターシークレットからアプリケーショントラフィック鍵を導出します:\n  client_app_key = HKDF-Expand(Master Secret, \"c ap traffic\", Hash)\n  server_app_key = HKDF-Expand(Master Secret, \"s ap traffic\", Hash)\n\n合計: TLSハンドシェイクに1往復 (TCP後)。比較: TLS 1.2は2往復必要でした。TLS 1.3 + 0-RTT (PSK再開) では0往復にできます。\n注意: サーバは自身のFinished送信直後にアプリケーションデータの送信を開始できます — クライアントのFinishedを待つ必要はありません。これはTLS 1.3で「0.5-RTTデータ」と呼ばれます。"
+    },
+    "7": {
+      "text": "HTTPSリクエスト — AES-256-GCMアプリケーショントラフィック鍵で暗号化",
+      "detail": "クライアントがHTTP/2 GETリクエストを送信します。HTTPリクエスト全体 (メソッド、ヘッダ、パス、Cookie — すべて) がTLS Application Dataレコード内で暗号化されます。\n暗号化: 以下から構築されるレコードごとのナンスを持つAES-256-GCM:\n  nonce = write_iv XOR sequence_number (64ビット)\nシーケンス番号はレコードごとにインクリメントされ、レコード内に明示的なIVなしでナンスの一意性を保証します (TLS 1.2と比べてレコードあたり8バイト節約)。\n認証: GCMが暗号文と関連データ (レコードヘッダ) をカバーする128ビットタグを生成します。改ざんがあると復号が失敗します。"
+    },
+    "8": {
+      "text": "HTTPS 200 OKレスポンス — 暗号化されたページコンテンツ",
+      "detail": "サーバがアプリケーショントラフィック鍵で暗号化されたページコンテンツで応答します。大きなレスポンスは複数のTLSレコードにまたがります (レコードあたり最大16,384バイトの平文、コンテンツタイプとパディング用に256バイト追加)。\nHTTP/2は単一のTLS接続内で複数ストリームをマルチプレクスするため、CSS、JS、画像への同時リクエストがすべてこの暗号化トンネルを共有します。"
+    },
+    "9": {
+      "text": "TLS close_notifyアラート — クライアントがグレースフルシャットダウンを開始",
+      "detail": "クライアントがclose_notifyを送信し、TLSデータの送信がこれ以上ないことを通知します。このアラートは暗号化されています (ワイヤ上ではApplication Dataとして表示)。\nclose_notifyはトランケーション攻撃を防止します — これがなければ、攻撃者がTCP接続を終了することでデータを無言でドロップできます。close_notifyにより、両側がデータ転送の完了を確認できます。"
+    },
+    "10": {
+      "text": "TLS close_notify ← サーバが応答、TLSセッション正常終了",
+      "detail": "サーバが自身のclose_notifyで応答します。両側がTLSセッションが正常に終了したことを確認しました。TCP FIN/ACKが続いてトランスポート接続を閉じます。"
+    },
+    "11": {
+      "text": "シナリオ完了 — TLS 1.3フルハンドシェイク",
+      "detail": "このシナリオではTLS 1.3 (RFC 8446) フルハンドシェイクを実演しました:\nTCPハンドシェイク (3パケット):\n  SYN → SYN-ACK → ACK\n\nTLS 1.3ハンドシェイク (3メッセージ、1往復):\n  ClientHello (key_share: x25519公開鍵)\n  ServerHello (key_share: x25519公開鍵)\n  → 両側がECDHE共有シークレットを計算\n  サーバ: {EncryptedExtensions, Certificate, CertificateVerify, Finished}\n          ↑ すべてハンドシェイクトラフィック鍵で暗号化\n  クライアント: {Finished}\n\nアプリケーションデータ:\n  AES-256-GCM上の双方向HTTP/2\n\nTLSクローズ:\n  相互close_notifyアラート\n\nTLS 1.2に対する主要な改善点:\n• 1-RTTハンドシェイク (2-RTTに対して) — クライアントが先行的に鍵共有を送信\n• 証明書が暗号化 — 受動的な観察者がサーバのアイデンティティを見れない\n• AEAD暗号スイートのみ — CBCパディングオラクル、RC4、3DESなし\n• RSA鍵トランスポートなし — 常に前方秘匿性 (ECDHE必須)\n• 簡素化されたステートマシン — 可動部品が少なく、攻撃が少ない\n• HKDFベースの鍵スケジュール — クリーンで分析可能な鍵導出\n• 再開用0-RTTが利用可能 (リプレイに関する注意あり)\n\nネゴシエーションされた暗号スイート: TLS_AES_256_GCM_SHA384\n鍵交換: x25519 (Curve25519 ECDHE)\nサーバ認証: ECDSA (secp256r1) 証明書"
+    }
+  }
+}

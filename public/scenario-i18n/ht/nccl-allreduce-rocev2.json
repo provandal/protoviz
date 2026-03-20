@@ -1,0 +1,62 @@
+{
+  "meta": {
+    "title": "NCCL AllReduce: Algorit Anò sou RoCEv2 (4 GPU)",
+    "description": "NCCL (Bibliyotèk Kominikasyon Kolektif NVIDIA) Ring-AllReduce sou 4 nè GPU konekte atravè RoCEv2. AllReduce se modèl kominikasyon dominan nan antrenman IA distribye — chak senkronizasyon gradyan apre chak pas aryè itilize AllReduce pou agreje gradyan yo sou tout GPU epi distribye rezilta a tounen. Algorit anò a dekonpoze AllReduce an de faz: Rediksyon-Dispersyon (chak GPU fini ak yon moso plen-redwi) swiv pa Tout-Rasanble (chak GPU kolekte moso redwi ki manke yo).",
+    "learning_objectives": [
+      "Konprann poukisa AllReduce kritik pou antrenman IA distribye (senkronizasyon gradyan)",
+      "Wè kijan algorit anò a dekonpoze AllReduce an Rediksyon-Dispersyon + Tout-Rasanble",
+      "Swiv operasyon RDMA WRITE ki pote moso gradyan ant vwazen anò GPU",
+      "Obsève kijan chak GPU akimile sòm pasyèl pandan Rediksyon-Dispersyon",
+      "Konprann poukisa AllReduce anò reyalize itilizasyon bann pasant optimal: 2(N-1)/N",
+      "Wè GPUDirect RDMA an aksyon — done deplase GPU-a-GPU san rebondi DRAM machin",
+      "Apresye diferans ant algorit AllReduce anò, pyebwa, ak lòt",
+      "Konprann wòl NCCL nan kadri tankou PyTorch DDP ak DeepSpeed"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Lyen fizik monte — tisi san pèt 100GbE pou tout 4 nè GPU",
+      "detail": "Tout 4 nè GPU konekte nan switch la atravè 100GbE ak PFC ak ECN aktive. Nan yon vrè grap antrenman IA, topoloji rezo a ta ka yon desyn pyebwa gra oswa optimize-pa-ray ak plizyè nivo switch. Senaryo sa a senplifye nan yon sèl switch pou klète."
+    },
+    "1": {
+      "text": "Inisyalizasyon NCCL fini — topoloji anò etabli, QP yo konekte, tanpon GPU yo anrejistre",
+      "detail": "ncclCommInitRank() fin konplete. NCCL te: 1. Amòse atravè TCP pou echanje adrès (NCCL_COMM_ID) 2. Detekte kapasite GPUDirect RDMA (nvidia-peermem chaje) 3. Kreye QP RDMA ant vwazen anò: Anò: GPU 0 → GPU 1 → GPU 2 → GPU 3 → GPU 0 4. Anrejistre tanpon GPU kòm Rejyon Memwa RDMA (atravè nvidia-peermem)"
+    },
+    "2": {
+      "text": "ncclAllReduce() rele — tensè gradyan 1MB, 4 moso × 256KB",
+      "detail": "Bouk antrenman an rele ncclAllReduce(sendbuf, recvbuf, count, ncclFloat, ncclSum, comm, stream). Sa deklanche algorit Ring AllReduce.\nAntre: Chak GPU gen yon tensè gradyan 1MB (262,144 valè float32) soti nan pas aryè a. Objektif: chak GPU dwe fini ak SÒM tout gradyan 4 GPU yo. Algorit anò a divize tensè a an 4 moso egal (256KB chak) epi mache an 2 faz: Rediksyon-Dispersyon (N-1=3 etap) + Tout-Rasanble (N-1=3 etap)."
+    },
+    "3": {
+      "text": "Rediksyon-Dispersyon Etap 1 — Tout GPU voye moso[rank] bay pwochen-nan-anò",
+      "detail": "Tout 4 GPU simultanman voye yon moso bay vwazen pwochen-nan-anò yo: GPU 0 voye moso 0 → GPU 1 (atravè RDMA WRITE nan HBM GPU 1) GPU 1 voye moso 1 → GPU 2 GPU 2 voye moso 2 → GPU 3 GPU 3 voye moso 3 → GPU 0\nNou montre GPU 0 → GPU 1 an detay: RDMA WRITE 256KB depi HBM GPU 0 bay HBM GPU 1, zewo kopi CPU. GPU 1 resevwa epi akimile: lokal[moso 0] += resevwa[moso 0]."
+    },
+    "4": {
+      "text": "Rediksyon-Dispersyon Etap 1 (ranvèse) — GPU 0 resevwa moso soti nan Rank 3",
+      "detail": "Simultanman, GPU 0 resevwa yon moso soti nan Rank 3 (avan-nan-anò li). Tout transfè rive an paralèl — anò a bidireksyonèl ak lyen plen-diplèks. Chak GPU voye epi resevwa an menm tan.\nGPU 0 akimile: lokal[moso 3] += resevwa[moso 3] soti nan GPU 3."
+    },
+    "5": {
+      "text": "Rediksyon-Dispersyon Etap 2 — Sòm pasyèl ap vire otou anò a",
+      "detail": "Chak GPU voye moso AKIMILE li (sòm pasyèl soti nan etap 1) bay vwazen pwochen-nan-anò li. Sòm pasyèl yo ap vire otou anò a, ap grandi nan chak etap.\nChak GPU voye moso akimile → pwochen (ki gen kounye a sòm de 2 GPU). Vwazen an akimile: sòm pasyèl li += sòm pasyèl resevwa a."
+    },
+    "6": {
+      "text": "Rediksyon-Dispersyon Etap 3 (dènye) — Chak GPU kounye a gen yon moso plen-redwi",
+      "detail": "Dènye etap Rediksyon-Dispersyon. Apre GPU 1 resevwa epi akimile: moso GPU 1 = sòm gradyan GPU 0 + GPU 1 + GPU 2 + GPU 3\nChak GPU kounye a gen SÒM KONPLÈ pou egzakteman yon moso: GPU 0: moso 0 plen redwi, GPU 1: moso 1 plen redwi, GPU 2: moso 2 plen redwi, GPU 3: moso 3 plen redwi. Faz Rediksyon-Dispersyon an konplè."
+    },
+    "7": {
+      "text": "Tout-Rasanble Etap 1 — GPU yo difize moso plen-redwi yo",
+      "detail": "Kounye a chak GPU voye moso plen-redwi li otou anò a: GPU 0 voye moso 0 plen-redwi → GPU 1 GPU 1 voye moso 1 plen-redwi → GPU 2 GPU 2 voye moso 2 plen-redwi → GPU 3 GPU 3 voye moso 3 plen-redwi → GPU 0\nKontrèman ak Rediksyon-Dispersyon, Tout-Rasanble sèlman kopye done (pa gen adisyon) — chak moso deja finalman redwi."
+    },
+    "8": {
+      "text": "Tout-Rasanble Etap 2 — Chak GPU kounye a gen 3 sou 4 moso redwi",
+      "detail": "Moso yo kontinye vire otou anò a. Apre etap sa a, chak GPU te resevwa 3 nan 4 moso plen-redwi yo plis pwòp pa li — sèlman 1 moso ki rete."
+    },
+    "9": {
+      "text": "Tout-Rasanble Etap 3 (dènye) — Tout GPU gen rezilta redwi konplè a",
+      "detail": "Dènye etap Tout-Rasanble. Chak GPU kounye a gen tout 4 moso plen-redwi yo asanble nan tanpon sòti li. AllReduce la konplè.\nRezilta: Chak GPU gen yon tanpon 1MB idantik ki gen SÒM gradyan tout 4 GPU. Optimize a (SGD, Adam, elatriye) ka kounye a mete ajou pwa modèl la idantikman sou tout GPU."
+    },
+    "10": {
+      "text": "⟳ Senaryo fini — NCCL Ring-AllReduce sou RoCEv2",
+      "detail": "Senaryo sa a te demontre Ring-AllReduce NCCL sou 4 nè GPU:\nFaz 1 — REDIKSYON-DISPERSYON (3 etap): Chak GPU voye yon moso pa etap bay vwazen pwochen-nan-anò li. Reseptè a akimile (fè sòm) done resevwa ak pa li. Apre N-1=3 etap, chak GPU gen yon moso plen-redwi.\nFaz 2 — TOUT-RASANBLE (3 etap): Chak GPU difize moso plen-redwi li otou anò a. Apre N-1=3 etap, chak GPU gen tout N=4 moso.\nTotal done transfere: 2 × (N-1)/N × gwosè_done = 2 × 3/4 × 1MB = 1.5MB pa GPU. Sa a se optimal — pa gen algorit ki ka fè mwens.\nGPUDirect RDMA te itilize pou CHAK transfè — done te vwayaje HBM GPU-a-HBM GPU san janm touche DRAM machin oswa enplike CPU. Sa a se egzakteman sa ki rive pandan antrenman PyTorch DDP, DeepSpeed, oswa Megatron-LM."
+    }
+  }
+}

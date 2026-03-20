@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import useWalkthrough from '../../hooks/useWalkthrough';
 
 const btnStyle = {
@@ -48,6 +49,7 @@ const dropdownItemStyle = {
 };
 
 export default function WalkthroughLauncher() {
+  const { t } = useTranslation();
   const { hasWalkthroughs, walkthroughs, isWalkthroughActive, startWalkthrough } = useWalkthrough();
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
@@ -79,9 +81,9 @@ export default function WalkthroughLauncher() {
         style={btnStyle}
         onMouseEnter={e => { e.currentTarget.style.borderColor = '#3b82f6'; e.currentTarget.style.color = '#e2e8f0'; }}
         onMouseLeave={e => { e.currentTarget.style.borderColor = '#3b82f644'; e.currentTarget.style.color = '#93c5fd'; }}
-        title={walkthroughs[0].description || 'Start guided walkthrough'}
+        title={walkthroughs[0].description || t('walkthrough.startGuided')}
       >
-        Guided Tour
+        {t('playback.guidedTour')}
       </button>
     );
   }
@@ -95,7 +97,7 @@ export default function WalkthroughLauncher() {
         onMouseEnter={e => { e.currentTarget.style.borderColor = '#3b82f6'; e.currentTarget.style.color = '#e2e8f0'; }}
         onMouseLeave={e => { e.currentTarget.style.borderColor = '#3b82f644'; e.currentTarget.style.color = '#93c5fd'; }}
       >
-        Guided Tour {'\u25BC'}
+        {t('playback.guidedTour')} {'\u25BC'}
       </button>
       {open && (
         <div style={dropdownStyle}>

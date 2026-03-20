@@ -1,0 +1,114 @@
+{
+  "meta": {
+    "title": "[WIP] GPUDirect Storage: Lekti/Ekriti NVMe-oF Distans nan Memwa GPU sou RoCEv2",
+    "description": "Yon senaryo GPUDirect Storage ki montre kijan yon GPU li ak ekri done sou yon sib depo NVMe-oF/RDMA distans ak done ki ateri dirèkteman nan HBM GPU — san pase nan DRAM machin. Chemen depo distans tradisyonèl rebondi done de fwa (depo → RDMA → DRAM machin → CPU memcpy → GPU). GDS sou RDMA elimine toude rebondi: RDMA WRITE sib depo a livre done dirèkteman nan apèti BAR1 PCIe GPU a, epi done cuFileWrite tire dirèkteman soti nan HBM GPU atravè RDMA READ.",
+    "learning_objectives": [
+      "Konprann kijan GPUDirect Storage (GDS) elimine tanpon rebondi DRAM machin pou IO depo distans",
+      "Wè kijan cuFileRead deklanche yon NVMe-oF READ ki gen RDMA WRITE ki ateri done dirèkteman nan HBM GPU atravè BAR1",
+      "Wè kijan cuFileWrite deklanche yon NVMe-oF WRITE ki gen done tire dirèkteman soti nan HBM GPU atravè RDMA READ",
+      "Trase lyen transpò NVMe-oF/RDMA: kòmand NVMe atravè RDMA SEND, done atravè RDMA WRITE/READ",
+      "Swiv Fabrics Connect NVMe-oF pou etabli pè fil atant admin ak IO sou RDMA",
+      "Obsève kijan nvidia-fs ak nvidia-peermem kolabore pou anrejistre memwa GPU pou RDMA",
+      "Konpare chemen tradisyonèl (depo → DRAM → GPU) vs chemen GDS (depo → GPU dirèkteman)",
+      "Swiv echanj MAD Jesyonè Koneksyon IB pou mennen yon Pè Fil Atant soti nan RESET rive nan RTS"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Lyen A: siyal detekte — Nè GPU ↔ Switch",
+      "detail": "Transeptè optik sou nè GPU detekte limyè soti nan switch pò A. Oto-Negosyasyon kòmanse dapre IEEE 802.3cd klòz 73."
+    },
+    "1": {
+      "text": "Lyen B: siyal detekte — Switch ↔ Sib Depo",
+      "detail": "Transeptè optik sou sib depo detekte limyè soti nan switch pò B."
+    },
+    "2": {
+      "text": "Lyen A MONTE — Nè GPU ↔ Switch nan 100Gbps ak RS-FEC",
+      "detail": "AN ak Fòmasyon Lyen fini. PFC aktive sou priyorite 3 pou RoCEv2."
+    },
+    "3": {
+      "text": "Lyen B MONTE — Switch ↔ Sib Depo nan 100Gbps ak RS-FEC",
+      "detail": "Toude lyen monte. Konektivite L2 bout-a-bout etabli."
+    },
+    "4": {
+      "text": "Demann ARP: kiyès ki gen 192.168.1.20?",
+      "detail": "Nè GPU rezoud IP sib depo a nan MAC pou mapaj GID-a-MAC RoCEv2."
+    },
+    "5": {
+      "text": "Repons ARP: 192.168.1.20 se nan 00:02:c9:ab:cd:ef",
+      "detail": "Sib depo reponn. Nè GPU kounye a gen aksesibilite L2 ak depo."
+    },
+    "6": {
+      "text": "CM REQ — Nè GPU pwopoze QP pou transpò NVMe-oF/RDMA",
+      "detail": "Demann Jesyonè Koneksyon IB. Nè GPU pwopoze paramèt QP RC pou koneksyon NVMe-oF/RDMA. Done prive pote fòma demann CM RDMA NVMe-oF dapre TP8010 (ID fil atant, gwosè SQ/RQ)."
+    },
+    "7": {
+      "text": "CM REP — sib depo aksepte, bay QPN ak PSN",
+      "detail": "Sib depo aksepte koneksyon an epi bay nimewo QP li (0x00B002) ak PSN kòmanse (8765432)."
+    },
+    "8": {
+      "text": "CM RTU — toude QP yo fè tranzisyon nan RTS, transpò RDMA pare",
+      "detail": "Toude QP yo deplase nan RTS. Kouch transpò NVMe-oF/RDMA ka kounye a voye kapsil kòmand NVMe atravè RDMA SEND epi transfere done atravè RDMA WRITE/READ."
+    },
+    "9": {
+      "text": "Fabrics Connect — Fil Atant Admin (QID=0)",
+      "detail": "Kòmand NVMe-oF Fabrics Connect voye atravè RDMA SEND pou etabli asosyasyon fil atant admin. Done Connect (voye atravè SGL) gen hostnqn, subnqn, ak hostid. Sib depo a asiyen yon ID kontwolè."
+    },
+    "10": {
+      "text": "Repons Fabrics Connect — ID Kontwolè=1 asiyen",
+      "detail": "Sib depo aksepte Fabrics Connect epi asiyen ID kontwolè 1. Fil atant admin kounye a etabli — kòmand Identifye, Get Log Page, ak lòt kòmand admin ka sikile."
+    },
+    "11": {
+      "text": "Fabrics Connect — Fil Atant IO (QID=1)",
+      "detail": "Fabrics Connect pou Fil Atant IO 1. Apre sa, kòmand Lekti/Ekriti NVMe ka soumèt. Fil atant IO se kote kòmand cuFileRead/cuFileWrite ap deplwaye."
+    },
+    "12": {
+      "text": "cuFileDriverOpen() — Drivè GDS inisyalize, nvidia-fs chaje",
+      "detail": "Aplikasyon rele cuFileDriverOpen() pou inisyalize GPUDirect Storage. Sa chaje modil kernel nvidia-fs ki entèsepte chemen IO NVMe epi redirije DMA nan memwa GPU olye DRAM machin. nvidia-peermem anrejistre kòm yon kliyan memwa peer IB pou MR RDMA ka sipòte pa paj GPU."
+    },
+    "13": {
+      "text": "cuFileHandleRegister() — espas non NVMe-oF distans anrejistre ak GDS",
+      "detail": "Aplikasyon anrejistre manch fichye (sipòte pa espas non NVMe-oF distans) ak GDS. Sa di nvidia-fs pou entèsepte IO sou deskriptè fichye sa a epi itilize chemen GPUDirect."
+    },
+    "14": {
+      "text": "cuFileBufRegister() — Tanpon GPU anrejistre pou RDMA, tanpon rebondi kontounen",
+      "detail": "Aplikasyon anrejistre yon tanpon memwa GPU ak GDS. nvidia-peermem pike paj GPU yo atravè BAR1 epi kreye yon Rejyon Memwa RDMA sipòte pa HBM GPU. RNIC a ka kounye a DMA dirèkteman nan/soti nan tanpon GPU sa a. Tanpon rebondi DRAM machin kontounen — sa a se kle pou IO depo zewo-kopi nan memwa GPU."
+    },
+    "15": {
+      "text": "cuFileRead() rele — GDS emèt NVMe READ ak memwa GPU kòm sib RDMA",
+      "detail": "Aplikasyon rele cuFileRead(). GDS bati yon kòmand Lekti NVMe ak yon deskriptè SGL ki pwente sou rejyon memwa GPU (rkey=0xGPU01234). Lè sib depo a li done sou disk, li ap RDMA WRITE done yo dirèkteman nan adrès GPU sa a — done yo pa janm touche DRAM machin."
+    },
+    "16": {
+      "text": "cuFileRead → Kòmand Lekti NVMe voye bay depo (SGL → memwa GPU)",
+      "detail": "Kapsil kòmand Lekti NVMe voye atravè RDMA SEND. Deskriptè SGL a pote rkey ak adrès vityèl rejyon memwa GPU a. Sib depo a ap itilize sa yo pou RDMA WRITE done lekti dirèkteman nan HBM GPU."
+    },
+    "17": {
+      "text": "Depo RDMA WRITE done lekti dirèkteman nan HBM GPU — zewo rebondi DRAM machin",
+      "detail": "SA A SE MOMAN KLE: Sib depo a li done soti nan SSD NVMe li, answit fè yon RDMA WRITE ki vize rejyon memwa GPU. Antèt RETH pote adrès vityèl BAR1 GPU ak rkey. RNIC nè GPU a resevwa RDMA WRITE sa a epi DMA chaj itil la dirèkteman nan HBM GPU atravè P2P PCIe — done yo PA JANM pase nan DRAM machin oswa kach CPU.\nChemen tradisyonèl: Depo → RDMA WRITE → DRAM machin → CPU memcpy → GPU\nChemen GDS: Depo → RDMA WRITE → RNIC → BAR1 PCIe → HBM GPU (zewo rebondi)"
+    },
+    "18": {
+      "text": "Konpleyon Lekti NVMe — cuFileRead() retounen, done nan HBM GPU",
+      "detail": "Konpleyon NVMe konfime lekti a fini. Done yo kounye a nan HBM GPU epi disponib pou kernel CUDA imedyatman — pa bezwen kopi adisyonèl."
+    },
+    "19": {
+      "text": "cuFileWrite() rele — GDS emèt NVMe WRITE, done souse soti nan HBM GPU",
+      "detail": "Aplikasyon rele cuFileWrite(). GDS bati yon kòmand Ekriti NVMe ak yon deskriptè SGL ki pwente sou memwa GPU. Sib depo a ap RDMA READ done ekriti dirèkteman soti nan HBM GPU — done yo pa janm rebondi nan DRAM machin."
+    },
+    "20": {
+      "text": "cuFileWrite → Kòmand Ekriti NVMe voye (SGL → memwa GPU pou RDMA READ)",
+      "detail": "Kapsil kòmand Ekriti NVMe voye atravè RDMA SEND. SGL a bay rkey ak adrès vityèl tanpon GPU a. Sib depo a ap RDMA READ soti nan adrès sa a pou chèche done ekriti."
+    },
+    "21": {
+      "text": "Repons RDMA READ — Done GPU voye dirèkteman soti nan HBM nan depo",
+      "detail": "Sib depo a te emèt yon Demann RDMA READ ki vize rejyon memwa GPU. RNIC nè GPU a otonòm li soti nan HBM GPU atravè DMA P2P PCIe BAR1 epi voye Repons RDMA READ sa a ki gen done yo. Zewo enplikasyon CPU sou nè GPU — RNIC jere tout bagay.\nChemen tradisyonèl: GPU → CPU memcpy → DRAM machin → RDMA SEND → Depo\nChemen GDS: HBM GPU → RNIC (atravè P2P BAR1) → Repons RDMA READ → Depo"
+    },
+    "22": {
+      "text": "Konpleyon Ekriti NVMe — cuFileWrite() retounen, done pèsiste nan depo",
+      "detail": "Konpleyon NVMe konfime ekriti a fini. Done soti nan HBM GPU pèsiste nan depo NVMe distans san janm touche DRAM machin."
+    },
+    "23": {
+      "text": "Senaryo fini — GPUDirect Storage sou RoCEv2",
+      "detail": "Rezime: De lyen 100GbE te monte. QP RDMA etabli atravè IB CM. Fabrics Connect NVMe-oF te kreye fil atant admin ak IO sou RDMA. GDS inisyalize ak cuFileDriverOpen, cuFileHandleRegister, ak cuFileBufRegister — anrejistre memwa GPU pou RDMA epi kontounen tanpon rebondi DRAM machin. cuFileRead te deklanche yon NVMe READ ki gen done livre atravè RDMA WRITE dirèkteman nan HBM GPU. cuFileWrite te deklanche yon NVMe WRITE ki gen done tire atravè RDMA READ dirèkteman soti nan HBM GPU. Nan toude ka, zewo rebondi DRAM machin, zewo enplikasyon CPU nan chemen done."
+    }
+  }
+}

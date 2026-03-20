@@ -1,0 +1,190 @@
+{
+  "meta": {
+    "title": "NVMe/TCP: mDNS → CDC 디스커버리 → DIM → 서브시스템 연결 → I/O",
+    "description": "완전한 NVMe/TCP 수명주기: mDNS를 통한 CDC(Centralized Discovery Controller) 검색, DIM(Discovery Information Management, TP8013) 등록, DDC(Direct Discovery Controller) 참조, IO Controller 연결, Identify Controller/Namespace, IO Queue 설정, NVMe Write 및 Read 작업. NVMe-oF/RDMA 시나리오와 비교 — 여기서는 모든 것이 TCP 위에서 커널이 매개하는 데이터 경로로 수행됩니다.",
+    "learning_objectives": [
+      "mDNS를 통한 NVMe/TCP CDC 검색 방법 이해",
+      "CDC → DDC → IO Controller의 계층적 디스커버리 구조 확인",
+      "NVMe/TCP PDU: ICReq/ICResp, H2CData, C2HData, R2T 추적",
+      "NVMe/TCP와 NVMe-oF/RDMA 데이터 경로 비교"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "mDNS 조회: _nvme-disc._tcp.local",
+      "detail": "호스트가 mDNS 조회를 브로드캐스트하여 네트워크에서 NVMe 디스커버리 컨트롤러를 검색합니다."
+    },
+    "1": {
+      "text": "mDNS 응답: CDC가 192.168.100.50:8009에 있음",
+      "detail": "CDC가 디스커버리 서비스를 광고하는 mDNS 레코드로 응답합니다. PTR 레코드가 _nvme-disc._tcp.local을 서비스 인스턴스 이름에 매핑합니다. SRV 레코드가 대상 호스트명과 포트(8009)를 제공합니다. TXT 레코드에 키-값 쌍이 포함됩니다: p=tcp(전송 유형) 및 nqn=nqn.2014-08.org.nvmexpress.discovery(잘 알려진 디스커버리 NQN). stafd의 Avahi 콜백이 이 레코드를 파싱하여 transport, traddr, trsvcid, subsysnqn이 포함된 컨트롤러 딕셔너리를 구성합니다."
+    },
+    "2": {
+      "text": "TCP SYN → CDC 포트 8009",
+      "detail": "stafd가 CDC(192.168.100.50:8009)에 TCP 연결을 시작합니다. 포트 8009는 NVMe 디스커버리 컨트롤러의 기본 trsvcid(Transport Service ID)입니다. TCP 3-way 핸드셰이크가 NVMe-oF/TCP가 실행될 신뢰성 있는 전송을 수립합니다."
+    },
+    "3": {
+      "text": "TCP SYN-ACK ← CDC",
+      "detail": "CDC의 TCP 스택이 SYN-ACK로 응답하여 호스트의 SYN을 확인하고 자체 시퀀스 번호를 전송합니다."
+    },
+    "4": {
+      "text": "TCP ACK — CDC에 연결 수립",
+      "detail": "호스트가 3-way 핸드셰이크를 완료합니다. CDC에 대한 TCP 연결이 수립되었습니다. NVMe-oF/TCP 계층이 다음으로 ICReq를 전송합니다."
+    },
+    "5": {
+      "text": "ICReq → CDC (NVMe/TCP 연결 초기화)",
+      "detail": "NVMe/TCP ICReq(Initialize Connection Request) PDU를 전송하여 NVMe/TCP 연결 매개변수를 협상합니다."
+    },
+    "6": {
+      "text": "ICResp ← CDC (연결 매개변수 수락)",
+      "detail": "CDC가 ICResp로 응답하여 협상된 매개변수를 확인합니다. 컨트롤러의 CPDA(Controller PDU Data Alignment)와 수락된 다이제스트 유형이 반환됩니다. MaxData는 컨트롤러가 R2T당 처리할 수 있는 최대 데이터를 나타냅니다. ICReq/ICResp가 완료되면 NVMe/TCP 전송 계층이 초기화되어 NVMe 명령을 전송할 준비가 됩니다."
+    },
+    "7": {
+      "text": "Fabrics Connect → CDC (Admin Queue, Discovery NQN)",
+      "detail": "호스트가 NVMe Fabrics Connect 명령을 전송하여 CDC와 Admin 큐 연관을 수립합니다. 이 명령은 opcode 0x7F(Fabrics), fctype=0x01(Connect)을 사용합니다. Queue ID 0은 Admin 큐를 나타냅니다. Connect 데이터(1024바이트)에 호스트 ID(UUID), Host NQN, 타겟 Subsystem NQN(nqn.2014-08.org.nvmexpress.discovery — 잘 알려진 디스커버리 서브시스템 NQN)이 포함됩니다. Controller ID는 0xFFFF(동적)로 설정되어 CDC가 할당합니다."
+    },
+    "8": {
+      "text": "Fabrics Connect 응답 ← CDC (CNTLID=65)",
+      "detail": "CDC가 Fabrics Connect를 수락하고 이 호스트에 Controller ID 65를 할당합니다. Admin 큐가 수립되었습니다 — 호스트가 이제 DIM 및 Get Log Page를 포함한 관리 명령을 CDC에 전송할 수 있습니다."
+    },
+    "9": {
+      "text": "DIM Register → CDC (TP8013)",
+      "detail": "DIM(Discovery Information Management) 등록을 CDC에 전송합니다. TP8013 사양에 따른 모니터링 등록입니다."
+    },
+    "10": {
+      "text": "DIM Register 응답 ← CDC (성공)",
+      "detail": "CDC가 호스트의 등록을 확인합니다. 호스트가 이제 CDC 데이터베이스에 등록되어 조닝 구성으로 필터링된 디스커버리 로그 페이지를 수신합니다 — 이 호스트가 접근 권한이 있는 서브시스템만 표시됩니다. 디스커버리 로그가 변경되면 CDC가 AEN(Asynchronous Event Notification)도 전송합니다."
+    },
+    "11": {
+      "text": "Get Log Page → CDC (Discovery Log, LID 0x70)",
+      "detail": "호스트가 CDC에 Discovery Log Page(LID 0x70)를 요청합니다. 이것은 표준 NVMe Get Log Page 관리 명령입니다. 디스커버리 로그에는 CDC의 조닝 구성에 따라 이 호스트가 접근 가능한 모든 서브시스템의 항목이 포함됩니다. 각 항목은 전송 유형, 주소 패밀리, 전송 주소(IP), 포트, 서브시스템 NQN, 서브시스템 유형(NVM 또는 Discovery 참조)을 제공합니다. 호스트는 읽기 전후에 generation counter를 확인합니다 — 변경되면 로그를 다시 읽어야 합니다."
+    },
+    "12": {
+      "text": "Discovery Log Page ← CDC (DDC 참조 2개)",
+      "detail": "CDC가 Discovery Log Page를 반환합니다. 2개의 DDC(Direct Discovery Controller) 참조가 포함됩니다."
+    },
+    "13": {
+      "text": "TCP SYN → DDC 포트 8009 (스토리지 어레이)",
+      "detail": "stafd가 CDC의 디스커버리 로그에서 DDC 참조를 따릅니다. 스토리지 어레이 1의 DDC(Direct Discovery Controller)에 TCP 연결을 시작합니다(192.168.100.51:8009). DDC는 스토리지 어레이 자체에서 실행되는 디스커버리 컨트롤러입니다(네트워크 스위치에서 실행되는 CDC와 달리). DDC는 해당 스토리지 어레이의 IO 서브시스템에 특화된 디스커버리 로그 페이지를 제공합니다. 이것은 3계층 디스커버리 계층 구조의 두 번째 계층입니다: CDC(네트워크 전체) → DDC(어레이별) → IOC(서브시스템별)."
+    },
+    "14": {
+      "text": "TCP SYN-ACK ← DDC",
+      "detail": "스토리지 어레이의 DDC가 TCP 연결 시도를 확인합니다."
+    },
+    "15": {
+      "text": "TCP ACK — DDC에 연결 수립",
+      "detail": "DDC에 대한 TCP 핸드셰이크가 완료되었습니다."
+    },
+    "16": {
+      "text": "ICReq → DDC (NVMe/TCP 연결 초기화)",
+      "detail": "DDC와의 NVMe/TCP 초기화 — CDC와 동일한 ICReq/ICResp 교환입니다."
+    },
+    "17": {
+      "text": "ICResp ← DDC (연결 매개변수 수락)",
+      "detail": "DDC가 NVMe/TCP 전송 매개변수를 수락합니다."
+    },
+    "18": {
+      "text": "Fabrics Connect → DDC (Admin Queue, Discovery NQN)",
+      "detail": "호스트가 DDC에 Fabrics Connect를 전송하며 잘 알려진 디스커버리 서브시스템 NQN(nqn.2014-08.org.nvmexpress.discovery)을 사용합니다 — CDC 연결에 사용된 것과 동일한 NQN입니다. CDC와 DDC 모두 디스커버리 컨트롤러이며, 범위(CDC = 중앙 집중/네트워크 전체, DDC = 스토리지 어레이 로컬)가 다르지만 동일한 디스커버리 프로토콜과 NQN을 사용합니다."
+    },
+    "19": {
+      "text": "Fabrics Connect 응답 ← DDC (CNTLID=1)",
+      "detail": "DDC가 연결을 수락하고 CNTLID=1을 할당합니다. DDC에 대한 Admin 큐가 수립되었습니다 — 호스트가 이제 DDC의 디스커버리 로그를 요청하여 이 스토리지 어레이의 IO Controller에 대해 알 수 있습니다."
+    },
+    "20": {
+      "text": "DIM Register → DDC (TP8013)",
+      "detail": "호스트가 CDC에 한 것처럼 DIM을 통해 DDC에 등록합니다. 이를 통해 DDC가 이 특정 호스트의 조닝 구성에 따라 필터링된 디스커버리 로그 항목을 반환합니다. 이 스토리지 어레이의 서브시스템이 변경되면 DDC가 AEN도 전송합니다."
+    },
+    "21": {
+      "text": "DIM Register 응답 ← DDC (성공)",
+      "detail": "DDC가 호스트의 등록을 확인합니다. 호스트가 이제 DDC의 디스커버리 로그 페이지를 요청하여 이 스토리지 어레이에서 접근 가능한 IO Controller를 알 수 있습니다."
+    },
+    "22": {
+      "text": "Get Log Page → DDC (Discovery Log, LID 0x70)",
+      "detail": "호스트가 DDC에 Discovery Log Page를 요청합니다. DDC 참조를 포함했던 CDC의 로그와 달리, DDC의 로그에는 실제 NVM 서브시스템 항목 — 구체적으로 이 호스트가 접근 가능한 이 스토리지 어레이의 IO Controller가 포함됩니다. 이 단계에서 호스트가 IO Controller의 NQN과 연결 세부 정보를 알게 됩니다."
+    },
+    "23": {
+      "text": "DDC Discovery Log ← DDC (subsys-alpha가 포트 4420에 있음)",
+      "detail": "DDC가 1개 항목이 포함된 디스커버리 로그를 반환합니다: NVM Subsystem A(nqn.2024-01.com.storage:subsys-alpha)가 192.168.100.51:4420에 있습니다. 이것이 stacd가 연결에 사용할 IO Controller NQN입니다. 3계층 디스커버리 계층 구조가 완료되었습니다: CDC(네트워크 전체) → DDC(어레이별) → IOC(서브시스템별). stacd는 이제 IO Controller 연결을 수립하는 데 필요한 서브시스템 NQN과 연결 세부 정보를 가지고 있습니다."
+    },
+    "24": {
+      "text": "TCP SYN → IO Controller 포트 4420",
+      "detail": "stacd가 IO Controller(192.168.100.51:4420)에 TCP 연결을 시작합니다 — DDC의 디스커버리 로그에서 학습한 주소와 포트(nqn.2024-01.com.storage:subsys-alpha)입니다. 포트 4420은 NVMe over Fabrics용 IANA 할당 포트입니다."
+    },
+    "25": {
+      "text": "TCP SYN-ACK ← IO Controller",
+      "detail": "IO Controller가 TCP 연결 시도를 확인합니다."
+    },
+    "26": {
+      "text": "TCP ACK — IO Controller에 연결 수립",
+      "detail": "IO Controller에 대한 TCP 핸드셰이크가 완료되었습니다."
+    },
+    "27": {
+      "text": "ICReq → IO Controller",
+      "detail": "NVMe/TCP 초기화 — CDC와 동일한 ICReq/ICResp 교환입니다."
+    },
+    "28": {
+      "text": "ICResp ← IO Controller",
+      "detail": "IO Controller가 NVMe/TCP 전송 매개변수를 수락합니다."
+    },
+    "29": {
+      "text": "Fabrics Connect → IO Controller (subsys-alpha)",
+      "detail": "호스트가 DDC의 디스커버리 로그에서 학습한 서브시스템 NQN(nqn.2024-01.com.storage:subsys-alpha)을 사용하여 IO Controller에 연결합니다. 이것은 Admin 큐 연관을 생성합니다. 잘 알려진 디스커버리 NQN을 사용했던 CDC 및 DDC 연결과 달리, 이것은 실제 스토리지 서브시스템 NQN을 사용합니다 — CDC → DDC → IOC 계층 구조의 최종 계층을 완성합니다."
+    },
+    "30": {
+      "text": "Fabrics Connect 응답 ← IO Controller (CNTLID=1)",
+      "detail": "IO Controller가 연결을 수락하고 CNTLID=1을 할당합니다. Admin 큐가 수립되었습니다 — 호스트가 이제 컨트롤러와 네임스페이스를 식별할 수 있습니다."
+    },
+    "31": {
+      "text": "Identify Controller (CNS=0x01)",
+      "detail": "호스트가 Identify Controller(관리 opcode 0x06, CNS=1)를 전송하여 컨트롤러의 기능을 확인합니다: 시리얼 번호, 모델, 펌웨어 버전, 최대 데이터 전송 크기(MDTS), 네임스페이스 수, 지원 기능. 이 4096바이트 응답은 호스트 드라이버가 올바르게 구성하는 데 필수적입니다."
+    },
+    "32": {
+      "text": "Identify Controller 응답 (네임스페이스 4개, MDTS=256KB)",
+      "detail": "IO Controller가 자신의 ID를 반환합니다: 모델 \"NVMe-oF/TCP Storage Array\", 펌웨어 v2.1.0, MDTS=6(최대 전송 256KB), 네임스페이스 4개. 호스트 드라이버는 MDTS를 사용하여 I/O 요청 크기를 제한하고 nn(네임스페이스 수)으로 열거할 네임스페이스 수를 파악합니다."
+    },
+    "33": {
+      "text": "Identify Namespace (NSID=1, CNS=0x00)",
+      "detail": "호스트가 Namespace 1을 식별하여 크기, LBA 형식, 기능을 확인합니다. CNS=0에 특정 NSID를 지정하면 네임스페이스의 ID 데이터가 반환됩니다: 총 크기(nsze), 용량(ncap), 현재 사용량(nuse), LBA 형식(섹터 크기, 메타데이터)."
+    },
+    "34": {
+      "text": "Identify Namespace 응답 (NSID=1, ~1TB, 512B LBA)",
+      "detail": "Namespace 1은 ~1TB 용량(1,953,525,168 × 512바이트 LBA), 25% 사용 중입니다. LBA 형식 0: LBA당 512바이트, 메타데이터 없음, 최상의 상대 성능. 호스트의 블록 레이어가 이것을 /dev/nvmeXnY(예: /dev/nvme0n1)로 표시합니다."
+    },
+    "35": {
+      "text": "Fabrics Connect IO Queue 1",
+      "detail": "호스트가 Fabrics Connect로 IO Queue 1을 생성합니다(QID=1). IO 큐는 NVMe Read/Write 명령에 사용됩니다(관리 명령은 QID=0 사용). SQ Size는 128 항목으로 설정됩니다. 최적의 성능을 위해 여러 IO 큐를 생성할 수 있습니다(일반적으로 CPU 코어당 하나)."
+    },
+    "36": {
+      "text": "IO Queue 1 수립 — I/O 준비 완료",
+      "detail": "IO Queue 1이 수립되었습니다. 호스트가 이제 NVMe Read 및 Write 명령을 제출할 수 있습니다. 블록 장치 /dev/nvme0n1이 완전히 작동합니다."
+    },
+    "37": {
+      "text": "NVMe Write 명령 (LBA 0x1000에 4KB)",
+      "detail": "호스트가 Namespace 1의 LBA 0x1000에 4KB NVMe Write 명령을 제출합니다. Write SQE(64바이트)가 IO Queue 1에서 CapsuleCmd PDU로 전송됩니다. 명령은 8개의 LBA(0 기반 NLB=7) × 512바이트 = 4096바이트를 지정합니다. NVMe/TCP에서 쓰기 데이터는 명령과 함께 인라인으로 전송되지 않습니다 — 컨트롤러가 먼저 데이터를 요청하는 R2T(Ready to Transfer) PDU를 보내야 합니다."
+    },
+    "38": {
+      "text": "R2T ← 컨트롤러 (4KB 쓰기 데이터 요청)",
+      "detail": "NVMe/TCP R2T(Ready to Transfer) PDU. 컨트롤러가 호스트에게 쓰기 데이터를 보내도 된다고 알립니다."
+    },
+    "39": {
+      "text": "H2CData → 컨트롤러 (4KB 쓰기 페이로드)",
+      "detail": "H2CData(Host to Controller Data) PDU로 4KB 쓰기 데이터를 전송합니다."
+    },
+    "40": {
+      "text": "Write 완료 ← 컨트롤러 (성공)",
+      "detail": "IO Controller가 쓰기를 완료하고 상태 0x0000(성공)이 포함된 CapsuleResp를 반환합니다. 4KB가 Namespace 1의 LBA 0x1000에 기록되었습니다. 호스트 드라이버가 블록 I/O 요청을 완료합니다."
+    },
+    "41": {
+      "text": "NVMe Read 명령 (LBA 0x1000에서 4KB)",
+      "detail": "호스트가 LBA 0x1000에서 동일한 4KB를 다시 읽습니다. Read SQE가 IO Queue 1에서 CapsuleCmd로 전송됩니다. Write와 달리 Read 명령은 R2T가 필요하지 않습니다 — 컨트롤러가 C2HData PDU를 통해 데이터를 직접 전송합니다."
+    },
+    "42": {
+      "text": "C2HData ← 컨트롤러 (4KB 읽기 페이로드)",
+      "detail": "C2HData(Controller to Host Data) PDU로 4KB 읽기 데이터를 호스트에 전달합니다."
+    },
+    "43": {
+      "text": "Read 완료 ← 컨트롤러 (성공)",
+      "detail": "Read가 성공적으로 완료되었습니다. LBA 0x1000의 4KB 데이터가 호스트에 전달되었습니다. 전체 NVMe/TCP 수명주기가 시연되었습니다: mDNS 디스커버리 → CDC 등록 → CDC 디스커버리 로그(DDC 참조) → DDC 연결 → DDC 디스커버리 로그(IOC 세부 정보) → IOC 연결 → 컨트롤러 식별 → 네임스페이스 열거 → IO 큐 설정 → Write → Read. 3계층 디스커버리 계층 구조(CDC → DDC → IOC)가 완료되었습니다."
+    }
+  }
+}

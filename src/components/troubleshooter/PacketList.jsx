@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 
 function formatTimestamp(pkt, baseTimestamp) {
   const relative = pkt.timestamp - baseTimestamp;
@@ -9,6 +10,7 @@ function formatTimestamp(pkt, baseTimestamp) {
 }
 
 export default function PacketList({ packets, findings, selectedIndex, onPacketSelect, onConversationView }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
   const selectedRef = useRef(null);
@@ -75,10 +77,10 @@ export default function PacketList({ packets, findings, selectedIndex, onPacketS
         fontSize: 9, fontWeight: 700, color: '#475569',
         textTransform: 'uppercase', letterSpacing: '0.05em',
       }}>
-        <span style={{ width: 50 }}>#</span>
-        <span style={{ width: 110 }}>Time</span>
-        <span style={{ flex: 1 }}>Summary</span>
-        <span style={{ width: 60, textAlign: 'right' }}>Length</span>
+        <span style={{ width: 50 }}>{t('packetList.colNumber')}</span>
+        <span style={{ width: 110 }}>{t('packetList.colTime')}</span>
+        <span style={{ flex: 1 }}>{t('packetList.colSummary')}</span>
+        <span style={{ width: 60, textAlign: 'right' }}>{t('packetList.colLength')}</span>
       </div>
 
       {packets.map((pkt, i) => {
@@ -141,7 +143,7 @@ export default function PacketList({ packets, findings, selectedIndex, onPacketS
                           background: '#78350f', color: '#fbbf24', fontSize: 9,
                           padding: '1px 5px', borderRadius: 3, fontWeight: 600,
                         }} title={layer._sensitive.map(m => m.name).join(', ')}>
-                          Sensitive data detected
+                          {t('packetList.sensitiveData')}
                         </span>
                       )}
                     </div>
@@ -208,7 +210,7 @@ export default function PacketList({ packets, findings, selectedIndex, onPacketS
             onMouseEnter={e => e.currentTarget.style.background = '#334155'}
             onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
           >
-            View Conversation as Scenario
+            {t('packetList.viewConversation')}
             <div style={{ color: '#64748b', fontSize: 9, marginTop: 2 }}>
               {contextMenu.srcIp} ↔ {contextMenu.dstIp}
             </div>
@@ -228,7 +230,7 @@ export default function PacketList({ packets, findings, selectedIndex, onPacketS
             onMouseEnter={e => e.currentTarget.style.color = '#94a3b8'}
             onMouseLeave={e => e.currentTarget.style.color = '#64748b'}
           >
-            Cancel
+            {t('packetList.cancel')}
           </div>
         </div>
       )}

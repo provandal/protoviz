@@ -1,0 +1,53 @@
+{
+  "meta": {
+    "title": "GPU-para-GPU RDMA: Transferência de Tensor entre Nós via RoCEv2",
+    "description": "Transferência de tensor GPU-para-GPU de ponta a ponta entre dois nós usando GPUDirect RDMA sobre RoCEv2. Este é o caminho de dados fundamental para treinamento distribuído de IA, serviço de inferência e clusters de computação GPU. O cenário rastreia o ciclo de vida completo: alocação de memória CUDA, exposição do GPU BAR1 via nvidia-peermem, registro de MR contra memória GPU, ativação de QP via CM, RDMA WRITE empurrando um tensor diretamente da HBM da GPU 0 para a HBM da GPU 1 (zero bounce na DRAM do host), e RDMA READ puxando-o de volta. Contrasta o caminho GPUDirect (1 cópia) com o caminho tradicional (4 cópias).\n",
+    "learning_objectives": [
+      "Rastrear o caminho completo de dados GPU-para-GPU RDMA: GPU HBM → PCIe → RNIC → Rede → RNIC → PCIe → GPU HBM",
+      "Entender por que o GPUDirect RDMA elimina o bounce na DRAM do host e o envolvimento da CPU",
+      "Ver como o nvidia-peermem conecta o subsistema de memória GPU ao subsistema RDMA",
+      "Comparar caminho tradicional (GPU→CPU→RNIC→Rede→RNIC→CPU→GPU, 4 cópias) vs GPUDirect (1 cópia)",
+      "Acompanhar DMA peer-to-peer (P2P) PCIe entre RNIC e GPU via abertura BAR1",
+      "Entender quando o GPUDirect RDMA é usado: coletivas NCCL, serviço de inferência, computação GPU",
+      "Ver tanto RDMA WRITE (modelo push) quanto RDMA READ (modelo pull) para memória GPU"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Link físico ativo — fabric lossless 100GbE entre nós GPU",
+      "detail": "Ambos os nós GPU se conectam ao switch via 100GbE com PFC e ECN habilitados. O fabric lossless é essencial — o RDMA depende de a rede não descartar pacotes.\nTopologia típica de cluster GPU: cada nó tem 8 GPUs com NVLink intra-nó e 1-8 RNICs para RDMA inter-nó. Este cenário mostra uma única GPU e RNIC por nó para maior clareza.\n"
+    },
+    "1": {
+      "text": "Memória CUDA alocada — buffers de tensor de 4MB na HBM da GPU em ambos os nós",
+      "detail": "cuMemAlloc() aloca memória na HBM (High Bandwidth Memory) da GPU: • Nó A: buffer de tensor de 4MB no VA da GPU 0x7f0000000000 • Nó B: buffer de tensor de 4MB no VA da GPU 0x7f0100000000\nEssa memória está no espaço de endereçamento privado da GPU — a CPU não pode acessá-la diretamente, e nem a RNIC. O GPUDirect RDMA resolve isso expondo a memória da GPU para a RNIC via a abertura PCIe BAR1.\n"
+    },
+    "2": {
+      "text": "Mapeamento GPU BAR1 — memória GPU exposta ao espaço de endereçamento PCIe via nvidia-peermem",
+      "detail": "nvidia-peermem (módulo do kernel) registra-se como peer_memory_client no subsistema RDMA. Quando ibv_reg_mr() é chamado contra um endereço virtual da GPU, o nvidia-peermem intercepta:\n1. Chama nvidia_p2p_get_pages() para fixar a memória GPU 2. Obtém os endereços físicos da GPU (na DRAM local da GPU) 3. Mapeia estes através da abertura PCIe BAR1 da GPU 4. Retorna endereços de barramento PCIe para o motor DMA da RNIC\nAgora a RNIC pode fazer DMA diretamente para/da memória GPU via PCIe peer-to-peer, sem passar pela DRAM do host ou a CPU.\nCaminho tradicional (sem GPUDirect):\n  GPU → cudaMemcpy → DRAM host → ibv_post_send → RNIC → Rede\n  Rede → RNIC → DRAM host → cudaMemcpy → GPU\n  = 4 cópias, 2 intervenções da CPU\n\nCaminho GPUDirect RDMA:\n  GPU HBM → BAR1 → RNIC → Rede → RNIC → BAR1 → GPU HBM\n  = 1 transferência DMA por direção, 0 cópias de dados pela CPU\n"
+    },
+    "3": {
+      "text": "Memory Regions registradas contra memória GPU — chaves RDMA trocadas",
+      "detail": "ibv_reg_mr() é chamado com os endereços virtuais da GPU. nvidia-peermem intercepta e fornece os endereços físicos mapeados via BAR1 para a tabela de páginas do hardware da RNIC.\nApós o registro da MR, ambos os nós trocam rkeys fora de banda (tipicamente via um canal de controle TCP ou RDMA SEND). Cada nó agora tem o {rkey, virtual_address, length} do nó remoto — tudo necessário para RDMA READ/WRITE.\nO registro de MR é caro (microsegundos a milissegundos) e deve ser feito uma vez durante a inicialização, não por transferência. O NCCL pré-registra buffers durante ncclCommInitRank().\n"
+    },
+    "4": {
+      "text": "QPs conectados (RTS) — canal RDMA pronto para transferências GPU-para-GPU",
+      "detail": "QPs Reliable Connected (RC) são levados a RTS via CM REQ/REP/RTU. Com QPs em RTS e memória GPU registrada como MRs, o caminho de dados GPU-para-GPU está totalmente estabelecido.\n"
+    },
+    "5": {
+      "text": "RDMA WRITE — tensor de 4MB empurrado da HBM da GPU A → HBM da GPU B (zero cópia pela CPU)",
+      "detail": "A aplicação do Nó A chama ibv_post_send() com um WQE de RDMA WRITE apontando para o buffer local da GPU (origem) e o buffer da GPU do Nó B (destino, via rkey + VA do RETH).\nO caminho de dados passo a passo: 1. O motor DMA da RNIC A lê 4MB da HBM da GPU A via PCIe BAR1\n   (DMA peer-to-peer — sem envolvimento da DRAM do host)\n2. A RNIC A segmenta em pacotes de tamanho MTU (payload de 4K cada)\n   e transmite via RoCEv2 (UDP/IP/Ethernet)\n3. Os pacotes atravessam o switch lossless 4. A RNIC B recebe os pacotes e faz DMA-write de cada um diretamente\n   na HBM da GPU B via PCIe BAR1 (peer-to-peer)\n5. Após todos os pacotes, a RNIC B envia um ACK\nAs CPUs de nenhum dos nós tocam os dados do tensor. A CPU do Nó A apenas posta o WQE (64 bytes); a CPU do Nó B não está envolvida (RDMA é unilateral).\nA 100 Gbps, 4MB levam ~330 microssegundos no fio. PCIe Gen5 x16 fornece 64 GB/s — não é o gargalo.\n"
+    },
+    "6": {
+      "text": "RDMA READ Request — Nó A solicita tensor de 4MB da HBM da GPU B",
+      "detail": "A aplicação do Nó A chama ibv_post_send() com um WQE de RDMA READ. A RNIC envia um pequeno READ Request (78 bytes) para o Nó B especificando o endereço do buffer remoto da GPU e rkey.\nRDMA READ é um modelo \"pull\" — o solicitante (Nó A) diz ao respondente (Nó B) qual memória remota ler. A RNIC do Nó B busca autonomamente os dados da HBM da GPU B e os envia de volta. A CPU do Nó B nunca está envolvida.\n"
+    },
+    "7": {
+      "text": "RDMA READ Response — tensor de 4MB da HBM da GPU B → HBM da GPU A",
+      "detail": "A RNIC do Nó B autonomamente: 1. Lê 4MB da HBM da GPU B via PCIe BAR1 (P2P DMA) 2. Transmite como pacotes RDMA READ Response para o Nó A 3. A RNIC do Nó A escreve cada pacote na HBM da GPU A via BAR1\nApós a conclusão, o CQ (completion queue) do Nó A sinaliza à aplicação que os dados do tensor estão disponíveis no buffer da GPU A.\nRDMA READ vs WRITE tradeoffs: • WRITE: iniciador empurra dados (menor latência, servidor não\n  precisa saber quando os dados chegam)\n• READ: iniciador puxa dados (respondente não precisa iniciar,\n  mas adiciona latência de request/response)\n• NCCL prefere WRITE para operações coletivas\n"
+    },
+    "8": {
+      "text": "Cenário completo — transferência de tensor GPU-para-GPU via RDMA",
+      "detail": "Este cenário demonstrou RDMA GPU-para-GPU de ponta a ponta:\nCONFIGURAÇÃO:\n  cuMemAlloc → mapeamento BAR1 nvidia-peermem → ibv_reg_mr (GPU MR)\n  → ativação CM QP → troca de rkey\n\nRDMA WRITE (push — GPU A → GPU B):\n  GPU A HBM → PCIe BAR1 P2P → RNIC A → RoCEv2 → RNIC B\n  → PCIe BAR1 P2P → GPU B HBM\n  Envolvimento da CPU: 0 (apenas postagem de WQE)\n\nRDMA READ (pull — GPU B → GPU A):\n  Request: RNIC A → RoCEv2 → RNIC B\n  Response: GPU B HBM → RNIC B → RoCEv2 → RNIC A → GPU A HBM\n  Envolvimento da CPU no Nó B: 0\n\nCOMPARAÇÃO DE CAMINHOS DE DADOS:\n| Caminho                       | Cópias | Ops CPU |\n|-------------------------------|--------|---------|\n| Tradicional (sem GPUDirect)   |   4    |    2    |\n| GPU→CPU→RNIC→Rede→RNIC→CPU→GPU                  |\n| GPUDirect RDMA                |   1    |    0    |\n| GPU→RNIC→Rede→RNIC→GPU                          |\n\nOnde GPU-para-GPU RDMA é usado: • NCCL AllReduce/AllGather em treinamento distribuído de IA • Serviço de inferência: migração de cache KV entre GPUs • Computação GPU: MPI_Send/Recv com buffers GPU • Checkpoint/restore de estado GPU • Renderização multi-nó GPU\nComponentes chave habilitando isto: • nvidia-peermem: conecta memória GPU e subsistemas RDMA • PCIe BAR1: abertura de memória GPU acessível pela RNIC • Fabric lossless: PFC + ECN/DCQCN previne descarte de pacotes • RDMA verbs: zero-copy, kernel-bypass, CPU-bypass\n"
+    }
+  }
+}

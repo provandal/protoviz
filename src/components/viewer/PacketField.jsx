@@ -1,6 +1,8 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 export default function PacketField({ field, depth = 0, highlightFields = [] }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const [showSpec, setShowSpec] = useState(false);
   const hasSpec = field.spec && field.spec.length > 0;
@@ -33,20 +35,20 @@ export default function PacketField({ field, depth = 0, highlightFields = [] }) 
           {hasSpec && (
             <div>
               <button onClick={() => setShowSpec(s => !s)} style={{ background: 'none', border: '1px solid #334155', color: '#60a5fa', fontSize: 10, borderRadius: 4, padding: '2px 8px', cursor: 'pointer', marginBottom: 4 }}>
-                {showSpec ? '▼' : '▶'} Spec References ({field.spec.length})
+                {showSpec ? '\u25BC' : '\u25B6'} {t('inspector.specReferences', { count: field.spec.length })}
               </button>
               {showSpec && field.spec.map((s, i) => (
                 <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '3px 0' }}>
                   <span style={{ background: '#1e3a5f', color: '#93c5fd', fontSize: 10, padding: '1px 6px', borderRadius: 3, fontFamily: 'monospace' }}>{s.doc}</span>
-                  <span style={{ color: '#64748b', fontSize: 10 }}>§{s.sec}</span>
-                  {s.url && <a href={s.url} target="_blank" rel="noreferrer" style={{ color: '#34d399', fontSize: 10, textDecoration: 'none' }}>↗ Spec</a>}
+                  <span style={{ color: '#64748b', fontSize: 10 }}>&sect;{s.sec}</span>
+                  {s.url && <a href={s.url} target="_blank" rel="noreferrer" style={{ color: '#34d399', fontSize: 10, textDecoration: 'none' }}>&uarr; {t('inspector.specLink')}</a>}
                 </div>
               ))}
             </div>
           )}
           {hasKernel && (
             <div style={{ marginTop: 6, padding: '6px 8px', background: '#0a0f1a', borderRadius: 4, borderLeft: '3px solid #f59e0b' }}>
-              <div style={{ color: '#f59e0b', fontSize: 10, fontWeight: 700, marginBottom: 2 }}>🐧 Linux Kernel</div>
+              <div style={{ color: '#f59e0b', fontSize: 10, fontWeight: 700, marginBottom: 2 }}>{t('inspector.linuxKernel')}</div>
               <div style={{ color: '#94a3b8', fontSize: 10, fontFamily: 'monospace' }}>{field.kernel.file}</div>
               <div style={{ color: '#fbbf24', fontSize: 10, fontFamily: 'monospace' }}>{field.kernel.fn}()</div>
               {field.kernel.note && <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>{field.kernel.note}</div>}

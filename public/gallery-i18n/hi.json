@@ -1,0 +1,94 @@
+{
+  "tcp-3way-handshake-data-fin": {
+    "title": "TCP: 3-Way Handshake → डेटा ट्रांसफ़र → FIN Teardown",
+    "description": "संपूर्ण TCP कनेक्शन जीवनचक्र: ISN सिंक्रोनाइज़ेशन के साथ 3-way handshake (SYN → SYN-ACK → ACK), सीक्वेंस नंबर ट्रैकिंग के साथ HTTP अनुरोध/प्रतिक्रिया डेटा ट्रांसफ़र, और TIME_WAIT के साथ 4-way FIN teardown।"
+  },
+  "pfc-ecn-dcqcn-congestion-control": {
+    "title": "Lossless Ethernet: PFC Pause → ECN मार्किंग → DCQCN रेट कंट्रोल",
+    "description": "RoCEv2 लॉसलेस ट्रांसपोर्ट कैसे प्राप्त करता है: PFC PAUSE फ़्रेम बफ़र ओवरफ़्लो रोकते हैं, ECN पैकेट ड्रॉप करने के बजाय उन्हें Congestion Experienced के साथ चिह्नित करता है, और DCQCN CNP-ट्रिगर्ड रेट रिडक्शन और टाइमर-आधारित रिकवरी के साथ फ़ीडबैक लूप बंद करता है।"
+  },
+  "nvme-rdma-discovery-io": {
+    "title": "NVMe-oF/RDMA: Discovery → Fabrics Connect → RoCEv2 पर NVMe Write & Read",
+    "description": "RDMA ट्रांसपोर्ट का उपयोग करके संपूर्ण NVMe over Fabrics: CM कनेक्शन सेटअप, Discovery Controller से Fabrics Connect, RDMA WRITE द्वारा Discovery Log प्राप्ति, IO Controller क्यू सेटअप, NVMe Write (RDMA READ द्वारा डेटा) और NVMe Read (RDMA WRITE द्वारा डेटा)। पूरे पथ में ज़ीरो-कॉपी डेटा।"
+  },
+  "iscsi-login-discovery-io": {
+    "title": "iSCSI: Login → Discovery → SCSI INQUIRY → WRITE(10) → READ(10)",
+    "description": "संपूर्ण iSCSI सत्र: TCP कनेक्शन, दो-चरणीय Login नेगोशिएशन (सुरक्षा + ऑपरेशनल), LUN खोजने के लिए SCSI INQUIRY, R2T फ़्लो कंट्रोल के साथ WRITE(10), और READ(10)। सबसे व्यापक रूप से तैनात SAN प्रोटोकॉल — मानक TCP/IP, कोई विशेष हार्डवेयर नहीं।"
+  },
+  "roce-v2-rc-connection-rdma-write-read": {
+    "title": "RoCEv2 RC: Link Training → QP Connection → RDMA WRITE → RDMA READ",
+    "description": "100GbE पर संपूर्ण RoCEv2 Reliable Connected एक्सचेंज: फ़िज़िकल लिंक, ARP, CM bring-up, RDMA WRITE, RDMA READ।"
+  },
+  "fc-fabric-login-scsi-io": {
+    "title": "FC Fabric: FLOGI → Name Server → PLOGI → PRLI → SCSI I/O",
+    "description": "फ़ैब्रिक स्विच के माध्यम से संपूर्ण Fibre Channel SAN लॉगिन अनुक्रम: फ़िज़िकल लिंक, FLOGI, Name Server डिस्कवरी, PLOGI, PRLI, फिर SCSI INQUIRY, WRITE(10), और READ(10)।"
+  },
+  "nvme-tcp-cdc-discovery-io": {
+    "title": "NVMe/TCP: mDNS → CDC Discovery → DIM → Subsystem Connect → I/O",
+    "description": "त्रि-स्तरीय डिस्कवरी के साथ संपूर्ण NVMe over TCP फ़्लो: mDNS → CDC (DIM रजिस्ट्रेशन, DDC रेफ़रल) → स्टोरेज पर DDC (IO Controller विवरण) → IOC कनेक्शन, Identify Controller/Namespace, NVMe Write और Read।"
+  },
+  "gpudirect-rdma-write-to-gpu": {
+    "title": "GPUDirect RDMA: GPU मेमोरी में सीधे RoCEv2 WRITE",
+    "description": "GPUDirect RDMA जो nvidia-peermem के माध्यम से सीधे GPU HBM में RDMA WRITE करता है, होस्ट DRAM को पूरी तरह बायपास करते हुए। cuMemAlloc, GPU BAR1 एक्सपोज़र, GPU मेमोरी पर MR रजिस्ट्रेशन, और ज़ीरो-कॉपी DMA डेटा पथ शामिल है।"
+  },
+  "gpudirect-storage-nvme-to-gpu": {
+    "title": "GPUDirect Storage: NVMe Read सीधे GPU मेमोरी में (लोकल PCIe)",
+    "description": "GPUDirect Storage (GDS) जो cuFile API और nvidia-fs के माध्यम से NVMe SSD डेटा सीधे GPU मेमोरी में पढ़ता है, CPU पेज कैश को पूरी तरह बायपास करते हुए। पारंपरिक स्टोरेज पथ (3 कॉपी) बनाम GDS ज़ीरो-कॉपी P2P DMA की तुलना।"
+  },
+  "s3-rdma-object-put-get": {
+    "title": "S3/RDMA: RoCEv2 पर Object PUT और GET (NVIDIA लाइब्रेरी आर्किटेक्चर)",
+    "description": "NVIDIA RDMA for S3-compatible storage लाइब्रेरी का उपयोग करके प्री-स्टैंडर्ड S3/RDMA फ़्लो: Library Init, UD SEND द्वारा QP कनेक्ट, S3 PUT (उल्टा — क्लाइंट सर्वर पर RDMA WRITE करता है), S3 GET (सर्वर क्लाइंट पर RDMA WRITE करता है)। ज़ीरो CPU डेटा पथ।"
+  },
+  "gpudirect-storage-rdma-remote": {
+    "title": "GPUDirect Storage: RoCEv2 पर रिमोट NVMe-oF Read/Write सीधे GPU मेमोरी में",
+    "description": "RoCEv2 फ़ैब्रिक पर GPUDirect Storage: cuFileRead NVMe-oF READ ट्रिगर करता है जिसमें RDMA WRITE सीधे GPU HBM में डेटा पहुँचाता है; cuFileWrite NVMe-oF WRITE ट्रिगर करता है जिसमें RDMA READ GPU HBM से डेटा खींचता है। ज़ीरो होस्ट DRAM बाउंस।"
+  },
+  "arp-ndp-resolution": {
+    "title": "ARP & NDP: IPv4 एड्रेस रिज़ॉल्यूशन और IPv6 नेबर डिस्कवरी",
+    "description": "साथ-साथ तुलना: ARP ब्रॉडकास्ट Request/Reply और Gratuitous ARP (IPv4) बनाम NDP solicited-node मल्टीकास्ट Neighbor Solicitation/Advertisement और SLAAC के साथ Router Advertisement (IPv6)। दिखाता है कि NDP क्यों ARP से अधिक स्केलेबल और सुरक्षित है।"
+  },
+  "smb-direct-negotiate-rdma-io": {
+    "title": "SMB Direct: Negotiate → RDMA चैनल → RoCEv2 पर File Read & Write",
+    "description": "RoCEv2 पर SMB Direct (MS-SMBD): SMB Direct negotiate, SMB 3.1.1 dialect, session/tree सेटअप, फिर file WRITE (सर्वर क्लाइंट बफ़र से RDMA READ करता है) और READ (सर्वर क्लाइंट बफ़र में RDMA WRITE करता है)। Hyper-V over SMB वर्कलोड के लिए ज़ीरो-कॉपी डेटा पथ।"
+  },
+  "tls-1.3-handshake": {
+    "title": "TLS 1.3: पूर्ण Handshake → एन्क्रिप्टेड एप्लिकेशन डेटा → Alert Close",
+    "description": "संपूर्ण TLS 1.3 (RFC 8446) फ़्लो: TCP handshake, x25519 की एक्सचेंज के साथ 1-RTT TLS handshake (ClientHello key_share + ServerHello key_share), एन्क्रिप्टेड सर्वर फ़्लाइट (EncryptedExtensions + Certificate + CertificateVerify + Finished), AES-256-GCM पर एप्लिकेशन डेटा, और close_notify teardown।"
+  },
+  "gpu-to-gpu-rdma-tensor-transfer": {
+    "title": "GPU-to-GPU RDMA: RoCEv2 के माध्यम से नोड्स में टेंसर ट्रांसफ़र",
+    "description": "RoCEv2 पर GPUDirect RDMA का उपयोग करके एंड-टू-एंड GPU-to-GPU टेंसर ट्रांसफ़र: CUDA alloc, nvidia-peermem BAR1 एक्सपोज़र, MR रजिस्ट्रेशन, QP bring-up, RDMA WRITE (पुश) और RDMA READ (पुल) — सब GPU HBM से GPU HBM, ज़ीरो होस्ट DRAM बाउंस।"
+  },
+  "checking-email": {
+    "title": "ईमेल चेक करना: जब आप Inbox पर क्लिक करते हैं तो असल में क्या होता है",
+    "description": "आप अपने Gmail बुकमार्क पर क्लिक करते हैं। एक भी ईमेल दिखने से पहले, 500ms से कम में ~20 प्रोटोकॉल एक्सचेंज होते हैं: DNS लुकअप, TCP 3-way handshake, TLS 1.3 एन्क्रिप्शन, और HTTP/2 मल्टीप्लेक्स्ड HTML, JavaScript, और inbox डेटा लोडिंग — सब एक कनेक्शन पर।"
+  },
+  "nccl-allreduce-rocev2": {
+    "title": "NCCL AllReduce: RoCEv2 पर Ring Algorithm (4 GPUs)",
+    "description": "RoCEv2 के माध्यम से 4 GPU नोड्स पर NCCL Ring-AllReduce: Reduce-Scatter चरण (3 स्टेप, आंशिक ग्रेडिएंट योग संचय) फिर AllGather चरण (3 स्टेप, अंतिम परिणाम प्रसारण)। सभी डेटा मूवमेंट GPUDirect RDMA WRITE द्वारा — GPU HBM से GPU HBM, ज़ीरो CPU कॉपी।"
+  },
+  "ipv6-slaac-autoconfiguration": {
+    "title": "IPv6 SLAAC: Router Advertisement → DAD → एड्रेस ऑटोकॉन्फ़िगरेशन",
+    "description": "IPv6 होस्ट बिना DHCP सर्वर के अपने एड्रेस कैसे कॉन्फ़िगर करते हैं: Router Solicitation, प्रीफ़िक्स जानकारी के साथ Router Advertisement, EUI-64 और प्राइवेसी एड्रेस जनरेशन, solicited-node मल्टीकास्ट द्वारा Duplicate Address Detection, और DNS के लिए RDNSS।"
+  },
+  "ipv6-vs-ipv4-header-comparison": {
+    "title": "IPv6 बनाम IPv4 हेडर: IPv6 वायर पर तेज़ क्यों है",
+    "description": "साथ-साथ तुलना: IPv4 का 13-फ़ील्ड वेरिएबल-लेंथ हेडर जिसमें हर हॉप पर चेकसम रीकैलकुलेशन बनाम IPv6 का 8-फ़ील्ड फ़िक्स्ड 40-बाइट हेडर जिसमें कोई चेकसम नहीं और कोई राउटर फ़्रैगमेंटेशन नहीं।"
+  },
+  "happy-eyeballs-dual-stack": {
+    "title": "Happy Eyeballs: आपका ब्राउज़र IPv4 बनाम IPv6 कैसे चुनता है",
+    "description": "Happy Eyeballs एल्गोरिदम (RFC 8305) कार्यरत: समानांतर DNS AAAA+A क्वेरीज़, 250ms फ़ॉलबैक टाइमर के साथ IPv6-प्राथमिक कनेक्शन रेसिंग, और IPv6 टूटने पर पारदर्शी IPv4 फ़ॉलबैक।"
+  },
+  "dhcpv6-stateful-stateless": {
+    "title": "DHCPv6: Stateful बनाम Stateless — जब RA पर्याप्त नहीं है",
+    "description": "तीन DHCPv6 मोड साथ-साथ: SLAAC के साथ DNS/NTP जानकारी के लिए Stateless (O=1, M=0), प्रबंधित एड्रेस असाइनमेंट के लिए पूर्ण SARR 4-मैसेज एक्सचेंज वाला Stateful (M=1), और Prefix Delegation जहाँ ISP होम राउटर को /48 डेलिगेट करता है।"
+  },
+  "nat64-dns64-ipv6-only-to-ipv4": {
+    "title": "NAT64/DNS64: IPv6-Only क्लाइंट की IPv4-Only सर्वर से बात",
+    "description": "प्रमुख फ़ेडरल IPv6 ट्रांज़िशन तकनीक: DNS64 वेल-नोन प्रीफ़िक्स 64:ff9b::/96 का उपयोग करके A रिकॉर्ड से AAAA रिकॉर्ड सिंथेसाइज़ करता है, NAT64 वायर पर IPv6 पैकेट को IPv4 में ट्रांसलेट करता है, और 464XLAT हार्डकोडेड IPv4 एड्रेस वाले लेगेसी ऐप्स को संभालता है।"
+  },
+  "ipv6-path-mtu-discovery": {
+    "title": "IPv6 Path MTU Discovery: राउटर फ़्रैगमेंटेशन अब नहीं",
+    "description": "PMTUD IPv6 में अनिवार्य क्यों है: राउटर फ़्रैगमेंट नहीं कर सकते, इसलिए ICMPv6 Packet Too Big संदेश सोर्स को छोटे पैकेट भेजने के लिए कहते हैं।"
+  }
+}

@@ -1,0 +1,74 @@
+{
+  "meta": {
+    "title": "iSCSI: 로그인 → 디스커버리 → SCSI INQUIRY → WRITE(10) → READ(10)",
+    "description": "TCP 기반 iSCSI 스토리지 세션의 전체 수명주기. TCP 3방향 핸드셰이크, iSCSI 로그인 단계(보안 협상 및 운영 매개변수 협상), SCSI INQUIRY를 통한 장치 검색, 4KB WRITE(10) 및 READ(10) 작업. iSCSI 프로토콜 데이터 단위(PDU): Login, R2T, Data-Out, Data-In, SCSI Response를 포함합니다.",
+    "learning_objectives": [
+      "iSCSI가 TCP 연결 위에서 SCSI 명령을 전달하는 방식 이해",
+      "iSCSI 로그인 단계 확인: 보안 협상 → 운영 매개변수 협상 → Full Feature Phase",
+      "R2T(Ready to Transfer) 흐름 제어가 쓰기 데이터를 제어하는 방식 관찰",
+      "SCSI WRITE와 READ 명령의 데이터 흐름 비교"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "물리 링크 업 — 양쪽 세그먼트에서 10GbE",
+      "detail": "표준 10GbE Ethernet 링크가 활성화됩니다. FC(전용 SAN 패브릭)나 RoCEv2(PFC/무손실 Ethernet 필요)와 달리 iSCSI는 모든 표준 IP 네트워크에서 실행됩니다. 특별한 스위치 구성이 필요 없습니다 — TCP가 신뢰성과 흐름 제어를 처리합니다."
+    },
+    "1": {
+      "text": "TCP 3방향 핸드셰이크 → 포트 3260으로 연결 수립",
+      "detail": "iSCSI 이니시에이터가 타겟의 잘 알려진 iSCSI 포트(3260)로 TCP 연결을 설정합니다. 이 TCP 연결 위에서 모든 iSCSI PDU가 전송됩니다."
+    },
+    "2": {
+      "text": "iSCSI 로그인 → 보안 협상(AuthMethod=None)",
+      "detail": "이니시에이터가 iSCSI Login 요청 PDU를 전송하여 보안 협상을 시작합니다. 이 시나리오에서는 AuthMethod=None으로 인증 없이 진행합니다."
+    },
+    "3": {
+      "text": "로그인 응답 ← 보안 수락, TSIH=0x0001 할당",
+      "detail": "타겟이 보안 협상을 수락하고 TSIH(Target Session Identifying Handle)를 할당합니다."
+    },
+    "4": {
+      "text": "로그인 → 운영 매개변수 협상",
+      "detail": "이니시에이터와 타겟이 운영 매개변수를 협상합니다: MaxRecvDataSegmentLength, MaxBurstLength, FirstBurstLength, MaxConnections 등."
+    },
+    "5": {
+      "text": "로그인 완료 ← Full Feature Phase — 세션 수립",
+      "detail": "iSCSI 로그인 절차가 완료되고 Full Feature Phase로 전환됩니다. 이제 SCSI 명령을 발행할 수 있습니다."
+    },
+    "6": {
+      "text": "SCSI INQUIRY → 이니시에이터가 LUN 0 장치 특성 검색",
+      "detail": "이니시에이터가 SCSI INQUIRY 명령을 전송하여 LUN 0 장치의 유형, 제조사, 모델 정보를 조회합니다."
+    },
+    "7": {
+      "text": "INQUIRY 응답 ← 직접 액세스 블록 장치(LIO-ORG IBLOCK)",
+      "detail": "타겟이 INQUIRY 응답을 반환합니다: 장치 유형=직접 액세스 블록 장치(SPC-5), 제조사=LIO-ORG, 모델=IBLOCK."
+    },
+    "8": {
+      "text": "SCSI WRITE(10) → LBA 0에 4KB 쓰기",
+      "detail": "이니시에이터가 SCSI WRITE(10) 명령을 iSCSI PDU로 캡슐화하여 전송합니다. 4KB 데이터를 LBA 0에 쓰려고 합니다."
+    },
+    "9": {
+      "text": "R2T ← 타겟이 4KB 쓰기 데이터 수신 준비 완료",
+      "detail": "타겟이 R2T(Ready to Transfer) PDU를 전송하여 이니시에이터에게 데이터를 보내도 된다고 알립니다. R2T는 iSCSI의 흐름 제어 메커니즘입니다."
+    },
+    "10": {
+      "text": "Data-Out → 이니시에이터가 4KB 쓰기 데이터 전송",
+      "detail": "이니시에이터가 Data-Out PDU로 4KB 쓰기 데이터를 전송합니다."
+    },
+    "11": {
+      "text": "WRITE 응답 ← GOOD — 4KB가 LBA 0에 기록됨",
+      "detail": "타겟이 SCSI WRITE 완료 상태 GOOD를 반환합니다. 4KB 데이터가 LBA 0에 성공적으로 기록되었습니다."
+    },
+    "12": {
+      "text": "SCSI READ(10) → LBA 0에서 4KB 읽기",
+      "detail": "이니시에이터가 SCSI READ(10) 명령을 전송하여 LBA 0에서 4KB를 읽으려고 합니다."
+    },
+    "13": {
+      "text": "Data-In ← GOOD 상태와 함께 4KB 읽기 데이터 전달",
+      "detail": "타겟이 Data-In PDU로 4KB 읽기 데이터를 GOOD 상태와 함께 전달합니다. iSCSI에서 READ는 R2T 없이 타겟이 직접 데이터를 보냅니다."
+    },
+    "14": {
+      "text": "⟳ 시나리오 완료 — iSCSI 세션 수명주기",
+      "detail": "이 시나리오는 iSCSI 세션의 전체 수명주기를 보여주었습니다: TCP 연결, iSCSI 로그인(보안 + 운영 협상), SCSI INQUIRY, WRITE(10) 및 READ(10) 작업."
+    }
+  }
+}

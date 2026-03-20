@@ -1,0 +1,102 @@
+{
+  "meta": {
+    "title": "NVMe-oF/RDMA: 디스커버리 → Fabrics Connect → RoCEv2 기반 NVMe Write & Read",
+    "description": "RDMA(RoCEv2) 전송을 사용하는 완전한 NVMe over Fabrics. 물리 링크 수립과 ARP 해석부터 CM 기반 RDMA 연결 설정, Discovery Controller에 대한 NVMe-oF Fabrics Connect, Discovery Log Page 검색, IO Controller 연결, Identify Controller/Namespace, NVMe Write 및 Read 작업까지. NVMe/TCP 시나리오와 비교 — 여기서는 NVMe 명령이 RDMA SEND로, 데이터는 RDMA WRITE(컨트롤러→호스트) 및 RDMA READ(호스트→컨트롤러)로, 완료는 RDMA SEND로 전달됩니다. CPU는 데이터 경로에 관여하지 않습니다.",
+    "learning_objectives": [
+      "NVMe-oF가 RDMA를 전송 바인딩으로 사용하는 방식 이해 — 명령은 SEND, 데이터는 WRITE/READ",
+      "NVMe-oF Fabrics Connect에 선행하는 RDMA CM 연결 설정 확인",
+      "RDMA를 통해 Admin 및 IO 큐를 설정하는 Fabrics Connect 명령 추적",
+      "IO Controller를 찾기 위해 RDMA를 통해 반환되는 Discovery Log Page 관찰",
+      "NVMe Write 추적: 호스트가 RDMA SEND로 명령 전송, 컨트롤러가 RDMA READ로 데이터 가져오기",
+      "NVMe Read 추적: 호스트가 RDMA SEND로 명령 전송, 컨트롤러가 RDMA WRITE로 데이터 전달",
+      "RDMA 데이터 배치를 위한 SGL(Scatter-Gather List) 사용 이해",
+      "RDMA 전송 바인딩과 TCP 비교 — 제로카피 vs 커널 매개 데이터 경로"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "물리 링크 업 — 양쪽 세그먼트에서 PFC 활성화된 100GbE",
+      "detail": "양쪽 100GbE 링크가 오토네고시에이션을 완료하고 PFC가 활성화됩니다. RoCEv2 전송에는 무손실 이더넷 패브릭이 필요합니다."
+    },
+    "1": {
+      "text": "ARP 요청 — 호스트가 스토리지 타겟의 MAC 주소 해석",
+      "detail": "호스트가 NVMe-oF 스토리지 타겟의 MAC 주소를 해석하기 위해 ARP 요청을 브로드캐스트합니다."
+    },
+    "2": {
+      "text": "ARP 응답 — 타겟이 MAC 00:02:c9:ab:cd:ef로 응답",
+      "detail": "스토리지 타겟이 자신의 MAC 주소로 응답합니다. 양쪽이 ARP 캐시를 업데이트합니다."
+    },
+    "3": {
+      "text": "CM REQ → 호스트가 NVMe Admin Queue용 RDMA 연결 시작",
+      "detail": "호스트가 RDMA CM(Connection Manager) REQ 메시지를 전송하여 NVMe Admin Queue용 RDMA 연결을 요청합니다. QP 번호, 프라이빗 데이터, RDMA 연결 매개변수가 포함됩니다."
+    },
+    "4": {
+      "text": "CM REP ← 타겟이 RDMA 연결 수락, QP 할당",
+      "detail": "타겟이 CM REP로 응답하여 RDMA 연결을 수락하고 QP를 할당합니다."
+    },
+    "5": {
+      "text": "CM RTU → RDMA 연결 수립 — Admin Queue 준비 완료",
+      "detail": "호스트가 CM RTU(Ready-to-Use)를 전송하여 RDMA 연결을 완료합니다. QP가 RTS(Ready-to-Send) 상태로 전환됩니다."
+    },
+    "6": {
+      "text": "Fabrics Connect → 호스트가 Discovery Controller에 연결",
+      "detail": "호스트가 NVMe-oF Fabrics Connect 명령을 RDMA SEND로 전송하여 Discovery Controller에 연결합니다."
+    },
+    "7": {
+      "text": "Fabrics Connect 응답 ← Discovery Controller 준비 완료",
+      "detail": "Discovery Controller가 Fabrics Connect에 성공적으로 응답합니다. 호스트가 Admin 명령을 발행할 수 있습니다."
+    },
+    "8": {
+      "text": "Get Log Page → 호스트가 RDMA SEND로 Discovery Log 요청",
+      "detail": "호스트가 Get Log Page 명령을 RDMA SEND로 전송하여 사용 가능한 IO Controller 목록이 포함된 Discovery Log Page를 요청합니다."
+    },
+    "9": {
+      "text": "RDMA WRITE ← 타겟이 Discovery Log Page를 호스트 메모리에 전달",
+      "detail": "타겟이 RDMA WRITE를 사용하여 Discovery Log Page를 호스트 메모리에 직접 배치합니다. CPU 개입 없는 제로카피 전송입니다."
+    },
+    "10": {
+      "text": "완료 ← Discovery Log Page 검색 성공",
+      "detail": "호스트가 Discovery Log Page를 성공적으로 수신했습니다. 사용 가능한 IO Controller 목록을 얻었습니다."
+    },
+    "11": {
+      "text": "Fabrics Connect → 호스트가 IO Queue를 스토리지 서브시스템에 연결",
+      "detail": "호스트가 새로운 RDMA 연결을 설정하고 Fabrics Connect를 전송하여 IO Controller에 IO Queue를 연결합니다."
+    },
+    "12": {
+      "text": "Fabrics Connect 응답 ← IO Controller 준비, CNTLID=0x0041",
+      "detail": "IO Controller가 Fabrics Connect에 성공적으로 응답하고 컨트롤러 ID(CNTLID=0x0041)를 할당합니다. IO 작업을 시작할 수 있습니다."
+    },
+    "13": {
+      "text": "NVMe Write → 호스트가 4KB 쓰기 명령 전송(RDMA SEND)",
+      "detail": "호스트가 RDMA SEND로 NVMe Write 명령을 전송합니다. SQE(제출 큐 항목)에는 SGL(Scatter-Gather List)이 포함되어 컨트롤러가 호스트 메모리에서 쓰기 데이터를 가져올 위치를 알려줍니다."
+    },
+    "14": {
+      "text": "RDMA READ ← 타겟이 호스트 메모리에서 쓰기 데이터 가져오기",
+      "detail": "컨트롤러가 RDMA READ를 실행하여 SGL이 가리키는 호스트 메모리에서 4KB 쓰기 데이터를 가져옵니다. 호스트 CPU의 개입 없이 NIC이 직접 메모리에서 읽습니다."
+    },
+    "15": {
+      "text": "RDMA READ 응답 → 4KB 쓰기 데이터가 타겟에 전달됨",
+      "detail": "RDMA READ 응답으로 4KB 쓰기 데이터가 타겟에 성공적으로 전달됩니다."
+    },
+    "16": {
+      "text": "NVMe Write 완료 ← 4KB가 LBA 0에 성공적으로 기록됨",
+      "detail": "컨트롤러가 RDMA SEND로 NVMe 완료 항목을 전송합니다. 4KB 데이터가 LBA 0에 성공적으로 기록되었습니다."
+    },
+    "17": {
+      "text": "NVMe Read → 호스트가 4KB 읽기 명령 전송(RDMA SEND)",
+      "detail": "호스트가 RDMA SEND로 NVMe Read 명령을 전송합니다. SGL에는 컨트롤러가 읽기 데이터를 배치할 호스트 메모리 위치가 포함됩니다."
+    },
+    "18": {
+      "text": "RDMA WRITE ← 타겟이 4KB 읽기 데이터를 호스트 메모리에 전달",
+      "detail": "컨트롤러가 RDMA WRITE를 사용하여 4KB 읽기 데이터를 SGL이 가리키는 호스트 메모리에 직접 배치합니다. 호스트 CPU 개입 없이 제로카피로 전달됩니다."
+    },
+    "19": {
+      "text": "NVMe Read 완료 ← 4KB가 LBA 0에서 성공적으로 읽혀짐",
+      "detail": "컨트롤러가 RDMA SEND로 NVMe 완료 항목을 전송합니다. 4KB 데이터가 LBA 0에서 성공적으로 읽혀졌습니다."
+    },
+    "20": {
+      "text": "⟳ 시나리오 완료 — NVMe-oF/RDMA 디스커버리 및 I/O",
+      "detail": "이 시나리오는 완전한 NVMe over Fabrics/RDMA 수명주기를 보여주었습니다: RDMA CM 연결 설정, Discovery Controller를 통한 IO Controller 검색, IO Queue 연결, 그리고 RDMA WRITE/READ를 통한 제로카피 NVMe I/O 작업."
+    }
+  }
+}

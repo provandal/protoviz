@@ -1,4 +1,5 @@
 import { L_COLOR } from '../../utils/constants';
+import { isRtl, endAlign } from '../../utils/rtl';
 
 export default function OsiStack({ actorId, label, layers, stepEvent }) {
   const activeLayers = new Set();
@@ -35,7 +36,7 @@ export default function OsiStack({ actorId, label, layers, stepEvent }) {
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', borderBottom: `1px solid ${color}22` }}>
                 <span style={{ background: isActive ? color : `${color}44`, color: '#fff', fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 3, transition: 'background 0.3s' }}>L{layer.layer}</span>
                 <span style={{ color: isActive ? '#f1f5f9' : '#64748b', fontSize: 10, fontWeight: 600, transition: 'color 0.3s' }}>{layer.name}</span>
-                {isActive && <span style={{ marginLeft: 'auto', width: 6, height: 6, borderRadius: '50%', background: color, boxShadow: `0 0 4px ${color}` }} />}
+                {isActive && <span style={{ marginInlineStart: 'auto', width: 6, height: 6, borderRadius: '50%', background: color, boxShadow: `0 0 4px ${color}` }} />}
               </div>
               <div style={{ padding: '4px 8px 6px' }}>
                 {Object.entries(layer.fields).map(([k, v]) => (
@@ -45,7 +46,7 @@ export default function OsiStack({ actorId, label, layers, stepEvent }) {
                       color: String(v).includes('RTS') || String(v).includes('UP') || String(v).includes('ESTABLISHED') || String(v).includes('complete') ? '#34d399' :
                              String(v).includes('down') || String(v).includes('RESET') || String(v).includes('idle') || v === false ? '#475569' :
                              '#fbbf24',
-                      fontSize: 9, fontFamily: 'monospace', fontWeight: 600, maxWidth: 120, textAlign: 'right', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      fontSize: 9, fontFamily: 'monospace', fontWeight: 600, maxWidth: 120, textAlign: endAlign(), overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                     }}>{String(v)}</span>
                   </div>
                 ))}

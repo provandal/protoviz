@@ -1,0 +1,30 @@
+{
+  "meta": {
+    "title": "TLS 1.3: Full Handshake → एन्क्रिप्टेड Application Data → Alert Close",
+    "description": "TLS 1.3 (RFC 8446) पूर्ण handshake जो TCP handshake के तुरंत बाद केवल 1-RTT में पूरा होता है। ClientHello key_share (x25519) सर्वर को तुरंत keys derive करने में सक्षम बनाता है। EncryptedExtensions, Certificate, CertificateVerify, और Finished सभी एन्क्रिप्टेड हैं। AES-256-GCM authenticated encryption एप्लिकेशन डेटा की सुरक्षा करता है। close_notify alert से सुचारु TLS शटडाउन।",
+    "learning_objectives": [
+      "1-RTT TLS 1.3 handshake बनाम 2-RTT TLS 1.2 समझें",
+      "देखें कि ClientHello key_share (x25519) सर्वर को तुरंत keys derive करने में कैसे सक्षम बनाता है",
+      "Handshake key schedule ट्रेस करें: (EC)DHE shared secret → Handshake Secret → handshake traffic keys",
+      "देखें कि EncryptedExtensions, Certificate, CertificateVerify, और Finished सभी एन्क्रिप्टेड हैं",
+      "समझें कि Master Secret handshake से application traffic keys कैसे derive करता है",
+      "application data की सुरक्षा करने वाला AES-256-GCM authenticated encryption देखें",
+      "सुचारु TLS शटडाउन के लिए close_notify alert फॉलो करें",
+      "समझें कि TLS 1.3 ने RSA key transport, static DH, और सभी CBC cipher suites क्यों हटाए"
+    ]
+  },
+  "timeline": {
+    "0": { "text": "TCP SYN → Port 443 (HTTPS)", "detail": "क्लाइंट सर्वर के HTTPS पोर्ट (443) पर TCP कनेक्शन शुरू करता है। TLS 1.3 TCP पर चलता है (या TLS 1.3 + HTTP/3 में QUIC/UDP पर, यहाँ नहीं दिखाया)। TLS शुरू होने से पहले TCP handshake पूरा होना चाहिए।" },
+    "1": { "text": "TCP SYN-ACK ← सर्वर acknowledge करता है", "detail": "सर्वर SYN-ACK के साथ जवाब देता है।" },
+    "2": { "text": "TCP ACK → कनेक्शन स्थापित", "detail": "TCP 3-way handshake पूर्ण। TLS handshake तुरंत शुरू होता है।" },
+    "3": { "text": "TLS ClientHello — TLS 1.3 + x25519 key share प्रस्तावित करता है", "detail": "क्लाइंट ClientHello भेजता है जिसमें शामिल है: • supported_versions: [TLS 1.3] — TLS 1.3 negotiate करने का एकमात्र तरीका • cipher_suites: [AES-256-GCM, AES-128-GCM, ChaCha20-Poly1305] • key_share: x25519 क्लाइंट public key\nTLS 1.3 में मुख्य नवाचार: क्लाइंट key_share पहले मैसेज में ही भेजता है। TLS 1.2 में, key exchange ServerKeyExchange तक शुरू नहीं होता था (अतिरिक्त राउंड ट्रिप)।" },
+    "4": { "text": "TLS ServerHello — AES-256-GCM + x25519 key share चुनता है", "detail": "सर्वर ServerHello से जवाब देता है: • supported_versions: TLS 1.3 (version पुष्टि) • cipher_suite: TLS_AES_256_GCM_SHA384 • key_share: x25519 सर्वर public key\nइस बिंदु पर, दोनों तरफ ECDHE shared secret की गणना कर सकते हैं और handshake traffic keys derive कर सकते हैं। ServerHello के बाद सब कुछ एन्क्रिप्टेड है।" },
+    "5": { "text": "सर्वर एन्क्रिप्टेड फ्लाइट — EncryptedExtensions + Certificate + CertificateVerify + Finished", "detail": "सर्वर चार handshake मैसेज भेजता है, सभी ECDHE shared secret से derive किए गए handshake traffic keys से एन्क्रिप्टेड:\n1. EncryptedExtensions — नॉन-key extensions (ALPN: h2, आदि)\n2. Certificate — सर्वर का X.509 certificate chain\n3. CertificateVerify — certificate private key से handshake transcript पर signature\n4. Finished — HMAC-SHA384(server_finished_key, Hash(all_handshake))\nTLS 1.2 की तुलना में: वहाँ Certificate और ServerKeyExchange प्लेनटेक्स्ट में थे। TLS 1.3 ServerHello के बाद सब कुछ एन्क्रिप्ट करता है।" },
+    "6": { "text": "Client Finished (एन्क्रिप्टेड) — TLS 1.3 handshake 1-RTT में पूर्ण", "detail": "क्लाइंट अपना Finished मैसेज भेजता है (handshake keys से एन्क्रिप्टेड): • Verify Data = HMAC-SHA384(client_finished_key, Hash(all_handshake))\nसर्वर इसे वेरिफाई करने के बाद, handshake पूरा है। दोनों तरफ master secret से application traffic keys derive करते हैं। कुल TLS handshake: 1 राउंड ट्रिप (ClientHello → ServerHello+Encrypted → Client Finished)।" },
+    "7": { "text": "HTTPS GET request — AES-256-GCM application traffic keys से एन्क्रिप्टेड", "detail": "क्लाइंट पेज के लिए HTTP/2 GET request भेजता है। पूरा HTTP request (method, headers, path, cookies — सब कुछ) TLS Application Data रिकॉर्ड में एन्क्रिप्ट है।\nEncryption: application traffic key से AES-256-GCM, प्रति-रिकॉर्ड unique nonce के साथ। authentication tag अखंडता की गारंटी देता है।" },
+    "8": { "text": "HTTPS 200 OK response — एन्क्रिप्टेड पेज सामग्री", "detail": "सर्वर अपनी application traffic key से एन्क्रिप्टेड पेज सामग्री के साथ जवाब देता है। बड़ी responses कई TLS रिकॉर्ड में फैलती हैं (प्रति रिकॉर्ड अधिकतम 16,384 बाइट plaintext, साथ ही content type और padding के लिए 256 बाइट)।" },
+    "9": { "text": "TLS close_notify alert — क्लाइंट सुचारु शटडाउन शुरू करता है", "detail": "क्लाइंट close_notify भेजता है कि वह और TLS डेटा नहीं भेजेगा। यह alert एन्क्रिप्टेड है (वायर पर Application Data के रूप में दिखता है)।\nclose_notify truncation हमले रोकता है — इसके बिना, हमलावर TCP कनेक्शन काटकर application को अपूर्ण डेटा स्वीकार करवा सकता है।" },
+    "10": { "text": "TLS close_notify ← सर्वर जवाब देता है, TLS session साफ तरीके से बंद", "detail": "सर्वर अपने close_notify से acknowledge करता है। दोनों तरफ अब जानते हैं कि TLS session साफ तरीके से समाप्त है। ट्रांसपोर्ट कनेक्शन बंद करने के लिए TCP FIN/ACK अनुसरण करता है।" },
+    "11": { "text": "⟳ परिदृश्य पूर्ण — TLS 1.3 Full Handshake", "detail": "इस परिदृश्य ने TLS 1.3 (RFC 8446) full handshake प्रदर्शित किया:\nTCP HANDSHAKE (3 पैकेट): SYN → SYN-ACK → ACK\nTLS 1.3 HANDSHAKE (3 मैसेज, 1 राउंड ट्रिप): ClientHello (key_share: x25519 public) → ServerHello (key_share) + Encrypted[Extensions, Cert, CertVerify, Finished] → Client Finished\nAPPLICATION DATA: AES-256-GCM एन्क्रिप्टेड HTTP/2 request/response\nGRACEFUL CLOSE: close_notify exchange\n\nTLS 1.2 से मुख्य सुधार: • 2 RTT → 1 RTT handshake • ServerHello के बाद सब एन्क्रिप्टेड • कोई RSA key transport (केवल forward secrecy) • कोई CBC cipher suites (GCM/ChaCha20 ही) • सरल state machine" }
+  }
+}

@@ -1,0 +1,114 @@
+{
+  "meta": {
+    "title": "[WIP] GPUDirect Storage：基于 RoCEv2 的远程 NVMe-oF 读写到 GPU 内存",
+    "description": "展示 GPUDirect Storage 如何通过 NVMe-oF/RDMA 从远程存储直接读写 GPU 内存，绕过主机 DRAM 弹跳缓冲区。",
+    "learning_objectives": [
+      "理解远程 GDS 如何结合 NVMe-oF/RDMA 和 GPUDirect",
+      "了解 cuFileHandleRegister 如何注册远程 NVMe-oF 命名空间",
+      "观察 RDMA WRITE 直接到 GPU HBM 的数据路径",
+      "观察 RDMA READ 从 GPU HBM 的数据路径",
+      "理解弹跳缓冲区绕过的性能优势",
+      "跟踪 cuFileRead 和 cuFileWrite 的完整流程",
+      "了解 nvidia-fs 内核模块的角色",
+      "将远程 GDS 与本地 GDS 进行对比"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "链路 A：检测到信号 — GPU 节点 ↔ 交换机",
+      "detail": "GPU 节点上的光收发器检测到来自交换机端口 A 的光信号。自动协商按照 IEEE 802.3cd 第 73 条款开始。"
+    },
+    "1": {
+      "text": "链路 B：检测到信号 — 交换机 ↔ 存储目标",
+      "detail": "存储目标上的光收发器检测到来自交换机端口 B 的光信号。"
+    },
+    "2": {
+      "text": "链路 A UP — GPU 节点 ↔ 交换机 100Gbps，带 RS-FEC",
+      "detail": "自动协商和链路训练完成。优先级 3 上已启用 PFC，用于 RoCEv2 无损传输。"
+    },
+    "3": {
+      "text": "链路 B UP — 交换机 ↔ 存储目标 100Gbps，带 RS-FEC",
+      "detail": "两条链路均已建立。端到端的二层连通性已就绪。"
+    },
+    "4": {
+      "text": "ARP 请求：谁拥有 192.168.1.20？",
+      "detail": "GPU 节点将存储目标的 IP 地址解析为 MAC 地址，用于 RoCEv2 GID 到 MAC 的映射。"
+    },
+    "5": {
+      "text": "ARP 应答：192.168.1.20 的 MAC 地址是 00:02:c9:ab:cd:ef",
+      "detail": "存储目标响应 ARP 请求。GPU 节点现在具有到存储的二层可达性。"
+    },
+    "6": {
+      "text": "CM REQ — GPU 节点为 NVMe-oF/RDMA 传输提议 QP",
+      "detail": "IB Connection Manager Request（连接管理器请求）。GPU 节点为 NVMe-oF/RDMA 连接提议 RC QP 参数。私有数据字段携带 TP8010 规定的 NVMe-oF RDMA CM 请求格式（队列 ID、SQ/RQ 大小）。"
+    },
+    "7": {
+      "text": "CM REP — 存储目标接受，提供 QPN 和 PSN",
+      "detail": "存储目标接受连接并提供其 QP 号（0x00B002）和起始 PSN（8765432）。"
+    },
+    "8": {
+      "text": "CM RTU — 两个 QP 均转换到 RTS，RDMA 传输就绪",
+      "detail": "两个 QP 均进入 RTS 状态。NVMe-oF/RDMA 传输层现在可以通过 RDMA SEND 发送 NVMe 命令胶囊，通过 RDMA WRITE/READ 传输数据。"
+    },
+    "9": {
+      "text": "Fabrics Connect — Admin 队列（QID=0）",
+      "detail": "NVMe-oF Fabrics Connect 命令通过 RDMA SEND 发送，建立管理队列关联。Connect Data（通过 SGL 发送）包含 hostnqn、subnqn 和 hostid。存储目标分配一个控制器 ID。"
+    },
+    "10": {
+      "text": "Fabrics Connect 响应 — 控制器 ID=1 已分配",
+      "detail": "存储目标接受 Fabrics Connect 并分配控制器 ID 1。管理队列已建立——Identify、Get Log Page 和其他管理命令可以流动。"
+    },
+    "11": {
+      "text": "Fabrics Connect — I/O 队列（QID=1）",
+      "detail": "为 I/O 队列 1 建立 Fabrics Connect。之后可以提交 NVMe Read/Write 命令。cuFileRead/cuFileWrite 命令将在此 I/O 队列上调度。"
+    },
+    "12": {
+      "text": "cuFileDriverOpen() — GDS 驱动已初始化，nvidia-fs 已加载",
+      "detail": "应用程序调用 cuFileDriverOpen() 初始化 GPUDirect Storage。这将加载 nvidia-fs 内核模块，该模块拦截 NVMe I/O 路径并将 DMA 重定向到 GPU 内存而非主机 DRAM。nvidia-peermem 注册为 IB peer memory 客户端，使得 RDMA MR 可以由 GPU 页面支持。"
+    },
+    "13": {
+      "text": "cuFileHandleRegister() — 远程 NVMe-oF 命名空间已向 GDS 注册",
+      "detail": "应用程序将文件句柄（由远程 NVMe-oF 命名空间支持）注册到 GDS。这告诉 nvidia-fs 拦截此文件描述符上的 I/O 并使用 GPUDirect 路径。"
+    },
+    "14": {
+      "text": "cuFileBufRegister() — GPU 缓冲区已为 RDMA 注册，绕过弹跳缓冲区",
+      "detail": "应用程序向 GDS 注册 GPU 内存缓冲区。nvidia-peermem 通过 BAR1 锁定 GPU 页面，并创建由 GPU HBM 支持的 RDMA Memory Region。RNIC 现在可以直接 DMA 到/从此 GPU 缓冲区。主机 DRAM 弹跳缓冲区被绕过——这是实现零拷贝存储 I/O 到 GPU 内存的关键使能器。"
+    },
+    "15": {
+      "text": "cuFileRead() 调用 — GDS 发出 NVMe READ，GPU 内存作为 RDMA 目标",
+      "detail": "应用程序调用 cuFileRead()。GDS 构建一个 NVMe Read 命令，其 SGL 描述符指向 GPU 内存区域（rkey=0xGPU01234）。当存储目标从磁盘读取数据时，它将 RDMA WRITE 数据直接到此 GPU 地址——数据永远不触碰主机 DRAM。"
+    },
+    "16": {
+      "text": "cuFileRead → NVMe Read 命令发送到存储（SGL → GPU 内存）",
+      "detail": "NVMe Read 命令胶囊通过 RDMA SEND 发送。SGL 描述符携带 GPU 内存区域的 rkey 和虚拟地址。存储目标将使用这些信息将读取数据 RDMA WRITE 直接到 GPU HBM。"
+    },
+    "17": {
+      "text": "存储 RDMA WRITE 读取数据直接到 GPU HBM — 零主机 DRAM 弹跳",
+      "detail": "这是关键时刻：存储目标从其 NVMe SSD 读取数据，然后执行目标为 GPU 内存区域的 RDMA WRITE。RETH 头部携带 GPU BAR1 虚拟地址和 rkey。GPU 节点的 RNIC 接收此 RDMA WRITE 并通过 PCIe P2P 将载荷直接 DMA 到 GPU HBM——数据永远不经过主机 DRAM 或 CPU 缓存。\n传统路径：存储 → RDMA WRITE → 主机 DRAM → CPU memcpy → GPU\nGDS 路径：存储 → RDMA WRITE → RNIC → PCIe BAR1 → GPU HBM（零弹跳）"
+    },
+    "18": {
+      "text": "NVMe Read 完成 — cuFileRead() 返回，数据已在 GPU HBM 中",
+      "detail": "NVMe 完成确认读取已完成。数据现在位于 GPU HBM 中，CUDA 内核可以立即使用——无需额外拷贝。"
+    },
+    "19": {
+      "text": "cuFileWrite() 调用 — GDS 发出 NVMe WRITE，数据源自 GPU HBM",
+      "detail": "应用程序调用 cuFileWrite()。GDS 构建一个 NVMe Write 命令，其 SGL 描述符指向 GPU 内存。存储目标将 RDMA READ 写入数据直接从 GPU HBM——数据永远不通过主机 DRAM 弹跳。"
+    },
+    "20": {
+      "text": "cuFileWrite → NVMe Write 命令发送（SGL → GPU 内存用于 RDMA READ）",
+      "detail": "NVMe Write 命令胶囊通过 RDMA SEND 发送。SGL 提供 GPU 缓冲区的 rkey 和虚拟地址。存储目标将从此地址 RDMA READ 以获取写入数据。"
+    },
+    "21": {
+      "text": "RDMA READ 响应 — GPU 数据直接从 HBM 发送到存储",
+      "detail": "存储目标发出目标为 GPU 内存区域的 RDMA READ Request。GPU 节点的 RNIC 自主地通过 PCIe BAR1 P2P DMA 从 GPU HBM 读取数据，并发送包含数据的 RDMA READ Response。GPU 节点上零 CPU 参与——RNIC 处理一切。\n传统路径：GPU → CPU memcpy → 主机 DRAM → RDMA SEND → 存储\nGDS 路径：GPU HBM → RNIC（通过 BAR1 P2P）→ RDMA READ Response → 存储"
+    },
+    "22": {
+      "text": "NVMe Write 完成 — cuFileWrite() 返回，数据已持久化到存储",
+      "detail": "NVMe 完成确认写入已完成。来自 GPU HBM 的数据已持久化到远程 NVMe 存储，全程未触碰主机 DRAM。"
+    },
+    "23": {
+      "text": "场景完成 — 基于 RoCEv2 的 GPUDirect Storage",
+      "detail": "总结：两条 100GbE 链路建立。通过 IB CM 建立 RDMA QP。NVMe-oF Fabrics Connect 在 RDMA 上创建了管理队列和 I/O 队列。GDS 通过 cuFileDriverOpen、cuFileHandleRegister 和 cuFileBufRegister 初始化——将 GPU 内存注册为 RDMA 并绕过主机 DRAM 弹跳缓冲区。cuFileRead 触发了 NVMe READ，其数据通过 RDMA WRITE 直接传递到 GPU HBM。cuFileWrite 触发了 NVMe WRITE，其数据通过 RDMA READ 直接从 GPU HBM 拉取。在两种情况下，均为零主机 DRAM 弹跳、零 CPU 参与数据路径。"
+    }
+  }
+}

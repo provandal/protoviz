@@ -1,0 +1,62 @@
+{
+  "meta": {
+    "title": "NCCL AllReduce: RoCEv2上のリングアルゴリズム (4 GPU)",
+    "description": "NCCL (NVIDIA Collective Communications Library) のRing-AllReduceを4つのGPUノードでRoCEv2接続により実行。AllReduceは分散AIトレーニングにおける支配的な通信パターンです — データ並列トレーニングのすべての勾配同期ステップがAllReduceです。このシナリオではリングアルゴリズムを示します: 各GPUがRDMA WRITE経由でリング隣接ノードにチャンクを送信し、Reduce-Scatterフェーズ (N-1ステップ) で部分和を蓄積し、AllGatherフェーズ (N-1ステップ) で最終結果をブロードキャストします。4 GPUでリングは合計6ステップで完了します。すべてのデータ移動はGPUDirect RDMAを使用 — ホストDRAMに触れずにGPUメモリからGPUメモリへ。",
+    "learning_objectives": [
+      "分散AIトレーニングにおいてAllReduceが重要な理由を理解する (勾配同期)",
+      "リングアルゴリズムがAllReduceをReduce-Scatter + AllGatherに分解する方法を見る",
+      "GPUリング隣接ノード間の勾配チャンクを運ぶRDMA WRITE操作を追跡する",
+      "Reduce-Scatter中に各GPUが部分和を蓄積する様子を観察する",
+      "リングAllReduceが最適な帯域幅利用率 2(N-1)/N を達成する理由を理解する",
+      "GPUDirect RDMAの動作を見る — ホストDRAMバウンスなしにGPU間でデータ移動",
+      "リング、ツリー、その他のAllReduceアルゴリズムの違いを理解する",
+      "PyTorch DDPやDeepSpeedなどのフレームワークにおけるNCCLの役割を理解する"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "物理リンクアップ — 4つのGPUノード全てに100GbEロスレスファブリック",
+      "detail": "4つのGPUノードすべてがPFCとECN有効の100GbEでスイッチに接続されています。実際のAIトレーニングクラスタではネットワークトポロジがファットツリーまたはレール最適化設計で複数のスイッチ階層を持つ場合があります。このシナリオでは明確さのために単一スイッチに簡略化しています。\nNCCLがトポロジを探索 (nvidia-smi topo、NVML、IBデバイスクエリ経由) し、最適なコレクティブアルゴリズムを決定します。4 GPUのノード間RoCEv2では、通常リングアルゴリズムを選択します。"
+    },
+    "1": {
+      "text": "NCCL初期化完了 — リングトポロジ確立、QP接続、GPUバッファ登録",
+      "detail": "ncclCommInitRank()が完了しました。NCCLは以下を実行しました:\n1. TCP経由でブートストラップしアドレスを交換 (NCCL_COMM_ID)\n2. GPUDirect RDMA機能を検出 (nvidia-peermemがロード済み)\n3. リング隣接ノード間のRDMA QPを作成:\n   リング: GPU 0 → GPU 1 → GPU 2 → GPU 3 → GPU 0\n4. GPU メモリバッファをibv_reg_mr()でRDMA Memory Regionとして登録 (nvidia-peermemがGPU BAR1マッピングを提供)\n5. rkeyとバッファアドレスをアウトオブバンドで交換\n\n各GPUにはGPU HBM (High Bandwidth Memory) 内に送信バッファと受信バッファがあります。NCCLはダブルバッファリングとパイプライニングを使用して計算と通信をオーバーラップさせます — 1つのチャンクが転送されている間、GPUカーネルは前のチャンクのリダクションを実行します。\n\n4 GPUのリングトポロジ:\n  GPU 0 → GPU 1 → GPU 2 → GPU 3 → GPU 0 (ring-next)\n  GPU 0 ← GPU 3 ← GPU 2 ← GPU 1 ← GPU 0 (ring-prev)"
+    },
+    "2": {
+      "text": "ncclAllReduce()呼び出し — 1 MB勾配テンソル、4チャンク × 256 KB",
+      "detail": "トレーニングループがncclAllReduce(sendbuf, recvbuf, count, ncclFloat, ncclSum, comm, stream)を呼び出します。リングAllReduceアルゴリズムがトリガーされます。\n入力: 各GPUがバックワードパスからの1 MB勾配テンソル (262,144 float32値) を持ちます。目標: すべてのGPUが4つのGPUの勾配のSUMを持つこと (SGD/Adamオプティマイザ更新用)。\nNCCLがテンソルをN=4チャンク、各256 KBに分割:\n  チャンク0: バイト [0, 256KB)\n  チャンク1: バイト [256KB, 512KB)\n  チャンク2: バイト [512KB, 768KB)\n  チャンク3: バイト [768KB, 1MB)\n\nリングアルゴリズムには2つのフェーズがあります:\nフェーズ1 — Reduce-Scatter (N-1 = 3ステップ):\n  各GPUがring-nextに1チャンクを送信、ring-prevから受信し、受信チャンクと自分のチャンクを蓄積 (合計)。3ステップ後、各GPUが正確に1チャンクの完全にリダクションされた結果を保持。\n\nフェーズ2 — AllGather (N-1 = 3ステップ):\n  各GPUが完全にリダクションされたチャンクをリング上で送信。3ステップ後、すべてのGPUが4つの完全にリダクションされたチャンクを保持。\n\nGPUあたりの合計転送データ: 2 × (N-1)/N × DataSize\n  = 2 × 3/4 × 1MB = 1.5 MB送信 + 1.5 MB受信\nこれは最適です — 帯域幅はNに線形にスケールします。"
+    },
+    "3": {
+      "text": "Reduce-Scatterステップ1 — 全GPUがchunk[rank]をring-nextに送信",
+      "detail": "4つのGPUが同時にring-next隣接ノードに1チャンクずつ送信します:\n  GPU 0がチャンク0をGPU 1に送信 (RDMA WRITEでGPU 1のHBMに直接)\n  GPU 1がチャンク1をGPU 2に送信\n  GPU 2がチャンク2をGPU 3に送信\n  GPU 3がチャンク3をGPU 0に送信\n\n代表的なリンクとしてGPU 0 → GPU 1を示します。RDMA WRITEはGPUDirect RDMA経由でGPU 1のHBM受信バッファに直接着地します — RNICのDMAエンジンがnvidia-peermemによってマッピングされたGPU BAR1メモリに書き込みます。どちらのCPUもデータ転送に関与しません。\n受信後、GPU 1がCUDAカーネルを起動して計算:\n  recv_buf[チャンク0] = recv_buf[チャンク0] + local[チャンク0]\nこれはGPU 0の勾配をGPU 1自身のチャンク0の勾配に加算します。"
+    },
+    "4": {
+      "text": "Reduce-Scatterステップ1 (逆方向) — GPU 0がRank 3からチャンクを受信",
+      "detail": "同時に、GPU 0がRank 3 (ring-prev) からチャンクを受信します。すべての転送は並行して行われます — リングは全二重リンクで双方向です。各GPUが同時に送信と受信の両方を行います。\nGPU 0が蓄積: local[チャンク3] += received[Rank 3からのチャンク3]"
+    },
+    "5": {
+      "text": "Reduce-Scatterステップ2 — 部分和がリング上を回転",
+      "detail": "各GPUが蓄積されたチャンク (ステップ1からの部分和) をring-next隣接ノードに送信します。部分和がリング上を回転し、各ステップで大きくなります。\n\n  GPU 0が蓄積チャンクをGPU 1に送信 (2つのGPUの和を含む)\n  GPU 1が蓄積チャンクをGPU 2に送信\n  GPU 2が蓄積チャンクをGPU 3に送信\n  GPU 3が蓄積チャンクをGPU 0に送信\n\nこのステップ後、各チャンクは3つのGPUの勾配の和を含みます。\n注意: 転送ごとのデータサイズは参加GPU数に関係なく256 KBのまま一定です。リングAllReduceがうまくスケールする理由がこれです — GPUあたりの帯域幅 = 2(N-1)/N × DataSize、Nが大きくなるにつれ2× DataSizeに近づきます。ナイーブなAllReduce (全対1対全) はルートにボトルネックを作ります。"
+    },
+    "6": {
+      "text": "Reduce-Scatterステップ3 (最終) — 各GPUが1つの完全にリダクションされたチャンクを保持",
+      "detail": "最後のReduce-Scatterステップ。GPU 1が受信して蓄積後:\n  GPU 1のチャンク = GPU 0 + GPU 1 + GPU 2 + GPU 3の勾配の合計\n\n各GPUが正確に1チャンクの完全な合計を保持:\n  GPU 0: 完全にリダクションされたチャンク0\n  GPU 1: 完全にリダクションされたチャンク1\n  GPU 2: 完全にリダクションされたチャンク2\n  GPU 3: 完全にリダクションされたチャンク3\n\nReduce-Scatter完了。リダクション (合計) は完了しました。ただし各GPUは最終結果の1/4しか持っていません。AllGatherが残りのチャンクを配布します。"
+    },
+    "7": {
+      "text": "AllGatherステップ1 — GPUが完全にリダクションされたチャンクをブロードキャスト",
+      "detail": "各GPUが完全にリダクションされたチャンクをリング上で送信:\n  GPU 0が完全リダクション済みチャンク0をGPU 1に送信\n  GPU 1が完全リダクション済みチャンク1をGPU 2に送信\n  GPU 2が完全リダクション済みチャンク2をGPU 3に送信\n  GPU 3が完全リダクション済みチャンク3をGPU 0に送信\n\nReduce-Scatterと異なり、AllGatherは蓄積しません — 受信チャンクを出力バッファの正しい位置に単純にコピーします。ステップ1後、各GPUは4つのリダクション済みチャンクのうち2つを持ちます。\nRDMA WRITEは最終出力バッファの位置を直接ターゲットにします — チャンク0はオフセット0、チャンク1はオフセット256KBなど。"
+    },
+    "8": {
+      "text": "AllGatherステップ2 — 各GPUが4中3のリダクション済みチャンクを保持",
+      "detail": "チャンクがリング上を回転し続けます。このステップ後、各GPUは4つの完全リダクション済みチャンクのうち3つ (自分のものを含む) を受信しました — 残り1チャンクのみ。"
+    },
+    "9": {
+      "text": "AllGatherステップ3 (最終) — 全GPUが完全なリダクション結果を保持",
+      "detail": "最後のAllGatherステップ。すべてのGPUが出力バッファに組み立てられた4つの完全リダクション済みチャンクを持ちます。AllReduceが完了しました。\n結果: すべてのGPUが4つのGPUの勾配のSUMを含む同一の1 MBバッファを持ちます。オプティマイザ (SGD、Adamなど) が各GPU上で同一にモデルの重みを更新し、モデルコピーの同期を維持できます。"
+    },
+    "10": {
+      "text": "⟳ シナリオ完了 — RoCEv2上のNCCL Ring-AllReduce",
+      "detail": "このシナリオでは4つのGPUノードでのNCCLのRing-AllReduceを実演しました:\n\nフェーズ1 — REDUCE-SCATTER (3ステップ):\n  各GPUがステップごとにring-next隣接ノードに1チャンク送信。\n  受信側が自分のデータと蓄積 (合計)。\n  N-1=3ステップ後、各GPUが正確に1チャンクの完全リダクション結果を保持 (テンソル全体の1/N)。\n\nフェーズ2 — ALLGATHER (3ステップ):\n  各GPUが完全リダクション済みチャンクをリング上で送信。\n  受信側がコピー (蓄積なし) して出力バッファに格納。\n  N-1=3ステップ後、すべてのGPUがN個の完全リダクション済みチャンクを保持。\n\n合計: 4 GPUで2(N-1) = 6ステップ。\n\nパフォーマンス特性:\n• GPUあたりステップあたりのデータ: DataSize/N = 256KB\n• GPUあたりの送信データ合計: 2 × (N-1)/N × DataSize = 1.5MB\n• 帯域幅利用率: 2(N-1)/N = 理論最大値の75% (N → ∞で100%に接近)\n• すべての転送がGPUDirect経由のRDMA WRITE — ゼロCPUコピー\n\nAIトレーニングにおけるRing AllReduceの理由:\n• データ並列トレーニング: 各GPUが異なるミニバッチを処理するが、オプティマイザステップ前に勾配を同期する必要がある\n• AllReduce(Sum)はバックワードパスごとに呼ばれる — 通常エポックあたり数千回\n• 大規模 (数百GPU) では、AllReduceレイテンシがトレーニングスループットに直接影響: 1ステップあたり1ミリ秒追加 × 100,000ステップ = 100秒\n\nNCCLが選択する代替アルゴリズム:\n• Tree AllReduce — 小さなメッセージに優れている (低レイテンシ)\n• CollNet (SHARP) — インネットワークリダクション (スイッチが合計を実行)\n• NVLink + RDMAハイブリッド — ノード内NVLink、ノード間RDMA\n\nロスレスRoCEv2ファブリック (PFC + ECN/DCQCN) が重要: パケットドロップはRDMAタイムアウトを引き起こし、再送に戻り、AllReduceパフォーマンスを破壊します。"
+    }
+  }
+}

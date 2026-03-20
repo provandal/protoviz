@@ -1,0 +1,45 @@
+{
+  "meta": {
+    "title": "ARP & NDP: IPv4 주소 해석과 IPv6 이웃 검색",
+    "description": "IPv4의 ARP(Address Resolution Protocol)와 IPv6의 NDP(Neighbor Discovery Protocol)를 비교하는 시나리오. ARP 요청/응답, Gratuitous ARP, NDP Neighbor Solicitation/Advertisement, NDP Router Advertisement를 포함합니다.",
+    "learning_objectives": [
+      "ARP와 NDP의 주소 해석 방식 비교",
+      "Gratuitous ARP의 목적과 사용 사례 이해",
+      "NDP가 ICMPv6를 사용하여 이웃을 검색하는 방식 확인"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "물리 링크 업 — 양쪽 호스트가 동일한 이더넷 세그먼트에 있음",
+      "detail": "양쪽 호스트가 동일한 L2 네트워크(VLAN 또는 플랫 이더넷)에 있습니다. 호스트 A는 IPv4 주소 192.168.1.10과 IPv6 주소 fd00::10을 가지고 있고, 호스트 B는 IPv4 주소 192.168.1.20과 IPv6 주소 fd00::20을 가지고 있습니다.\n호스트 A가 호스트 B에게 IP 패킷을 보내려면 먼저 호스트 B의 MAC 주소를 검색해야 합니다. 이것이 ARP(IPv4) 또는 NDP(IPv6)가 필요한 이유입니다."
+    },
+    "1": {
+      "text": "ARP 요청 — '192.168.1.20은 누구인가요? 192.168.1.10에게 알려주세요'",
+      "detail": "호스트 A가 ARP 요청을 브로드캐스트합니다. 목적지 MAC은 ff:ff:ff:ff:ff:ff(브로드캐스트)입니다."
+    },
+    "2": {
+      "text": "ARP 응답 — '192.168.1.20은 AA:BB:CC:00:00:0B입니다'",
+      "detail": "호스트 B가 ARP 요청에서 자신의 IP를 인식하고 자신의 MAC 주소가 포함된 유니캐스트 ARP 응답을 보냅니다.\n양쪽 호스트가 ARP 캐시를 업데이트합니다: • 호스트 A: 192.168.1.20 → AA:BB:CC:00:00:0B (응답에서) • 호스트 B: 192.168.1.10 → AA:BB:CC:00:00:0A (요청에서)\nARP 캐시 항목에는 타임아웃이 있습니다(Linux에서 일반적으로 30-300초, net.ipv4.neigh.default.gc_stale_time으로 설정 가능). 타임아웃 후 다음 패킷이 새로운 ARP 요청을 트리거합니다."
+    },
+    "3": {
+      "text": "Gratuitous ARP — 호스트 A가 자신의 IP→MAC 바인딩을 공지",
+      "detail": "Gratuitous ARP는 자신의 IP→MAC 매핑을 네트워크에 알리는 무요청 ARP입니다. IP 충돌 감지나 페일오버 시에 사용됩니다."
+    },
+    "4": {
+      "text": "NDP Neighbor Solicitation — 'fd00::20은 누구인가요?'(요청된 노드 멀티캐스트)",
+      "detail": "IPv6 NDP는 ARP 대신 ICMPv6 Neighbor Solicitation을 사용합니다. 브로드캐스트가 아닌 요청된 노드 멀티캐스트 주소로 전송합니다."
+    },
+    "5": {
+      "text": "NDP Neighbor Advertisement — 'fd00::20은 AA:BB:CC:00:00:0B입니다'",
+      "detail": "호스트 B가 Neighbor Advertisement(ICMPv6 타입 136)으로 응답합니다: • Solicited 플래그(S=1): NS에 대한 응답 • Override 플래그(O=1): 기존 캐시 항목 업데이트 • Router 플래그(R=0): 호스트 B는 라우터가 아님\n호스트 A가 이웃 캐시를 업데이트합니다: fd00::20 → AA:BB:CC:00:00:0B (상태: REACHABLE)\nNDP 이웃 캐시 상태(RFC 4861 섹션 7.3.2): • INCOMPLETE: NS 전송됨, NA 대기 중 • REACHABLE: 최근 확인됨(ReachableTime 이내) • STALE: 최근 확인되지 않음, 사용 가능하지만 곧 프로브 예정 • DELAY: 상위 계층 확인 대기 중 • PROBE: 재확인을 위해 유니캐스트 NS를 적극적으로 전송 중"
+    },
+    "6": {
+      "text": "NDP Router Advertisement — SLAAC용 프리픽스 fd00::/64",
+      "detail": "NDP Router Advertisement는 IPv6에서 라우터가 프리픽스와 기본 게이트웨이 정보를 알리는 메커니즘입니다."
+    },
+    "7": {
+      "text": "⟳ 시나리오 완료 — ARP vs NDP 비교",
+      "detail": "ARP(IPv4, RFC 826): • EtherType 0x0806의 별도 프로토콜 • 브로드캐스트 사용 — L2 세그먼트의 모든 호스트가 모든 요청을 처리 • 인증 없음 — ARP 스푸핑/포이즈닝에 취약 • 주소 해석(IP → MAC)만 수행 • 단순 타임아웃이 있는 무상태 캐시\nNDP(IPv6, RFC 4861): • ICMPv6(타입 133-137)에 내장 • 요청된 노드 멀티캐스트 사용 — NS당 ~1개 호스트만 처리 • Hop Limit 255가 오프-링크 공격을 방지; SEND(RFC 3971) 선택적 • 주소 해석 및 라우터 검색, SLAAC, 리디렉트 수행 • 상태 있는 이웃 캐시(INCOMPLETE → REACHABLE → STALE → PROBE) • DAD(Duplicate Address Detection) 내장\n엔터프라이즈/데이터센터 네트워크에서: • ARP 스톰은 대규모 L2 도메인에서 실제 확장성 문제 • IPv6 NDP의 멀티캐스트 접근 방식이 브로드캐스트 오버헤드를 줄임 • 양쪽 모두 보안 가능: ARP는 Dynamic ARP Inspection(DAI), NDP는 RA Guard와 SEND"
+    }
+  }
+}

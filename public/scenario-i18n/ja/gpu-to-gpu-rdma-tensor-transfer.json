@@ -1,0 +1,53 @@
+{
+  "meta": {
+    "title": "GPU間RDMA: RoCEv2経由のノード間テンソル転送",
+    "description": "2ノード間のGPUDirect RDMA over RoCEv2を使用したエンドツーエンドのGPU間テンソル転送。これは分散AIトレーニング、推論サービング、GPUコンピューティングクラスタの基盤となるデータパスです。シナリオ全体のライフサイクルを追跡します: CUDAメモリ割り当て、nvidia-peermem GPU BAR1公開、GPUメモリに対するMR登録、CM QPの起動、RDMA WRITEによるGPU 0のHBMからGPU 1のHBMへの直接テンソルプッシュ (ホストDRAMバウンスなし)、RDMA READによるプルバック。GPUDirectパス (1コピー) と従来パス (4コピー) を対比します。",
+    "learning_objectives": [
+      "完全なGPU間RDMAデータパスを追跡する: GPU HBM → PCIe → RNIC → ネットワーク → RNIC → PCIe → GPU HBM",
+      "GPUDirect RDMAがホストDRAMバウンスとCPU関与を排除する理由を理解する",
+      "nvidia-peermemがGPUメモリサブシステムとRDMAサブシステムをブリッジする仕組みを見る",
+      "従来パス (GPU→CPU→RNIC→ネット→RNIC→CPU→GPU、4コピー) とGPUDirect (1コピー) を比較する",
+      "RNICとGPU間のBAR1アパーチャ経由PCIeピアツーピア (P2P) DMAを追跡する",
+      "GPUDirect RDMAが使用される場面を理解する: NCCLコレクティブ、推論サービング、GPUコンピューティング",
+      "GPUメモリに対するRDMA WRITE (プッシュモデル) とRDMA READ (プルモデル) の両方を見る"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "物理リンクアップ — GPUノード間の100GbEロスレスファブリック",
+      "detail": "両GPUノードがPFCとECN有効の100GbEでスイッチに接続されています。ロスレスファブリックは不可欠です — RDMAはネットワークがパケットをドロップしないことに依存しています。\n典型的なGPUクラスタトポロジ: 各ノードに8 GPUとNVLinkがノード内接続用に、1-8 RNICがノード間RDMA用にあります。このシナリオでは明確さのためにノードごとに1 GPUと1 RNICを示しています。"
+    },
+    "1": {
+      "text": "CUDAメモリ割り当て — 両ノードのGPU HBMに4 MBテンソルバッファ",
+      "detail": "cuMemAlloc()がGPU HBM (High Bandwidth Memory) にメモリを割り当てます:\n• ノードA: GPU VA 0x7f0000000000に4 MBテンソルバッファ\n• ノードB: GPU VA 0x7f0100000000に4 MBテンソルバッファ\nこのメモリはGPUのプライベートアドレス空間にあります — CPUは直接アクセスできず、RNICも同様です。GPUDirect RDMAがPCIe BAR1アパーチャ経由でGPUメモリをRNICに公開することで、この問題を解決します。"
+    },
+    "2": {
+      "text": "GPU BAR1マッピング — nvidia-peermemでGPUメモリをPCIeアドレス空間に公開",
+      "detail": "nvidia-peermem (カーネルモジュール) がRDMAサブシステムにpeer_memory_clientとして登録します。GPUの仮想アドレスに対してibv_reg_mr()が呼ばれると、nvidia-peermemがインターセプトします:\n1. nvidia_p2p_get_pages()を呼び出してGPUメモリをピン\n2. GPU物理アドレス (GPUのローカルDRAM内) を取得\n3. GPUのPCIe BAR1アパーチャを通じてマッピング\n4. PCIeバスアドレスをRNICのDMAエンジンに返す\n\nこれでRNICはホストDRAMやCPUを経由せずに、PCIeピアツーピアでGPUメモリに直接DMAできます。\n\n従来パス (GPUDirectなし):\n  GPU → cudaMemcpy → ホストDRAM → ibv_post_send → RNIC → ネット\n  ネット → RNIC → ホストDRAM → cudaMemcpy → GPU\n  = 4コピー、2回のCPU介入\n\nGPUDirect RDMAパス:\n  GPU HBM → BAR1 → RNIC → ネット → RNIC → BAR1 → GPU HBM\n  = 方向ごとに1 DMA転送、0 CPUデータコピー"
+    },
+    "3": {
+      "text": "GPUメモリに対してMemory Region登録 — RDMAキーを交換",
+      "detail": "GPU仮想アドレスに対してibv_reg_mr()が呼ばれます。nvidia-peermemがインターセプトし、BAR1マッピングされた物理アドレスをRNICのハードウェアページテーブルに提供します。\nMR登録後、両ノードがrkeysをアウトオブバンドで交換します (通常はTCP制御チャネルまたはRDMA SEND経由)。各ノードがリモートノードの{rkey, virtual_address, length}を持ちます — RDMA READ/WRITEに必要なすべての情報です。\nMR登録はコストが高く (マイクロ秒からミリ秒)、転送ごとではなく初期化中に一度行うべきです。NCCLはncclCommInitRank()中にバッファを事前登録します。"
+    },
+    "4": {
+      "text": "QP接続 (RTS) — GPU間RDMAチャネル転送準備完了",
+      "detail": "Reliable Connected (RC) QPがCM REQ/REP/RTU経由でRTSに遷移します。QPがRTS状態でGPUメモリがMRとして登録されることで、GPU間データパスが完全に確立されました。"
+    },
+    "5": {
+      "text": "RDMA WRITE — 4 MBテンソルをGPU A HBM → GPU B HBMにプッシュ (ゼロCPUコピー)",
+      "detail": "ノードAのアプリケーションがibv_post_send()を呼び出し、ローカルGPUバッファ (ソース) とノードBのGPUバッファ (RETHのrkey + VA経由の宛先) を指すRDMA WRITE WQEを発行します。\nデータパスのステップ:\n1. RNIC AのDMAエンジンがPCIe BAR1経由でGPU AのHBMから4 MBを読み取り (ピアツーピアDMA — ホストDRAM非関与)\n2. RNIC AがMTUサイズのパケットに分割 (各4 Kペイロード) しRoCEv2 (UDP/IP/イーサネット) で送信\n3. パケットがロスレススイッチを通過\n4. RNIC Bがパケットを受信し、PCIe BAR1経由で各パケットをGPU BのHBMに直接DMA書き込み (ピアツーピア)\n5. 全パケット完了後、RNIC BがACKを送信\n\nどちらのノードのCPUもテンソルデータに触れません。ノードAのCPUはWQE (64バイト) をポストするだけで、ノードBのCPUは一切関与しません (RDMAは一方向操作)。\n100 Gbpsで4 MBはワイヤ上で約330マイクロ秒かかります。PCIe Gen5 x16は64 GB/sを提供し、ボトルネックにはなりません。"
+    },
+    "6": {
+      "text": "RDMA READ Request — ノードAがGPU BのHBMから4 MBテンソルを要求",
+      "detail": "ノードAのアプリケーションがibv_post_send()でRDMA READ WQEを発行します。RNICがリモートGPUバッファアドレスとrkeyを指定した小さなREAD Request (78バイト) をノードBに送信します。\nRDMA READは「プル」モデルです — リクエスター (ノードA) がレスポンダー (ノードB) にどのリモートメモリを読み取るかを指示します。ノードBのRNICが自律的にGPU BのHBMからデータをフェッチして返送します。ノードBのCPUは一切関与しません。"
+    },
+    "7": {
+      "text": "RDMA READ Response — 4 MBテンソル GPU B HBM → GPU A HBM",
+      "detail": "ノードBのRNICが自律的に:\n1. PCIe BAR1経由でGPU BのHBMから4 MBを読み取り (P2P DMA)\n2. RDMA READ ResponseパケットとしてノードAに送信\n3. ノードAのRNICが各パケットをBAR1経由でGPU AのHBMに書き込み\n\n完了後、ノードAのCQ (完了キュー) がアプリケーションにテンソルデータがGPU Aのバッファで利用可能であることを通知します。\n\nRDMA READ対WRITEのトレードオフ:\n• WRITE: イニシエータがデータをプッシュ (低レイテンシ、サーバはデータ到着を知る必要なし)\n• READ: イニシエータがデータをプル (レスポンダが開始する必要なし、ただしリクエスト/レスポンスのレイテンシが追加)\n• NCCLはコレクティブ操作にWRITEを好みます"
+    },
+    "8": {
+      "text": "シナリオ完了 — GPU間RDMAテンソル転送",
+      "detail": "このシナリオではエンドツーエンドのGPU間RDMAを実演しました:\nセットアップ:\n  cuMemAlloc → nvidia-peermem BAR1マッピング → ibv_reg_mr (GPU MR)\n  → CM QP起動 → rkey交換\n\nRDMA WRITE (プッシュ — GPU A → GPU B):\n  GPU A HBM → PCIe BAR1 P2P → RNIC A → RoCEv2 → RNIC B\n  → PCIe BAR1 P2P → GPU B HBM\n  CPU関与: 0 (WQEポストのみ)\n\nRDMA READ (プル — GPU B → GPU A):\n  リクエスト: RNIC A → RoCEv2 → RNIC B\n  レスポンス: GPU B HBM → RNIC B → RoCEv2 → RNIC A → GPU A HBM\n  ノードBのCPU関与: 0\n\nGPU間RDMAが使用される場面:\n• 分散AIトレーニングでのNCCL AllReduce/AllGather\n• 推論サービング: GPU間のKVキャッシュマイグレーション\n• GPUコンピューティング: GPUバッファ付きMPI_Send/Recv\n• GPU状態のチェックポイント/リストア\n• マルチノードGPUレンダリング\n\nこれを可能にする主要コンポーネント:\n• nvidia-peermem: GPUメモリとRDMAサブシステムをブリッジ\n• PCIe BAR1: RNICからアクセス可能なGPUメモリアパーチャ\n• ロスレスファブリック: PFC + ECN/DCQCNでパケットドロップを防止\n• RDMAバーブ: ゼロコピー、カーネルバイパス、CPUバイパス"
+    }
+  }
+}

@@ -1,0 +1,86 @@
+{
+  "meta": {
+    "title": "[WIP] GPUDirect Storage: Lekti NVMe Dirèkteman nan Memwa GPU (PCIe Lokal)",
+    "description": "Yon echanj GPUDirect Storage (GDS) konplè ki montre kijan done li soti nan yon SSD NVMe dirèkteman nan memwa GPU (BAR1) san pase nan kach paj CPU. Sa a se yon senaryo pwotokòl LOKAL — tout twa aktè yo (GPU, CPU/OS Machin, SSD NVMe) se konpozan nan yon sèl machin konekte atravè PCIe, pa pwen final rezo. Senaryo a konpare chemen depo tradisyonèl (SSD NVMe → kach paj → tanpon itilizatè → cudaMemcpy → GPU = plizyè kopi atravè CPU) ak chemen GDS (SSD NVMe → memwa BAR GPU = zewo kopi CPU).",
+    "learning_objectives": [
+      "Konprann poukisa chemen IO depo tradisyonèl (NVMe → kach paj → cudaMemcpy) pa efikas pou travay GPU",
+      "Aprann kijan GPUDirect Storage elimine tanpon rebondi CPU lè li dirije DMA NVMe dirèkteman nan memwa BAR1 GPU",
+      "Trase sik lavi API cuFile: cuFileDriverOpen → cuFileHandleRegister → cuFileBufRegister → cuFileRead/cuFileWrite",
+      "Konprann wòl modil kernel nvidia-fs kòm yon kalòj ant drivè NVMe ak jesyon memwa GPU",
+      "Wè kijan DMA peer-to-peer (P2P) PCIe pèmèt kontwolè NVMe ekri dirèkteman nan BAR1 GPU san enplikasyon CPU",
+      "Obsève soumisyon kòmand NVMe ak antre PRP/SGL ki pwente sou adrès fizik GPU olye DRAM machin",
+      "Konprann poukisa GDS egzije memwa BAR1 GPU pou anrejistre — modil nvidia-fs dwe pike ak mape paj GPU pou DMA",
+      "Wè kijan cuFileWrite ranvèse chemen an: memwa GPU → SSD NVMe pou sovgad pwen kontwòl IA"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Chemen Tradisyonèl (san GDS): NVMe → Kach Paj → Tanpon Itilizatè → cudaMemcpy → GPU",
+      "detail": "SAN GPUDirect Storage, lekti done NVMe nan memwa GPU egzije plizyè kopi atravè CPU: (1) Aplikasyon rele read() oswa pread(). (2) Drivè NVMe soumèt yon kòmand Lekti NVMe ak antre PRP ki pwente sou paj DRAM machin alwe pa kach paj la. (3) SSD NVMe DMA done nan DRAM machin (kach paj). (4) Kernel la kopye done soti nan kach paj nan tanpon espas itilizatè. (5) Aplikasyon rele cudaMemcpyHostToDevice() pou kopye tanpon itilizatè nan memwa GPU. (6) Runtime CUDA DMA done soti nan DRAM machin pike nan GPU atravè PCIe. Chak kopi konsome sik CPU, bann pasant memwa, ak ajoute latans."
+    },
+    "1": {
+      "text": "Penalite bann pasant chemen tradisyonèl: done travèse bis PCIe DE FWA",
+      "detail": "Nan chemen tradisyonèl la, done lekti NVMe travèse bis PCIe de fwa: (1) SSD NVMe → DRAM Machin (PCIe x4 Gen5 = 32 GB/s), (2) DRAM Machin → GPU atravè cudaMemcpy (PCIe x16 Gen5 = 64 GB/s). Ak GDS, done travèse PCIe YON SÈL FWA: SSD NVMe → GPU dirèkteman. GDS redwi latans tou lè li elimine kopi kernel-a-itilizatè ak depans planifikasyon cudaMemcpy."
+    },
+    "2": {
+      "text": "cuFileDriverOpen() — Inisyalize sousistèm GPUDirect Storage",
+      "detail": "Aplikasyon an (oswa kadri tankou DALI/kvikio) rele cuFileDriverOpen() pou inisyalize sousistèm GDS. Sa deklanche chajman modil kernel nvidia-fs (si li pa deja chaje). nvidia-fs anrejistre callback operasyon DMA ak drivè machin NVMe atravè nvme_register_fs(). Li mande topoloji PCIe tou pou verifye ke GPU ak SSD NVMe kapab P2P."
+    },
+    "3": {
+      "text": "open(\"/data/training/imagenet_shard_0042.bin\", O_RDONLY | O_DIRECT)",
+      "detail": "Apèl open() POSIX estanda ak drapo O_DIRECT. O_DIRECT obligatwa pou GDS — li kontounen kach paj Linux, ki se egzakteman sa nou vle piske GDS voye done dirèkteman nan memwa GPU. San O_DIRECT, kernel la ta alwe tanpon kach paj nan DRAM machin epi kopye done la dabò, sa defèt objektif GDS."
+    },
+    "4": {
+      "text": "cuFileHandleRegister() — Anrejistre deskriptè fichye ak GDS",
+      "detail": "Anvlope fd POSIX nan yon manch cuFile. nvidia-fs valide ke fichye a rezide sou yon sistèm fichye sipòte (ext4, XFS, oswa aparèy blòk brit) epi rezoud fichye a nan aparèy blòk NVMe anba a (/dev/nvme0n1p1)."
+    },
+    "5": {
+      "text": "cuFileBufRegister() — Pike memwa GPU epi kreye mapaj DMA BAR1",
+      "detail": "Sa a se etap konfigirasyon kritik. cuFileBufRegister() pike paj memwa GPU (anpeche drivè GPU a migre oswa ekspilse yo) epi kreye yon mapaj apèti BAR1. BAR1 GPU a se yon Rejis Adrès Debaz PCIe ki ekspoze yon fenèt memwa GPU (HBM) nan espas adrès fizik sistèm nan. Apre apèl sa a, tanpon GPU nan VA 0x7f1a_0000_0000 aksesib nan adrès fizik 0x0000_3a00_0000_0000 atravè PCIe — nenpòt aparèy PCIe (enkli kontwolè NVMe) ka DMA nan adrès sa a."
+    },
+    "6": {
+      "text": "cuFileRead() — Kòmanse lekti dirèk NVMe → GPU (4 MiB)",
+      "detail": "Aplikasyon an rele cuFileRead() ak manch cuFile, tanpon GPU, ak gwosè transfè. nvidia-fs tradwi offsèt fichye nan LBA NVMe (atravè kat dimansyon sistèm fichye), konstwi SQE Lekti NVMe ak antre PRP ki pwente sou adrès fizik BAR1 GPU, epi soumèt yo bay drivè NVMe. Inovasyon kle: nvidia-fs branche nan chemen mapaj DMA drivè NVMe a (dma_map_sg) epi ranplase antre scatter-gather DRAM machin nòmal yo ak adrès fizik BAR1 GPU."
+    },
+    "7": {
+      "text": "SQE Lekti NVMe soumèt — sonèt sonnen",
+      "detail": "Drivè machin NVMe ekri SQE 64 oktè a nan Fil Atant Soumisyon nan DRAM machin epi ekri nouvo pwentè ke SQ nan rejis sonèt kontwolè NVMe a (ekriti MMIO atravè PCIe). SQE a gen opcode=0x02 (Lekti), NSID=1, SLBA=0, NLB=8191 (4 MiB), epi esansyèlman: PRP1 = adrès fizik BAR1 GPU (0x0000_3a00_0000_0000). Kontwolè NVMe a pa konnen epi li pa enterese ke PRP1 pwente sou memwa GPU — li ap senpman DMA done nan adrès sa a."
+    },
+    "8": {
+      "text": "SSD NVMe chèche SQE nan memwa machin",
+      "detail": "Kontwolè NVMe a detekte ekriti sonèt la (nouvo ke SQ) epi emèt yon Lekti Memwa PCIe pou chèche SQE 64 oktè a nan Fil Atant Soumisyon nan DRAM machin. Kontwolè a analize SQE a, ekstrè opcode Lekti, NSID, SLBA, NLB, ak adrès PRP. Li answit kòmanse yon lekti NAND flash pou ranje LBA mande a."
+    },
+    "9": {
+      "text": "P2P DMA: 4 MiB ap sikile NVMe SSD → BAR1 GPU (zewo kopi CPU)",
+      "detail": "MOMAN EDIKASYONÈL KLE. Kontwolè NVMe a li done soti nan NAND flash nan tanpon DRAM entèn li, answit emèt TLP Ekriti Memwa PCIe ki vize adrès BAR1 GPU nan PRP1/lis PRP. Konplèks rasin PCIe a dekode adrès BAR1 la epi achemine TLP yo dirèkteman nan GPU — done yo pa janm antre nan DRAM machin epi CPU a pa janm wè oktè chaj itil yo. Nan PCIe Gen5 x4 (32 GB/s bann pasant lyen), transfè 4 MiB la fini nan anviwon 125 mikwosegond."
+    },
+    "10": {
+      "text": "Konpleyon NVMe — CQE poste, MSI-X tire",
+      "detail": "Apre tout done fin DMA nan BAR1 GPU, kontwolè NVMe a poste yon Antre Fil Atant Konpleyon (CQE) 16 oktè nan CQ nan DRAM machin epi tire yon entèripsyon MSI-X. CQE a gen CID=0x0042 (ki matche ak kòmand Lekti a), estati=0 (siksè), ak pwentè tèt SQ aktyalize."
+    },
+    "11": {
+      "text": "cuFileRead() retounen — done antrenman 4 MiB nan memwa GPU",
+      "detail": "cuFileRead() retounen 4194304 (oktè li ak siksè). Done antrenman yo kounye a nan HBM3 GPU nan adrès tanpon anrejistre a, imedyatman aksesib bay kernel CUDA. Total enplikasyon CPU: ekri yon SQE NVMe 64 oktè + sonnen yon sonèt + trete yon CQE 16 oktè. CPU a pa janm touche yon sèl oktè nan chaj itil 4 MiB la."
+    },
+    "12": {
+      "text": "cuFileWrite() — Sovgade pwen kontwòl soti nan memwa GPU nan NVMe (4 MiB)",
+      "detail": "Apre kalkil antrenman fini, aplikasyon an sovgade yon pwen kontwòl lè li rele cuFileWrite(). Sa a ekri kontni memwa GPU dirèkteman nan SSD NVMe san pase nan DRAM machin. Chemen ekriti a se miwa chemen lekti a: nvidia-fs konstwi yon SQE Ekriti NVMe ak antre PRP ki pwente sou adrès BAR1 GPU, men kounye a kontwolè NVMe a ap DMA-li soti nan adrès sa yo (GPU → SSD)."
+    },
+    "13": {
+      "text": "SQE Ekriti NVMe soumèt — PRP1 = BAR1 GPU",
+      "detail": "SQE kòmand Ekriti NVMe a idantik nan estrikti ak kòmand Lekti men ak opcode 0x01 (Ekriti). PRP1 toujou pwente sou adrès BAR1 GPU — men kounye a kontwolè NVMe a ap emèt TLP LEKTI Memwa PCIe nan adrès sa a (li memwa GPU) olye TLP Ekriti Memwa (ekri nan memwa GPU)."
+    },
+    "14": {
+      "text": "P2P DMA: 4 MiB ap sikile BAR1 GPU → SSD NVMe (sovgad pwen kontwòl)",
+      "detail": "Kontwolè NVMe a li 4 MiB soti nan memwa BAR1 GPU atravè TLP Lekti Memwa P2P PCIe. Lekti PCIe se tranzaksyon divize — kontwolè NVMe a voye TLP demann MRd, tisi PCIe achemine yo nan GPU, epi GPU a retounen TLP CplD (Konpleyon ak Done). Kontwolè NVMe a akimile done yo nan tanpon ekriti entèn li epi pwograme NAND flash la. Ankò, DRAM machin ak CPU pa nan chemen done a."
+    },
+    "15": {
+      "text": "Konpleyon Ekriti NVMe — pwen kontwòl pèsiste nan NAND",
+      "detail": "Kontwolè NVMe a konplete ekriti a nan NAND flash epi poste yon CQE ak estati=siksè. cuFileWrite() retounen 4194304 (oktè ekri). Pwen kontwòl la kounye a pèsiste an sekirite sou SSD a. Tout operasyon sovgad la te itilize zewo kopi CPU."
+    },
+    "16": {
+      "text": "Rezime GDS: IO zewo-kopi ant NVMe ak GPU nan plen bann pasant PCIe",
+      "detail": "GPUDirect Storage elimine CPU nan chemen done depo a antyèman. Sèl wòl CPU a se plan kontwòl: soumèt deskriptè kòmand NVMe 64 oktè ak trete antre konpleyon 16 oktè. Tout mouvman done an kantite fèt atravè DMA peer-to-peer PCIe ant SSD NVMe ak GPU.\nPou travay antrenman IA: GDS pèmèt lekti done antrenman nan plen bann pasant NVMe (7+ GB/s pa SSD) dirèkteman nan memwa GPU, ak sovgad pwen kontwòl nan menm vitès. Ak 8 SSD NVMe ki alimante yon GPU H100, GDS ka livre 50+ GB/s bann pasant done antrenman ak zewo depans CPU.\nKonpozan kle: API cuFile (espas itilizatè), modil kernel nvidia-fs (espas kernel), drivè NVMe (pa modifye), achemiman P2P PCIe (aparèy)."
+    }
+  }
+}

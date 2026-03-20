@@ -1,0 +1,29 @@
+{
+  "meta": {
+    "title": "NCCL AllReduce: RoCEv2 पर Ring Algorithm (4 GPUs)",
+    "description": "NCCL का Ring-AllReduce एल्गोरिथम 4 GPU नोड्स पर RoCEv2 का उपयोग करते हुए। AllReduce डिस्ट्रिब्यूटेड AI ट्रेनिंग (gradient synchronization) के लिए महत्वपूर्ण है। Ring एल्गोरिथम AllReduce को Reduce-Scatter + AllGather में विभाजित करता है। GPUDirect RDMA WRITE ऑपरेशन gradient chunks ring neighbors के बीच ले जाते हैं — GPU-to-GPU बिना होस्ट DRAM bounce के।",
+    "learning_objectives": [
+      "समझें कि AllReduce डिस्ट्रिब्यूटेड AI ट्रेनिंग (gradient synchronization) के लिए क्यों महत्वपूर्ण है",
+      "देखें कि ring एल्गोरिथम AllReduce को Reduce-Scatter + AllGather में कैसे विभाजित करता है",
+      "GPU ring neighbors के बीच gradient chunks ले जाने वाले RDMA WRITE ऑपरेशन फॉलो करें",
+      "देखें कि Reduce-Scatter के दौरान प्रत्येक GPU partial sums कैसे जमा करता है",
+      "समझें कि ring AllReduce इष्टतम बैंडविड्थ उपयोग क्यों प्राप्त करता है: 2(N-1)/N",
+      "GPUDirect RDMA एक्शन में देखें — डेटा होस्ट DRAM bounce के बिना GPU-to-GPU जाता है",
+      "ring, tree, और अन्य AllReduce एल्गोरिथम के बीच अंतर समझें",
+      "PyTorch DDP और DeepSpeed जैसे frameworks में NCCL की भूमिका समझें"
+    ]
+  },
+  "timeline": {
+    "0": { "text": "भौतिक लिंक अप — सभी 4 GPU नोड्स के लिए 100GbE लॉसलेस फैब्रिक", "detail": "सभी 4 GPU नोड PFC और ECN सक्षम 100GbE के माध्यम से स्विच से जुड़ते हैं। वास्तविक AI ट्रेनिंग क्लस्टर में, नेटवर्क टोपोलॉजी fat-tree या कई स्विच tiers वाला rail-optimized डिज़ाइन हो सकता है।" },
+    "1": { "text": "NCCL init पूर्ण — ring टोपोलॉजी स्थापित, QPs कनेक्ट, GPU बफर रजिस्टर", "detail": "ncclCommInitRank() पूरा हो गया है। NCCL ने: 1. एड्रेस एक्सचेंज (NCCL_COMM_ID) के लिए TCP के माध्यम से bootstrap किया 2. GPUDirect RDMA क्षमता डिटेक्ट की (nvidia-peermem लोडेड) 3. Ring neighbors के बीच RDMA QPs बनाए: GPU 0↔1, 1↔2, 2↔3, 3↔0 4. GPU HBM बफर RDMA MRs के रूप में रजिस्टर किए 5. Ring topology: 0→1→2→3→0 स्थापित की" },
+    "2": { "text": "ncclAllReduce() कॉल — 1MB gradient tensor, 4 chunks × 256KB", "detail": "ट्रेनिंग लूप ncclAllReduce(sendbuf, recvbuf, count, ncclFloat, ncclSum, comm, stream) कॉल करता है। यह ring AllReduce एल्गोरिथम ट्रिगर करता है।\nइनपुट: प्रत्येक GPU के पास 1MB gradient tensor (262,144 float32 मान) है। Tensor को 4 equal chunks में विभाजित (256KB प्रत्येक, N GPUs = N chunks)।\nलक्ष्य: हर GPU को सभी 4 GPUs के gradients का SUM मिलना चाहिए।" },
+    "3": { "text": "Reduce-Scatter स्टेप 1 — सभी GPUs chunk[rank] ring-next को भेजते हैं", "detail": "सभी 4 GPUs एक साथ अपने ring-next neighbor को एक chunk भेजते हैं:\n  GPU 0 chunk 0 → GPU 1 को भेजता है (GPU 1 के HBM में RDMA WRITE के माध्यम से)\n  GPU 1 chunk 1 → GPU 2 को भेजता है\n  GPU 2 chunk 2 → GPU 3 को भेजता है\n  GPU 3 chunk 3 → GPU 0 को भेजता है\nप्रत्येक ट्रांसफर GPUDirect RDMA WRITE है: GPU HBM →[PCIe]→ RNIC →[100GbE]→ RNIC →[PCIe]→ GPU HBM।" },
+    "4": { "text": "Reduce-Scatter स्टेप 1 (reverse) — GPU 0 Rank 3 से chunk प्राप्त करता है", "detail": "साथ ही, GPU 0 Rank 3 (अपने ring-prev) से chunk प्राप्त करता है। सभी ट्रांसफर parallel में होते हैं — ring full-duplex लिंक के साथ bidirectional है। प्रत्येक GPU एक साथ भेजता और प्राप्त करता है।\nGPU 0: chunk 3 (GPU 3 से) प्राप्त और अपने chunk 3 में जोड़ता है: accumulated = GPU0_chunk3 + GPU3_chunk3।" },
+    "5": { "text": "Reduce-Scatter स्टेप 2 — Partial sums ring में घूम रहे हैं", "detail": "प्रत्येक GPU अपना ACCUMULATED chunk (स्टेप 1 से partial sum) ring-next neighbor को भेजता है। Partial sums ring में घूम रहे हैं, प्रत्येक स्टेप पर बड़े होते जा रहे हैं।" },
+    "6": { "text": "Reduce-Scatter स्टेप 3 (अंतिम) — प्रत्येक GPU के पास अब एक पूरी तरह-reduced chunk है", "detail": "अंतिम Reduce-Scatter स्टेप। प्रत्येक GPU अब ठीक एक chunk के लिए COMPLETE sum रखता है:\n  GPU 0: chunk 0 का पूरा sum (सभी 4 GPUs)\n  GPU 1: chunk 1 का पूरा sum\n  GPU 2: chunk 2 का पूरा sum\n  GPU 3: chunk 3 का पूरा sum\nReduce-Scatter पूर्ण। प्रत्येक GPU के पास 1/N अंतिम परिणाम है। अब AllGather बाकी बाँटता है।" },
+    "7": { "text": "AllGather स्टेप 1 — GPUs अपने fully-reduced chunks ब्रॉडकास्ट करते हैं", "detail": "अब प्रत्येक GPU अपना fully-reduced chunk ring में भेजता है:\n  GPU 0 fully-reduced chunk 0 → GPU 1 को\n  GPU 1 fully-reduced chunk 1 → GPU 2 को\n  GPU 2 fully-reduced chunk 2 → GPU 3 को\n  GPU 3 fully-reduced chunk 3 → GPU 0 को\nReduce-Scatter के विपरीत, AllGather में कोई accumulation नहीं — chunks बस कॉपी होते हैं।" },
+    "8": { "text": "AllGather स्टेप 2 — प्रत्येक GPU के पास अब 4 में से 3 reduced chunks हैं", "detail": "Chunks ring में घूमते रहते हैं। इस स्टेप के बाद, प्रत्येक GPU को 4 fully-reduced chunks में से 3 प्राप्त हो चुके हैं साथ ही उसका अपना — केवल 1 chunk बाकी।" },
+    "9": { "text": "AllGather स्टेप 3 (अंतिम) — सभी GPUs के पास पूर्ण reduced परिणाम है", "detail": "अंतिम AllGather स्टेप। हर GPU के पास अब सभी 4 fully-reduced chunks अपने output बफर में assembled हैं। AllReduce पूर्ण।\nपरिणाम: हर GPU के पास सभी 4 GPUs के gradients का SUM रखने वाला identical 1MB बफर है। AI ट्रेनिंग में, synchronized gradients का उपयोग मॉडल weights अपडेट करने के लिए किया जाता है।" },
+    "10": { "text": "⟳ परिदृश्य पूर्ण — RoCEv2 पर NCCL Ring-AllReduce", "detail": "इस परिदृश्य ने 4 GPU नोड्स पर NCCL का Ring-AllReduce प्रदर्शित किया:\nफेज़ 1 — REDUCE-SCATTER (3 स्टेप): प्रत्येक GPU प्रति स्टेप एक chunk ring-next neighbor को भेजता है। रिसीवर आने वाले डेटा को अपने लोकल chunk के साथ accumulate (sum) करता है। 3 स्टेप के बाद, प्रत्येक GPU एक chunk का पूरा sum रखता है।\nफेज़ 2 — ALLGATHER (3 स्टेप): प्रत्येक GPU अपना fully-reduced chunk ring में forward करता है। कोई accumulation नहीं — बस कॉपी। 3 स्टेप के बाद, हर GPU के पास सभी chunks हैं।\nकुल RDMA WRITE ऑपरेशन: 2 × (N-1) × N = 24 (प्रत्येक 256KB)। बैंडविड्थ उपयोग: 2(N-1)/N = 75% (N=4 GPUs)।" }
+  }
+}

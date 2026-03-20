@@ -1,0 +1,194 @@
+{
+  "meta": {
+    "title": "NVMe/TCP: mDNS → CDC Discovery → DIM → Subsystem Connect → I/O",
+    "description": "تبادل NVMe over TCP (NVMe-oF/TCP) كامل من أول اكتشاف الخدمة لحد عمليات I/O. هوست Linux عم يشغّل nvme-stas بيكتشف Centralized Discovery Controller (CDC) عبر mDNS، بيسجّل عبر DIM (TP8013)، بيجيب CDC Discovery Log Pages فيها DDC referrals، بيتّصل بال Direct Discovery Controller (DDC) على ال storage array تيعرف تفاصيل IO Controller، وبعدين بيتّصل بال IO Controller ليعمل NVMe Write و Read. بيوضّح كامل ال three-tier discovery hierarchy: CDC → DDC → IOC.",
+    "learning_objectives": [
+      "كيف nvme-stas (stafd) بيكتشف CDCs عبر mDNS service advertisement (_nvme-disc._tcp)",
+      "تابع NVMe-oF/TCP connection initialization: تبادل ICReq/ICResp PDU و parameter negotiation",
+      "شوف كيف Fabrics Connect command بتأسّس Admin queue لل Discovery Controller",
+      "كيف DIM (Discovery Information Management, TP8013) بيسجّل هوست مع CDC",
+      "فهم Discovery Log Pages: كيف الهوستات بتعرف شو ال subsystems وال controllers المتاحة",
+      "تابع كامل IO Controller connection: Fabrics Connect → Identify Controller → Identify Namespace",
+      "شوف NVMe Write و Read commands عبر TCP مع CapsuleCmd, R2T, H2CData, و C2HData PDUs",
+      "فهم ال CDC → DDC → IOC controller hierarchy بنظام NVMe-oF discovery"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "mDNS Query: _nvme-disc._tcp.local",
+      "detail": "ال stafd daemon (جزء من nvme-stas) بيعمل query ل mDNS عن NVMe discovery controllers. بيبعت multicast DNS query لـ 224.0.0.251:5353 يدوّر على PTR records مطابقة لل _nvme-disc._tcp service type. هيدا ال DNS-SD (DNS-Based Service Discovery, RFC 6763) mechanism المحدد بـ TP8009 لاكتشاف CDC أوتوماتيكي. stafd بيستعمل Avahi (Linux mDNS/DNS-SD implementation) ليسجّل service browser لهيدا ال service type."
+    },
+    "1": {
+      "text": "mDNS Response: CDC على 192.168.100.50:8009",
+      "detail": "ال CDC بيرد مع mDNS records بتعلن عن discovery service تبعه. ال PTR record بيربط _nvme-disc._tcp.local باسم ال service instance. ال SRV record بيعطي ال target hostname وال port (8009). ال TXT record بيحمل key-value pairs: p=tcp (transport type) و nqn=nqn.2014-08.org.nvmexpress.discovery (ال well-known discovery NQN). ال Avahi callback تبع stafd بيحلّل هالـ records وبيجمّع controller dictionary مع transport, traddr, trsvcid, و subsysnqn."
+    },
+    "2": {
+      "text": "TCP SYN → CDC port 8009",
+      "detail": "stafd بيبدأ TCP connection لل CDC على 192.168.100.50:8009. ال Port 8009 هو ال default trsvcid (Transport Service ID) لل NVMe discovery controllers. ال TCP 3-way handshake بيأسّس ال reliable transport يلّي NVMe-oF/TCP رح يمشي فوقه."
+    },
+    "3": {
+      "text": "TCP SYN-ACK ← CDC",
+      "detail": "ال TCP stack تبع CDC بيرد بـ SYN-ACK، بيعترف بـ SYN تبع الهوست وبيبعت sequence number تبعه."
+    },
+    "4": {
+      "text": "TCP ACK — تأسّس الاتصال بال CDC",
+      "detail": "الهوست بيكمّل ال 3-way handshake. TCP connection لل CDC صار جاهز. طبقة NVMe-oF/TCP رح تبعت ICReq هلّق."
+    },
+    "5": {
+      "text": "ICReq → CDC (Initialize NVMe/TCP Connection)",
+      "detail": "أول NVMe-oF/TCP PDU بعد ال TCP handshake. الهوست بيبعت Initialize Connection Request (ICReq) ليفاوض على NVMe/TCP parameters. أهم الحقول: PDU Format Version (بس v0 معرّف)، digest types المطلوبة (header و/أو data digests لل integrity)، Host PDU Data Alignment، و max outstanding R2Ts. ال ICReq يلّي حجمه 128 bytes هو أول شي ال NVMe/TCP driver بيبعته بعد ما يكتمل TCP connect (nvme_tcp_init_connection)."
+    },
+    "6": {
+      "text": "ICResp ← CDC (قُبلت ال connection parameters)",
+      "detail": "ال CDC بيرد بـ ICResp بيأكّد ال negotiated parameters. ال CPDA تبع ال controller (Controller PDU Data Alignment) وال accepted digest types بيرجعوا. MaxData بيوضّح أقصى data ال controller بيقدر يعالجها لكل R2T. مع خلص ICReq/ICResp، طبقة NVMe/TCP transport صارت جاهزة لأوامر NVMe."
+    },
+    "7": {
+      "text": "Fabrics Connect → CDC (Admin Queue, Discovery NQN)",
+      "detail": "الهوست بيبعت NVMe Fabrics Connect command ليأسّس Admin queue association مع ال CDC. الأمر بيستعمل opcode 0x7F (Fabrics) مع fctype=0x01 (Connect). Queue ID 0 بيعني Admin queue. ال Connect data (1024 bytes) بتحمل هوية الهوست: Host ID (UUID)، Host NQN، وال target Subsystem NQN (nqn.2014-08.org.nvmexpress.discovery — ال well-known discovery subsystem NQN). Controller ID محطوط 0xFFFF (dynamic) فال CDC بيعيّن واحد."
+    },
+    "8": {
+      "text": "Fabrics Connect Response ← CDC (CNTLID=65)",
+      "detail": "ال CDC بيقبل ال Fabrics Connect وبيعيّن Controller ID 65 لهالهوست. ال admin queue صار جاهز — الهوست بيقدر يبعت admin commands لل CDC، بما فيها DIM و Get Log Page."
+    },
+    "9": {
+      "text": "DIM Register → CDC (TP8013)",
+      "detail": "الهوست بيبعت Discovery Information Management (DIM) command ليسجّل مع ال CDC. DIM معرّف بـ TP8013 وبيسمح للهوستات يسجّلوا/يشيلوا تسجيلهم مع discovery controllers. التسجيل بيشمل ال NQN تبع الهوست، Host ID (UUID)، hostname، و OS version. بعد التسجيل، ال CDC بيحسب هالهوست بحسابات ال zoning تبعه وبيبعت Asynchronous Event Notifications لما يتغيّر ال discovery log (مثلاً subsystems جداد بيطلعوا online). بـ nvme-stas، هيدا بيتعامل معه libnvme عبر nvmf_register_ctrl()."
+    },
+    "10": {
+      "text": "DIM Register Response ← CDC (نجح)",
+      "detail": "ال CDC بيأكّد تسجيل الهوست. الهوست هلّق بقاعدة بيانات ال CDC ورح يستلم discovery log pages مفلترة حسب إعدادات ال zoning — بس ال subsystems يلّي هالهوست مسموح يوصلّهم رح يظهروا. ال CDC كمان رح يبعت AENs (Asynchronous Event Notifications) إذا تغيّر ال discovery log."
+    },
+    "11": {
+      "text": "Get Log Page → CDC (Discovery Log, LID 0x70)",
+      "detail": "الهوست بيطلب Discovery Log Page (LID 0x70) من ال CDC. هيدا standard NVMe Get Log Page admin command. ال discovery log فيه entries لكل ال subsystems يلّي هالهوست بيقدر يوصلّهم، مفلترة حسب zoning configuration تبع ال CDC. كل entry بتعطي ال transport type، address family، transport address (IP)، port، subsystem NQN، و subsystem type (NVM أو Discovery referral). الهوست بيقرا ال generation counter قبل وبعد — إذا تغيّر، لازم يعيد يقرا ال log."
+    },
+    "12": {
+      "text": "Discovery Log Page ← CDC (2 DDC referrals)",
+      "detail": "ال CDC بيرجّع ال discovery log مع 2 DDC referral entries: 1) DDC على storage array 1 (subtype=1, Discovery Subsystem) على 192.168.100.51:8009 و 2) DDC على storage array 2 (subtype=1, Discovery Subsystem) على 192.168.100.52:8009. هيدي referrals — ال CDC بيوجّه الهوست يتّصل بكل DDC (Direct Discovery Controller) ليعرف شو ال IO Controllers المتاحة على هداك ال storage array. ال CDC بيعطي النظرة على مستوى الشبكة؛ ال DDCs بيعطوا التفاصيل لكل array. stafd هلّق رح يتبع أول referral ويتّصل بال DDC على storage array 1."
+    },
+    "13": {
+      "text": "TCP SYN → DDC port 8009 (storage array)",
+      "detail": "stafd بيتبع ال DDC referral من discovery log تبع ال CDC. بيبدأ TCP connection لل Direct Discovery Controller (DDC) على storage array 1 على 192.168.100.51:8009. ال DDC هو Discovery Controller بيشتغل على ال storage array نفسه (بعكس ال CDC يلّي بيشتغل بال network switch). ال DDC بيعطي discovery log pages خاصة بال IO subsystems على هال storage array بالذات. هيدا المستوى التاني من ال three-tier discovery hierarchy: CDC (كل الشبكة) → DDC (لكل array) → IOC (لكل subsystem)."
+    },
+    "14": {
+      "text": "TCP SYN-ACK ← DDC",
+      "detail": "ال DDC تبع ال storage array بيعترف بمحاولة ال TCP connection."
+    },
+    "15": {
+      "text": "TCP ACK — تأسّس الاتصال بال DDC",
+      "detail": "ال TCP handshake لل DDC على ال storage array خلص."
+    },
+    "16": {
+      "text": "ICReq → DDC (Initialize NVMe/TCP Connection)",
+      "detail": "NVMe/TCP initialization مع ال DDC — نفس تبادل ICReq/ICResp متل ال CDC."
+    },
+    "17": {
+      "text": "ICResp ← DDC (قُبلت ال connection parameters)",
+      "detail": "ال DDC بيقبل NVMe/TCP transport parameters."
+    },
+    "18": {
+      "text": "Fabrics Connect → DDC (Admin Queue, Discovery NQN)",
+      "detail": "الهوست بيبعت Fabrics Connect لل DDC باستعمال ال well-known discovery subsystem NQN (nqn.2014-08.org.nvmexpress.discovery) — نفس ال NQN المستعمل مع ال CDC. ال CDC وال DDC الاتنين Discovery Controllers؛ الفرق بنطاقهم (CDC = centralized/كل الشبكة، DDC = محلي على storage array) بس بيستعملوا نفس ال discovery protocol وال NQN."
+    },
+    "19": {
+      "text": "Fabrics Connect Response ← DDC (CNTLID=1)",
+      "detail": "ال DDC بيقبل الاتصال وبيعيّن CNTLID=1. ال admin queue لل DDC تأسّس — الهوست هلّق بيقدر يطلب ال discovery log تبع ال DDC ليعرف عن ال IO Controllers على هال storage array."
+    },
+    "20": {
+      "text": "DIM Register → DDC (TP8013)",
+      "detail": "الهوست بيسجّل مع ال DDC عبر DIM، متل ما عمل مع ال CDC. هيدا بيضمن إنو ال DDC يرجّع discovery log entries مفلترة حسب zoning configuration لهالهوست بالذات. ال DDC كمان رح يبعت AENs إذا تغيّرت ال subsystems على هال storage array."
+    },
+    "21": {
+      "text": "DIM Register Response ← DDC (نجح)",
+      "detail": "ال DDC بيأكّد تسجيل الهوست. الهوست هلّق بيقدر يطلب discovery log page تبع ال DDC ليعرف شو ال IO Controllers يلّي بيقدر يوصلّهم على هال storage array."
+    },
+    "22": {
+      "text": "Get Log Page → DDC (Discovery Log, LID 0x70)",
+      "detail": "الهوست بيطلب Discovery Log Page من ال DDC. بعكس log تبع ال CDC يلّي كان فيه DDC referrals، log تبع ال DDC فيه NVM subsystem entries الفعلية — تحديداً ال IO Controllers على هال storage array يلّي هالهوست بيقدر يوصلّهم. هيدي الخطوة يلّي بيتعلّم فيها الهوست ال NQN وتفاصيل الاتصال تبع ال IO Controller."
+    },
+    "23": {
+      "text": "DDC Discovery Log ← DDC (subsys-alpha على 4420)",
+      "detail": "ال DDC بيرجّع discovery log تبعه مع entry واحد: NVM Subsystem A (nqn.2024-01.com.storage:subsys-alpha) على 192.168.100.51:4420. هيدا ال IO Controller NQN يلّي stacd رح يستعمله ليتّصل. ال three-tier discovery hierarchy كمل: CDC (كل الشبكة) → DDC (لكل array) → IOC (لكل subsystem). stacd هلّق عنده ال subsystem NQN وتفاصيل الاتصال اللازمة لتأسيس IO Controller connection."
+    },
+    "24": {
+      "text": "TCP SYN → IO Controller port 4420",
+      "detail": "stacd بيبدأ TCP connection لل IO Controller على 192.168.100.51:4420 — العنوان وال port يلّي تعلّمهم من discovery log تبع ال DDC (nqn.2024-01.com.storage:subsys-alpha). ال Port 4420 هو ال IANA-assigned port لـ NVMe over Fabrics."
+    },
+    "25": {
+      "text": "TCP SYN-ACK ← IO Controller",
+      "detail": "ال IO Controller بيعترف بمحاولة ال TCP connection."
+    },
+    "26": {
+      "text": "TCP ACK — تأسّس الاتصال بال IO Controller",
+      "detail": "ال TCP handshake لل IO Controller خلص."
+    },
+    "27": {
+      "text": "ICReq → IO Controller",
+      "detail": "NVMe/TCP initialization — نفس تبادل ICReq/ICResp متل ال CDC."
+    },
+    "28": {
+      "text": "ICResp ← IO Controller",
+      "detail": "ال IO Controller بيقبل NVMe/TCP transport parameters."
+    },
+    "29": {
+      "text": "Fabrics Connect → IO Controller (subsys-alpha)",
+      "detail": "الهوست بيتّصل بال IO Controller باستعمال ال subsystem NQN يلّي تعلّمه من discovery log تبع ال DDC (nqn.2024-01.com.storage:subsys-alpha). هيدا بيأسّس ال Admin queue association. بعكس اتصالات ال CDC وال DDC يلّي استعملت ال well-known discovery NQN، هيدا بيستعمل ال actual storage subsystem NQN — بيكمّل المستوى الأخير من ال CDC → DDC → IOC hierarchy."
+    },
+    "30": {
+      "text": "Fabrics Connect Response ← IO Controller (CNTLID=1)",
+      "detail": "ال IO Controller بيقبل الاتصال وبيعيّن CNTLID=1. ال admin queue تأسّس — الهوست بيقدر هلّق يتعرّف على ال controller وال namespaces تبعه."
+    },
+    "31": {
+      "text": "Identify Controller (CNS=0x01)",
+      "detail": "الهوست بيبعت Identify Controller (admin opcode 0x06, CNS=1) ليعرف قدرات ال controller: serial number, model, firmware version, maximum data transfer size (MDTS), عدد ال namespaces, وال supported features. هال response يلّي حجمه 4096 bytes ضروري لل host driver تيضبّط حاله."
+    },
+    "32": {
+      "text": "Identify Controller Response (4 namespaces, MDTS=256KB)",
+      "detail": "ال IO Controller بيرجّع هويته: model \"NVMe-oF/TCP Storage Array\", firmware v2.1.0, MDTS=6 (max transfer 256KB), و 4 namespaces. ال host driver بيستعمل MDTS ليحدّ حجم I/O requests و nn (Number of Namespaces) ليعرف قديش namespace لازم يعدّد."
+    },
+    "33": {
+      "text": "Identify Namespace (NSID=1, CNS=0x00)",
+      "detail": "الهوست بيتعرّف على Namespace 1 ليعرف حجمها، LBA format، وقدراتها. CNS=0 مع NSID محدد بيرجّع بيانات هوية ال namespace يلّي بتشمل total size (nsze)، capacity (ncap)، current utilization (nuse)، و LBA format (sector size, metadata)."
+    },
+    "34": {
+      "text": "Identify Namespace Response (NSID=1, ~1TB, 512B LBAs)",
+      "detail": "Namespace 1 سعتها ~1TB (1,953,525,168 × 512-byte LBAs)، 25% مستعملة. LBA format 0: 512 bytes لكل LBA، بلا metadata، أفضل أداء نسبي. ال block layer تبع الهوست رح يقدّم هيدا كـ /dev/nvmeXnY (مثلاً /dev/nvme0n1)."
+    },
+    "35": {
+      "text": "Fabrics Connect IO Queue 1",
+      "detail": "الهوست بيعمل IO Queue 1 عبر Fabrics Connect مع QID=1. ال IO queues بتُستعمل لأوامر NVMe Read/Write (ال admin commands بتستعمل QID=0). SQ Size محطوط 128 entries. بتقدر تعمل عدة IO queues (عادةً وحدة لكل CPU core لأفضل أداء)."
+    },
+    "36": {
+      "text": "IO Queue 1 تأسّس — جاهز لل I/O",
+      "detail": "IO Queue 1 تأسّس. الهوست هلّق بيقدر يبعت NVMe Read و Write commands. ال block device /dev/nvme0n1 هلّق شغّال بالكامل."
+    },
+    "37": {
+      "text": "NVMe Write Command (4KB على LBA 0x1000)",
+      "detail": "الهوست بيبعت 4KB NVMe Write command لـ Namespace 1 على LBA 0x1000. ال Write SQE (64 bytes) بينبعت كـ CapsuleCmd PDU على IO Queue 1. الأمر بيحدّد 8 LBAs (NLB=7 بالصفر) × 512 bytes = 4096 bytes. عبر NVMe/TCP، ال write data ما بتنبعت مع الأمر مباشرة — ال controller لازم أولاً يبعت R2T (Ready to Transfer) PDU يطلب فيها ال data."
+    },
+    "38": {
+      "text": "R2T ← Controller (طلب 4KB write data)",
+      "detail": "ال IO Controller بيبعت Ready-to-Transfer (R2T) PDU يطلب ال write data من الهوست. ال R2T بيحدّد ال transfer tag، data offset (0 = البداية)، و length (4096 bytes). هيدا ال NVMe/TCP flow control mechanism — ال controller بيتحكّم متى وقديش data الهوست بيبعت. هيدا بيختلف عن RDMA وين الهوست بيقدر يدفع ال data مباشرة."
+    },
+    "39": {
+      "text": "H2CData → Controller (4KB write payload)",
+      "detail": "الهوست بيبعت ال 4KB write data بـ H2CData (Host-to-Controller Data) PDU. ال transfer tag بيطابق ال R2T. ال LAST flag بيعني هيدا آخر data PDU لهالأمر. لل writes الأكبر، ممكن يصير عدة R2T/H2CData exchanges (محكومة بـ maxr2t من ICReq)."
+    },
+    "40": {
+      "text": "Write Completion ← Controller (نجح)",
+      "detail": "ال IO Controller بيكمّل ال write وبيرجّع CapsuleResp مع status 0x0000 (Success). ال 4KB انكتبت على LBA 0x1000 بـ Namespace 1. ال host driver بيكمّل ال block I/O request."
+    },
+    "41": {
+      "text": "NVMe Read Command (4KB من LBA 0x1000)",
+      "detail": "الهوست بيقرا نفس ال 4KB من LBA 0x1000. ال Read SQE بينبعت كـ CapsuleCmd على IO Queue 1. بعكس Write، ال Read command ما بيحتاج R2T — ال controller بيبعت ال data مباشرة عبر C2HData PDUs."
+    },
+    "42": {
+      "text": "C2HData ← Controller (4KB read payload)",
+      "detail": "ال IO Controller بيبعت ال 4KB read data بـ C2HData (Controller-to-Host Data) PDU. لل reads، ال data بتمشي من ال controller للهوست بدون R2T handshake — ال controller بيبعت ال data فوراً لما تكون جاهزة من ال media. ال LAST flag بيعني هيدا آخر data PDU."
+    },
+    "43": {
+      "text": "Read Completion ← Controller (نجح)",
+      "detail": "ال Read خلص بنجاح. ال 4KB data من LBA 0x1000 وصلت للهوست. كامل دورة حياة NVMe/TCP تمّت: mDNS discovery → CDC registration → CDC discovery log (DDC referrals) → DDC connection → DDC discovery log (IOC details) → IOC connection → controller identification → namespace enumeration → IO queue setup → Write → Read. ال three-tier discovery hierarchy (CDC → DDC → IOC) كمل."
+    }
+  }
+}

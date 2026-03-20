@@ -1,0 +1,53 @@
+{
+  "meta": {
+    "title": "GPU 到 GPU RDMA：通过 RoCEv2 的跨节点 Tensor 传输",
+    "description": "端到端的 GPU 到 GPU tensor 传输，使用 GPUDirect RDMA over RoCEv2 在两个节点之间完成。这是分布式 AI 训练、推理服务和 GPU 计算集群的基础数据路径。本场景追踪完整的生命周期：CUDA 内存分配、nvidia-peermem GPU BAR1 暴露、针对 GPU 内存的 MR 注册、CM QP 建立、RDMA WRITE 将 tensor 从 GPU 0 的 HBM 直接推送到 GPU 1 的 HBM（零主机 DRAM 中转），以及 RDMA READ 将其拉回。对比了 GPUDirect 路径（1 次拷贝）与传统路径（4 次拷贝）。",
+    "learning_objectives": [
+      "追踪完整的 GPU 到 GPU RDMA 数据路径：GPU HBM → PCIe → RNIC → Network → RNIC → PCIe → GPU HBM",
+      "理解 GPUDirect RDMA 为何能消除主机 DRAM 中转和 CPU 参与",
+      "观察 nvidia-peermem 如何桥接 GPU 内存子系统与 RDMA 子系统",
+      "对比传统路径（GPU→CPU→RNIC→Network→RNIC→CPU→GPU，4 次拷贝）与 GPUDirect（1 次拷贝）",
+      "跟踪 RNIC 和 GPU 之间通过 BAR1 映射窗口进行的 PCIe 点对点（P2P）DMA",
+      "了解 GPUDirect RDMA 的应用场景：NCCL 集合通信、推理服务、GPU 计算",
+      "观察 RDMA WRITE（推送模型）和 RDMA READ（拉取模型）对 GPU 内存的操作"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "物理链路建立——GPU 节点之间的 100GbE 无损网络",
+      "detail": "两个 GPU 节点通过 100GbE 连接到交换机，PFC 和 ECN 已启用。无损网络至关重要——RDMA 依赖网络不丢包。\n典型的 GPU 集群拓扑：每个节点有 8 个 GPU，通过 NVLink 进行节点内通信，1-8 个 RNIC 用于节点间 RDMA。本场景为了清晰起见，每个节点只展示一个 GPU 和一个 RNIC。"
+    },
+    "1": {
+      "text": "CUDA 内存已分配——两个节点的 GPU HBM 中各分配 4MB tensor 缓冲区",
+      "detail": "cuMemAlloc() 在 GPU HBM（High Bandwidth Memory，高带宽内存）中分配内存：\n• 节点 A：GPU VA 0x7f0000000000 处的 4MB tensor 缓冲区\n• 节点 B：GPU VA 0x7f0100000000 处的 4MB tensor 缓冲区\n此内存位于 GPU 的私有地址空间中——CPU 无法直接访问它，RNIC 也不行。GPUDirect RDMA 通过 PCIe BAR1 映射窗口将 GPU 内存暴露给 RNIC 来解决这个问题。"
+    },
+    "2": {
+      "text": "GPU BAR1 映射——通过 nvidia-peermem 将 GPU 内存暴露到 PCIe 地址空间",
+      "detail": "nvidia-peermem（内核模块）将自身注册为 RDMA 子系统的 peer_memory_client。当对 GPU 虚拟地址调用 ibv_reg_mr() 时，nvidia-peermem 进行拦截：\n1. 调用 nvidia_p2p_get_pages() 锁定 GPU 内存\n2. 获取 GPU 物理地址（在 GPU 本地 DRAM 中）\n3. 通过 GPU 的 PCIe BAR1 映射窗口映射这些地址\n4. 将 PCIe 总线地址返回给 RNIC 的 DMA 引擎\n现在 RNIC 可以通过 PCIe 点对点直接对 GPU 内存进行 DMA，无需经过主机 DRAM 或 CPU。\n传统路径（无 GPUDirect）：\n  GPU → cudaMemcpy → 主机 DRAM → ibv_post_send → RNIC → 网络\n  网络 → RNIC → 主机 DRAM → cudaMemcpy → GPU\n  = 4 次拷贝，2 次 CPU 介入\n\nGPUDirect RDMA 路径：\n  GPU HBM → BAR1 → RNIC → 网络 → RNIC → BAR1 → GPU HBM\n  = 每个方向 1 次 DMA 传输，0 次 CPU 数据拷贝"
+    },
+    "3": {
+      "text": "针对 GPU 内存注册 Memory Region——RDMA 密钥已交换",
+      "detail": "使用 GPU 虚拟地址调用 ibv_reg_mr()。nvidia-peermem 拦截并将 BAR1 映射的物理地址提供给 RNIC 的硬件页表。\nMR 注册后，两个节点通过带外方式（通常通过 TCP 控制通道或 RDMA SEND）交换 rkey。每个节点现在都拥有远程节点的 {rkey, virtual_address, length}——进行 RDMA READ/WRITE 所需的一切。\nMR 注册开销较大（微秒到毫秒级），应在初始化期间一次性完成，而非每次传输都执行。NCCL 在 ncclCommInitRank() 期间预注册缓冲区。"
+    },
+    "4": {
+      "text": "QP 已连接（RTS）——RDMA 通道准备好进行 GPU 到 GPU 传输",
+      "detail": "Reliable Connected（RC）QP 通过 CM REQ/REP/RTU 过渡到 RTS 状态。QP 处于 RTS 且 GPU 内存已注册为 MR 后，GPU 到 GPU 的数据路径已完全建立。"
+    },
+    "5": {
+      "text": "RDMA WRITE——4MB tensor 从 GPU A HBM 推送到 GPU B HBM（CPU 零拷贝）",
+      "detail": "节点 A 的应用程序调用 ibv_post_send()，使用指向本地 GPU 缓冲区（源）和节点 B GPU 缓冲区（目标，通过 RETH 中的 rkey + VA）的 RDMA WRITE WQE。\n数据路径逐步说明：\n1. RNIC A 的 DMA 引擎通过 PCIe BAR1 从 GPU A 的 HBM 读取 4MB（点对点 DMA——无主机 DRAM 参与）\n2. RNIC A 将数据分段为 MTU 大小的数据包（每个 4K 载荷），并通过 RoCEv2（UDP/IP/Ethernet）传输\n3. 数据包经过无损交换机\n4. RNIC B 接收数据包并通过 PCIe BAR1（点对点）将每个数据包直接 DMA 写入 GPU B 的 HBM\n5. 所有数据包传输完成后，RNIC B 发送 ACK\n两个节点的 CPU 都不接触 tensor 数据。节点 A 的 CPU 仅投递 WQE（64 字节）；节点 B 的 CPU 完全不参与（RDMA 是单边操作）。\n在 100 Gbps 下，4MB 在线路上大约需要约 330 微秒。PCIe Gen5 x16 提供 64 GB/s——不是瓶颈。"
+    },
+    "6": {
+      "text": "RDMA READ 请求——节点 A 请求 GPU B HBM 中的 4MB tensor",
+      "detail": "节点 A 的应用程序调用 ibv_post_send()，使用 RDMA READ WQE。RNIC 向节点 B 发送一个小型 READ Request（78 字节），指定远程 GPU 缓冲区地址和 rkey。\nRDMA READ 是拉取模型——请求方（节点 A）告诉响应方（节点 B）要读取哪块远程内存。节点 B 的 RNIC 自主从 GPU B 的 HBM 获取数据并发回。节点 B 的 CPU 从不参与。"
+    },
+    "7": {
+      "text": "RDMA READ 响应——4MB tensor 从 GPU B HBM → GPU A HBM",
+      "detail": "节点 B 的 RNIC 自主完成：\n1. 通过 PCIe BAR1（P2P DMA）从 GPU B 的 HBM 读取 4MB\n2. 作为 RDMA READ Response 数据包传输到节点 A\n3. 节点 A 的 RNIC 通过 BAR1 将每个数据包写入 GPU A 的 HBM\n完成后，节点 A 的 CQ（Completion Queue，完成队列）通知应用程序 tensor 数据已在 GPU A 的缓冲区中可用。\nRDMA READ 与 WRITE 的权衡：\n• WRITE：发起方推送数据（更低延迟，服务端无需知道数据何时到达）\n• READ：发起方拉取数据（响应方无需发起操作，但增加了请求/响应延迟）\n• NCCL 倾向于在集合操作中使用 WRITE"
+    },
+    "8": {
+      "text": "场景完成——GPU 到 GPU RDMA tensor 传输",
+      "detail": "本场景展示了端到端的 GPU 到 GPU RDMA：\n设置：\n  cuMemAlloc → nvidia-peermem BAR1 映射 → ibv_reg_mr（GPU MR）\n  → CM QP 建立 → rkey 交换\n\nRDMA WRITE（推送——GPU A → GPU B）：\n  GPU A HBM → PCIe BAR1 P2P → RNIC A → RoCEv2 → RNIC B\n  → PCIe BAR1 P2P → GPU B HBM\n  CPU 参与：0（仅 WQE 投递）\n\nRDMA READ（拉取——GPU B → GPU A）：\n  请求：RNIC A → RoCEv2 → RNIC B\n  响应：GPU B HBM → RNIC B → RoCEv2 → RNIC A → GPU A HBM\n  节点 B 上 CPU 参与：0\n\n数据路径对比：\n  传统路径（无 GPUDirect）：4 次拷贝，2 次 CPU 操作\n  GPU→CPU→RNIC→网络→RNIC→CPU→GPU\n\n  GPUDirect RDMA：1 次拷贝，0 次 CPU 操作\n  GPU→RNIC→网络→RNIC→GPU\n\nGPU 到 GPU RDMA 的应用场景：\n• 分布式 AI 训练中的 NCCL AllReduce/AllGather\n• 推理服务：GPU 间的 KV cache 迁移\n• GPU 计算：使用 GPU 缓冲区的 MPI_Send/Recv\n• GPU 状态的 checkpoint/restore\n• 多节点 GPU 渲染\n\n实现此功能的关键组件：\n• nvidia-peermem：桥接 GPU 内存和 RDMA 子系统\n• PCIe BAR1：RNIC 可访问的 GPU 内存映射窗口\n• 无损网络：PFC + ECN/DCQCN 防止丢包\n• RDMA verbs：零拷贝、内核旁路、CPU 旁路"
+    }
+  }
+}

@@ -1,0 +1,102 @@
+{
+  "meta": {
+    "title": "NVMe-oF/RDMA: Discovery \u2192 Fabrics Connect \u2192 NVMe Write & Read \u00fcber RoCEv2",
+    "description": "Vollst\u00e4ndiges NVMe over Fabrics mit RDMA-Transport (RoCEv2). Vom Aufbau der physischen Verbindung und ARP-Aufl\u00f6sung \u00fcber CM-basierten RDMA-Verbindungsaufbau, NVMe-oF Fabrics Connect zum Discovery Controller, Discovery-Log-Page-Abfrage, IO-Controller-Verbindung, Identify Controller/Namespace bis hin zu NVMe Write- und Read-Operationen. Kontrast zum NVMe/TCP-Szenario \u2014 hier werden NVMe-Befehle via RDMA SEND, Daten via RDMA WRITE (Controller\u2192Host) und RDMA READ (Host\u2192Controller) sowie Completions via RDMA SEND transportiert. Die CPU ist nicht am Datenpfad beteiligt.",
+    "learning_objectives": [
+      "Verstehen, wie NVMe-oF RDMA als Transportbindung nutzt \u2014 Befehle via SEND, Daten via WRITE/READ",
+      "Den RDMA-CM-Verbindungsaufbau sehen, der dem NVMe-oF Fabrics Connect vorausgeht",
+      "Dem Fabrics-Connect-Befehl folgen, der Admin- und IO-Queues \u00fcber RDMA herstellt",
+      "Discovery Log Pages beobachten, die \u00fcber RDMA zur\u00fcckgegeben werden, um IO Controller zu lokalisieren",
+      "NVMe Write nachverfolgen: Host sendet Befehl via RDMA SEND, Controller holt Daten via RDMA READ",
+      "NVMe Read nachverfolgen: Host sendet Befehl via RDMA SEND, Controller liefert Daten via RDMA WRITE",
+      "Die Verwendung von SGL (Scatter-Gather List) f\u00fcr RDMA-Datenplatzierung verstehen",
+      "RDMA-Transport mit TCP vergleichen \u2014 Zero-Copy vs. Kernel-vermittelter Datenpfad"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Physische Verbindung aktiv \u2014 100GbE mit PFC aktiviert auf beiden Segmenten",
+      "detail": "Beide 100GbE-Verbindungen werden \u00fcber Auto-Negotiation mit RS-FEC aktiv. PFC ist auf Priorit\u00e4t 3 f\u00fcr verlustfreien RoCEv2-Transport aktiviert. Dies ist die gleiche verlustfreie Fabric-Grundlage wie im PFC/ECN/DCQCN-Szenario beschrieben."
+    },
+    "1": {
+      "text": "ARP-Anfrage \u2014 Host l\u00f6st MAC-Adresse des Speicherziels auf",
+      "detail": "Der NVMe-Host ben\u00f6tigt die MAC-Adresse des Targets, bevor er eine RDMA-Verbindung aufbauen kann. ARP-Anfrage wird als Broadcast gesendet; Switch flutet an alle Ports."
+    },
+    "2": {
+      "text": "ARP-Antwort \u2014 Target antwortet mit MAC 00:02:c9:ab:cd:ef",
+      "detail": "ARP-Cache auf beiden Seiten aktualisiert. Der Host kann nun RDMA-Verbindungen aufbauen."
+    },
+    "3": {
+      "text": "CM REQ \u2192 Host initiiert RDMA-Verbindung f\u00fcr NVMe Admin Queue",
+      "detail": "Der nvme-rdma-Treiber ruft rdma_connect() auf, was den IB CM (Connection Manager) veranlasst, ein CM REQ zu senden. Dies wird via UD (Unreliable Datagram) an den bekannten QP1 (GSI \u2014 General Service Interface) gesendet.\nDas CM REQ tr\u00e4gt NVMe-oF-RDMA-Privatdaten mit Angabe von: \u2022 HRQSIZE = 128 (Host-Empfangswarteschlangenl\u00e4nge) \u2022 HSQSIZE = 128 (Host-Sendewarteschlangenl\u00e4nge)\nDies ist ein wesentlicher Unterschied zu NVMe/TCP: Der RDMA-Transport erfordert einen expliziten QP-Verbindungsaufbau \u00fcber den IB CM, bevor NVMe-Befehle flie\u00dfen k\u00f6nnen. Der NVMe/TCP-Transport \u00f6ffnet einfach eine TCP-Verbindung."
+    },
+    "4": {
+      "text": "CM REP \u2190 Target akzeptiert RDMA-Verbindung, weist QP zu",
+      "detail": "Der nvme-rdma-Treiber des Targets akzeptiert die Verbindung. Er weist einen QP zu, postet Receive-WQEs (f\u00fcr eingehende NVMe-Befehlskapseln) und sendet CM REP mit CRQSIZE = 128 (Controller-Empfangswarteschlangenl\u00e4nge).\nDer QP durchl\u00e4uft: RESET \u2192 INIT \u2192 RTR (Ready to Receive)."
+    },
+    "5": {
+      "text": "CM RTU \u2192 RDMA-Verbindung hergestellt \u2014 Admin Queue bereit",
+      "detail": "Der Host sendet CM RTU (Ready To Use), beide QPs wechseln zu RTS (Ready To Send). Die RDMA-Verbindung ist vollst\u00e4ndig hergestellt.\nNVMe-oF/RDMA nutzt einen RDMA-QP pro NVMe-Queue: \u2022 Admin Queue (QID 0) \u2192 QP-Paar 0x000080 \u2194 0x000100 \u2022 IO Queue 1 (QID 1) \u2192 separates QP-Paar (wird sp\u00e4ter verbunden)\nDiese Queue-Isolation bedeutet, dass eine blockierte IO-Queue keine Admin-Operationen blockiert \u2014 wichtig f\u00fcr die Controller-Verwaltung."
+    },
+    "6": {
+      "text": "Fabrics Connect \u2192 Host verbindet sich mit Discovery Controller",
+      "detail": "Mit der hergestellten RDMA-Verbindung sendet der Host einen NVMe Fabrics Connect-Befehl via RDMA SEND (BTH Opcode 0x04). Die Befehlskapsel landet direkt in einem vorher geposteten Receive-WQE auf dem Target \u2014 Zero-Copy in den Befehlspuffer des Targets.\nDer Host verbindet sich mit dem bekannten Discovery Controller NQN: nqn.2014-08.org.nvmexpress.discovery\nDies ist analog zum mDNS \u2192 CDC-Ablauf im NVMe/TCP-Szenario, aber einfacher: Beim RDMA-Fall kennt der Host die IP-Adresse des Targets typischerweise aus statischer Konfiguration (nvme connect-all -t rdma -a 192.168.100.20)."
+    },
+    "7": {
+      "text": "Fabrics Connect Response \u2190 Discovery Controller bereit",
+      "detail": "Das Target akzeptiert den Fabrics Connect und gibt eine dynamische Controller-ID zur\u00fcck (0xFFFF f\u00fcr Discovery Controller). Die Admin Queue des Hosts ist nun dem Discovery Controller zugeordnet."
+    },
+    "8": {
+      "text": "Get Log Page \u2192 Host fordert Discovery Log via RDMA SEND an",
+      "detail": "Der Host sendet einen Get-Log-Page-Befehl (LID 0x70) via RDMA SEND. Der Befehl enth\u00e4lt einen Keyed SGL-Deskriptor, der dem Target genau sagt, wohin es die Log-Page-Daten in den Host-Speicher per RDMA WRITE schreiben soll: rkey=0x0000ABCD, va=0x7f8000100000, len=4096.\nDies ist das grundlegende NVMe-oF/RDMA-Datentransfermuster f\u00fcr Controller-zu-Host-Daten: 1. Host sendet Befehl via RDMA SEND (mit SGL, der auf Host-Puffer zeigt) 2. Target f\u00fchrt RDMA WRITE direkt in den Host-Puffer durch (unter Verwendung von SGL rkey/va) 3. Target sendet Completion via RDMA SEND\nDie CPU des Hosts ber\u00fchrt die Daten nicht \u2014 sie gehen direkt von der Target-NIC in den Host-Speicher via RDMA WRITE. Vergleichen Sie dies mit NVMe/TCP, wo der Kernel Daten von Socket-Puffern in den Zielpuffer kopieren muss."
+    },
+    "9": {
+      "text": "RDMA WRITE \u2190 Target liefert Discovery Log Page in den Host-Speicher",
+      "detail": "Das Target liest die Discovery Log Page aus seiner Konfiguration und f\u00fchrt einen RDMA WRITE direkt in den vorregistrierten Puffer des Hosts unter Verwendung des rkey und der virtuellen Adresse aus dem SGL des Befehls durch.\nDie Log Page enth\u00e4lt einen Eintrag: \u2022 SubNQN: nqn.2024-01.com.example:subsys-array01 \u2022 Transport: RDMA (0x01) \u2022 Adresse: 192.168.100.20 \u2022 Service-ID: 4420\nDer Host wird diese Informationen nutzen, um sich mit dem IO Controller zu verbinden."
+    },
+    "10": {
+      "text": "Completion \u2190 Discovery Log Page erfolgreich abgerufen",
+      "detail": "Das Target sendet die NVMe-Completion via RDMA SEND. RDMA-Ordnungsgarantien stellen sicher, dass der RDMA WRITE (Daten) im Host-Speicher sichtbar ist, BEVOR dieser SEND (Completion) eintrifft. Der Host kann sofort auf die Discovery-Log-Page-Daten zugreifen."
+    },
+    "11": {
+      "text": "Fabrics Connect \u2192 Host verbindet IO Queue mit Speicher-Subsystem",
+      "detail": "Der Host stellt eine zweite RDMA-Verbindung her (separates CM REQ/REP/RTU, der K\u00fcrze halber ausgelassen) und sendet Fabrics Connect f\u00fcr IO Queue 1 (QID=1) zum im Log Page entdeckten Subsystem-NQN.\nJede NVMe-IO-Queue wird einem separaten RDMA-QP zugeordnet. In der Produktion erstellt ein Host typischerweise eine IO-Queue pro CPU-Kern (z.B. 32 QPs f\u00fcr 32 Kerne) f\u00fcr maximale Parallelit\u00e4t. Jede Queue arbeitet unabh\u00e4ngig."
+    },
+    "12": {
+      "text": "Fabrics Connect Response \u2190 IO Controller bereit, CNTLID=0x0041",
+      "detail": "Das Target weist Controller-ID 0x0041 zu und die IO-Queue ist bereit f\u00fcr NVMe-I/O-Operationen. Der Host kann nun NVMe-Read- und Write-Befehle auf dieser Queue absetzen.\nZu diesem Zeitpunkt ist der vollst\u00e4ndige NVMe-oF/RDMA-Stack aufgebaut: \u2022 Admin Queue: QP 0x000080 \u2194 0x000100 (f\u00fcr Admin-Befehle, Discovery) \u2022 IO Queue 1: QP 0x000082 \u2194 0x000102 (f\u00fcr NVMe Read/Write I/O)"
+    },
+    "13": {
+      "text": "NVMe Write \u2192 Host sendet 4KB-Write-Befehl (RDMA SEND)",
+      "detail": "Die Host-Anwendung gibt einen 4KB-Write auf LBA 0 aus. Der nvme-rdma-Treiber: 1. Registriert den Write-Datenpuffer als MR (Memory Region) 2. Erstellt einen NVMe-Write-Befehl mit einem Keyed SGL, der auf den Puffer zeigt 3. Sendet den Befehl via RDMA SEND (ibv_post_send mit SEND-Opcode)\nDer SGL teilt dem Target mit: \u201eMeine Write-Daten befinden sich bei va=0x7f8000200000, rkey=0x0000BCDE, L\u00e4nge=4096. F\u00fchre einen RDMA READ von dort durch.\u201c\nDies ist das GEGENTEIL des NVMe-Read-Datenflusses: Bei Writes holt das TARGET die Daten VOM Host via RDMA READ. Bei Reads liefert das Target die Daten AN den Host via RDMA WRITE."
+    },
+    "14": {
+      "text": "RDMA READ \u2190 Target holt Write-Daten aus dem Host-Speicher",
+      "detail": "Der NVMe-Treiber des Targets gibt einen RDMA READ aus, um die 4KB-Write-Daten aus dem Puffer des Hosts zu holen. Die RNIC des Targets sendet einen RDMA-READ-Request (BTH Opcode 0x0c) mit dem rkey und der virtuellen Adresse des Hosts.\nDie RNIC des Hosts empf\u00e4ngt diese Anfrage, f\u00fchrt DMA-Lesezugriffe aus der registrierten Memory Region des Hosts durch und gibt die Daten als RDMA-READ-Response zur\u00fcck \u2014 ALLES IN HARDWARE. Die Host-CPU wird nicht unterbrochen.\nDies ist ein grundlegender Vorteil des RDMA-Transports gegen\u00fcber TCP: Bei NVMe/TCP muss der Host-Kernel Write-Daten aus User-Puffern in Kernel-Socket-Puffer kopieren, dann f\u00fchrt die NIC DMA aus dem Kernel-Speicher durch. Bei NVMe-oF/RDMA gehen die Daten direkt vom Userspace-Speicher auf die Leitung ohne CPU-Kopie."
+    },
+    "15": {
+      "text": "RDMA READ Response \u2192 4KB Write-Daten an Target geliefert",
+      "detail": "Die RNIC des Hosts gibt die 4KB-Datennutzlast zur\u00fcck. Das Target empf\u00e4ngt sie, und der NVMe-Target-Treiber schreibt sie auf die Backend-NVMe-SSD bei LBA 0."
+    },
+    "16": {
+      "text": "NVMe Write Completion \u2190 4KB erfolgreich auf LBA 0 geschrieben",
+      "detail": "Das Target best\u00e4tigt, dass der NVMe Write abgeschlossen ist. Die NVMe-Completion wird via RDMA SEND an die Completion Queue des Hosts (Receive-WQE) geliefert.\nZusammenfassung des NVMe-Write-Datenpfads (RDMA-Transport): 1. Host \u2192 Target: RDMA SEND (NVMe-Write-Befehl mit SGL) 2. Target \u2192 Host: RDMA READ Request (Write-Daten holen) 3. Host \u2192 Target: RDMA READ Response (4KB Daten, Zero-Copy) 4. Target \u2192 Host: RDMA SEND (NVMe-Completion) Gesamt: 4 RDMA-Operationen, 0 CPU-Kopien auf dem Host."
+    },
+    "17": {
+      "text": "NVMe Read \u2192 Host sendet 4KB-Read-Befehl (RDMA SEND)",
+      "detail": "Der Host sendet einen NVMe-Read-Befehl f\u00fcr die gleiche LBA 0 (4KB). Der Befehl enth\u00e4lt einen Keyed SGL, der dem Target mitteilt, wohin es die Read-Daten per RDMA WRITE in den Host-Speicher schreiben soll: rkey=0x0000CDEF, va=0x7f8000300000, len=4096.\nBei Read-Operationen ist der Datenpfad einfacher als bei Write: Das Target liest von der SSD und f\u00fchrt RDMA WRITE direkt in den Puffer des Hosts durch, dann sendet es die Completion."
+    },
+    "18": {
+      "text": "RDMA WRITE \u2190 Target liefert 4KB-Read-Daten in den Host-Speicher",
+      "detail": "Das Target liest 4KB von der NVMe-SSD bei LBA 0 und f\u00fchrt einen RDMA WRITE direkt in den registrierten Puffer des Hosts unter Verwendung des SGL-rkey und der virtuellen Adresse durch. Die CPU des Hosts ist nicht beteiligt \u2014 Daten landen lautlos im Userspace-Speicher.\nDies ist der gleiche Datenlieferungsmechanismus wie zuvor f\u00fcr die Discovery Log Page und das grundlegende Muster f\u00fcr alle Controller-zu-Host-Daten in NVMe-oF/RDMA."
+    },
+    "19": {
+      "text": "NVMe Read Completion \u2190 4KB erfolgreich von LBA 0 gelesen",
+      "detail": "Das Target sendet die Completion via RDMA SEND. RDMA-Ordnungsgarantien stellen sicher, dass die WRITE-Daten sichtbar sind, bevor diese Completion eintrifft.\nZusammenfassung des NVMe-Read-Datenpfads (RDMA-Transport): 1. Host \u2192 Target: RDMA SEND (NVMe-Read-Befehl mit SGL) 2. Target \u2192 Host: RDMA WRITE (4KB Daten, Zero-Copy in Host-Puffer) 3. Target \u2192 Host: RDMA SEND (NVMe-Completion) Gesamt: 3 RDMA-Operationen, 0 CPU-Kopien auf dem Host.\nVergleich mit NVMe/TCP: \u2022 NVMe/TCP Read: Befehl (TCP SEND) \u2192 Daten (TCP C2HData PDU, Kernel-Kopie) \u2192 Completion \u2022 NVMe-oF/RDMA Read: Befehl (RDMA SEND) \u2192 Daten (RDMA WRITE, Zero-Copy) \u2192 Completion Der RDMA-Pfad eliminiert alle CPU-Datenkopien und Kernel-\u00dcberg\u00e4nge."
+    },
+    "20": {
+      "text": "\u27f3 Szenario abgeschlossen \u2014 NVMe-oF/RDMA Discovery und I/O",
+      "detail": "Dieses Szenario demonstrierte NVMe over Fabrics mit RDMA-Transportbindung:\n1. LINK \u2014 100GbE physischer Aufbau mit PFC f\u00fcr verlustfreies Fabric\n2. ARP \u2014 MAC-Adressaufl\u00f6sung\n3. CM \u2014 IB Connection Manager QP-Aufbau (REQ/REP/RTU) f\u00fcr Admin Queue\n4. FABRICS CONNECT \u2014 Discovery-Controller-Verbindung, Discovery-Log-Page-Abruf\n5. IO CONNECT \u2014 IO-Controller-Queue-Aufbau \u00fcber separaten RDMA-QP\n6. NVMe WRITE \u2014 Befehl via SEND, Daten geholt via RDMA READ (3 Operationen)\n7. NVMe READ \u2014 Befehl via SEND, Daten geliefert via RDMA WRITE (2 Operationen)\n\nRDMA-Transportbindung \u2014 Datenpfad-\u00dcbersicht:\n\u2502 Operation               \u2502 Befehlsrichtung      \u2502 Datenrichtung       \u2502\n\u2502 NVMe Read               \u2502 Host\u2192Target (SEND)   \u2502 Target\u2192Host (WRITE) \u2502\n\u2502 NVMe Write              \u2502 Host\u2192Target (SEND)   \u2502 Target\u2190Host (READ)  \u2502\n\u2502 Admin (Get Log Page)    \u2502 Host\u2192Target (SEND)   \u2502 Target\u2192Host (WRITE) \u2502\n\u2502 Completion (beliebig)   \u2502 Target\u2192Host (SEND)   \u2502 \u2014                   \u2502\n\nWichtige Vorteile gegen\u00fcber NVMe/TCP: \u2022 Null CPU-Datenkopien \u2014 RNIC-DMA \u00fcbernimmt alle Datenbewegungen \u2022 Geringere Latenz \u2014 keine Kernel-Socket-Puffer-\u00dcberg\u00e4nge \u2022 H\u00f6herer Durchsatz \u2014 Leitungsrate mit einzelnem QP erreichbar \u2022 Queue-Isolation \u2014 jede NVMe-Queue auf eigenem RDMA-QP\nKompromiss: Erfordert verlustfreies Ethernet-Fabric (PFC + ECN/DCQCN), RDMA-f\u00e4hige NICs und komplexere Konfiguration."
+    }
+  }
+}

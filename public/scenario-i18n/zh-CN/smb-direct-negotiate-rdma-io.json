@@ -1,0 +1,85 @@
+{
+  "meta": {
+    "title": "SMB Direct：协商 → RDMA 通道 → 基于 RoCEv2 的文件读写",
+    "description": "SMB Direct 场景：通过 RDMA 通道进行 SMB 3.1.1 协商、会话建立和文件 I/O。展示写入如何通过 RDMA READ 从客户端获取数据，读取如何通过 RDMA WRITE 将数据推送到客户端。",
+    "learning_objectives": [
+      "理解 SMB Direct 如何在 RDMA 上建立 SMB 会话",
+      "跟踪 SMB Direct 协商请求/响应的 RDMA 参数",
+      "观察 SMB2 WRITE 如何通过 RDMA READ 获取客户端数据",
+      "观察 SMB2 READ 如何通过 RDMA WRITE 将数据推送到客户端",
+      "理解 RDMA 缓冲区描述符在 SMB I/O 中的角色",
+      "将 SMB Direct 与传统 SMB/TCP 进行性能对比",
+      "了解 SMB 3.1.1 方言协商和 RDMA 转换能力"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "物理链路建立 — 用于 SMB Direct 的 100GbE 无损网络",
+      "detail": "两台主机通过 100GbE 连接，已启用 PFC（RoCEv2 无损传输所需）。Windows 上的 SMB Direct 通过系统中注册的 NetworkDirect（ND）提供程序检测支持 RDMA 的网卡。\nSMB Direct 支持：\n- Windows Server 2012 及更高版本（内置）\n- Windows 10/11 Enterprise/Pro（客户端）\n- Samba 4.x（带 RDMA 支持）\n- RNIC 硬件：ConnectX、E810、EFA 等"
+    },
+    "1": {
+      "text": "RDMA QP 已连接 — SMB Direct 建立 RDMA 通道",
+      "detail": "在 SMB Direct 协商之前，底层 RDMA 连接必须先建立。客户端通过 CM REQ/REP/RTU（如使用 iWARP 传输则通过 iWARP MPA）连接到服务器的 RDMA 监听端口（5445）。\nQP 到达 RTS 状态后，SMB Direct 协商即可在 RDMA SEND/RECV 上开始。"
+    },
+    "2": {
+      "text": "SMB Direct 协商请求 — 客户端提议 RDMA 参数",
+      "detail": "客户端通过 RDMA SEND 发送 SMB Direct Negotiate 消息，提议：\n- Credits：255（用于 SEND 消息的流控）\n- Preferred Send Size：1364 字节\n- Max Fragmented Size：1 MB（用于跨多次 SEND 拆分的大型 SMB 消息）\n- Max Read/Write Size：1 MB（用于 RDMA READ/WRITE 批量传输）\nCredit 管理至关重要：每次 RDMA SEND 在接收端消耗一个 credit。没有 credit 时，发送方必须等待——这防止接收队列溢出。"
+    },
+    "3": {
+      "text": "SMB Direct 协商响应 — RDMA 通道已建立",
+      "detail": "服务器接受 SMB Direct 参数。RDMA 通道现已激活——所有后续 SMB2 消息将通过 RDMA SEND/RECV 而非 TCP 传输。\n关键协商值：\n- Credits：255（双向）\n- 最大 RDMA Read/Write：1 MB\n- 这意味着最多 1 MB 的文件数据可以在单次 RDMA READ 或 WRITE 操作中传输"
+    },
+    "4": {
+      "text": "SMB2 NEGOTIATE — 方言 3.1.1，带 RDMA 转换能力",
+      "detail": "标准 SMB2 NEGOTIATE 交换，但现在通过 SMB Direct RDMA 通道传输（via RDMA SEND）。客户端提议 SMB 3.1.1 并包含 RDMA Transform 协商上下文，该上下文在 SMB 3.1.1 中启用 RDMA 载荷加密。\n没有 RDMA Transform 时，SMB 加密（AES-128-CCM/GCM）会强制所有数据通过 SEND/RECV 传输（破坏了 RDMA 的零拷贝优势）。RDMA Transform 在 RDMA READ/WRITE 之前在注册的内存缓冲区中就地加密。"
+    },
+    "5": {
+      "text": "SMB2 NEGOTIATE 响应 — SMB 3.1.1 已确认",
+      "detail": "服务器选择 SMB 3.1.1 方言。MULTI_CHANNEL 和 LARGE_MTU 能力已确认。"
+    },
+    "6": {
+      "text": "SMB2 SESSION_SETUP + TREE_CONNECT — 认证并映射共享",
+      "detail": "标准 SMB2 会话和树连接，通过 RDMA 传输。SESSION_SETUP 通过 Kerberos（域）或 NTLM 进行认证。TREE_CONNECT 映射 \\\\server\\share$ 以进行文件访问。\n在 Hyper-V over SMB 场景中，共享托管 VHDx 虚拟磁盘文件。SMB Direct 是实时 VM 存储的推荐传输——它提供比 TCP 更低的延迟和更高的吞吐量，对 Hyper-V 实时迁移和 CSV（群集共享卷）至关重要。"
+    },
+    "7": {
+      "text": "会话已建立，共享已连接",
+      "detail": "会话和树连接成功。客户端现在可以打开文件。"
+    },
+    "8": {
+      "text": "SMB2 CREATE — 打开 vm01.vhdx 进行读写",
+      "detail": "客户端打开 Hyper-V 虚拟磁盘文件。这是典型的 SMB Direct 工作负载：Hyper-V 将 VM 磁盘镜像存储在远程 SMB 共享上，所有 VM I/O 通过 SMB Direct 流动。"
+    },
+    "9": {
+      "text": "CREATE 响应 — vm01.vhdx 的文件句柄（100 GB）",
+      "detail": "服务器返回持久性文件句柄。"
+    },
+    "10": {
+      "text": "SMB2 WRITE，带 RDMA 缓冲区描述符 — 1 MB 写入 vm01.vhdx",
+      "detail": "客户端通过 RDMA SEND 发送 SMB2 WRITE 命令，但不是内联数据，而是包含一个 SMB_DIRECT_BUFFER_DESCRIPTOR_V1，其中有：\n- 注册缓冲区的内存偏移量（虚拟地址）\n- R_Key（用于 RDMA 访问的远程密钥）\n- 数据长度\nChannel 字段 = SMB2_CHANNEL_RDMA_V1 告诉服务器从此缓冲区描述符 RDMA READ 数据，而非期望内联数据。\n这是「反转」模型：客户端暴露其内存，服务器拉取数据——与传统文件写入（客户端推送数据）相反。此模型高效因为：\n1. 服务器控制节奏（无接收缓冲区溢出）\n2. 服务器可以将数据直接读入其文件系统缓存\n3. 双方零 CPU 拷贝"
+    },
+    "11": {
+      "text": "RDMA READ — 服务器从客户端内存获取 1 MB 写入数据",
+      "detail": "服务器的 RNIC 发出 RDMA READ，直接从客户端注册的内存缓冲区获取 1 MB 写入数据。两端的 CPU 都不参与数据传输——这是 DMA 引擎到 DMA 引擎在无损 RoCEv2 网络上的传输。\nRDMA READ 完成后，服务器在其本地缓冲区中拥有文件数据，可以将其写入磁盘（或其文件系统缓存）。"
+    },
+    "12": {
+      "text": "SMB2 WRITE 响应 — 1 MB 写入成功",
+      "detail": "服务器确认 1 MB 写入成功。整个数据路径都是零拷贝的。"
+    },
+    "13": {
+      "text": "SMB2 READ，带 RDMA 缓冲区描述符 — 从 vm01.vhdx 读取 1 MB",
+      "detail": "客户端发送带 Channel = SMB2_CHANNEL_RDMA_V1 和缓冲区描述符的 SMB2 READ。服务器将 RDMA WRITE 文件数据直接到客户端注册的内存缓冲区。\n对于 Hyper-V over SMB，这就是 VM 读取的工作方式：虚拟机管理程序发出 VHDx 读取，变成通过 RDMA 的 SMB READ。文件数据通过 RDMA WRITE 落入 VM 内存，文件服务器上零 CPU 拷贝。"
+    },
+    "14": {
+      "text": "RDMA WRITE — 服务器将 1 MB 读取数据推送到客户端内存",
+      "detail": "服务器的 RNIC 将 1 MB 文件数据 RDMA WRITE 直接到客户端注册的缓冲区。数据路径：\n  服务器磁盘/缓存 → 服务器内存 → RNIC DMA → 网络 →\n  客户端 RNIC DMA → 客户端注册缓冲区\n\n服务器 CPU 仅发起 RDMA WRITE（提交一个 WQE）；实际的数据移动完全由硬件驱动。"
+    },
+    "15": {
+      "text": "SMB2 READ 响应 — 数据已在客户端缓冲区（零内联数据）",
+      "detail": "READ 响应仅包含状态——文件数据已通过 RDMA WRITE 投递。响应的 Data Remaining = 0 确认所有数据已传输。\n对比 SMB over TCP：完整的 1 MB 文件数据将内联在 SMB2 READ 响应中，需要服务器 CPU 将数据拷贝到 TCP 发送缓冲区，客户端 CPU 从 TCP 接收缓冲区拷贝。"
+    },
+    "16": {
+      "text": "场景完成 — 基于 RoCEv2 的 SMB Direct 文件 I/O",
+      "detail": "本场景演示了 SMB Direct（MS-SMBD）：\n建立阶段：\n  RDMA QP 连接 → SMB Direct Negotiate（credits、最大 R/W 大小）\n  → SMB2 NEGOTIATE（3.1.1）→ SESSION_SETUP → TREE_CONNECT → CREATE\n\n文件写入（SMB2_CHANNEL_RDMA_V1）：\n  客户端：WRITE 命令 + 缓冲区描述符（via RDMA SEND）\n  服务器：RDMA READ 从客户端缓冲区获取 1 MB（零拷贝）\n  服务器：WRITE 响应（via RDMA SEND）\n\n文件读取（SMB2_CHANNEL_RDMA_V1）：\n  客户端：READ 命令 + 缓冲区描述符（via RDMA SEND）\n  服务器：RDMA WRITE 将 1 MB 推送到客户端缓冲区（零拷贝）\n  服务器：READ 响应——无内联数据（via RDMA SEND）\n\n关键要点：\n- 控制消息（命令、响应）→ RDMA SEND/RECV\n- 批量数据（文件内容）→ RDMA READ/WRITE（零拷贝）\n- WRITE 使用 RDMA READ（服务器从客户端拉取）\n- READ 使用 RDMA WRITE（服务器推送到客户端）\n- 基于 credit 的流控防止接收队列溢出\n- SMB 3.1.1 RDMA Transform 支持零拷贝加密\n\n主要用例：\n- Hyper-V over SMB（远程共享上的 VHDx）\n- SQL Server on SMB（SMB Direct 共享上的数据库文件）\n- CSV（故障转移群集的群集共享卷）\n- 任何受益于低延迟的 Windows 文件工作负载"
+    }
+  }
+}

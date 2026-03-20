@@ -1,0 +1,85 @@
+{
+  "meta": {
+    "title": "SMB Direct: ネゴシエーション → RDMAチャネル → ファイルRead & Write over RoCEv2",
+    "description": "SMB Direct (MS-SMBD) はSMB 3.xファイル共有をRDMAトランスポート (RoCEv2、iWARP) 上で動作させます。TCPベースのSMBネゴシエーションでRDMA機能を発見した後、接続がRDMAチャネルに移行します。ファイル読み取りはRDMA READ (サーバがクライアントバッファからプル) を使用し、ファイル書き込みはRDMA WRITE (サーバがクライアントバッファにプッシュ) を使用し、どちらもCPUデータパスをバイパスします。このシナリオでは、TCP接続、RDMA機能付きSMB2 NEGOTIATE、SMB Directネゴシエーション、RDMAチャネル確立、SMB2 SESSION_SETUP、TREE_CONNECT、CREATE、RDMA経由のWRITEとREADをカバーします。",
+    "learning_objectives": [
+      "SMB3がNEGOTIATE中にRDMA機能を発見する方法を理解する",
+      "RDMAチャネルを確立するSMB Direct (MS-SMBD) ネゴシエーションを見る",
+      "RDMAチャネルがアクティブになるとファイルデータがTCPを完全にバイパスする仕組みを追跡する",
+      "RDMA付きSMB2 WRITEを追跡する: クライアントがバッファディスクリプタを提示し、サーバがRDMA READでデータをプル",
+      "RDMA付きSMB2 READを追跡する: サーバがRDMA WRITEでクライアントの登録バッファにデータを配置",
+      "フロー制御のためのSMB Directクレジット管理を理解する",
+      "CPUオフロードの利点を理解する: ファイルサーバのデータパスがゼロコピー"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "物理リンクアップ — SMB Direct用100GbEロスレスファブリック",
+      "detail": "両ホストがPFC有効 (RoCEv2ロスレストランスポートに必要) の100GbEで接続されています。WindowsのSMB DirectがNetworkDirect (ND) プロバイダを通じてRDMA対応NICを検出します。\nSMB Directのサポート環境:\n• Windows Server 2012以降 (組み込み)\n• Windows 10/11 Enterprise/Pro (クライアント)\n• Samba 4.x (RDMAサポート付き)\n• RNICハードウェア: ConnectX、E810、EFAなど"
+    },
+    "1": {
+      "text": "RDMA QP接続完了 — SMB DirectがRDMAチャネルを確立",
+      "detail": "SMB Directネゴシエーションの前に、基盤となるRDMA接続を確立する必要があります。クライアントがCM REQ/REP/RTU (iWARPトランスポート使用時はiWARP MPA) 経由でサーバのRDMAリスナー (ポート5445) に接続します。\nQPがRTS状態に達すると、RDMA SEND/RECV上でSMB Directネゴシエーションを開始できます。"
+    },
+    "2": {
+      "text": "SMB Directネゴシエーションリクエスト — クライアントがRDMAパラメータを提案",
+      "detail": "クライアントがRDMA SEND経由でSMB Directネゴシエーションメッセージを送信し、以下を提案します:\n• クレジット: 255 (SENDベースメッセージのフロー制御)\n• 優先送信サイズ: 1364バイト\n• 最大フラグメントサイズ: 1 MB (複数SENDにまたがる大きなSMBメッセージ用)\n• 最大Read/Writeサイズ: 1 MB (RDMA READ/WRITEバルク転送用)\nクレジット管理が重要です: 各RDMA SENDは受信側で1クレジットを消費します。クレジットがなければ送信側は待機する必要があります — これにより受信キューのオーバーフローを防止します。"
+    },
+    "3": {
+      "text": "SMB Directネゴシエーションレスポンス — RDMAチャネル確立",
+      "detail": "サーバがSMB Directパラメータを受け入れます。RDMAチャネルがアクティブになり、以降のすべてのSMB2メッセージはTCPではなくRDMA SEND/RECV経由で送受信されます。\nネゴシエーション結果の主要値:\n• クレジット: 255 (双方向)\n• 最大RDMA Read/Write: 1 MB\n• これは1回のRDMA READまたはWRITE操作で最大1MBのファイルデータを転送できることを意味します"
+    },
+    "4": {
+      "text": "SMB2 NEGOTIATE — ダイアレクト3.1.1、RDMAトランスフォーム機能付き",
+      "detail": "標準的なSMB2 NEGOTIATE交換ですが、SMB Direct RDMAチャネル上で (RDMA SEND経由) 送受信されます。クライアントがSMB 3.1.1を提案し、RDMA Transformネゴシエーションコンテキストを含めます。これによりSMB 3.1.1でRDMAペイロードの暗号化が可能になります。\nRDMA Transformがないと、SMB暗号化 (AES-128-CCM/GCM) はすべてのデータをSEND/RECV経由で強制します (RDMAのゼロコピー利点を無効にします)。RDMA Transformは登録メモリバッファ内でインプレース暗号化を行い、RDMA READ/WRITEの前に適用します。"
+    },
+    "5": {
+      "text": "SMB2 NEGOTIATEレスポンス — SMB 3.1.1確認",
+      "detail": "サーバがSMB 3.1.1ダイアレクトを選択します。MULTI_CHANNELおよびLARGE_MTU機能が確認されました。"
+    },
+    "6": {
+      "text": "SMB2 SESSION_SETUP + TREE_CONNECT — 認証と共有マッピング",
+      "detail": "標準的なSMB2セッションおよびツリー接続。RDMA経由で送受信されます。SESSION_SETUPはKerberos (ドメイン) またはNTLMで認証します。TREE_CONNECTはファイルアクセス用に\\\\server\\share$をマッピングします。\nHyper-V over SMBシナリオでは、共有がVHDx仮想ディスクファイルをホストします。SMB DirectはライブVMストレージの推奨トランスポートです — TCPより低レイテンシと高スループットを提供し、Hyper-Vライブマイグレーションおよび CSV (クラスタ共有ボリューム) に不可欠です。"
+    },
+    "7": {
+      "text": "セッション確立、共有接続完了",
+      "detail": "セッションおよびツリー接続が成功。クライアントはファイルを開くことができます。"
+    },
+    "8": {
+      "text": "SMB2 CREATE — vm01.vhdxを読み書き用にオープン",
+      "detail": "クライアントがHyper-V仮想ディスクファイルを開きます。これは典型的なSMB Directワークロードです: Hyper-VがリモートSMB共有にVMディスクイメージを保存し、すべてのVM I/OがSMB Direct経由で流れます。"
+    },
+    "9": {
+      "text": "CREATEレスポンス — vm01.vhdxのファイルハンドル (100 GB)",
+      "detail": "サーバが永続的なファイルハンドルを返します。"
+    },
+    "10": {
+      "text": "SMB2 WRITE (RDMAバッファディスクリプタ付き) — vm01.vhdxに1 MB",
+      "detail": "クライアントがRDMA SEND経由でSMB2 WRITEコマンドを送信しますが、インラインデータの代わりに、以下を含むSMB_DIRECT_BUFFER_DESCRIPTOR_V1を含めます:\n• 登録バッファのメモリオフセット (仮想アドレス)\n• RDMAアクセス用R_Key (リモートキー)\n• データ長\nChannelフィールド = SMB2_CHANNEL_RDMA_V1は、サーバにインラインデータを期待する代わりに、このバッファディスクリプタからRDMA READでデータをプルするよう指示します。\nこれは「反転」モデルです: クライアントがメモリを公開し、サーバがデータをプルします — 従来のファイル書き込み (クライアントがデータをプッシュ) とは逆です。このモデルが効率的な理由:\n1. サーバがペースを制御 (受信バッファオーバーフローなし)\n2. サーバがファイルシステムキャッシュに直接データを読み取り可能\n3. 両側でゼロCPUコピー"
+    },
+    "11": {
+      "text": "RDMA READ — サーバがクライアントメモリから1 MBのライトデータをフェッチ",
+      "detail": "サーバのRNICがRDMA READを発行し、クライアントの登録メモリバッファから1 MBのライトデータを直接フェッチします。どちらのCPUもデータ転送に関与しません — ロスレスRoCEv2ファブリック上でDMAエンジン同士の通信です。\nRDMA READ完了後、サーバはローカルバッファにファイルデータを持ち、ディスク (またはファイルシステムキャッシュ) に書き込めます。"
+    },
+    "12": {
+      "text": "SMB2 WRITEレスポンス — 1 MB書き込み成功",
+      "detail": "サーバが1 MB書き込み完了を確認。データパス全体がゼロコピーでした。"
+    },
+    "13": {
+      "text": "SMB2 READ (RDMAバッファディスクリプタ付き) — vm01.vhdxから1 MB",
+      "detail": "クライアントがChannel = SMB2_CHANNEL_RDMA_V1とバッファディスクリプタ付きでSMB2 READを送信します。サーバはRDMA WRITEでファイルデータをクライアントの登録メモリバッファに直接書き込みます。\nHyper-V over SMBの場合、VMリードはこのように動作します: ハイパーバイザーがVHDxリードを発行し、それがRDMA経由のSMB READになります。ファイルデータはRDMA WRITEによりファイルサーバ上のCPUコピーなしにVMのメモリに配置されます。"
+    },
+    "14": {
+      "text": "RDMA WRITE — サーバがクライアントメモリに1 MBのリードデータをプッシュ",
+      "detail": "サーバのRNICが1 MBのファイルデータをクライアントの登録バッファに直接RDMA WRITEします。データパス:\n  サーバディスク/キャッシュ → サーバメモリ → RNIC DMA → ネットワーク →\n  クライアントRNIC DMA → クライアント登録バッファ\n\nサーバCPUはRDMA WRITEの開始 (WQEのポスト) のみ行い、実際のデータ移動は完全にハードウェア駆動です。"
+    },
+    "15": {
+      "text": "SMB2 READレスポンス — データは既にクライアントバッファ内 (インラインデータなし)",
+      "detail": "READレスポンスにはステータスのみが含まれます — ファイルデータはRDMA WRITEで既に配信されています。レスポンスのData Remaining = 0はすべてのデータが転送されたことを確認します。\nSMB over TCPと比較: 1 MB全体のファイルデータがSMB2 READレスポンスにインラインで含まれ、サーバCPUがTCP送信バッファにデータをコピーし、クライアントCPUがTCP受信バッファからコピーする必要があります。"
+    },
+    "16": {
+      "text": "シナリオ完了 — SMB DirectファイルI/O over RoCEv2",
+      "detail": "このシナリオではSMB Direct (MS-SMBD) を実演しました:\nセットアップ:\n  RDMA QP接続 → SMB Directネゴシエーション (クレジット、最大R/Wサイズ)\n  → SMB2 NEGOTIATE (3.1.1) → SESSION_SETUP → TREE_CONNECT → CREATE\n\nファイル書き込み (SMB2_CHANNEL_RDMA_V1):\n  クライアント: WRITEコマンド + バッファディスクリプタ (RDMA SEND経由)\n  サーバ: RDMA READでクライアントバッファから1 MBをフェッチ (ゼロコピー)\n  サーバ: WRITEレスポンス (RDMA SEND経由)\n\nファイル読み取り (SMB2_CHANNEL_RDMA_V1):\n  クライアント: READコマンド + バッファディスクリプタ (RDMA SEND経由)\n  サーバ: RDMA WRITEでクライアントバッファに1 MBをプッシュ (ゼロコピー)\n  サーバ: READレスポンス — インラインデータなし (RDMA SEND経由)\n\n主要ポイント:\n• 制御メッセージ (コマンド、レスポンス) → RDMA SEND/RECV\n• バルクデータ (ファイル内容) → RDMA READ/WRITE (ゼロコピー)\n• WRITEはRDMA READを使用 (サーバがクライアントからプル)\n• READはRDMA WRITEを使用 (サーバがクライアントにプッシュ)\n• クレジットベースのフロー制御で受信キューオーバーフローを防止\n• SMB 3.1.1 RDMA Transformがゼロコピーでの暗号化を可能に\n\n主なユースケース:\n• Hyper-V over SMB (リモート共有上のVHDx)\n• SQL Server on SMB (SMB Direct共有上のデータベースファイル)\n• CSV (フェイルオーバークラスタ用クラスタ共有ボリューム)\n• 低レイテンシの恩恵を受けるあらゆるWindowsファイルワークロード"
+    }
+  }
+}

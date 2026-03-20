@@ -1,0 +1,114 @@
+{
+  "meta": {
+    "title": "[WIP] GPUDirect Storage: Leitura/Escrita NVMe-oF Remota para Memória GPU sobre RoCEv2",
+    "description": "Um cenário GPUDirect Storage mostrando como uma GPU lê e escreve dados em um alvo NVMe-oF/RDMA remoto com dados aterrissando diretamente na HBM da GPU — contornando completamente a DRAM do host. O caminho tradicional de armazenamento remoto faz bounce dos dados duas vezes (armazenamento → RDMA → DRAM host → CPU memcpy → GPU). O GDS sobre RDMA elimina ambos os bounces: o RDMA WRITE do alvo de armazenamento entrega dados direto na abertura PCIe BAR1 da GPU, e os dados do cuFileWrite são puxados diretamente da HBM da GPU via RDMA READ. O fluxo cobre estabelecimento de link físico, ARP, configuração de QP via IB CM, NVMe-oF Fabrics Connect (filas admin + I/O), inicialização GDS (cuFileDriverOpen, cuFileHandleRegister, cuFileBufRegister), um cuFileRead que dispara NVMe READ sobre RDMA com dados escritos diretamente na memória GPU, e um cuFileWrite que dispara NVMe WRITE com dados lidos diretamente da memória GPU.\n",
+    "learning_objectives": [
+      "Entender como o GPUDirect Storage (GDS) elimina o buffer de bounce da DRAM do host para I/O de armazenamento remoto",
+      "Ver como cuFileRead dispara um NVMe-oF READ cujo RDMA WRITE aterrissa dados diretamente na HBM da GPU via BAR1",
+      "Ver como cuFileWrite dispara um NVMe-oF WRITE cujos dados são puxados da HBM da GPU via RDMA READ",
+      "Rastrear o binding de transporte NVMe-oF/RDMA: comandos NVMe via RDMA SEND, dados via RDMA WRITE/READ",
+      "Acompanhar NVMe-oF Fabrics Connect para estabelecer pares de filas admin e I/O sobre RDMA",
+      "Observar como nvidia-fs e nvidia-peermem cooperam para registrar memória GPU para RDMA",
+      "Contrastar caminho tradicional (armazenamento → DRAM → GPU) vs caminho GDS (armazenamento → GPU diretamente)",
+      "Acompanhar troca MAD do IB Connection Manager para levar um Queue Pair de RESET a RTS"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Link A: sinal detectado — Nó GPU <-> Switch",
+      "detail": "Transceptor óptico no nó GPU detecta luz da porta A do switch. Auto-Negotiation começa conforme IEEE 802.3cd cláusula 73.\n"
+    },
+    "1": {
+      "text": "Link B: sinal detectado — Switch <-> Alvo de Armazenamento",
+      "detail": "Transceptor óptico no alvo de armazenamento detecta luz da porta B do switch.\n"
+    },
+    "2": {
+      "text": "Link A ATIVO — Nó GPU <-> Switch a 100Gbps com RS-FEC",
+      "detail": "AN e Link Training completos. PFC habilitado na prioridade 3 para RoCEv2.\n"
+    },
+    "3": {
+      "text": "Link B ATIVO — Switch <-> Alvo de Armazenamento a 100Gbps com RS-FEC",
+      "detail": "Ambos os links ativos. Conectividade L2 de ponta a ponta estabelecida.\n"
+    },
+    "4": {
+      "text": "ARP Request: quem tem 192.168.1.20?",
+      "detail": "O nó GPU resolve o IP do alvo de armazenamento para MAC para mapeamento GID-para-MAC do RoCEv2.\n"
+    },
+    "5": {
+      "text": "ARP Reply: 192.168.1.20 está em 00:02:c9:ab:cd:ef",
+      "detail": "O alvo de armazenamento responde. O nó GPU agora tem alcançabilidade L2 para o armazenamento.\n"
+    },
+    "6": {
+      "text": "CM REQ — Nó GPU propõe QP para transporte NVMe-oF/RDMA",
+      "detail": "IB Connection Manager Request. O nó GPU propõe parâmetros de QP RC para a conexão NVMe-oF/RDMA. Dados privados carregam o formato de requisição CM RDMA NVMe-oF conforme TP8010 (ID de fila, tamanhos de SQ/RQ).\n"
+    },
+    "7": {
+      "text": "CM REP — alvo de armazenamento aceita, fornece QPN e PSN",
+      "detail": "O alvo de armazenamento aceita a conexão e fornece seu número de QP (0x00B002) e PSN inicial (8765432).\n"
+    },
+    "8": {
+      "text": "CM RTU — ambos os QPs transitam para RTS, transporte RDMA pronto",
+      "detail": "Ambos os QPs movem para RTS. A camada de transporte NVMe-oF/RDMA agora pode enviar cápsulas de comando NVMe via RDMA SEND e transferir dados via RDMA WRITE/READ.\n"
+    },
+    "9": {
+      "text": "Fabrics Connect — Fila Admin (QID=0)",
+      "detail": "Comando NVMe-oF Fabrics Connect enviado via RDMA SEND para estabelecer a associação da fila admin. Os dados do Connect (enviados via SGL) contêm hostnqn, subnqn e hostid. O alvo de armazenamento atribui um ID de controlador.\n"
+    },
+    "10": {
+      "text": "Fabrics Connect Response — Controller ID=1 atribuído",
+      "detail": "O alvo de armazenamento aceita o Fabrics Connect e atribui o controller ID 1. A fila admin agora está estabelecida — comandos Identify, Get Log Page e outros comandos admin podem fluir.\n"
+    },
+    "11": {
+      "text": "Fabrics Connect — Fila I/O (QID=1)",
+      "detail": "Fabrics Connect para a Fila I/O 1. Após isso, comandos NVMe Read/Write podem ser submetidos. A fila I/O é onde os comandos cuFileRead/cuFileWrite serão despachados.\n"
+    },
+    "12": {
+      "text": "cuFileDriverOpen() — driver GDS inicializado, nvidia-fs carregado",
+      "detail": "A aplicação chama cuFileDriverOpen() para inicializar o GPUDirect Storage. Isso carrega o módulo do kernel nvidia-fs que intercepta caminhos de I/O NVMe e redireciona DMA para memória GPU em vez da DRAM do host. nvidia-peermem registra-se como um cliente de memória peer IB para que MRs RDMA possam ser suportadas por páginas GPU.\n"
+    },
+    "13": {
+      "text": "cuFileHandleRegister() — namespace NVMe-oF remoto registrado com GDS",
+      "detail": "A aplicação registra o handle de arquivo (suportado pelo namespace NVMe-oF remoto) com o GDS. Isso diz ao nvidia-fs para interceptar I/O neste descritor de arquivo e usar o caminho GPUDirect.\n"
+    },
+    "14": {
+      "text": "cuFileBufRegister() — buffer GPU registrado para RDMA, buffer de bounce contornado",
+      "detail": "A aplicação registra um buffer de memória GPU com o GDS. nvidia-peermem fixa as páginas GPU via BAR1 e cria uma RDMA Memory Region suportada pela HBM da GPU. A RNIC agora pode fazer DMA diretamente de/para este buffer GPU. O buffer de bounce da DRAM do host é contornado — este é o habilitador chave para I/O de armazenamento zero-copy para memória GPU.\n"
+    },
+    "15": {
+      "text": "cuFileRead() chamado — GDS emite NVMe READ com memória GPU como alvo RDMA",
+      "detail": "A aplicação chama cuFileRead(). O GDS constrói um comando NVMe Read com um descritor SGL apontando para a região de memória GPU (rkey=0xGPU01234). Quando o alvo de armazenamento lê dados do disco, ele fará RDMA WRITE dos dados diretamente para este endereço GPU — os dados nunca tocam a DRAM do host.\n"
+    },
+    "16": {
+      "text": "cuFileRead → comando NVMe Read enviado ao armazenamento (SGL → memória GPU)",
+      "detail": "Cápsula de comando NVMe Read enviada via RDMA SEND. O descritor SGL carrega a rkey e endereço virtual da região de memória GPU. O alvo de armazenamento usará estes para fazer RDMA WRITE dos dados lidos diretamente na HBM da GPU.\n"
+    },
+    "17": {
+      "text": "Armazenamento faz RDMA WRITE dos dados lidos diretamente na HBM da GPU — zero bounce na DRAM do host",
+      "detail": "ESTE É O MOMENTO CHAVE: O alvo de armazenamento lê dados do seu SSD NVMe, então realiza um RDMA WRITE mirando a região de memória GPU. O header RETH carrega o endereço virtual BAR1 da GPU e rkey. A RNIC do nó GPU recebe este RDMA WRITE e faz DMA do payload diretamente na HBM da GPU via PCIe P2P — os dados NUNCA passam pela DRAM do host ou caches da CPU.\nCaminho tradicional: Armazenamento → RDMA WRITE → DRAM host → CPU memcpy → GPU Caminho GDS: Armazenamento → RDMA WRITE → RNIC → PCIe BAR1 → GPU HBM (zero bounce)\n"
+    },
+    "18": {
+      "text": "Conclusão NVMe Read — cuFileRead() retorna, dados estão na HBM da GPU",
+      "detail": "A conclusão NVMe confirma que a leitura está feita. Os dados estão agora na HBM da GPU e disponíveis para kernels CUDA imediatamente — nenhuma cópia adicional necessária.\n"
+    },
+    "19": {
+      "text": "cuFileWrite() chamado — GDS emite NVMe WRITE, dados originados da HBM da GPU",
+      "detail": "A aplicação chama cuFileWrite(). O GDS constrói um comando NVMe Write com um descritor SGL apontando para memória GPU. O alvo de armazenamento fará RDMA READ dos dados de escrita diretamente da HBM da GPU — os dados nunca passam pela DRAM do host.\n"
+    },
+    "20": {
+      "text": "cuFileWrite → comando NVMe Write enviado (SGL → memória GPU para RDMA READ)",
+      "detail": "Cápsula de comando NVMe Write enviada via RDMA SEND. O SGL fornece a rkey e endereço virtual do buffer GPU. O alvo de armazenamento fará RDMA READ deste endereço para buscar os dados de escrita.\n"
+    },
+    "21": {
+      "text": "RDMA READ Response — dados GPU enviados diretamente da HBM para armazenamento",
+      "detail": "O alvo de armazenamento emitiu um RDMA READ Request mirando a região de memória GPU. A RNIC do nó GPU autonomamente lê da HBM da GPU via PCIe BAR1 P2P DMA e envia esta RDMA READ Response contendo os dados. Zero envolvimento da CPU no nó GPU — a RNIC cuida de tudo.\nCaminho tradicional: GPU → CPU memcpy → DRAM host → RDMA SEND → Armazenamento Caminho GDS: GPU HBM → RNIC (via BAR1 P2P) → RDMA READ Response → Armazenamento\n"
+    },
+    "22": {
+      "text": "Conclusão NVMe Write — cuFileWrite() retorna, dados persistidos no armazenamento",
+      "detail": "A conclusão NVMe confirma que a escrita está feita. Dados da HBM da GPU foram persistidos no armazenamento NVMe remoto sem nunca tocar a DRAM do host.\n"
+    },
+    "23": {
+      "text": "Cenário completo — GPUDirect Storage sobre RoCEv2",
+      "detail": "Resumo: Dois links 100GbE foram ativados. QP RDMA estabelecido via IB CM. NVMe-oF Fabrics Connect criou filas admin e I/O sobre RDMA. GDS inicializado com cuFileDriverOpen, cuFileHandleRegister e cuFileBufRegister — registrando memória GPU para RDMA e contornando o buffer de bounce da DRAM do host. cuFileRead disparou um NVMe READ cujos dados foram entregues via RDMA WRITE diretamente na HBM da GPU. cuFileWrite disparou um NVMe WRITE cujos dados foram puxados via RDMA READ diretamente da HBM da GPU. Em ambos os casos, zero bounce na DRAM do host, zero envolvimento da CPU no caminho de dados.\n"
+    }
+  }
+}

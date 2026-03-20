@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next';
+
 const SEVERITY_STYLES = {
   error: { bg: '#450a0a', border: '#dc2626', color: '#fca5a5', label: 'ERROR' },
   warning: { bg: '#451a03', border: '#d97706', color: '#fde68a', label: 'WARN' },
@@ -5,6 +7,7 @@ const SEVERITY_STYLES = {
 };
 
 export default function FindingsPanel({ findings, onFindingClick }) {
+  const { t } = useTranslation();
   return (
     <div style={{ padding: 12 }}>
       <div style={{
@@ -12,7 +15,7 @@ export default function FindingsPanel({ findings, onFindingClick }) {
         textTransform: 'uppercase', letterSpacing: '0.1em',
         marginBottom: 12, padding: '0 4px',
       }}>
-        Findings ({findings.length})
+        {t('findings.title', { count: findings.length })}
       </div>
       {findings.map((f, i) => {
         const sev = SEVERITY_STYLES[f.severity] || SEVERITY_STYLES.info;
@@ -36,10 +39,10 @@ export default function FindingsPanel({ findings, onFindingClick }) {
                 {sev.label}
               </span>
               <span style={{ color: '#475569', fontSize: 9 }}>
-                Packet #{f.packetIndex + 1}
+                {t('findings.packetNumber', { number: f.packetIndex + 1 })}
               </span>
               <span style={{ color: '#334155', fontSize: 9, marginLeft: 'auto' }}>
-                Click to view
+                {t('findings.clickToView')}
               </span>
             </div>
             <div style={{ color: sev.color, fontSize: 11, lineHeight: 1.5 }}>
@@ -47,7 +50,7 @@ export default function FindingsPanel({ findings, onFindingClick }) {
             </div>
             {f.spec_ref && (
               <div style={{ color: '#475569', fontSize: 9, marginTop: 4 }}>
-                Ref: {f.spec_ref}
+                {t('findings.ref', { ref: f.spec_ref })}
               </div>
             )}
           </div>

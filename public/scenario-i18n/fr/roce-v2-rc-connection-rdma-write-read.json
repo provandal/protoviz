@@ -1,0 +1,102 @@
+{
+  "meta": {
+    "title": "RoCEv2 RC : entrainement de liaison → connexion QP → RDMA WRITE → RDMA READ",
+    "description": "Un echange RoCEv2 Reliable Connected (RC) complet sur 100GbE, commencant par l'etablissement de la liaison physique (auto-negociation, entrainement de liaison, RS-FEC), se poursuivant par la configuration IP/ARP, la mise en place du QP via le gestionnaire de connexion IB (CM) par l'echange MAD/CM REQ→REP→RTU, un RDMA WRITE qui pousse un tampon de 4 Ko directement dans la memoire distante sans intervention CPU sur la cible, et un RDMA READ qui recupere ce meme tampon. L'etat de l'hote est montre a travers toutes les couches OSI, y compris l'API verbs, la machine a etats QP, les en-tetes de transport IB, l'encapsulation IP/UDP, l'Ethernet compatible PFC, et l'etat RS-FEC de la couche physique. Les champs de trame sont annotes avec les references aux specifications IBTA, RFC et IEEE et renvoient au code source du noyau Linux (rdma-core, drivers/infiniband/hw/mlx5).",
+    "learning_objectives": [
+      "Comprendre comment les liaisons physiques 100GbE s'activent independamment (hote↔commutateur) via l'auto-negociation et l'entrainement de liaison",
+      "Suivre la resolution ARP et l'adressage IP pour RoCEv2 (qui fonctionne sur UDP/IP, contrairement a RoCEv1)",
+      "Suivre l'echange MAD du gestionnaire de connexion IB pour amener un Queue Pair de RESET a RTS",
+      "Observer les transitions de la machine a etats QP : RESET → INIT → RTR → RTS",
+      "Voir comment RDMA WRITE contourne le CPU distant — aucun WQE de reception n'est consomme sur la cible",
+      "Voir comment RDMA READ necessite un aller-retour et comment les en-tetes RETH/AETH transportent l'adressage",
+      "Comprendre les cles de region memoire (MR) (lkey/rkey) et leur role dans l'autorisation RDMA",
+      "Observer comment PFC (Priority Flow Control) empeche la perte sur Ethernet sans perte sous congestion"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Liaison A : signal detecte — initiateur ↔ port A du commutateur",
+      "detail": "L'emetteur-recepteur optique de l'initiateur detecte la lumiere du port A du commutateur. L'auto-negociation (AN) commence selon la clause 73 de IEEE 802.3cd. La couche L1 est point a point — c'est independant de la liaison commutateur↔cible."
+    },
+    "1": {
+      "text": "Liaison B : signal detecte — port B du commutateur ↔ cible",
+      "detail": "L'emetteur-recepteur optique de la cible detecte la lumiere du port B du commutateur. L'AN commence independamment sur cette liaison."
+    },
+    "2": {
+      "text": "Liaison A : AN terminee — 100GbE convenu, l'entrainement de liaison commence",
+      "detail": "L'AN echange des pages de capacite technologique entre l'initiateur et le port A du commutateur. Les deux conviennent de 100GBASE-SR4. RS(544,514) FEC est obligatoire pour 100G. L'entrainement de liaison commence pour egaliser le canal (pre-accentuation, post-curseur)."
+    },
+    "3": {
+      "text": "Liaison B : AN terminee — 100GbE convenu, l'entrainement de liaison commence",
+      "detail": "L'AN se termine sur le port B du commutateur ↔ cible. Meme negociation : 100GBASE-SR4 avec RS(544,514) FEC. L'entrainement de liaison commence independamment sur cette liaison."
+    },
+    "4": {
+      "text": "Liaison A ACTIVE — initiateur ↔ commutateur a 100 Gbit/s avec RS-FEC",
+      "detail": "Entrainement de liaison termine sur initiateur↔commutateur. PFC (802.1Qbb) est active pour la priorite 3 via la negociation DCBX (non montree). Les trames Ethernet peuvent maintenant circuler sur ce segment de liaison."
+    },
+    "5": {
+      "text": "Liaison B ACTIVE — commutateur ↔ cible a 100 Gbit/s avec RS-FEC",
+      "detail": "Entrainement de liaison termine sur commutateur↔cible. PFC active. Les deux liaisons sont maintenant actives — le commutateur peut transmettre des trames L2 entre ses ports. La connectivite L2 de bout en bout est etablie."
+    },
+    "6": {
+      "text": "Requete ARP : qui a 192.168.1.20 ?",
+      "detail": "RoCEv2 utilise l'adressage IP. Avant toute configuration de connexion, l'accessibilite IP doit etre etablie."
+    },
+    "7": {
+      "text": "Reponse ARP : 192.168.1.20 est a 00:02:c9:ab:cd:ef",
+      "detail": ""
+    },
+    "8": {
+      "text": "Les deux cotes enregistrent des regions memoire via ibv_reg_mr()",
+      "detail": "ibv_reg_mr() verrouille les pages physiques, construit une correspondance DMA, et enregistre la traduction virtuelle→physique dans la table de traduction memoire (MTT) du RNIC. Retourne lkey (pour le DMA local) et rkey (a partager avec le distant pour l'acces RDMA). Linux : mlx5_ib_reg_user_mr() → commande firmware MLX5_CMD_OP_CREATE_MKEY."
+    },
+    "9": {
+      "text": "QP cree — etat : RESET",
+      "detail": "ibv_create_qp() alloue un Queue Pair (file d'envoi + file de reception + file de completion). Le QP commence dans l'etat RESET — ne peut ni envoyer ni recevoir. mlx5 : la commande firmware MLX5_CMD_OP_CREATE_QP attribue le QPN."
+    },
+    "10": {
+      "text": "QP transite de RESET → INIT via ibv_modify_qp()",
+      "detail": "modify_qp(RESET→INIT) definit : index P_Key, numero de port, drapeaux d'acces. Le QP peut maintenant poster des WQE de reception (mais ne peut pas encore envoyer). Linux : ib_modify_qp() → mlx5_ib_modify_qp() → MLX5_CMD_OP_RST2INIT_QP. Attributs requis : IB_QP_PKEY_INDEX | IB_QP_PORT | IB_QP_ACCESS_FLAGS."
+    },
+    "11": {
+      "text": "CM REQ envoye — proposition des parametres QP",
+      "detail": "rdma_connect() declenche ib_send_cm_req(). Envoie le QPN de l'initiateur, le PSN de depart, le MTU du chemin = 4096, les compteurs de reessai et les donnees privees de l'application a la cible. Les deux QP sont encore dans l'etat INIT a ce stade."
+    },
+    "12": {
+      "text": "CM REP recu — la cible accepte, fournit son QPN et PSN",
+      "detail": "A la reception du REQ, la cible appelle rdma_accept() → ib_send_cm_rep(). La cible fait transiter son QP a RTR (Ready To Receive) apres l'envoi du REP. L'initiateur fait transiter son QP a RTR a la reception du REP. INIT→RTR definit : QPN de destination, PSN de la RQ, MTU du chemin, AV (vecteur d'adresse). Linux : mlx5_ib_modify_qp() → MLX5_CMD_OP_INIT2RTR_QP."
+    },
+    "13": {
+      "text": "CM RTU envoye — les deux QP transitent a RTS. Connexion etablie.",
+      "detail": "Apres l'envoi du RTU, l'initiateur fait transiter son QP : RTR→RTS. A la reception du RTU, la cible fait transiter son QP : RTR→RTS. RTR→RTS definit : PSN de la SQ, compteur de reessai, reessai RNR, delai d'attente. Linux : MLX5_CMD_OP_RTR2RTS_QP. Le QP est maintenant entierement operationnel — les operations RDMA peuvent commencer."
+    },
+    "14": {
+      "text": "L'application poste une requete de travail RDMA WRITE dans la file d'envoi",
+      "detail": "ibv_post_send() avec l'opcode IBV_WR_RDMA_WRITE. La WR specifie : la liste SG locale (lkey + vaddr du tampon source), la vaddr distante + rkey. La sonnette est actionnee par ecriture MMIO dans le registre BAR du RNIC (pas d'appel systeme apres ibv_post_send). Linux : mlx5_post_one_wr() → construit un WQE de 64 octets → actionne la sonnette via mlx5_write64() vers le MMIO du RNIC."
+    },
+    "15": {
+      "text": "RDMA WRITE — 4 Ko pousses dans la memoire distante, zero CPU sur la cible",
+      "detail": "Le RNIC lit le tampon local par DMA, l'encapsule dans BTH+RETH+UDP+IP+Eth, et transmet. Le RNIC cible verifie l'ICRC, controle l'autorisation rkey dans la table MR, et ecrit la charge utile par DMA dans la memoire physique de la cible. Le CPU de la cible ne voit rien jusqu'a ce que l'application interroge la CQ (ce qui ne se produirait que si la cible avait poste un WRITE_WITH_IMM)."
+    },
+    "16": {
+      "text": "ACK du RNIC cible — WRITE termine, CQE poste sur l'initiateur",
+      "detail": "Le RNIC cible genere de maniere autonome un ACK RC. Aucune intervention CPU sur la cible. A la reception de l'ACK, le RNIC de l'initiateur poste un CQE (Completion Queue Entry) dans la CQ de l'initiateur. L'application apprend la completion via ibv_poll_cq(). Linux : mlx5_ib_poll_cq() lit le CQE depuis le tampon circulaire de la CQ."
+    },
+    "17": {
+      "text": "L'application poste une requete de travail RDMA READ",
+      "detail": "ibv_post_send() avec l'opcode IBV_WR_RDMA_READ. Specifie : le tampon SG local pour les donnees recues (lkey), la vaddr distante + rkey. RDMA READ necessite un aller-retour — l'initiateur envoie la requete, la cible envoie les donnees."
+    },
+    "18": {
+      "text": "Requete RDMA READ — aucune donnee dans cette direction",
+      "detail": "L'initiateur envoie BTH(opcode=0x0C) + RETH specifiants ce qu'il faut lire. Aucune charge utile. Le RNIC cible lira de maniere autonome sa propre memoire par DMA et repondra."
+    },
+    "19": {
+      "text": "Reponse RDMA READ — le RNIC cible lit la memoire par DMA et envoie les donnees",
+      "detail": "RNIC cible : recoit la requete READ → valide le rkey → lit la memoire physique par DMA → construit le(s) paquet(s) de reponse → transmet. Zero intervention CPU sur la cible. RNIC initiateur : recoit la reponse → ecrit par DMA dans le tampon local de l'initiateur → poste le CQE de READ. L'application appelle ibv_poll_cq() pour recuperer le resultat. Les donnees retournees sont exactement ce qui a ete ecrit lors du RDMA WRITE — verifie de bout en bout par l'ICRC."
+    },
+    "20": {
+      "text": "Scenario termine",
+      "detail": "Resume : deux liaisons 100GbE independantes se sont activees (hote↔commutateur chacune), le commutateur a assure le transfert L2, l'initiateur a etabli une connexion RoCEv2 RC, a effectue un RDMA WRITE de 4 Ko dans la memoire distante (zero intervention CPU distante), puis a relu ces memes donnees avec un RDMA READ (egalement zero intervention CPU distante). Total de trames de donnees : 2. Total de trames de controle : 5 (ARP×2, CM×3). Le CPU distant n'a jamais ete interrompu pour les operations de donnees."
+    }
+  }
+}

@@ -1,0 +1,85 @@
+{
+  "meta": {
+    "title": "SMB Direct: Negotiate \u2192 RDMA-Kanal \u2192 File Read & Write \u00fcber RoCEv2",
+    "description": "SMB Direct (MS-SMBD) erm\u00f6glicht SMB 3.x-Dateifreigabe \u00fcber RDMA-Transporte (RoCEv2, iWARP). Nachdem die TCP-basierte SMB-Aushandlung RDMA-F\u00e4higkeit entdeckt, migriert die Verbindung auf einen RDMA-Kanal. Datei-Reads verwenden RDMA READ (Server zieht aus Client-Buffer) und Datei-Writes verwenden RDMA WRITE (Server pusht Daten in Client-Buffer), beides unter Umgehung des CPU-Datenpfads. Dieses Szenario behandelt: TCP-Verbindung, SMB2 NEGOTIATE mit RDMA-F\u00e4higkeiten, SMB Direct-Aushandlung, RDMA-Kanalaufbau, SMB2 SESSION_SETUP, TREE_CONNECT, CREATE, WRITE via RDMA und READ via RDMA.",
+    "learning_objectives": [
+      "Verstehen, wie SMB3 RDMA-F\u00e4higkeit w\u00e4hrend NEGOTIATE erkennt",
+      "Die SMB Direct (MS-SMBD)-Aushandlung sehen, die den RDMA-Kanal herstellt",
+      "Nachverfolgen, wie Dateidaten TCP vollst\u00e4ndig umgehen, sobald der RDMA-Kanal aktiv ist",
+      "SMB2 WRITE mit RDMA verfolgen: Client bietet Buffer-Deskriptor an, Server f\u00fchrt RDMA READ der Daten durch",
+      "SMB2 READ mit RDMA verfolgen: Server f\u00fchrt RDMA WRITE der Daten in den registrierten Buffer des Clients durch",
+      "SMB Direct Credit-Management f\u00fcr Flusskontrolle verstehen",
+      "Den CPU-Offload-Vorteil erkennen: Dateiserver-Datenpfad ist Zero-Copy"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Physischer Link aktiv \u2014 100GbE verlustfreies Fabric f\u00fcr SMB Direct",
+      "detail": "Beide Hosts verbinden sich \u00fcber 100GbE mit aktiviertem PFC (erforderlich f\u00fcr verlustfreien RoCEv2-Transport). SMB Direct unter Windows erkennt RDMA-f\u00e4hige NICs \u00fcber NetworkDirect (ND)-Provider, die im System registriert sind.\nSMB Direct wird unterst\u00fctzt auf: \u2022 Windows Server 2012 und h\u00f6her (eingebaut) \u2022 Windows 10/11 Enterprise/Pro (Client) \u2022 Samba 4.x mit RDMA-Unterst\u00fctzung \u2022 RNIC-Hardware: ConnectX, E810, EFA usw."
+    },
+    "1": {
+      "text": "RDMA-QPs verbunden \u2014 SMB Direct stellt den RDMA-Kanal her",
+      "detail": "Vor der SMB Direct-Aushandlung muss die zugrunde liegende RDMA-Verbindung hergestellt werden. Der Client verbindet sich mit dem RDMA-Listener des Servers (Port 5445) via CM REQ/REP/RTU (oder iWARP MPA bei Verwendung des iWARP-Transports).\nSobald der QP den RTS-Zustand erreicht, kann die SMB Direct-Aushandlung \u00fcber RDMA SEND/RECV beginnen."
+    },
+    "2": {
+      "text": "SMB Direct Negotiate Request \u2014 Client schl\u00e4gt RDMA-Parameter vor",
+      "detail": "Der Client sendet eine SMB Direct Negotiate-Nachricht \u00fcber RDMA SEND mit Vorschl\u00e4gen: \u2022 Credits: 255 (Flusskontrolle f\u00fcr SEND-basierte Nachrichten) \u2022 Preferred Send Size: 1364 Bytes \u2022 Max Fragmented Size: 1 MB (f\u00fcr gro\u00dfe SMB-Nachrichten, die \u00fcber SENDs aufgeteilt werden) \u2022 Max Read/Write Size: 1 MB (f\u00fcr RDMA READ/WRITE Massendaten-Transfers)\nCredit-Management ist entscheidend: jeder RDMA SEND verbraucht ein Credit beim Empf\u00e4nger. Ohne Credits muss der Sender warten \u2014 dies verhindert \u00dcberlauf der Receive Queue."
+    },
+    "3": {
+      "text": "SMB Direct Negotiate Response \u2014 RDMA-Kanal hergestellt",
+      "detail": "Server akzeptiert die SMB Direct-Parameter. Der RDMA-Kanal ist nun aktiv \u2014 alle nachfolgenden SMB2-Nachrichten werden \u00fcber RDMA SEND/RECV statt TCP transportiert.\nAusgehandelte Schl\u00fcsselwerte: \u2022 Credits: 255 (bidirektional) \u2022 Max RDMA Read/Write: 1 MB \u2022 Das bedeutet, Dateidaten bis 1 MB k\u00f6nnen in einer einzigen RDMA READ- oder WRITE-Operation transferiert werden"
+    },
+    "4": {
+      "text": "SMB2 NEGOTIATE \u2014 Dialekt 3.1.1 mit RDMA Transform-F\u00e4higkeit",
+      "detail": "Standard-SMB2-NEGOTIATE-Austausch, aber nun \u00fcber den SMB Direct-RDMA-Kanal transportiert (via RDMA SEND). Der Client schl\u00e4gt SMB 3.1.1 vor und enth\u00e4lt den RDMA Transform Negotiate Context, der Verschl\u00fcsselung von RDMA-Nutzlasten in SMB 3.1.1 erm\u00f6glicht.\nOhne RDMA Transform w\u00fcrde SMB-Verschl\u00fcsselung (AES-128-CCM/GCM) alle Daten durch SEND/RECV zwingen (womit der Zero-Copy-Vorteil von RDMA zunichtegemacht w\u00fcrde). RDMA Transform verschl\u00fcsselt direkt im registrierten Speicher-Buffer vor RDMA READ/WRITE."
+    },
+    "5": {
+      "text": "SMB2 NEGOTIATE Response \u2014 SMB 3.1.1 best\u00e4tigt",
+      "detail": "Server w\u00e4hlt SMB 3.1.1-Dialekt. MULTI_CHANNEL- und LARGE_MTU-F\u00e4higkeiten best\u00e4tigt."
+    },
+    "6": {
+      "text": "SMB2 SESSION_SETUP + TREE_CONNECT \u2014 Authentifizierung und Share-Zuordnung",
+      "detail": "Standard-SMB2-Session und Tree Connect, \u00fcber RDMA transportiert. SESSION_SETUP authentifiziert via Kerberos (Dom\u00e4ne) oder NTLM. TREE_CONNECT ordnet \\\\server\\share$ f\u00fcr Dateizugriff zu.\nIn einem Hyper-V-\u00fcber-SMB-Szenario hostet der Share VHDx-virtuelle Festplattendateien. SMB Direct ist der empfohlene Transport f\u00fcr Live-VM-Speicher \u2014 es bietet niedrigere Latenz und h\u00f6heren Durchsatz als TCP, entscheidend f\u00fcr Hyper-V Live Migration und CSV (Cluster Shared Volumes)."
+    },
+    "7": {
+      "text": "Session hergestellt, Share verbunden",
+      "detail": "Session und Tree Connect erfolgreich. Client kann nun Dateien \u00f6ffnen."
+    },
+    "8": {
+      "text": "SMB2 CREATE \u2014 vm01.vhdx zum Lesen/Schreiben \u00f6ffnen",
+      "detail": "Client \u00f6ffnet die Hyper-V-virtuelle Festplattendatei. Dies ist ein typischer SMB Direct-Workload: Hyper-V speichert VM-Disk-Images auf Remote-SMB-Shares, und alle VM-I/O flie\u00dfen \u00fcber SMB Direct."
+    },
+    "9": {
+      "text": "CREATE-Antwort \u2014 Datei-Handle f\u00fcr vm01.vhdx (100 GB)",
+      "detail": "Server gibt ein persistentes Datei-Handle zur\u00fcck."
+    },
+    "10": {
+      "text": "SMB2 WRITE mit RDMA-Buffer-Deskriptor \u2014 1 MB in vm01.vhdx",
+      "detail": "Der Client sendet einen SMB2-WRITE-Befehl via RDMA SEND, aber anstelle von Inline-Daten enth\u00e4lt er einen SMB_DIRECT_BUFFER_DESCRIPTOR_V1 mit: \u2022 Memory Offset (Virtualadresse) des registrierten Buffers \u2022 R_Key (Remote Key) f\u00fcr RDMA-Zugriff \u2022 Datenl\u00e4nge\nDas Channel-Feld = SMB2_CHANNEL_RDMA_V1 teilt dem Server mit, die Daten per RDMA READ aus diesem Buffer-Deskriptor zu ziehen, anstatt Inline-Daten zu erwarten.\nDies ist das \u201einvertierte\u201c Modell: der Client legt seinen Speicher offen und der Server zieht Daten \u2014 das Gegenteil eines traditionellen Datei-Writes, bei dem der Client Daten pusht. Dieses Modell ist effizient, weil: 1. Der Server das Tempo steuert (keine Receive-Buffer-\u00dcberl\u00e4ufe) 2. Der Server Daten direkt in seinen Dateisystem-Cache lesen kann 3. Null CPU-Kopien auf beiden Seiten"
+    },
+    "11": {
+      "text": "RDMA READ \u2014 Server holt 1 MB Write-Daten aus Client-Speicher",
+      "detail": "Die RNIC des Servers f\u00fchrt einen RDMA READ durch, um 1 MB Write-Daten direkt aus dem registrierten Speicher-Buffer des Clients zu holen. Keine CPU ist am Datentransfer beteiligt \u2014 es ist DMA-Engine zu DMA-Engine \u00fcber das verlustfreie RoCEv2-Fabric.\nNach Abschluss des RDMA READ hat der Server die Dateidaten in seinem lokalen Buffer und kann sie auf die Disk schreiben (oder in seinen Dateisystem-Cache)."
+    },
+    "12": {
+      "text": "SMB2 WRITE Response \u2014 1 MB erfolgreich geschrieben",
+      "detail": "Server best\u00e4tigt 1 MB geschrieben. Der gesamte Datenpfad war Zero-Copy."
+    },
+    "13": {
+      "text": "SMB2 READ mit RDMA-Buffer-Deskriptor \u2014 1 MB aus vm01.vhdx",
+      "detail": "Client sendet SMB2 READ mit Channel = SMB2_CHANNEL_RDMA_V1 und einem Buffer-Deskriptor. Der Server wird die Dateidaten per RDMA WRITE direkt in den registrierten Speicher-Buffer des Clients schreiben.\nF\u00fcr Hyper-V \u00fcber SMB funktionieren VM-Reads so: der Hypervisor gibt einen VHDx-Read aus, der zu einem SMB READ \u00fcber RDMA wird. Die Dateidaten landen via RDMA WRITE im VM-Speicher ohne jegliche CPU-Kopien auf dem Dateiserver."
+    },
+    "14": {
+      "text": "RDMA WRITE \u2014 Server pusht 1 MB Read-Daten in Client-Speicher",
+      "detail": "Die RNIC des Servers f\u00fchrt RDMA WRITE von 1 MB Dateidaten direkt in den registrierten Buffer des Clients durch. Der Datenpfad:\n  Server-Disk/Cache \u2192 Server-Speicher \u2192 RNIC-DMA \u2192 Netzwerk \u2192 Client-RNIC-DMA \u2192 Registrierter Client-Buffer\nDie Server-CPU initiiert nur den RDMA WRITE (postet ein WQE); die eigentliche Datenbewegung ist vollst\u00e4ndig Hardware-gesteuert."
+    },
+    "15": {
+      "text": "SMB2 READ Response \u2014 Daten bereits im Client-Buffer (null Inline-Daten)",
+      "detail": "Die READ-Antwort enth\u00e4lt nur den Status \u2014 die Dateidaten wurden bereits via RDMA WRITE geliefert. Data Remaining = 0 in der Antwort best\u00e4tigt, dass alle Daten transferiert wurden.\nVergleich mit SMB \u00fcber TCP: das volle 1 MB an Dateidaten w\u00e4re inline in der SMB2-READ-Antwort, was erfordert, dass die Server-CPU Daten in TCP-Send-Buffer kopiert und die Client-CPU aus TCP-Receive-Buffern kopiert."
+    },
+    "16": {
+      "text": "Szenario abgeschlossen \u2014 SMB Direct Datei-I/O \u00fcber RoCEv2",
+      "detail": "Dieses Szenario demonstrierte SMB Direct (MS-SMBD):\nSETUP:\n  RDMA-QP-Verbindung \u2192 SMB Direct Negotiate (Credits, max R/W-Gr\u00f6\u00dfe) \u2192 SMB2 NEGOTIATE (3.1.1) \u2192 SESSION_SETUP \u2192 TREE_CONNECT \u2192 CREATE\nDATEI-WRITE (SMB2_CHANNEL_RDMA_V1):\n  Client: WRITE-Befehl + Buffer-Deskriptor (via RDMA SEND)\n  Server: RDMA READ holt 1 MB aus Client-Buffer (Zero-Copy)\n  Server: WRITE-Antwort (via RDMA SEND)\nDATEI-READ (SMB2_CHANNEL_RDMA_V1):\n  Client: READ-Befehl + Buffer-Deskriptor (via RDMA SEND)\n  Server: RDMA WRITE pusht 1 MB in Client-Buffer (Zero-Copy)\n  Server: READ-Antwort \u2014 keine Inline-Daten (via RDMA SEND)\nWichtige Punkte: \u2022 Steuernachrichten (Befehle, Antworten) \u2192 RDMA SEND/RECV \u2022 Massendaten (Dateiinhalt) \u2192 RDMA READ/WRITE (Zero-Copy) \u2022 WRITE verwendet RDMA READ (Server zieht vom Client) \u2022 READ verwendet RDMA WRITE (Server pusht zum Client) \u2022 Credit-basierte Flusskontrolle verhindert Receive-Queue-\u00dcberlauf \u2022 SMB 3.1.1 RDMA Transform erm\u00f6glicht Verschl\u00fcsselung mit Zero-Copy\nHauptanwendungsf\u00e4lle: \u2022 Hyper-V \u00fcber SMB (VHDx auf Remote-Shares) \u2022 SQL Server auf SMB (Datenbankdateien auf SMB Direct-Shares) \u2022 CSV (Cluster Shared Volumes) f\u00fcr Failover-Cluster \u2022 Jeder Windows-Datei-Workload, der von niedriger Latenz profitiert"
+    }
+  }
+}

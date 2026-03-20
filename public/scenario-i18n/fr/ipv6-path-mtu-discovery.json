@@ -1,0 +1,134 @@
+{
+  "meta": {
+    "title": "Decouverte du MTU de chemin IPv6 : pourquoi les routeurs ne peuvent pas fragmenter",
+    "description": "La decouverte du MTU de chemin (PMTUD) est obligatoire en IPv6 car les routeurs n'ont pas le droit de fragmenter les paquets — seul l'hote source peut fragmenter. Ce scenario contraste l'approche IPv4 (n'importe quel routeur peut fragmenter) avec le fonctionnement correct du PMTUD IPv6 (ICMPv6 Packet Too Big informe la source), puis demontre le redoute « trou noir PMTUD » qui survient quand un pare-feu bloque ICMPv6. La topologie presente un lien tunnel goulot d'etranglement avec un MTU de 1280 (le MTU minimum de liaison IPv6 selon le RFC 8200) entre deux routeurs, montrant exactement pourquoi ICMPv6 type 2 ne doit jamais etre filtre.",
+    "learning_objectives": [
+      "Comprendre pourquoi IPv6 a elimine la fragmentation par les routeurs — un changement de conception fondamental par rapport a IPv4",
+      "Suivre le flux du message ICMPv6 Packet Too Big et voir comment il declenche la mise a jour du cache de MTU de chemin",
+      "Observer la difference entre la fragmentation par les routeurs IPv4 (DF=0) et la fragmentation uniquement par la source en IPv6",
+      "Voir comment l'en-tete d'extension Fragment IPv6 (Next Header 44) fonctionne quand la source doit fragmenter",
+      "Comprendre l'ajustement du MSS TCP base sur les resultats du PMTUD — la plupart des applications ne voient jamais de problemes de MTU",
+      "Reconnaitre le probleme de trou noir PMTUD cause par les pare-feu bloquant ICMPv6",
+      "Savoir quels messages ICMPv6 ne doivent jamais etre filtres (RFC 4890)",
+      "Identifier les tunnels (6in4, GRE, IPsec) comme la cause la plus courante de MTU reduit sur les chemins IPv6"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "IPv4 : l'hote A envoie un paquet de 1500 octets avec DF=0 (fragmentation autorisee)",
+      "detail": "En IPv4, le drapeau Don't Fragment (DF) controle si les routeurs peuvent fragmenter un paquet. Avec DF=0, l'expediteur autorise explicitement n'importe quel routeur sur le chemin a decouper le paquet en morceaux plus petits si necessaire. C'est la conception originale d'IPv4 du RFC 791 (1981). Le paquet transporte 1480 octets de charge utile (en-tete TCP + 1460 octets de donnees applicatives) dans un paquet IPv4 de 1500 octets — le MTU Ethernet standard."
+    },
+    "1": {
+      "text": "Le routeur 1 recoit le paquet de 1500 octets, voit que le MTU du prochain saut est de 1280",
+      "detail": "Le routeur 1 effectue une recherche de route et determine que le paquet doit etre transfere via le lien tunnel vers le routeur 2. Mais le lien tunnel a un MTU de seulement 1280 octets (reduit par le surcout d'encapsulation du tunnel). Le paquet de 1500 octets ne passe pas. En IPv4 avec DF=0, le routeur est autorise a fragmenter le paquet pour le faire passer."
+    },
+    "2": {
+      "text": "Le routeur 1 envoie le fragment 1 : 1280 octets (MF=1, offset=0, ID=0x1a2b)",
+      "detail": "Le routeur 1 divise la charge utile originale de 1480 octets en deux fragments. Le premier fragment contient les 1260 premiers octets de charge utile (incluant l'en-tete TCP) dans un paquet IP de 1280 octets. Le drapeau MF (More Fragments) est defini a 1, indiquant que d'autres fragments suivent. Le Fragment Offset est 0 puisque c'est le premier morceau. Le champ Identification (0x1a2b) est copie dans les deux fragments pour que la destination puisse les reassembler."
+    },
+    "3": {
+      "text": "Le routeur 1 envoie le fragment 2 : 240 octets (MF=0, offset=158, ID=0x1a2b)",
+      "detail": "Le second fragment transporte les 220 octets restants de charge utile. MF=0 indique que c'est le dernier fragment. Le champ Fragment Offset (158 en unites de 8 octets = octet 1264) indique a l'hote B ou ces donnees se placent dans le datagramme original. L'hote B utilise le champ Identification pour regrouper les fragments et l'offset pour les ordonner."
+    },
+    "4": {
+      "text": "L'hote B recoit les deux fragments, reassemble le paquet original",
+      "detail": "L'hote B collecte les deux fragments (apparies par l'Identification 0x1a2b, l'IP source, l'IP destination et le protocole), verifie que tous les offsets sont couverts et reassemble le paquet original de 1500 octets. La couche TCP traite ensuite le segment complet. Cela fonctionne, mais a des inconvenients significatifs : les fragments peuvent arriver dans le desordre, un fragment perdu necessite la retransmission de l'integalite du paquet original, les tampons de reassemblage consomment de la memoire, et les attaques basees sur les fragments sont un probleme de securite connu."
+    },
+    "5": {
+      "text": "IPv4 laisse n'importe quel routeur fragmenter. Simple, mais cause des problemes de performance et des vulnerabilites de securite.",
+      "detail": "La fragmentation par les routeurs IPv4 fonctionne, mais a de serieux problemes : (1) Les fragments peuvent prendre des chemins differents et arriver dans le desordre. (2) Perdre un fragment gaspille la bande passante de tous les autres fragments — l'expediteur doit retransmettre l'integralite du paquet original. (3) Le reassemblage necessite que la destination mette en tampon les fragments et suive les delais d'expiration. (4) Les attaques par chevauchement de fragments et par micro-fragments sont des problemes de securite bien connus. (5) Les pare-feu a etat ont du mal avec les fragments car seul le premier fragment contient les numeros de port TCP/UDP. IPv6 elimine tous ces problemes en interdisant completement la fragmentation par les routeurs."
+    },
+    "6": {
+      "text": "IPv6 : l'hote A envoie un paquet de 1500 octets (suppose MTU de chemin = MTU de liaison = 1500)",
+      "detail": "L'hote A a une connexion TCP etablie avec l'hote B. Il envoie un paquet IPv6 de 1500 octets de taille maximale avec MSS=1440 (MTU 1500 - en-tete IPv6 de 40 octets - en-tete TCP de 20 octets). Le cache de MTU de chemin de l'hote A pour l'hote B est initialise au MTU de la liaison sortante (1500), donc il suppose que tout le chemin peut gerer des paquets de 1500 octets. L'en-tete IPv6 fait 40 octets fixes — pas d'en-tete de longueur variable ni de somme de controle d'en-tete, ce qui le rend plus simple et plus rapide a traiter qu'IPv4."
+    },
+    "7": {
+      "text": "Le routeur 1 recoit le paquet — il depasse le MTU de 1280 du prochain saut",
+      "detail": "Le routeur 1 recherche la route pour 2001:db8:b::1 et determine que le prochain saut passe par le lien tunnel (MTU 1280). Le paquet de 1500 octets est trop gros. DIFFERENCE CRITIQUE AVEC IPv4 : en IPv6, le routeur 1 NE PEUT PAS fragmenter le paquet. La section 5 du RFC 8200 est explicite : « Les routeurs IPv6 ne fragmentent pas les paquets qu'ils transferent. » Seul le noeud source est autorise a fragmenter. Le routeur 1 doit rejeter le paquet et informer l'expediteur."
+    },
+    "8": {
+      "text": "Le routeur 1 envoie ICMPv6 Packet Too Big (type 2, code 0, MTU=1280) a l'hote A",
+      "detail": "Apres avoir rejete le paquet, le routeur 1 genere un message ICMPv6 Packet Too Big (type 2, code 0) et l'envoie a l'hote A. Le champ critique est la valeur du MTU (1280), qui indique a l'hote A la taille maximale de paquet que le prochain saut peut accepter. Le message inclut egalement autant du paquet original rejete que ce qui peut tenir sans depasser le MTU minimum IPv6 de 1280 octets. Cela permet a l'hote A de faire correspondre l'erreur a la bonne connexion TCP ou au bon flux."
+    },
+    "9": {
+      "text": "L'hote A recoit Packet Too Big — met a jour le cache de MTU de chemin pour l'hote B a 1280",
+      "detail": "Le noyau de l'hote A recoit le message ICMPv6 Packet Too Big. Il extrait la valeur du MTU (1280) et les en-tetes du paquet original inclus. En utilisant les adresses source/destination et les numeros de port du paquet original, il identifie la connexion TCP affectee. Le noyau met a jour son cache de MTU de chemin (stocke dans le dst_entry de la table de routage sous Linux) pour la destination 2001:db8:b::1 de 1500 a 1280. TCP est egalement notifie, et il reduit son MSS de 1440 a 1220 (1280 - 40 IPv6 - 20 TCP)."
+    },
+    "10": {
+      "text": "L'hote A retransmet en utilisant des paquets de 1280 octets — tient dans le MTU de chemin",
+      "detail": "TCP retransmet les donnees en utilisant le nouveau MSS de 1220 octets, produisant un paquet IPv6 de 1280 octets (40 en-tete + 20 TCP + 1220 donnees). Cela tient dans le MTU du lien tunnel de 1280. Le routeur 1 transmet le paquet sans aucun probleme. Les donnees atteignent l'hote B avec succes. Notez que cette approche est plus efficace que la fragmentation IPv4 — un seul paquet de taille correcte au lieu de deux fragments."
+    },
+    "11": {
+      "text": "Alternative : l'hote A peut aussi fragmenter a la source en utilisant l'en-tete d'extension Fragment",
+      "detail": "Si l'hote A doit envoyer un datagramme plus grand que le MTU de chemin (par ex. une application UDP qui transmet un message de 2000 octets au noyau), la SOURCE peut le fragmenter en utilisant l'en-tete d'extension Fragment IPv6 (Next Header = 44). C'est fondamentalement different d'IPv4 : seul l'hote d'origine fragmente, jamais un routeur. L'en-tete Fragment contient un Fragment Offset (en unites de 8 octets), un drapeau M (More fragments) et un champ Identification de 32 bits. Cet exemple montre le premier fragment d'un paquet fragmente par la source."
+    },
+    "12": {
+      "text": "Fragment source 2 : le reste du datagramme (M=0, dernier fragment)",
+      "detail": "Le second fragment transporte la charge utile restante avec M=0 (dernier fragment). Les deux fragments sont transferes par les routeurs sans modification — chaque fragment tient individuellement dans le MTU de chemin de 1280 octets. L'hote B les reassemble en utilisant le champ Identification, l'adresse source et l'adresse destination. En pratique, TCP evite la fragmentation a la source en ajustant le MSS — l'en-tete d'extension Fragment est principalement utilise par UDP et les protocoles de tunnel."
+    },
+    "13": {
+      "text": "Les paquets suivants utilisent le MTU de chemin en cache (1280) — pas de rejets, pas de bande passante gaspillee",
+      "detail": "Le cache de MTU de chemin de l'hote A contient maintenant l'entree : destination 2001:db8:b::1 → MTU 1280. Tous les futurs paquets vers l'hote B sont dimensionnes a 1280 octets des le depart. Aucun paquet n'est rejete, aucun message ICMPv6 n'est necessaire, et aucune bande passante n'est gaspillee. Le MSS de TCP est de 1220 octets, donc la couche applicative est completement inconsciente de la contrainte de MTU. L'entree du cache de MTU de chemin expirera eventuellement (defaut Linux : 10 minutes), et l'hote pourra essayer une taille plus grande pour detecter si le chemin a change."
+    },
+    "14": {
+      "text": "Le PMTUD est elegant : decouvrir le goulot d'etranglement une fois, puis optimiser tous les futurs paquets.",
+      "detail": "La decouverte du MTU de chemin IPv6 (RFC 8201) est un mecanisme propre et efficace. Le cout est un paquet rejete et un message ICMPv6 par nouveau goulot d'etranglement decouvert. Apres cela, chaque paquet suivant est dimensionne parfaitement. Comparez cela a la fragmentation par les routeurs IPv4, qui impose un surcout sur chaque paquet surdimensionne pendant toute la duree du flux. Le PMTUD centralise aussi les decisions de fragmentation a la source, qui a une connaissance complete de ses propres flux et peut faire des choix intelligents (par ex. ajuster le MSS TCP contre utiliser l'en-tete d'extension Fragment)."
+    },
+    "15": {
+      "text": "Scenario de trou noir : l'hote A envoie un paquet IPv6 de 1500 octets (le pare-feu bloque ICMPv6)",
+      "detail": "Considerons maintenant un reseau ou un pare-feu mal configure entre le routeur 1 et l'hote A rejette tous les messages ICMPv6. C'est tragiquement courant dans les reseaux d'entreprise ou les administrateurs de securite appliquent des regles generiques comme « interdire tout ICMP ». L'hote A envoie le meme paquet de 1500 octets qu'avant. Le routeur 1 le rejettera (trop grand pour le tunnel de 1280 octets) et enverra un message Packet Too Big — mais cette fois, le message n'arrivera jamais."
+    },
+    "16": {
+      "text": "Le routeur 1 rejette le paquet de 1500 octets (trop grand pour le tunnel de 1280 octets)",
+      "detail": "Le routeur 1 rejette le paquet pour la meme raison qu'avant — il depasse le MTU du prochain saut de 1280 octets et les routeurs IPv6 ne peuvent pas fragmenter. Le routeur 1 genere correctement un message ICMPv6 Packet Too Big (type 2, code 0, MTU=1280) et l'envoie vers l'hote A."
+    },
+    "17": {
+      "text": "LE PARE-FEU BLOQUE ICMPv6 — le message Packet Too Big est silencieusement rejete !",
+      "detail": "Le message ICMPv6 Packet Too Big du routeur 1 atteint un pare-feu configure pour bloquer tout le trafic ICMPv6. Le pare-feu rejette silencieusement le message. L'hote A N'APPRENDRA JAMAIS que ses paquets sont trop gros. C'est la cause fondamentale du trou noir PMTUD. La section 4.3.1 du RFC 4890 est explicite : les messages ICMPv6 Packet Too Big (type 2) NE DOIVENT PAS etre rejetes par les pare-feu. Les bloquer casse la connectivite IPv6 pour tout chemin avec un MTU reduit."
+    },
+    "18": {
+      "text": "L'hote A ne recoit jamais le Packet Too Big — il n'a aucune idee de ce qui s'est passe",
+      "detail": "La pile TCP de l'hote A attend un ACK de l'hote B qui ne viendra jamais. Le segment de donnees a ete rejete par le routeur 1, et la notification ICMPv6 a ete bloquee par le pare-feu. Du point de vue de l'hote A, le paquet s'est simplement volatilise. Le temporisateur de retransmission TCP (RTO) commence a decompter. L'hote A n'a aucun mecanisme pour distinguer entre « le paquet a ete perdu a cause de la congestion » et « le paquet a ete rejete a cause du MTU ». Sans retour PMTUD, il continuera a retransmettre a la meme taille."
+    },
+    "19": {
+      "text": "Expiration du delai de retransmission TCP — l'hote A renvoie le meme paquet de 1500 octets (toujours trop gros)",
+      "detail": "Apres l'expiration du RTO TCP (typiquement 1 seconde pour la premiere retransmission), l'hote A retransmet le segment. Mais il retransmet a la meme taille (1500 octets) car il n'a jamais recu de message Packet Too Big. Le routeur 1 le rejette a nouveau, envoie un autre Packet Too Big (egalement bloque), et le cycle se repete. TCP double le RTO pour la tentative suivante (recul exponentiel : 1s, 2s, 4s, 8s, 16s...)."
+    },
+    "20": {
+      "text": "Deuxieme retransmission — toujours 1500 octets, meme resultat, RTO maintenant a 4 secondes",
+      "detail": "La deuxieme retransmission utilise egalement des paquets de 1500 octets. Rejete a nouveau. Le RTO double a 4 secondes. Du point de vue de l'utilisateur, la connexion est « bloquee » — les petits paquets (comme les ACK TCP de 40 octets) peuvent encore passer, mais tout segment de donnees depassant 1280 octets sera silencieusement rejete. Cela cree un symptome deroutant : « je peux faire un ping mais je ne peux pas telecharger de fichiers » ou « SSH se connecte mais bloque quand je tape une longue commande. »"
+    },
+    "21": {
+      "text": "La connexion semble bloquee — le trou noir PMTUD. Chaque paquet surdimensionne est silencieusement rejete.",
+      "detail": "Apres plusieurs retransmissions avec recul exponentiel, TCP finira par abandonner et reinitialiser la connexion (defaut Linux : net.ipv4.tcp_retries2 = 15, ce qui peut prendre plus de 13 minutes). L'utilisateur voit une expiration ou une reinitialisation de connexion. C'est le trou noir PMTUD — la raison numero 1 pour laquelle la connectivite IPv6 se casse dans les reseaux d'entreprise. Certaines piles TCP implementent le RFC 4821 (PMTUD au niveau de la couche de paquetisation) qui peut sonder avec des paquets plus petits apres des expirations repetees, mais il n'est pas deploye universellement."
+    },
+    "22": {
+      "text": "C'est pourquoi vous ne devez JAMAIS bloquer ICMPv6 Packet Too Big (type 2). Les pare-feu qui bloquent tout ICMPv6 cassent IPv6.",
+      "detail": "Le RFC 4890 fournit des directives explicites : les messages ICMPv6 Packet Too Big (type 2) DOIVENT etre autorises a travers les pare-feu. Les bloquer cree des trous noirs PMTUD qui cassent silencieusement la connectivite IPv6 pour tout chemin avec un MTU reduit. Cela inclut les liens tunnelises (6in4, GRE, IPsec, VXLAN), les connexions VPN et tout segment reseau avec un MTU non standard. La solution est simple : configurer les pare-feu pour autoriser ICMPv6 type 2 dans les deux directions. Mieux encore, suivre les recommandations completes du RFC 4890 sur les types ICMPv6 a autoriser. L'ere du « bloquer tout ICMP pour la securite » est revolue — en IPv6, ICMPv6 est une infrastructure essentielle, pas optionnelle."
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "Decouverte du MTU de chemin IPv6 : de la fragmentation IPv4 aux trous noirs PMTUD",
+      "description": "Parcourez pourquoi IPv6 interdit la fragmentation par les routeurs, comment le PMTUD decouvre la taille de paquet correcte, et ce qui tourne catastrophiquement mal quand les pare-feu bloquent ICMPv6",
+      "steps": {
+        "0": "En IPv4, les routeurs peuvent fragmenter. En IPv6, seule la SOURCE peut fragmenter. C'est un changement de conception fondamental. Voyons pourquoi c'est important en regardant d'abord comment IPv4 gere un paquet surdimensionne, puis en observant la decouverte du MTU de chemin IPv6 en action, et enfin en voyant la defaillance devastatrice qui se produit quand ICMPv6 est bloque.",
+        "1": "Nous commencons par l'approche IPv4 a titre de comparaison. L'hote A envoie un paquet IPv4 de 1500 octets avec le drapeau Don't Fragment efface (DF=0), signifiant que n'importe quel routeur sur le chemin est autorise a le decouper en morceaux. Le paquet transporte 1460 octets de donnees applicatives dans un segment TCP standard. Regardez le champ IP Flags — DF=0 est la cle.",
+        "2": "Le routeur 1 recoit le paquet et verifie le MTU du prochain saut — seulement 1280 octets (un lien tunnel). Le paquet de 1500 octets ne passe pas. Mais puisque DF=0, le routeur 1 est autorise a fragmenter. Il divise le paquet en deux fragments partageant le meme champ Identification (0x1a2b). Le premier fragment fait 1280 octets avec MF=1 (d'autres suivent), et le second fait 240 octets avec MF=0 (dernier fragment). Le Fragment Offset indique a l'hote B ou chaque morceau se place dans le paquet original.",
+        "3": "L'hote B recoit les deux fragments, les reassemble en utilisant le champ Identification et recupere le paquet original. Ca fonctionne, mais cette approche a de serieux problemes : les fragments peuvent arriver dans le desordre, perdre un fragment gaspille la bande passante de tous les fragments, les tampons de reassemblage consomment de la memoire, et les attaques basees sur les fragments sont un probleme de securite bien connu. IPv6 elimine tous ces problemes par une regle simple : les routeurs ne fragmentent pas.",
+        "4": "Voyons maintenant l'approche IPv6. L'hote A envoie un paquet IPv6 de 1500 octets en supposant que le MTU de chemin egale le MTU de la liaison sortante (1500). L'en-tete IPv6 fait 40 octets fixes — pas d'options de longueur variable, pas de somme de controle d'en-tete. Le champ Payload Length indique 1460 octets, soit l'en-tete TCP plus 1440 octets de donnees applicatives. Notez qu'il n'y a pas de drapeau Don't Fragment en IPv6 — la fragmentation par les routeurs n'existe tout simplement pas.",
+        "5": "Le routeur 1 recoit le paquet IPv6 de 1500 octets et verifie le MTU du prochain saut : 1280 octets. Le paquet est trop gros. En IPv4, le routeur fragmenterait. En IPv6, le routeur NE PEUT PAS fragmenter — la section 5 du RFC 8200 est explicite. Le routeur 1 n'a qu'une option : rejeter le paquet et dire a l'expediteur ce qui s'est passe. C'est le moment critique ou la conception d'IPv6 diverge d'IPv4.",
+        "6": "Le routeur 1 envoie un message ICMPv6 Packet Too Big (type 2, code 0) a l'hote A. Le champ le plus important est la valeur du MTU : 1280. Cela indique a l'hote A exactement la taille maximale de ses paquets. Le message inclut aussi autant du paquet original rejete que possible, pour que l'hote A puisse faire correspondre l'erreur a la bonne connexion TCP. ICMPv6 Packet Too Big est le mecanisme qui fait fonctionner le PMTUD — il n'est pas optionnel, il est essentiel.",
+        "7": "L'hote A recoit le message Packet Too Big et met a jour son cache de MTU de chemin : l'entree pour 2001:db8:b::1 passe de 1500 a 1280. TCP est egalement notifie et reduit son MSS de 1440 a 1220 (MTU de chemin 1280 moins 40 octets d'en-tete IPv6 moins 20 octets d'en-tete TCP). TCP ajuste son MSS base sur le PMTUD, donc la plupart des applications n'ont jamais besoin de connaitre le MTU. L'application continue d'envoyer des donnees normalement — TCP gere la reduction de taille de maniere transparente.",
+        "8": "L'hote A retransmet les donnees dans un paquet de 1280 octets (40 IPv6 + 20 TCP + 1220 donnees). Le routeur 1 le transfere maintenant avec succes — le paquet tient dans le MTU du tunnel de 1280 octets. Un paquet rejete et un message ICMPv6 ont suffi pour decouvrir le goulot d'etranglement. Desormais, tous les paquets vers l'hote B seront correctement dimensionnes. 1280 octets est le MTU minimum pour toute liaison IPv6 — garanti par la specification.",
+        "9": "Si la source doit envoyer un datagramme plus grand que le MTU de chemin (courant avec UDP), elle peut utiliser l'en-tete d'extension Fragment IPv6 (Next Header = 44). C'est de la fragmentation par la SOURCE, pas par le routeur. L'en-tete Fragment contient le Fragment Offset, le drapeau M (More fragments) et un champ Identification de 32 bits. Chaque fragment tient individuellement dans le MTU de chemin. TCP evite normalement cela en ajustant le MSS. Les tunnels (6in4, GRE, IPsec) sont la cause la plus courante de MTU reduit sur les chemins IPv6.",
+        "10": "Avec le MTU de chemin en cache, les paquets suivants utilisent la taille correcte de 1280 octets des le depart. Aucun paquet n'est rejete, aucun message ICMPv6 n'est necessaire. Le PMTUD est elegant : decouvrir le goulot d'etranglement une fois, puis optimiser tous les futurs paquets. Le cache expire eventuellement (defaut 10 minutes sous Linux), et l'hote peut sonder avec des paquets plus grands pour detecter si le chemin s'est ameliore — peut-etre que le tunnel a ete supprime ou reconfigure.",
+        "11": "Passons au scenario cauchemardesque : que se passe-t-il quand un pare-feu bloque ICMPv6. L'hote A envoie un paquet de 1500 octets. Le routeur 1 le rejette (trop gros pour le tunnel) et envoie un message Packet Too Big — mais un pare-feu entre le routeur 1 et l'hote A rejette silencieusement tout le trafic ICMPv6. L'hote A n'apprend jamais la contrainte de MTU. C'est ce qu'on appelle le trou noir PMTUD, et c'est la raison numero un pour laquelle la connectivite IPv6 se casse dans les reseaux d'entreprise.",
+        "12": "L'hote A attend un ACK TCP qui ne viendra jamais. Apres l'expiration du delai de retransmission (environ 1 seconde), il retransmet le segment — a la meme taille de 1500 octets, car il n'a jamais recu de message Packet Too Big. Le routeur 1 le rejette a nouveau. Le Packet Too Big est bloque a nouveau. Le cycle se repete avec recul exponentiel : 1 seconde, 2 secondes, 4 secondes, 8 secondes. La connexion semble completement bloquee.",
+        "13": "La partie insidieuse d'un trou noir PMTUD est que les petits paquets fonctionnent encore. Les ACK TCP (40 octets), les requetes DNS et les ping reussissent tous car ils sont bien en dessous de 1280 octets. Seuls les segments de donnees au-dessus du MTU goulot d'etranglement echouent. Cela cree des symptomes deroutants : « je peux faire un ping mais je ne peux pas telecharger de fichiers » ou « SSH se connecte mais bloque quand je colle une longue commande ». La connexion finit par expirer apres plus de 13 minutes de retransmissions.",
+        "14": "La solution est simple et non negociable : ne JAMAIS bloquer ICMPv6 Packet Too Big (type 2). Le RFC 4890 documente exactement quels messages ICMPv6 ne doivent pas etre filtres. Au minimum, autorisez le type 1 (Destination Unreachable), le type 2 (Packet Too Big), le type 3 (Time Exceeded) et le type 4 (Parameter Problem). Pour qu'IPv6 fonctionne correctement, ICMPv6 est une infrastructure essentielle — ce n'est pas optionnel comme l'ICMP a parfois ete traite en IPv4. Les pare-feu qui bloquent tout ICMPv6 cassent IPv6.",
+        "15": "Recapitulons les trois scenarios que nous avons observes : (1) IPv4 avec DF=0 — les routeurs fragmentent, ca fonctionne mais cree des problemes de performance et de securite. (2) Le PMTUD IPv6 fonctionnant correctement — un paquet rejete declenche un message Packet Too Big, la source apprend le MTU de chemin, et tous les futurs paquets sont correctement dimensionnes. (3) Le trou noir PMTUD — un pare-feu bloque ICMPv6, la source n'apprend jamais le bon MTU, et la connexion meurt silencieusement. La lecon est claire : le PMTUD IPv6 est elegant et efficace, mais il necessite absolument ICMPv6 Packet Too Big pour fonctionner. Protegez-le."
+      }
+    }
+  }
+}

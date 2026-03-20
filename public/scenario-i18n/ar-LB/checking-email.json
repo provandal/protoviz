@@ -1,0 +1,110 @@
+{
+  "meta": {
+    "title": "فحص إيميلك: شو بيصير فعلاً لما تضغط على Inbox",
+    "description": "بتضغط على bookmark تبع Gmail. قبل ما يظهر ولا إيميل واحد، اللابتوب تبعك بيعمل ~20 تبادل بروتوكولات بأقل من 500 ميلي ثانية: DNS lookup ليلاقي عنوان IP تبع Gmail، TCP 3-way handshake ليفتح اتصال، TLS 1.3 handshake ليشفّر كل شي، و HTTP/2 multiplexed requests ليجيب ال inbox HTML، JavaScript bundle، و API data — كلّهم بنفس الوقت على اتصال واحد. هال scenario بيكشف التعقيد المخبّى ورا عمل عادي، وبيغطّي 7+ بروتوكولات: Ethernet, IP, UDP, DNS, TCP, TLS 1.3, و HTTP/2.",
+    "learning_objectives": [
+      "شوف إنو DNS resolution بيصير قبل أي اتصال — دليل تلفونات الإنترنت",
+      "فهم TCP 3-way handshake (SYN → SYN-ACK → ACK) كأساس الاتصالات الموثوقة",
+      "لاحظ TLS 1.3 1-RTT handshake — المتصفّح و Gmail بيتبادلوا مفاتيح تشفير بجولة وحدة",
+      "اكتشف إنو SNI extension بال TLS بيكشف أي موقع عم تزور، حتى لو كل شي تاني مشفّر",
+      "تعلّم إنو ALPN بال TLS handshake بيفاوض على HTTP/2 قبل ما يخلص ال handshake",
+      "شوف HTTP/2 multiplexing عملياً — HTML, JavaScript, و API data كلّهم بينجابوا سوا على اتصال واحد",
+      "قدّر إنو عمل بسيط 'فحص إيميل' بيشمل 7+ بروتوكولات طبقية عم يشتغلوا سوا بأقل من 500ms"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "DNS Query — 'مين هو mail.google.com?'",
+      "detail": "ضغطت على bookmark تبع Gmail. قبل ما يقدر المتصفّح يتواصل مع Gmail، لازم يعرف عنوان IP تبع Gmail. بيبعت DNS query للـ resolver تبعك — يعني عم يسأل دليل تلفونات الإنترنت عن الاتجاهات. هال UDP packet الصغير (82 bytes) هو أول شي بيصير. بلا DNS، ما في إيميل. أكتر الناس ما بيعرفوا إنو هالخطوة موجودة."
+    },
+    "1": {
+      "text": "DNS Response — 'هو 142.250.80.5' (مع CNAME chain)",
+      "detail": "ال resolver بيرد بحوالي 25 ميلي ثانية بعنوان IP تبع Gmail. لاحظ ال CNAME chain: mail.google.com فعلياً alias لـ googlemail.l.google.com. Google بتستعمل CNAME records لل load balancing وال geographic routing — ال IP يلّي بتوخده ممكن يختلف عن حدا ببلد تاني. الجواب عنده TTL 300 ثانية (5 دقايق)، فاللابتوب بيخزّنه وما بيسأل مرة تانية لفترة.\nمعلومة ممتعة: هال DNS lookup الواحد مرّ عبر UDP, IP, و Ethernet — تلات بروتوكولات بس ليتعلّم عنوان IP واحد."
+    },
+    "2": {
+      "text": "TCP SYN → Gmail port 443",
+      "detail": "هلّق بعد ما اللابتوب عرف IP تبع Gmail (142.250.80.5)، بيبدأ يبني اتصال. TCP 3-way handshake متل تعارف رسمي:\nخطوة 1: اللابتوب بيبعت SYN — \"هاي Gmail، بدّي أحكي.\"\nهال packet الصغير ما فيه data، بس تحية وشوية اقتراحات: MSS (قديش بيكون حجم كل chunk من data)، window scale (قديش بيقدر يكون بالطريق)، و SACK support (لإعادة الإرسال بكفاءة). اللابتوب بيختار port عشوائي (54321) من طرفه وبيستهدف port 443 (HTTPS) من طرف Gmail."
+    },
+    "3": {
+      "text": "TCP SYN-ACK ← Gmail بيرد",
+      "detail": "خطوة 2: Gmail بيقول \"وصلت، أنا كمان هون!\"\nال SYN-ACK بيعمل وظيفتين: بيعترف بال SYN تبعك (ack=1، يعني \"وصلني byte 0 تبعك، ابعتلي byte 1\") وبيبعت SYN تبع Gmail مع ال parameters تبعه. لاحظ ال round-trip أخد حوالي 30ms — هيدا سرعة الضوء عم تسافر بال fiber عبر الإنترنت لأقرب datacenter تبع Google ورجعة. ما بتقدر تفاوض أسرع من الفيزياء."
+    },
+    "4": {
+      "text": "TCP ACK → تأسّس الاتصال",
+      "detail": "خطوة 3: \"صرنا متّصلين!\"\nاللابتوب بيبعت آخر ACK والطرفين بيدخلوا حالة ESTABLISHED. ال 3-way handshake خلص — جولة واحدة كاملة (حوالي 30ms). هيدا ثمن الاتصال الموثوق: تلات packets قبل ما يمشي ولا byte حقيقي. بروتوكولات متل QUIC (المستعمل بـ HTTP/3) بيحاولوا يدمجوا هيدا مع handshake التشفير ليوفّروا وقت.\nالوقت الكلّي لهلّق: ~57ms. ما لاحظت شي. المتصفّح لسا ما رسم ولا loading spinner."
+    },
+    "5": {
+      "text": "TLS ClientHello — عم يقترح TLS 1.3 + x25519 key exchange",
+      "detail": "هلّق بيبدأ التشفير. المتصفّح بيبعت ClientHello مع:\n- Cipher suites مدعومة (AES-256-GCM, AES-128-GCM, ChaCha20)\n- x25519 public key (المكوّن السحري بـ TLS 1.3)\n- SNI: \"mail.google.com\" (بيخبّر Gmail أي certificate يستعمل)\n- ALPN: \"h2\" (بيخبّر Gmail إنك بدك HTTP/2)\nالابتكار الأساسي: المتصفّح بيبعت Diffie-Hellman public key تبعه بأول رسالة. بـ TLS 1.2، هيدا كان بيحتاج جولة إضافية. هال optimization الواحد وفّر 30ms من كل HTTPS connection على الإنترنت.\nملاحظة خصوصية: ال SNI extension (mail.google.com) بينبعت بال cleartext. أي حدا عم يراقب شبكتك بيقدر يشوف إنك عم تتّصل بـ Gmail، حتى لو كل شي تاني رح يكون مشفّر. Encrypted Client Hello (ECH) هو draft standard عم يحاول يحل هيدا."
+    },
+    "6": {
+      "text": "TLS ServerHello + encrypted flight — شهادات، مفاتيح، كل شي",
+      "detail": "Gmail بيرد بجواب كبير فيه:\n1. ServerHello — بيختار AES-256-GCM وبيبعت x25519 public key تبعه. بهاللحظة، الطرفين بيحسبوا ال shared secret باستعمال elliptic curve math: x25519(my_private, their_public). هيدا بيصير بحوالي 50 microsecond.\n2. EncryptedExtensions — بيأكّد HTTP/2 (ALPN: h2). كل شي من هون مشفّر بمفاتيح مشتقة من ال shared secret.\n3. Certificate — سلسلة شهادات Gmail (mail.google.com → GTS CA → Google Trust Services root). بـ TLS 1.3، هيدا مشفّر — حدا عم يتنصّت ما بيقدر يشوف أي certificate انبعتت.\n4. CertificateVerify — توقيع رقمي بيثبت إنو Gmail فعلاً مالك ال private key تبع هال certificate.\n5. Finished — HMAC بيثبت إنو ال handshake ما تلاعبوا فيها.\nكل هيدا بجولة وحدة. المتصفّح و Gmail عملوا تشفير بمستوى عسكري بأقل من 30 ميلي ثانية."
+    },
+    "7": {
+      "text": "Client Finished — خلص TLS 1.3 handshake بجولة وحدة (1-RTT)",
+      "detail": "المتصفّح بيتحقّق من سلسلة شهادات Gmail، بيفحص توقيع CertificateVerify، بيأكّد ال Finished HMAC، وبعدين بيبعت ال Finished message تبعه. خلص TLS 1.3 handshake.\nالطرفين هلّق بيشتقّوا application traffic keys:\n  client_key = HKDF-Expand(master_secret, \"c ap traffic\", hash)\n  server_key = HKDF-Expand(master_secret, \"s ap traffic\", hash)\nمن هلّق، كل شي مشفّر بـ AES-256-GCM — إيميلاتك، cookies تبعك، ال search queries، والصور بإيميلاتك. كل شي مخفي عن أي حدا على الشبكة.\nوقت كل ال TLS handshake: حوالي 31ms (جولة وحدة). TLS 1.2 كان بيحتاج حوالي 62ms (جولتين). هال 31ms يلّي توفّرت، مضروبة ببلايين الاتصالات كل يوم، هي ليش TLS 1.3 كان شي كبير."
+    },
+    "8": {
+      "text": "HTTP/2 SETTINGS — عم يفاوض على multiplexed connection",
+      "detail": "مع تفعيل TLS والتفاوض على HTTP/2 (عبر ALPN خلال ال handshake)، المتصفّح بيبعت HTTP/2 connection preface: 24-byte magic string وبعدها SETTINGS frame.\nإعدادات أساسية:\n- Max concurrent streams: 100 (لحد 100 request بوقت واحد!)\n- Initial window size: 1MB لكل stream\n- Header table size: 64KB لـ HPACK compression\nHTTP/2 بروتوكول ثنائي — بعكس HTTP/1.1 يلّي كان plain text، HTTP/2 frames هي binary structures مدمجة. HPACK header compression يعني ال headers المكررة متل cookies و user-agents بيتشفّروا كـ table references صغيرة بدل ما ينبعتوا كاملين كل مرة."
+    },
+    "9": {
+      "text": "HTTP/2 GET /mail/u/0/#inbox (stream 1)",
+      "detail": "أخيراً — طلب ال inbox الفعلي! المتصفّح بيبعت HTTP/2 HEADERS frame على stream 1 مع:\n:method: GET\n:authority: mail.google.com\n:path: /mail/u/0/#inbox\nزائد session cookies تبعك (بتثبت إنك مسجّل دخول)، user-agent تبعك، و accepted compression formats. بفضل HPACK، هال ~800 bytes من headers بينضغطوا لحوالي ~200 bytes.\nنحنا هلّق حوالي 91ms من بداية الرحلة. ضغطت على bookmark 91 ميلي ثانية قبل وطلب الصفحة الفعلي هلّق عم يطلع من اللابتوب."
+    },
+    "10": {
+      "text": "HTTP/2 200 OK — هيكل HTML تبع ال inbox (stream 1, ~15KB مضغوطة)",
+      "detail": "Gmail بيرد بال inbox page HTML — بس هيدا بس الهيكل. قائمة الإيميلات الفعلية بتيجي من API call منفصل. هيك بتشتغل تطبيقات الويب الحديثة: ابعت HTML skeleton خفيف أولاً، بعدين عبّيه بال data عبر JavaScript.\nال HTML مضغوط بـ Brotli (br)، بيضغط ~60KB لـ ~15KB. Brotli اخترعه Google خصيصاً لضغط الويب وبيحقّق 20-26% ضغط أفضل من gzip.\nالمتصفّح بيبدأ يحلّل هال HTML فوراً، حتى قبل ما يوصل كل ال response — تقنية اسمها progressive rendering."
+    },
+    "11": {
+      "text": "HTTP/2 GET /static/js/main.js (stream 3)",
+      "detail": "بينما ال HTML لسا عم يوصل على stream 1، المتصفّح بيشوف <script> tag وفوراً بيبعت request لل JavaScript bundle تبع Gmail على stream 3.\nهيدا HTTP/2 multiplexing بالعمل: stream 1 و stream 3 بيتشاركوا نفس ال TCP connection. مع HTTP/1.1، المتصفّح كان بيحتاج TCP connection تاني (3-way handshake تاني + TLS handshake) بس لهال JavaScript file. كان ليكلّف ~90ms إضافية."
+    },
+    "12": {
+      "text": "HTTP/2 GET /mail/u/0/api/inbox (stream 5, XHR)",
+      "detail": "ال HTML shell فيه JavaScript بيطلب فوراً inbox data من API تبع Gmail على stream 5.\nتلات requests متزامنة على اتصال واحد:\n  Stream 1: HTML (خلص)\n  Stream 3: JavaScript (عم ينزل)\n  Stream 5: Inbox API data (عم يبدأ)\nمع HTTP/1.1، كان يلزم تلات TCP connections، كل وحدة مع handshake overhead خاص. HTTP/2 بيعمل كل شي على وحدة. هيدا أكبر سبب ليش المواقع الحديثة بتحس أسرع من مواقع 2010."
+    },
+    "13": {
+      "text": "HTTP/2 DATA — JS bundle (~200KB) و inbox JSON (~5KB) بيتداخلوا",
+      "detail": "Gmail بيبعت ال JavaScript bundle (stream 3) و inbox JSON (stream 5) بنفس الوقت، بيداخل DATA frames من الـ streams الاتنين على TCP connection واحد.\nHTTP/2 multiplexing يعني:\n- 16KB chunk من JavaScript على stream 3\n- بعدين 5KB chunk من inbox JSON على stream 5\n- بعدين كمان JavaScript على stream 3\n- وهيك...\nالمتصفّح بيعالج كل stream لحاله. ال inbox JSON (~5KB) بيخلص بسرعة، فالمتصفّح بيقدر يرسم عناوين الإيميلات والمرسلين بينما ال JavaScript bundle الأكبر (~200KB) لسا عم ينزل.\nمع HTTP/1.1، ال inbox JSON الأصغر كان ليكون عالق ورا ال JavaScript file الأكبر (head-of-line blocking). HTTP/2 بيحلّ هيدا بالكامل."
+    },
+    "14": {
+      "text": "ال Inbox ظهر — بتقدر تشوف إيميلاتك",
+      "detail": "حوالي 400 ميلي ثانية بعد ما ضغطت على هداك ال bookmark، ال inbox بيظهر عالشاشة. بلمحة عين، اللابتوب:\n1. دوّر على IP تبع Gmail عبر DNS (UDP, port 53)\n2. فتح TCP connection (3-way handshake)\n3. فاوض على تشفير TLS 1.3 (x25519 key exchange, AES-256-GCM)\n4. أسّس HTTP/2 multiplexed connection\n5. طلب ال inbox HTML, JavaScript, و API data\n6. استلم وفكّ ضغط التلاتة، متداخلين على اتصال واحد\n7. حلّل HTML, نفّذ JavaScript, رسم إيميلاتك\nالبروتوكولات المستعملة: Ethernet, IP, UDP, DNS, TCP, TLS 1.3, HTTP/2\nيعني 7+ بروتوكولات، ~20 تبادل شبكة، ~400ms.\nما كنت عارف."
+    },
+    "15": {
+      "text": "قناة إشعارات فورية انفتحت (Server-Sent Events)",
+      "detail": "Gmail ما خلص. بعد ما ظهر ال inbox، بيفتح HTTP/2 stream طويل العمر لإشعارات فورية باستعمال Server-Sent Events (SSE).\nلما حدا يبعتلك إيميل، backend تبع Google بيدفع JSON notification صغير عبر هال stream، و Gmail بيحدّث ال inbox فوراً — بلا polling، بلا page refresh. ال HTTP/2 connection بيضل مفتوح، عم يستنّى بهدوء.\nهيدا الويب الحديث: يلّي بيبيّن كأنه بس \"فحص إيميل\" هو فعلاً نظام اتصالات متعدد البروتوكولات وفوري. وكل شي بدأ بـ DNS query."
+    },
+    "16": {
+      "text": "خلص ال Scenario — فحص إيميلك",
+      "detail": "شو بيصير فعلاً لما تضغط على bookmark تبع Gmail:\nDNS RESOLUTION (جولة وحدة، ~25ms):\n  اللابتوب بيسأل \"وين mail.google.com?\"\n  ال resolver بيقول \"142.250.80.5\"\n\nTCP HANDSHAKE (جولة وحدة، ~30ms):\n  SYN → SYN-ACK → ACK\n  اتصال موثوق تأسّس على port 443\n\nTLS 1.3 HANDSHAKE (جولة وحدة، ~30ms):\n  ClientHello (x25519 public key, SNI, ALPN)\n  ServerHello + Certificate + Finished (مشفّر)\n  Client Finished\n  التشفير شغّال: AES-256-GCM\n\nHTTP/2 MULTIPLEXED LOADING (~300ms):\n  Connection preface + SETTINGS\n  GET /mail/u/0/#inbox → 200 OK (HTML shell, 15KB)\n  GET /static/js/main.js → 200 OK (JS bundle, 200KB)\n  GET /mail/u/0/api/inbox → 200 OK (inbox JSON, 5KB)\n  كل التلات responses متداخلين على اتصال واحد\n\nREAL-TIME PUSH:\n  Server-Sent Events stream لإشعارات إيميل فورية\n\nالمجموع: ~400ms، 7+ بروتوكولات، ~20 تبادل packets. المرة الجاية حدا بيقول \"عم بس أفحص إيميلي\"، رح تعرف شو عم يصير فعلاً على السلك."
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "شو بيصير فعلاً لما تفحص إيميلك",
+      "description": "جولة مرشدة عبر كل تبادل بروتوكولات بيصير لما تضغط على bookmark تبع Gmail — من DNS لرسم ال inbox",
+      "steps": {
+        "0": "لسا ضغطت على bookmark تبع Gmail. بيبيّن بسيط، صح؟ ورا الكواليس، اللابتوب عم يتحضّر يعمل واحدة من أروع إنجازات الهندسة الحديثة — حوالي 20 تبادل بروتوكولات، بتشمل 7+ بروتوكولات مختلفة، بأقل من نص ثانية.\nبيبدأ هون: المتصفّح ما بيعرف عنوان IP تبع Gmail، فبيبعت DNS query. فكّر بال DNS كدليل تلفونات الإنترنت. اللابتوب بيسأل \"وين mail.google.com?\" بـ UDP packet صغير 82 bytes على port 53. هيدا دايماً أول خطوة لأي موقع بتزوره، وأكتر الناس ما عندهم فكرة إنه بيصير.",
+        "1": "ال DNS resolver بيرجع بجواب: \"mail.google.com على 142.250.80.5.\" بس طلّع منيح — في CNAME chain. mail.google.com فعلياً alias لـ googlemail.l.google.com. Google بتستعمل هالحيلة لل load balancing وال geographic routing. لو كنت بطوكيو، كنت تاخد IP مختلف تماماً يوجّهك لسيرفر أقرب.\nال TTL (Time to Live) هو 300 ثانية، فاللابتوب بيخزّن هالجواب 5 دقايق. إذا فحصت إيميلك بعد دقيقتين، بيتخطّى ال DNS lookup بالكامل. يعني 25 ميلي ثانية وفّرتهم.\nالوقت الكلي يلّي مرّ: ~25 ميلي ثانية. عنا IP address. هلّق لازم نأسّس اتصال.",
+        "2": "اللابتوب بيبعت TCP SYN packet لـ Gmail على 142.250.80.5, port 443 (HTTPS). هيدي خطوة 1 من ال 3-way handshake الشهير.\nطلّع على destination MAC address — هو MAC ال router تبعك، مش تبع Gmail. لأنه على شبكتك المحلية، ال frames بتروح للـ router أولاً. ال router بعدين بيبعت ال packet عبر الإنترنت لـ datacenter تبع Google. Ethernet محلي بس؛ IP بيتعامل مع ال routing البعيد.\nال SYN بيحمل اقتراحات مهمة: MSS 1460 bytes (أقصى حجم chunk لكل packet)، window scale factor 7 (لنوافذ نقل كبيرة)، و SACK permitted (لاسترجاع خسارة فعّال).",
+        "3": "Gmail بيرد بـ SYN-ACK — \"وصلني SYN تبعك، هيدا تبعي!\" هال packet سافر من datacenter تبع Google للابتوبك ورجع، وأخد حوالي 30 ميلي ثانية. هال round-trip time أكتره سرعة الضوء بال fiber optic cables — الفيزياء، مش ال software، هي ال bottleneck.\nال ACK number (1) بيثبت إنو Gmail وصله SYN تبعك. Gmail كمان بيبعت window scale factor تبعه (8، أكبر من تبعك) — سيرفرات Google مبنية لاتصالات عالية ال bandwidth.",
+        "4": "اللابتوب بيبعت آخر ACK. ال TCP connection هلّق ESTABLISHED على الطرفين. تلات packets، جولة وحدة، حوالي 30 ميلي ثانية. ولا byte data اتبادل لسا — هيدا كان بس التعارف.\nحساب سريع: DNS أخد 25ms, TCP handshake أخد 31ms. نحنا هلّق 57 ميلي ثانية بهالمسيرة وما حمّلنا ولا byte من إيميلك. الخطوة الجاية: التشفير.",
+        "5": "هلّق بيبدأ التشفير. المتصفّح بيبعت TLS ClientHello — واحدة من أهم الرسائل بأمان الإنترنت الحديث.\nال ClientHello فيها x25519 public key تبع المتصفّح. هيدا الابتكار الأساسي بـ TLS 1.3: ببعت ال key share بأول رسالة، فالسيرفر بيقدر يحسب shared secret فوراً. TLS 1.2 كان بيحتاج جولة إضافية لهيدا.\nكمان بهالرسالة: SNI (Server Name Indication) بيقول \"mail.google.com.\" معلومة بتفاجئ أكتر الناس: SNI بينبعت بال CLEARTEXT. أي حدا عم يراقب شبكتك بيقدر يشوف إنك عم تتّصل بـ Gmail، حتى لو كل شي تاني مشفّر.\nو ALPN بيقول \"بفضّل HTTP/2\" — بيفاوض على ال application protocol جوّا ال TLS handshake فيكون جاهز لحظة ما يبدأ التشفير.",
+        "6": "Gmail بيرد بجولة ضخمة فيها ServerHello زائد أربع رسائل مشفّرة كلّهم بشوطة وحدة.\nأولاً، ServerHello بيعطي x25519 public key تبع Gmail. بهاللحظة، الطرفين بيعملوا elliptic curve math ليحسبوا shared secret — بحوالي 50 microsecond. بعدين كل شي بعد ServerHello مشفّر.\nجوّا ال encrypted payload: EncryptedExtensions (بيأكّد HTTP/2)، سلسلة الشهادات (mail.google.com موقّعة من Google Trust Services)، CertificateVerify (بيثبت إنو Gmail مالك ال private key)، و Finished (HMAC على كامل ال handshake).\nبـ TLS 1.2، الشهادة كانت تنبعت بال cleartext. بـ TLS 1.3، مراقب الشبكة بيشوف بس bytes مشفّرة غامضة. هيدا تحسّن خصوصية كبير.",
+        "7": "المتصفّح بيتحقّق من سلسلة شهادات Gmail، بيفحص التوقيع، بيأكّد ال Finished HMAC، وبيبعت ال Finished message تبعه. خلص TLS 1.3 handshake.\nالطرفين هلّق عندهم application traffic keys مشتقة عبر HKDF (key derivation function). من هلّق، كل byte مشفّر بـ AES-256-GCM.\nكل ال TLS handshake: جولة وحدة، حوالي 31 ميلي ثانية. TLS 1.2 كان يحتاج جولتين (~62ms). هال 31ms يلّي توفّرت، مضروبة ببلايين HTTPS connections كل يوم، هي ليش TLS 1.3 كان إنجاز كبير للإنترنت.\nالوقت الكلي: ~89ms. DNS + TCP + TLS خلصوا. هلّق بنجيب الإيميل الفعلي.",
+        "8": "مع التشفير الشغّال والتفاوض على HTTP/2، المتصفّح بيبعت HTTP/2 connection preface (24-byte magic string) و SETTINGS frame.\nإعدادات أساسية: 100 concurrent streams (يعني لحد 100 request بوقت واحد على اتصال واحد)، 1MB flow control window لكل stream، و HPACK header compression. HTTP/2 بروتوكول ثنائي — أكتر compact من plain text تبع HTTP/1.1. و HPACK compression يعني ال headers المكررة (متل cookies) بتنبعت كـ table indices صغيرة بدل النص الكامل.",
+        "9": "هيدا هو — طلب ال inbox الفعلي! المتصفّح بيبعت:\n  GET /mail/u/0/#inbox\nعلى HTTP/2 stream 1، مع session cookies تبعك (بتثبت إنك مسجّل دخول)، user-agent تبعك، و accepted compression formats.\nنحنا هلّق 91 ميلي ثانية بهالرحلة. أخد 91ms من DNS, TCP, TLS, و HTTP/2 setup قبل ما أول request حقيقي يطلع من اللابتوب. ولسا ما لاحظت أي تأخير.",
+        "10": "Gmail بيرد بال inbox HTML — بس هيدا بس الهيكل. هيكل الصفحة مع حاويات فاضية وين رح يروحوا الإيميلات. حجمه حوالي 60KB من HTML مضغوطة لـ 15KB باستعمال Brotli (خوارزمية ضغط من Google، 20-26% أفضل من gzip).\nالمتصفّح بيبدأ يحلّل هال HTML فوراً، حتى قبل ما يوصل كل ال response. هالتقنية (progressive rendering) هي ليش الصفحات بتبيّن إنها عم تظهر تدريجياً بدل كلّها مرة وحدة.",
+        "11": "بينما ال HTML لسا عم يوصل، المتصفّح بيشوف <script> tag وبيطلق request تاني على stream 3: ال JavaScript bundle.\nهيدا HTTP/2 multiplexing. Stream 1 (HTML) و stream 3 (JavaScript) بيتشاركوا نفس ال TCP connection. مع HTTP/1.1، المتصفّح كان يفتح TCP connection تاني، يعني ~90ms overhead إضافية من handshakes.",
+        "12": "request تالت بينطلق على stream 5: XHR call لـ inbox API تبع Gmail. تلات requests متزامنة على TCP connection واحد.\nفكّر شو كان يلزم HTTP/1.1:\n- Connection 1: HTML (TCP + TLS handshake = ~90ms overhead)\n- Connection 2: JavaScript (كمان ~90ms overhead)\n- Connection 3: API data (كمان ~90ms overhead)\nHTTP/2 بيعمل التلاتة بلا أي overhead إضافي. ال multiplexing لحاله بيوفّر حوالي 180ms من وقت ال handshake.",
+        "13": "Gmail بيبعت ال JavaScript bundle (~200KB مضغوطة) و inbox JSON (~5KB) بنفس الوقت، بيداخل DATA frames من الـ streams الاتنين. chunk من JavaScript، بعدين chunk من inbox JSON، بعدين كمان JavaScript...\nال inbox JSON بيخلص أول (هو أصغر 40 مرة)، فالمتصفّح بيقدر يبدأ يرسم عناوين الإيميلات والمرسلين بينما ال JavaScript bundle لسا عم ينزل. مع HTTP/1.1، ال JSON response الصغير كان ليكون محجوز ورا ال JavaScript file الكبير. HTTP/2 multiplexing بيحلّ هال head-of-line blocking بالكامل.",
+        "14": "حوالي 400 ميلي ثانية بعد ما ضغطت على هداك ال bookmark، ال inbox بيظهر عالشاشة. بأقل من نص ثانية، اللابتوب عمل DNS resolution, TCP connection setup, TLS 1.3 encryption, HTTP/2 multiplexed loading, Brotli decompression, HTML parsing, JavaScript execution, و UI rendering.\nسبع بروتوكولات. عشرين تبادل. أربعمية ميلي ثانية. وانت فكّرت إنك \"بس عم تفحص إيميلك.\"",
+        "15": "بس Gmail ما خلص. بيفتح Server-Sent Events (SSE) stream دائم عبر HTTP/2 لإشعارات push فورية. لما حدا يبعتلك إيميل جديد، JSON notification صغير بيوصل عبر هال stream، و inbox تبعك بيتحدّث فوراً — بلا polling، بلا page refresh.\nال HTTP/2 connection بيضل مفتوح بالخلفية، عم يستنّى بهدوء. هيدا الويب الحديث بأفضل حالاته: نظام اتصالات متطوّر، متعدد الطبقات، وفوري — بيحس كأنه \"بس فحص إيميل.\"",
+        "16": "خلّينا نلخّص شو شفنا:\n1. DNS (25ms) — دوّرنا على IP تبع mail.google.com عبر UDP\n2. TCP (31ms) — 3-way handshake لـ Gmail port 443\n3. TLS 1.3 (31ms) — x25519 key exchange, تشفير AES-256-GCM\n4. HTTP/2 Setup (1ms) — Connection preface و SETTINGS\n5. تحميل ال Inbox (~300ms) — HTML, JavaScript, و API data multiplexed\n6. Real-time Push — SSE stream لإشعارات فورية\nالبروتوكولات المستعملة: Ethernet, IP, UDP, DNS, TCP, TLS 1.3, HTTP/2\nالمجموع: ~400ms لـ 7+ بروتوكولات و ~20 تبادل packets\nكل موقع بتزوره بيمرّ بنفس هال stack. كل بحث، كل فيديو، كل scroll على السوشال ميديا. فهم هالبروتوكولات يعني فهم العمود الفقري للإنترنت الحديث."
+      }
+    }
+  }
+}

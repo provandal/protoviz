@@ -1,0 +1,48 @@
+{
+  "meta": {
+    "title": "GPU-to-GPU RDMA: RoCEv2를 통한 노드 간 텐서 전송",
+    "description": "RoCEv2를 통해 두 GPU 노드 간에 텐서 데이터를 전송하는 시나리오. GPU HBM 메모리 할당, BAR1 매핑, MR 등록, QP 연결, RDMA WRITE로 GPU A에서 GPU B로 텐서 푸시, RDMA READ로 GPU B에서 GPU A로 텐서 가져오기.",
+    "learning_objectives": [
+      "GPU-to-GPU RDMA 텐서 전송의 전체 흐름 이해",
+      "AI/ML 분산 학습에서 GPU 간 통신의 중요성 이해"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "물리 링크 업 — GPU 노드 간 100GbE 무손실 패브릭",
+      "detail": "양쪽 GPU 노드가 PFC와 ECN이 활성화된 100GbE로 스위치에 연결됩니다. 무손실 패브릭은 필수입니다 — RDMA는 네트워크가 패킷을 드롭하지 않는 것에 의존합니다.\n일반적인 GPU 클러스터 토폴로지: 각 노드에 NVLink 인트라-노드용 8개 GPU와 인터-노드 RDMA용 1-8개 RNIC가 있습니다. 이 시나리오는 명확성을 위해 노드당 단일 GPU와 RNIC를 보여줍니다."
+    },
+    "1": {
+      "text": "CUDA 메모리 할당 — 양쪽 노드의 GPU HBM에 4MB 텐서 버퍼",
+      "detail": "cuMemAlloc()이 GPU HBM(High Bandwidth Memory)에 메모리를 할당합니다: • 노드 A: GPU VA 0x7f0000000000에 4MB 텐서 버퍼 • 노드 B: GPU VA 0x7f0100000000에 4MB 텐서 버퍼\n이 메모리는 GPU의 사설 주소 공간에 있어 CPU나 RNIC가 직접 접근할 수 없습니다. GPUDirect RDMA는 PCIe BAR1 어퍼처를 통해 GPU 메모리를 RNIC에 노출하여 이 문제를 해결합니다."
+    },
+    "2": {
+      "text": "GPU BAR1 매핑 — nvidia-peermem을 통해 GPU 메모리가 PCIe 주소 공간에 노출",
+      "detail": "nvidia-peermem(커널 모듈)이 RDMA 서브시스템에 peer_memory_client로 등록합니다. GPU 가상 주소에 대해 ibv_reg_mr()가 호출되면 nvidia-peermem이 가로채서:\n1. nvidia_p2p_get_pages()를 호출하여 GPU 메모리를 고정 2. GPU 물리 주소를 가져옴 3. GPU의 PCIe BAR1 어퍼처를 통해 매핑 4. RNIC의 DMA 엔진에 PCIe 버스 주소를 반환\n이제 RNIC가 PCIe 피어-투-피어를 통해 호스트 DRAM이나 CPU를 거치지 않고 직접 GPU 메모리에 DMA할 수 있습니다.\n전통적 경로(GPUDirect 없이): GPU → cudaMemcpy → 호스트 DRAM → ibv_post_send → RNIC → Net = 4회 복사, 2회 CPU 개입\nGPUDirect RDMA 경로: GPU HBM → BAR1 → RNIC → Net → RNIC → BAR1 → GPU HBM = 방향당 1회 DMA 전송, 0회 CPU 데이터 복사"
+    },
+    "3": {
+      "text": "GPU 메모리에 Memory Region 등록 — RDMA 키 교환",
+      "detail": "GPU 가상 주소로 ibv_reg_mr()가 호출됩니다. nvidia-peermem이 가로채어 BAR1 매핑된 물리 주소를 RNIC의 하드웨어 페이지 테이블에 제공합니다.\nMR 등록 후 양쪽 노드가 대역 외(일반적으로 TCP 제어 채널 또는 RDMA SEND를 통해) rkey를 교환합니다. 각 노드는 이제 원격 노드의 {rkey, virtual_address, length}를 가지고 있어 RDMA READ/WRITE에 필요한 모든 것을 갖추고 있습니다."
+    },
+    "4": {
+      "text": "QP 연결(RTS) — GPU-to-GPU 전송용 RDMA 채널 준비 완료",
+      "detail": "Reliable Connected(RC) QP가 CM REQ/REP/RTU를 통해 RTS로 전이됩니다. QP가 RTS이고 GPU 메모리가 MR로 등록되면 GPU-to-GPU 데이터 경로가 완전히 수립됩니다."
+    },
+    "5": {
+      "text": "RDMA WRITE — 4MB 텐서가 GPU A HBM → GPU B HBM으로 푸시(CPU 복사 없음)",
+      "detail": "RDMA WRITE로 4MB 텐서 데이터가 GPU A의 HBM에서 GPU B의 HBM으로 직접 전송됩니다. 양쪽 CPU 모두 관여하지 않습니다."
+    },
+    "6": {
+      "text": "RDMA READ 요청 — 노드 A가 GPU B의 HBM에서 4MB 텐서 요청",
+      "detail": "노드 A의 애플리케이션이 RDMA READ WQE로 ibv_post_send()를 호출합니다. RNIC가 작은 READ 요청(78바이트)을 노드 B에 보내 원격 GPU 버퍼 주소와 rkey를 지정합니다.\nRDMA READ는 \"풀\" 모델입니다 — 요청자(노드 A)가 응답자(노드 B)에게 어떤 원격 메모리를 읽을지 알려줍니다. 노드 B의 RNIC가 자율적으로 GPU B의 HBM에서 데이터를 가져와 돌려보냅니다. 노드 B의 CPU는 전혀 관여하지 않습니다."
+    },
+    "7": {
+      "text": "RDMA READ 응답 — 4MB 텐서가 GPU B HBM → GPU A HBM으로 전송",
+      "detail": "노드 B의 RNIC가 자율적으로: 1. PCIe BAR1(P2P DMA)을 통해 GPU B의 HBM에서 4MB를 읽음 2. RDMA READ 응답 패킷으로 노드 A에 전송 3. 노드 A의 RNIC가 BAR1을 통해 각 패킷을 GPU A의 HBM에 기록\n완료 후 노드 A의 CQ(Completion Queue)가 애플리케이션에 텐서 데이터가 GPU A의 버퍼에 사용 가능하다고 알립니다.\nRDMA READ vs WRITE 트레이드오프: • WRITE: 이니시에이터가 데이터를 푸시(더 낮은 지연) • READ: 이니시에이터가 데이터를 풀(응답자가 시작할 필요 없음, 하지만 요청/응답 지연 추가) • NCCL은 집합 연산에 WRITE를 선호합니다"
+    },
+    "8": {
+      "text": "⟳ 시나리오 완료 — GPU-to-GPU RDMA 텐서 전송",
+      "detail": "이 시나리오는 엔드투엔드 GPU-to-GPU RDMA를 시연했습니다:\n설정: cuMemAlloc → nvidia-peermem BAR1 매핑 → ibv_reg_mr(GPU MR) → CM QP 구축 → rkey 교환\nRDMA WRITE(푸시 — GPU A → GPU B): GPU A HBM → PCIe BAR1 P2P → RNIC A → RoCEv2 → RNIC B → PCIe BAR1 P2P → GPU B HBM. CPU 관여: 0(WQE 게시만)\nRDMA READ(풀 — GPU B → GPU A): 요청: RNIC A → RoCEv2 → RNIC B. 응답: GPU B HBM → RNIC B → RoCEv2 → RNIC A → GPU A HBM. 노드 B의 CPU 관여: 0\n데이터 경로 비교: 전통적(GPUDirect 없음): 4회 복사, 2회 CPU 작업. GPUDirect RDMA: 1회 복사, 0회 CPU 작업.\nGPU-to-GPU RDMA 사용 사례: NCCL AllReduce/AllGather, 추론 서빙, GPU 컴퓨팅, 체크포인트/복원, 멀티 노드 GPU 렌더링."
+    }
+  }
+}

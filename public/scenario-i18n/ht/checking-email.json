@@ -1,0 +1,110 @@
+{
+  "meta": {
+    "title": "Tcheke Imèl Ou: Kisa Ki Rive Vrèman Lè W Klike sou Bwat Resepsyon",
+    "description": "Ou klike sou make Gmail ou. Anvan yon sèl imèl parèt, laptop ou tire ~20 echanj pwotokòl nan mwens pase 500 milisegond: yon rechèch DNS pou jwenn adrès IP Gmail, yon salitasyon TCP 3 etap pou etabli yon koneksyon fyab, yon salitasyon TLS 1.3 pou chifre tout bagay, negosyasyon HTTP/2 pou miltiplekse, epi plizyè demann HTTP/2 simultane pou HTML, JavaScript, ak done bwat resepsyon — tout sou yon sèl koneksyon TCP.",
+    "learning_objectives": [
+      "Wè ke rezolisyon DNS rive anvan nenpòt koneksyon — rechèch nan anyè telefòn entènèt la",
+      "Konprann salitasyon 3 etap TCP (SYN → SYN-ACK → ACK) kòm fondasyon pou koneksyon fyab",
+      "Obsève salitasyon 1-RTT TLS 1.3 — navigatè w ak Gmail echanje kle kriptografik nan yon sèl ale-retou",
+      "Dekouvri ke ekstansyon SNI nan TLS revele ki sit ou vizite, menm si tout lòt bagay chifre",
+      "Aprann ke ALPN nan salitasyon TLS negosye HTTP/2 anvan salitasyon an menm fini",
+      "Wè miltipleksaj HTTP/2 an aksyon — HTML, JavaScript, ak done API tout chèche an menm tan sou yon koneksyon",
+      "Apresye ke yon senp «tcheke imèl» enplike 7+ pwotokòl kouch ki travay ansanm nan mwens pase 500ms"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Demann DNS — 'Kiyès ki mail.google.com?'",
+      "detail": "Ou te klike sou make Gmail la. Anvan navigatè w ka kontakte Gmail, li bezwen konnen adrès IP Gmail. Li voye yon demann DNS bay rezolvè konfigire w la — esansyèlman li mande anyè telefòn entènèt la pou direksyon. Ti pakè UDP sa a (82 oktè) sòti nan laptop ou sou pò 53 epi li rive nan sèvè DNS lan an mwens pase yon milisegond."
+    },
+    "1": {
+      "text": "Repons DNS — 'Se 142.250.80.5' (ak chèn CNAME)",
+      "detail": "Rezolvè a reponn nan anviwon 25 milisegond ak adrès IP Gmail. Remake chèn CNAME: mail.google.com se aktyèlman yon alias pou googlemail.l.google.com. Google itilize anrejistreman CNAME pou repartisman chaj ak achemiman jeyografik — IP ou jwenn nan ka diferan de IP yon moun nan yon lòt peyi jwenn."
+    },
+    "2": {
+      "text": "TCP SYN → Gmail pò 443",
+      "detail": "Kounye a laptop ou konnen IP Gmail (142.250.80.5), li kòmanse bati yon koneksyon. Salitasyon 3 etap TCP a tankou yon prezantasyon fòmèl: Etap 1: Laptop ou voye SYN — \"Hey Gmail, mwen ta renmen pale.\" Ti pakè sa a pa pote done, jis yon salitasyon ak yon nimewo sekans owaza."
+    },
+    "3": {
+      "text": "TCP SYN-ACK ← Gmail reponn",
+      "detail": "Etap 2: Gmail di \"Mwen resevwa, mwen la tou!\" SYN-ACK la fè de travay: li konfime SYN ou (ack=1, ki vle di \"Mwen resevwa oktè 0 ou, voye m oktè 1 pwochen\") EPI voye pwòp SYN Gmail ak paramèt pa li. Remake ale-retou a te pran anviwon 30ms — sa a prèske vitès limyè atravè kab fibr optik."
+    },
+    "4": {
+      "text": "TCP ACK → Koneksyon etabli",
+      "detail": "Etap 3: \"Nou konekte!\" Laptop ou voye dènye ACK la epi toude bò antre nan eta ESTABLISHED. Salitasyon 3 etap la fini — yon ale-retou konplè (anviwon 30ms). Sa a se pri kominikasyon fyab: twa pakè anvan yon sèl oktè done ka voye."
+    },
+    "5": {
+      "text": "TLS ClientHello — pwopoze TLS 1.3 + echanj kle x25519",
+      "detail": "Kounye a chifreman kòmanse. Navigatè w voye yon ClientHello ak: swit chif sipòte (AES-256-GCM, AES-128-GCM, ChaCha20), yon kle piblik x25519 (engredyan majik TLS 1.3), SNI: \"mail.google.com\" (di Gmail ki sètifika pou itilize).\nPwen kle: nan TLS 1.2, kliyan an te dwe tann sèvè a voye kle li dabò. TLS 1.3 pèmèt kliyan an voye kle li nan premye mesaj la — sa rann salitasyon an yon sèl ale-retou olye de."
+    },
+    "6": {
+      "text": "TLS ServerHello + vol chifre — sètifika, kle, tout bagay",
+      "detail": "Gmail reponn ak yon gwo repons ki gen ServerHello plis kat mesaj chifre nan yon sèl kou. Premyèman, ServerHello bay kle piblik x25519 Gmail. Nan moman sa a, toude bò kalkile yon sekrè pataje itilize matematik koub eliptik: x25519(kle_prive_mwen, kle_piblik_yo). Sa rive an anviwon 25 mikwosegond. Answit EncryptedExtensions, Certificate (chèn sètifika Gmail), CertificateVerify (siyati ki pwouve se vrèman Gmail), ak Finished — TOUT chifre."
+    },
+    "7": {
+      "text": "Kliyan Finished — salitasyon TLS 1.3 fini nan 1-RTT",
+      "detail": "Navigatè w verifye chèn sètifika Gmail, tcheke siyati CertificateVerify, konfime HMAC Finished, answit voye pwòp mesaj Finished pa li. Salitasyon TLS 1.3 a fini.\nToude bò kounye a gen kle trafik aplikasyon derive atravè HKDF. Tout sa ki vin apre — chak demann HTTP, chak repons, chak fragman done — chifre ak AES-256-GCM."
+    },
+    "8": {
+      "text": "HTTP/2 SETTINGS — negosye koneksyon miltiplekse",
+      "detail": "Ak TLS aktif ak HTTP/2 negosye (atravè ALPN pandan salitasyon an), navigatè w voye prefas koneksyon HTTP/2: yon chèn majik 24 oktè swiv pa yon fram SETTINGS.\nParamèt kle: 100 fliks simultane (jiska 100 demann an menm tan sou yon koneksyon!), 1MB kontwòl fliks, 16KB gwosè maks antèt. Konpare ak HTTP/1.1 kote ou ta bezwen 6 koneksyon TCP separe pou ka chaj 6 resous an menm tan."
+    },
+    "9": {
+      "text": "HTTP/2 GET /mail/u/0/#inbox (fliks 1)",
+      "detail": "Finalman — demann bwat resepsyon aktyèl la! Navigatè w voye yon fram HEADERS HTTP/2 sou fliks 1 ak: :method: GET, :authority: mail.google.com, :path: /mail/u/0/#inbox, plis kouki sesyon w (ki pwouve ou konekte), ajan itilizatè w, ak fòma konpresyon aksepte. Nou nan 91 milisegond nan pwosesis la."
+    },
+    "10": {
+      "text": "HTTP/2 200 OK — HTML kadav bwat resepsyon (fliks 1, ~15KB konprese)",
+      "detail": "Gmail reponn ak HTML paj bwat resepsyon an — men se jis kadav la. Lis imèl aktyèl la vini nan yon apèl API separe. Se konsa aplikasyon wèb modèn mache: voye yon eskelèt HTML lejè dabò, answit ranpli li ak done atravè JavaScript. HTML la konprese ak Brotli — anviwon 60KB redwi nan 15KB."
+    },
+    "11": {
+      "text": "HTTP/2 GET /static/js/main.js (fliks 3)",
+      "detail": "Pandan HTML la toujou ap rive sou fliks 1, navigatè w wè yon tag <script> epi imedyatman lanse yon demann pou pake JavaScript Gmail sou fliks 3.\nSa a se miltipleksaj HTTP/2 an aksyon: fliks 1 ak fliks 3 pataje MENM koneksyon TCP. Ak HTTP/1.1, sa ta egzije de koneksyon TCP separe, chak ak pwòp salitasyon TCP + TLS pa li."
+    },
+    "12": {
+      "text": "HTTP/2 GET /mail/u/0/api/inbox (fliks 5, XHR)",
+      "detail": "Kadav HTML la gen JavaScript ki imedyatman mande done bwat resepsyon nan API Gmail sou fliks 5.\nTwa demann simultane sou yon koneksyon: Fliks 1: HTML (konplè), Fliks 3: JavaScript (ap telechaje), Fliks 5: Done API Bwat Resepsyon (kòmanse)."
+    },
+    "13": {
+      "text": "HTTP/2 DATA — pake JS (~200KB) ak JSON bwat resepsyon (~5KB) miltiplekse",
+      "detail": "Gmail voye retounen ni pake JavaScript (fliks 3) ni JSON bwat resepsyon (fliks 5) an menm tan, antrelase fram DATA soti nan toude fliks sou yon sèl koneksyon TCP.\nMiltipleksaj HTTP/2 vle di: yon moso 16KB JavaScript sou fliks 3, answit yon moso JSON bwat resepsyon sou fliks 5, answit plis JavaScript — tout antrelase pwòpman."
+    },
+    "14": {
+      "text": "Bwat resepsyon afiche — ou ka wè imèl ou yo",
+      "detail": "Anviwon 400 milisegond apre ou te klike sou make sa a, bwat resepsyon ou parèt sou ekran. Nan yon bat je, laptop ou te: 1. Chèche IP Gmail atravè DNS (UDP, pò 53) 2. Ouvri yon koneksyon TCP (salitasyon 3 etap) 3. Negosye chifreman TLS 1.3 (kle x25519, AES-256-GCM) 4. Miltiplekse 3 demann HTTP/2 sou yon sèl koneksyon 5. Telechaje, dekomprese, epi rann HTML + JS + done"
+    },
+    "15": {
+      "text": "Kanal notifikasyon an-tan ouvri (Server-Sent Events)",
+      "detail": "Gmail poko fini. Apre bwat resepsyon ou chaje, li ouvri yon fliks HTTP/2 ki dire lontan pou notifikasyon an-tan itilize Server-Sent Events (SSE).\nLè yon moun voye ou yon imèl, backend Google pouse yon ti notifikasyon JSON atravè fliks sa a, epi bwat resepsyon ou mete ajou touswit — san sondaj, san refrechi."
+    },
+    "16": {
+      "text": "Senaryo fini — Tcheke Imèl Ou",
+      "detail": "Kisa ki rive vrèman lè ou klike sou make Gmail ou:\nREZOLISYON DNS (1 ale-retou, ~25ms): Laptop ou mande \"Ki kote mail.google.com ye?\" Rezolvè a di \"142.250.80.5\"\nSALITASYON TCP (1 ale-retou, ~30ms): SYN → SYN-ACK → ACK. Koneksyon fyab etabli.\nSALITASYON TLS 1.3 (1 ale-retou, ~31ms): Echanj kle x25519, chifreman AES-256-GCM aktive.\nMILTIPLEKSAJ HTTP/2: 3+ demann simultane sou yon koneksyon.\nTOTAL: ~400ms soti nan klik jis nan rann bwat resepsyon.\n7+ pwotokòl kouch (Ethernet, IP, TCP, TLS, HTTP/2, DNS, SSE) tout travay ansanm pou ou tcheke imèl ou."
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "Kisa Ki Rive Vrèman Lè W Tcheke Imèl Ou",
+      "description": "Yon vizit gide atravè chak echanj pwotokòl ki rive lè ou klike sou make Gmail ou — soti nan DNS jis nan rann bwat resepsyon",
+      "steps": {
+        "0": "Ou fèk klike sou make Gmail ou. Sanble senp, pa vre? Dèyè sèn nan, laptop ou pral fè youn nan pi enkwayab eksplwa jeni modèn — anviwon 20 echanj pwotokòl, ki enplike 7+ pwotokòl diferan, nan mwens pase mwatye yon segond. Ann gade chak etap.",
+        "1": "Rezolvè DNS la tounen ak yon repons: \"mail.google.com se nan 142.250.80.5.\" Men gade byen — gen yon chèn CNAME. mail.google.com se aktyèlman yon alias pou googlemail.l.google.com. Google itilize twik sa a pou repartisman chaj ak achemiman jeyografik — IP ou jwenn nan ka diferan de IP yon moun nan yon lòt peyi jwenn.",
+        "2": "Laptop ou voye yon pakè TCP SYN bay Gmail nan 142.250.80.5, pò 443 (HTTPS). Sa a se etap 1 nan gwo salitasyon 3 etap la.\nGade adrès MAC destinasyon an — se MAC routè w la, pa Gmail. Sa a paske sou rezo lokal ou, fram yo ale bay routè w dabò, ki answit achemine pakè a sou entènèt bay sèvè Google.",
+        "3": "Gmail reponn ak SYN-ACK — \"Mwen resevwa SYN ou, men pa mwen!\" Pakè sa a te vwayaje soti nan sant done Google nan laptop ou epi retounen, li te pran anviwon 30 milisegond. Tan ale-retou sa a se sitou vitès limyè atravè kab fibr optik — fizik, pa lojisyèl.",
+        "4": "Laptop ou voye dènye ACK la. Koneksyon TCP a kounye a ESTABLISHED sou toude bò. Twa pakè, yon ale-retou, anviwon 30 milisegond. Pa gen done ki echanje ankò — sa a te jis prezantasyon an.\nKalkil rapid: DNS te pran 25ms, salitasyon TCP te pran 30ms. Nou nan 55ms epi navigatè a poko voye yon sèl demann.",
+        "5": "Kounye a chifreman deklanche. Navigatè w voye yon TLS ClientHello — youn nan mesaj ki pi enpòtan nan sekirite entènèt modèn.\nClientHello gen kle piblik x25519 navigatè w. Sa a se inovasyon kle TLS 1.3: lè li voye pataj kle nan premye mesaj la, sèvè a ka kalkile sekrè pataje a imedyatman — redwi salitasyon an a yon sèl ale-retou olye de.",
+        "6": "Gmail reponn ak yon gwo vol ki gen ServerHello plis kat mesaj chifre nan yon sèl kou.\nPremyèman, ServerHello bay kle piblik x25519 Gmail. Nan moman sa a, toude bò fè matematik koub eliptik pou kalkile yon sekrè pataje — nan anviwon 25 mikwosegond. Answit tout bagay chifre: EncryptedExtensions, Certificate, CertificateVerify, Finished.",
+        "7": "Navigatè w verifye chèn sètifika Gmail, tcheke siyati a, konfime HMAC Finished, epi voye pwòp mesaj Finished pa li. Salitasyon TLS 1.3 a fini.\nToude bò kounye a gen kle trafik aplikasyon derive atravè HKDF. Tout sa ki vin apre — chak demann HTTP, chak repons — chifre ak AES-256-GCM. Yon moun ki ap tande sou rezo a wè sèlman bri owaza.",
+        "8": "Ak chifreman aktif ak HTTP/2 negosye, navigatè w voye prefas koneksyon HTTP/2 (yon chèn majik 24 oktè) ak yon fram SETTINGS.\nParamèt kle: 100 fliks simultane (sa vle di jiska 100 demann an menm tan sou yon koneksyon), 1MB kontwòl fliks. Konpare ak HTTP/1.1 kote ou ta bezwen 6 koneksyon TCP separe.",
+        "9": "Men li — demann bwat resepsyon aktyèl la! Navigatè w voye: GET /mail/u/0/#inbox sou fliks HTTP/2 1, ansanm ak kouki sesyon w (ki pwouve ou konekte), ajan itilizatè w, ak fòma konpresyon aksepte.\nNou kounye a 91 milisegond nan pwosesis la, epi premye vrè demann vini ale.",
+        "10": "Gmail reponn ak HTML bwat resepsyon an — men se jis kadav la. Eskelèt paj la ak veso vid kote imèl yo ap ale. Sa a se anviwon 60KB HTML konprese jis nan 15KB itilize Brotli (algorit konpresyon Google, 20-26% pi bon pase gzip).",
+        "11": "Pandan HTML la toujou ap rive, navigatè w wè yon tag <script> epi lanse yon dezyèm demann sou fliks 3: pake JavaScript la.\nSa a se miltipleksaj HTTP/2. Fliks 1 (HTML) ak fliks 3 (JavaScript) pataje MENM koneksyon TCP. Ak HTTP/1.1, sa ta egzije de koneksyon TCP separe ak pwòp depans salitasyon yo.",
+        "12": "Yon twazyèm demann lanse sou fliks 5: yon apèl XHR bay API bwat resepsyon Gmail. Twa demann simultane sou yon koneksyon TCP.\nReflechi kisa HTTP/1.1 ta bezwen: Koneksyon 1: HTML (salitasyon TCP + TLS = ~90ms depans), Koneksyon 2: JavaScript (90ms depans ankò), Koneksyon 3: Done API (90ms depans ankò). HTTP/2 elimine tout depans depliste sa yo.",
+        "13": "Gmail voye retounen pake JavaScript (~200KB konprese) ak JSON bwat resepsyon (~5KB) an menm tan, antrelase fram DATA soti nan toude fliks. Yon moso JavaScript, answit yon moso JSON bwat resepsyon, answit plis JavaScript...\nJSON bwat resepsyon an fini premye (li pi piti). JavaScript la kòmanse egzekite epi li rann imèl yo lè li wè done JSON an.",
+        "14": "Anviwon 400 milisegond apre ou te klike sou make sa a, bwat resepsyon ou parèt sou ekran. Nan mwens pase mwatye yon segond, laptop ou te fè rezolisyon DNS, konfigirasyon koneksyon TCP, chifreman TLS 1.3, chajman miltiplekse HTTP/2, dekonpresyon Brotli, analize HTML, egzekisyon JavaScript, ak rann UI.",
+        "15": "Men Gmail poko fini. Li ouvri yon fliks Server-Sent Events (SSE) pèsistan sou HTTP/2 pou notifikasyon pouse an-tan. Lè yon moun voye ou yon nouvo imèl, yon ti notifikasyon JSON rive atravè fliks sa a, epi bwat resepsyon ou mete ajou touswit — san sondaj, san refrechi.",
+        "16": "Ann rezime sa nou fèk temwen:\n1. DNS (25ms) — Chèche adrès IP mail.google.com atravè UDP 2. TCP (31ms) — Salitasyon 3 etap nan Gmail pò 443 3. TLS 1.3 (31ms) — Echanj kle x25519, chifreman AES-256-GCM 4. Konfigirasyon HTTP/2 (1ms) — Prefas koneksyon, SETTINGS 5. Demann HTML (9ms) — GET /mail/u/0/#inbox 6. Chajman miltiplekse (~300ms) — HTML + JS + Done API an paralèl 7. SSE — Kanal notifikasyon an-tan\nTotal: ~400ms soti nan klik jis nan rann bwat resepsyon. 7+ pwotokòl kouch tout travay ansanm pafètman."
+      }
+    }
+  }
+}

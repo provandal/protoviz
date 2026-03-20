@@ -1,0 +1,78 @@
+{
+  "meta": {
+    "title": "iSCSI: Login → Discovery → SCSI INQUIRY → WRITE(10) → READ(10)",
+    "description": "دورة حياة جلسة iSCSI كاملة فوق 10GbE TCP/IP: TCP 3-way handshake، مرحلة iSCSI Login (مصادقة وتفاوض معطيات)، SendTargets discovery، تسجيل دخول هدف، SCSI INQUIRY لتعريف الـ LUN، SCSI WRITE(10) وREAD(10) لـ I/O البيانات. iSCSI هو أكتر بروتوكول SAN منتشر، بيحمل أوامر SCSI فوق شبكات TCP/IP العادية — بدون hardware خاص. هالسيناريو بيوضّح كيف التخزين الكتلي SCSI بيشتغل فوق Ethernet، ويقارن مع Fibre Channel (fabric SAN مخصّص) وNVMe-oF (الجيل الجاي).",
+    "learning_objectives": [
+      "فهم كيف iSCSI بيربط أوامر SCSI على اتصالات TCP باستخدام PDU framing",
+      "تابع مرحلة iSCSI Login: تفاوض أمان، تبادل معطيات تشغيلية",
+      "شوف SendTargets discovery — كيف الـ initiator بيتعلّم الأهداف والـ LUNs المتاحة",
+      "راقب معرّفات جلسة واتصال iSCSI (ISID، TSIH، CID)",
+      "تتبّع SCSI INQUIRY لاكتشاف نوع الجهاز والشركة والسعة",
+      "تابع SCSI WRITE(10) عبر iSCSI: PDU أمر، PDUs Data-Out، PDU جواب",
+      "تابع SCSI READ(10): PDU أمر، PDUs Data-In، PDU جواب",
+      "فهم header/data digests (CRC32C) تبع iSCSI لسلامة البيانات"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "الرابط الفيزيائي طلع — 10GbE على القطعتين",
+      "detail": "روابط 10GbE Ethernet عادية طلعت. بخلاف FC (fabric SAN مخصّص) أو RoCEv2 (بيتطلّب PFC/lossless Ethernet)، iSCSI بيشتغل على أي شبكة IP عادية. بدون تهيئة خاصة للسويتش — TCP بيتكفّل بالموثوقية والتحكّم بالتدفّق."
+    },
+    "1": {
+      "text": "TCP 3-way handshake → اتصال لمنفذ 3260 تأسّس",
+      "detail": "iscsid daemon تبع الـ initiator بيفتح اتصال TCP لمنفذ iSCSI المعروف 3260 (IANA). TCP SYN → SYN-ACK → ACK العادي بيأسّس بث بايتات موثوق.\niSCSI بيؤطّر PDUs تبعو فوق هالاتصال TCP. بخلاف بروتوكولات بتستعمل UDP (RoCEv2) أو تأطير مخصّص (FC)، iSCSI بيعتمد على TCP للموثوقية والترتيب والتحكّم بالتدفّق."
+    },
+    "2": {
+      "text": "iSCSI Login → تفاوض أمان (AuthMethod=None)",
+      "detail": "الـ initiator بيبعت أول Login PDU. iSCSI login عندو مرحلتين:\n1. Security Negotiation (CSG=0) — اختيار طريقة المصادقة\n2. Operational Negotiation (CSG=1) — ضبط معطيات الجلسة\n\nهالـ PDU فيه أزواج key-value:\n• InitiatorName=iqn.2024-01.com.example:host01\n• AuthMethod=None (بدون مصادقة — CHAP شائع بالإنتاج)"
+    },
+    "3": {
+      "text": "Login Response ← الأمان مقبول، TSIH=0x0001 معيّن",
+      "detail": "الهدف بيقبل AuthMethod=None وبيعيّن TSIH (Target Session Identifying Handle) = 0x0001. bit الـ T (Transit) محطوط، بيتحوّل لمرحلة Operational Negotiation."
+    },
+    "4": {
+      "text": "Login → تفاوض معطيات تشغيلية",
+      "detail": "الـ initiator بيقترح معطيات تشغيلية بتحكم بنقل البيانات:\n• MaxRecvDataSegmentLength = 262144 (256KB)\n• FirstBurstLength = 262144\n• MaxBurstLength = 524288\n• InitialR2T = Yes\n• ImmediateData = Yes\n• HeaderDigest = None\n• DataDigest = None"
+    },
+    "5": {
+      "text": "Login خلص ← Full Feature Phase — الجلسة تأسّست",
+      "detail": "الهدف بيقبل المعطيات التشغيلية وبيحوّل الجلسة لـ Full Feature Phase (NSG=3). جلسة iSCSI هلق مؤسّسة بالكامل وجاهزة لأوامر SCSI.\n\nمعرّفات الجلسة:\n• ISID = 0x00023d000001 (معيّن من الـ initiator)\n• TSIH = 0x0001 (معيّن من الهدف)\n• (ISID + TSIH) بيعرّف هالجلسة بشكل فريد عالمياً"
+    },
+    "6": {
+      "text": "SCSI INQUIRY → الـ initiator بيكتشف خصائص جهاز LUN 0",
+      "detail": "طبقة SCSI mid-layer تبع Linux تلقائياً بتبعت INQUIRY لكل LUN لتكتشف نوع الجهاز والشركة والقدرات. هيدا نفس أمر SCSI INQUIRY المستعمل بسيناريو Fibre Channel — iSCSI ببساطة بينقلو فوق TCP.\nأمر INQUIRY ملفوف بـ iSCSI SCSI Command PDU (opcode 0x01) مع CDB 16 بايت مدمج بالـ PDU header."
+    },
+    "7": {
+      "text": "INQUIRY Response ← جهاز كتلي وصول مباشر (LIO-ORG IBLOCK)",
+      "detail": "الهدف بيرجّع بيانات INQUIRY بتعرّف الجهاز كجهاز كتلي وصول مباشر (type 0x00). الـ Linux initiator بيأنشئ /dev/sdX device لهالـ LUN."
+    },
+    "8": {
+      "text": "SCSI WRITE(10) → كتابة 4KB على LBA 0",
+      "detail": "التطبيق بيكتب 4KB على الجهاز الكتلي. الـ iSCSI initiator بيبعت SCSI WRITE(10) CDB ملفوف بـ iSCSI SCSI Command PDU.\nلأنو InitialR2T=Yes تم التفاوض عليه، الـ initiator ما بيبعت بيانات الكتابة بعد — بيستنّى الهدف يشير بالجاهزية عبر R2T."
+    },
+    "9": {
+      "text": "R2T ← الهدف جاهز يستقبل 4KB بيانات كتابة",
+      "detail": "الهدف بيبعت R2T (Ready to Transfer) PDU، بيعطي الـ initiator إذن يبعت بيانات الكتابة:\n• Buffer Offset = 0\n• Desired Data Transfer Length = 4096\n• Target Transfer Tag = 0x00000001\n\nR2T بيوفّر تحكّم بالتدفّق — الهدف ما ينغمر ببيانات كتابة مش جاهز لها. قارن مع NVMe-oF/RDMA وين الهدف بيعمل RDMA READ للبيانات بسرعتو."
+    },
+    "10": {
+      "text": "Data-Out → الـ initiator بيبعت 4KB بيانات كتابة",
+      "detail": "الـ initiator بيبعت بيانات الكتابة بـ iSCSI SCSI Data-Out PDU (opcode 0x05). كل الـ 4KB بتخلص بـ PDU واحد لأنو MaxRecvDataSegmentLength = 256KB.\n\nمقارنة مسار البيانات لكتابة 4KB:\n• iSCSI: app → kernel SCSI → iSCSI PDU → TCP/IP stack → NIC DMA (2 نسخ)\n• NVMe-oF/RDMA: app → registered MR → RDMA READ من الهدف (0 نسخ CPU)\n• FC: app → kernel SCSI → FCP → FC driver → HBA DMA (نسخة 1)"
+    },
+    "11": {
+      "text": "WRITE Response ← GOOD — 4KB انكتبت على LBA 0",
+      "detail": "الهدف بيأكّد إنو SCSI WRITE(10) اكتمل بحالة GOOD.\n\nملخص تدفّق كتابة iSCSI:\n1. Initiator → Target: SCSI Command PDU (WRITE CDB)\n2. Target → Initiator: R2T PDU (جاهز للبيانات)\n3. Initiator → Target: Data-Out PDU (4KB بيانات كتابة)\n4. Target → Initiator: SCSI Response PDU (حالة GOOD)"
+    },
+    "12": {
+      "text": "SCSI READ(10) → قراءة 4KB من LBA 0",
+      "detail": "الـ initiator بيبعت READ(10) لنفس كتلة 4KB. ما في حاجة لـ R2T للقراءة — الهدف بيبعت Data-In PDUs مباشرة."
+    },
+    "13": {
+      "text": "Data-In ← 4KB بيانات قراءة مع حالة GOOD",
+      "detail": "الهدف بيقرا 4KB من LBA 0 وبيرجّعها بـ iSCSI SCSI Data-In PDU. bit الـ Status محطوط (S=1)، فحالة SCSI GOOD مدموجة بآخر data PDU.\n\nملخص تدفّق قراءة iSCSI:\n1. Initiator → Target: SCSI Command PDU (READ CDB)\n2. Target → Initiator: Data-In PDU (4KB + حالة GOOD)\n\nالقراءة أبسط من الكتابة لأنو ما في R2T handshake."
+    },
+    "14": {
+      "text": "⟳ السيناريو خلص — دورة حياة جلسة iSCSI",
+      "detail": "هالسيناريو وضّح جلسة iSCSI كاملة:\n1. LINK — 10GbE Ethernet عادي، بدون تهيئة خاصة\n2. TCP — 3-way handshake لمنفذ 3260\n3. LOGIN — تفاوض بمرحلتين (أمان → تشغيلي → Full Feature Phase)\n4. DISCOVERY — SCSI INQUIRY لتعريف LUN 0 (قرص)\n5. WRITE — أمر → R2T → Data-Out → جواب (4 PDUs)\n6. READ — أمر → Data-In+Status (2 PDUs)\n\niSCSI مقابل بروتوكولات SAN التانية:\n│ الميزة      │ iSCSI      │ FC          │ NVMe-oF/RDMA │\n│ النقل       │ TCP/IP     │ FC fabric   │ RoCEv2/RDMA  │\n│ الشبكة      │ أي Ethernet│ FC مخصّص   │ Lossless Eth │\n│ HW خاص     │ لا         │ FC HBA      │ RDMA NIC     │\n│ حمل CPU    │ عالي (TCP) │ منخفض (HBA)│ تقريباً صفر  │\n│ التأخير     │ ~100-500μs │ ~10-50μs   │ ~5-20μs      │\n│ التعقيد     │ منخفض     │ عالي       │ متوسط        │\n\nقوة iSCSI هي البساطة — بيشتغل على شبكات IP الموجودة بدون hardware خاص."
+    }
+  }
+}

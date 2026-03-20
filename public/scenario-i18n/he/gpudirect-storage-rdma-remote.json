@@ -1,0 +1,42 @@
+{
+  "meta": {
+    "title": "[WIP] GPUDirect Storage: קריאה/כתיבה מרוחקת NVMe-oF ל-GPU דרך RoCEv2",
+    "description": "תרחיש GPUDirect Storage המראה כיצד GPU קורא וכותב נתונים ביעד אחסון מרוחק NVMe-oF/RDMA כשהנתונים נוחתים ישירות ב-GPU HBM — תוך עקיפת DRAM מארח לחלוטין. הנתיב המסורתי מקפיץ נתונים פעמיים (אחסון → RDMA → DRAM מארח → העתקת מעבד → GPU). GDS על גבי RDMA מבטל את שני הקפצות.",
+    "learning_objectives": [
+      "הבנה כיצד GPUDirect Storage (GDS) מבטל מאגר ביניים DRAM מארח ל-I/O אחסון מרוחק",
+      "ראיית כיצד cuFileRead מפעיל NVMe-oF READ ש-RDMA WRITE שלו מנחית נתונים ישירות ב-GPU HBM דרך BAR1",
+      "ראיית כיצד cuFileWrite מפעיל NVMe-oF WRITE שנתוניו נשלפים מ-GPU HBM דרך RDMA READ",
+      "מעקב אחר קישור תעבורת NVMe-oF/RDMA: פקודות NVMe דרך RDMA SEND, נתונים דרך RDMA WRITE/READ",
+      "מעקב אחר Fabrics Connect של NVMe-oF להקמת זוגות תורי admin ו-I/O על גבי RDMA",
+      "תצפית כיצד nvidia-fs ו-nvidia-peermem משתפים פעולה לרישום זיכרון GPU ל-RDMA",
+      "ניגוד נתיב מסורתי (אחסון → DRAM → GPU) לעומת נתיב GDS (אחסון → GPU ישירות)",
+      "מעקב אחר חילוף MAD של IB Connection Manager להעברת QP ממצב RESET ל-RTS"
+    ]
+  },
+  "timeline": {
+    "0": { "text": "קישור A: אות זוהה — צומת GPU ↔ מתג", "detail": "משדר-קולט אופטי בצומת GPU מזהה אור מיציאת מתג A. Auto-Negotiation מתחיל." },
+    "1": { "text": "קישור B: אות זוהה — מתג ↔ יעד אחסון", "detail": "משדר-קולט אופטי ביעד אחסון מזהה אור מיציאת מתג B." },
+    "2": { "text": "קישור A פעיל — צומת GPU ↔ מתג ב-100Gbps עם RS-FEC", "detail": "AN ו-Link Training הושלמו. PFC מופעל על עדיפות 3 ל-RoCEv2." },
+    "3": { "text": "קישור B פעיל — מתג ↔ יעד אחסון ב-100Gbps עם RS-FEC", "detail": "שני הקישורים פעילים. קישוריות L2 מקצה לקצה הוקמה." },
+    "4": { "text": "בקשת ARP: למי יש 192.168.1.20?", "detail": "צומת GPU מפענח IP יעד אחסון ל-MAC למיפוי GID-ל-MAC של RoCEv2." },
+    "5": { "text": "תגובת ARP: 192.168.1.20 נמצא ב-00:02:c9:ab:cd:ef", "detail": "יעד אחסון עונה. לצומת GPU יש כעת נגישות L2 לאחסון." },
+    "6": { "text": "CM REQ — צומת GPU מציע QP לתעבורת NVMe-oF/RDMA", "detail": "בקשת IB Connection Manager. צומת GPU מציע פרמטרי RC QP לחיבור NVMe-oF/RDMA. נתונים פרטיים נושאים פורמט בקשת CM של NVMe-oF RDMA לפי TP8010." },
+    "7": { "text": "CM REP — יעד אחסון מקבל, מספק QPN ו-PSN", "detail": "יעד אחסון מקבל את החיבור ומספק מספר QP ו-PSN התחלתי שלו." },
+    "8": { "text": "CM RTU — חיבור RDMA הוקם, QPs ב-RTS", "detail": "שני ה-QPs עוברים ל-RTS. חיבור RDMA מוכן לפקודות NVMe-oF." },
+    "9": { "text": "Fabrics Connect → תור Admin של NVMe-oF/RDMA", "detail": "המארח שולח NVMe Fabrics Connect דרך RDMA SEND להקמת שיוך תור Admin עם יעד האחסון." },
+    "10": { "text": "תגובת Fabrics Connect ← תור Admin מוקם", "detail": "יעד האחסון מקבל את Fabrics Connect ומקצה מזהה בקר. תור Admin פעיל." },
+    "11": { "text": "Fabrics Connect → תור IO 1 של NVMe-oF/RDMA", "detail": "חיבור RDMA שני (CM REQ/REP/RTU) ו-Fabrics Connect לתור IO." },
+    "12": { "text": "תגובת Fabrics Connect ← תור IO מוקם", "detail": "תור IO 1 מוכן לפעולות NVMe Read/Write." },
+    "13": { "text": "cuFileDriverOpen() — אתחול GDS עם תמיכת RDMA", "detail": "האפליקציה מאתחלת GDS. nvidia-fs מזהה שיעד האחסון מחובר דרך NVMe-oF/RDMA ומתאם עם nvidia-peermem לרישום זיכרון GPU." },
+    "14": { "text": "cuFileBufRegister() — נעילת זיכרון GPU ויצירת מיפוי BAR1 ל-RDMA", "detail": "cuFileBufRegister() נועל דפי GPU ויוצר מיפוי BAR1. nvidia-peermem רושם כתובות BAR1 אלה ב-MTT של RNIC — כך ש-RDMA WRITE יכול לנחות ישירות בזיכרון GPU." },
+    "15": { "text": "cuFileRead() → פקודת NVMe Read (RDMA SEND) עם SGL של GPU BAR1", "detail": "cuFileRead() מפעיל פקודת קריאת NVMe שנשלחת ליעד דרך RDMA SEND. ה-SGL בפקודה מצביע ישירות לכתובות BAR1 GPU — יעד האחסון יבצע RDMA WRITE ישירות לזיכרון GPU." },
+    "16": { "text": "RDMA WRITE ← יעד אחסון כותב נתוני קריאה ישירות ל-GPU HBM", "detail": "יעד האחסון קורא נתונים מ-SSD ומבצע RDMA WRITE ישירות למאגר BAR1 GPU. RNIC צומת GPU מנתב את ה-DMA ישירות ל-GPU HBM דרך PCIe P2P. מעבד המארח מעולם לא רואה את הנתונים." },
+    "17": { "text": "השלמת NVMe Read ← נתונים נמצאים כעת ב-GPU HBM", "detail": "יעד האחסון שולח השלמת NVMe דרך RDMA SEND. cuFileRead() מחזיר. נתוני האימון נמצאים ב-GPU HBM, מוכנים לליבות CUDA." },
+    "18": { "text": "cuFileWrite() → פקודת NVMe Write (RDMA SEND) עם SGL של GPU BAR1", "detail": "cuFileWrite() מפעיל פקודת כתיבת NVMe. ה-SGL מצביע ל-GPU BAR1 — יעד האחסון יבצע RDMA READ ישירות מזיכרון GPU." },
+    "19": { "text": "RDMA READ ← יעד אחסון שולף נתוני כתיבה ישירות מ-GPU HBM", "detail": "יעד האחסון מנפיק RDMA READ Request. RNIC צומת GPU מבצע DMA מ-GPU HBM דרך PCIe P2P ושולח RDMA READ Response. אפס מעורבות מעבד." },
+    "20": { "text": "RDMA READ Response → נתוני כתיבה מועברים ליעד אחסון", "detail": "נתוני GPU HBM מועברים ליעד האחסון לכתיבה ל-SSD." },
+    "21": { "text": "השלמת NVMe Write ← נקודת ביקורת נשמרה", "detail": "יעד האחסון מאשר כתיבה מוצלחת. נקודת הביקורת נשמרה באחסון מרוחק." },
+    "22": { "text": "ניגוד: נתיב מסורתי לעומת GDS על RDMA", "detail": "מסורתי: אחסון → RDMA WRITE → DRAM מארח → cudaMemcpy → GPU (2 חציות PCIe, מעורבות מעבד)\nGDS על RDMA: אחסון → RDMA WRITE → GPU BAR1 → GPU HBM (1 חציית PCIe, אפס מעבד)" },
+    "23": { "text": "⟳ התרחיש הושלם — GPUDirect Storage על גבי NVMe-oF/RDMA", "detail": "תרחיש זה הדגים כיצד GDS על RDMA מבטל את DRAM מארח מנתיב אחסון מרוחק. נתונים זורמים ישירות בין יעד אחסון מרוחק וזיכרון GPU — אידיאלי לאימון AI בקנה מידה גדול שבו מספר GPUs צריכים לצרוך מערכי נתונים מאחסון מרוחק במהירות מרבית." }
+  }
+}

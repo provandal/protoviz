@@ -1,0 +1,94 @@
+{
+  "tcp-3way-handshake-data-fin": {
+    "title": "TCP: Salitasyon 3-Etap → Transfè Done → Fèmti FIN",
+    "description": "Sik konplè koneksyon TCP: salitasyon 3-etap (SYN → SYN-ACK → ACK) avèk senkwonizasyon ISN, transfè done HTTP demann/repons avèk swivi nimewo sekans, ak fèmti 4-etap FIN avèk TIME_WAIT."
+  },
+  "pfc-ecn-dcqcn-congestion-control": {
+    "title": "Ethernet San Pèt: PFC Pause → ECN Makaj → DCQCN Kontwòl Debi",
+    "description": "Kijan RoCEv2 reyalize transpò san pèt: kadè PFC PAUSE anpeche debòdman tanpon, ECN make pakè avèk Eksperyans Konjesyon olye li lage yo, epi DCQCN fèmen boukl retounen an avèk rediksyon debi deklanche pa CNP ak rekiperasyon baze sou revèy."
+  },
+  "nvme-rdma-discovery-io": {
+    "title": "NVMe-oF/RDMA: Dekouvèt → Koneksyon Fabrics → NVMe Ekriti & Lekti sou RoCEv2",
+    "description": "NVMe konplè sou Fabrics avèk transpò RDMA: konfigirasyon koneksyon CM, Koneksyon Fabrics nan Kontwolè Dekouvèt, rekiperasyon jounal Dekouvèt pa RDMA WRITE, konfigirasyon fil datant Kontwolè IO, NVMe Ekriti (done pa RDMA READ) ak NVMe Lekti (done pa RDMA WRITE). Chemen done zewo-kopi toupatou."
+  },
+  "iscsi-login-discovery-io": {
+    "title": "iSCSI: Koneksyon → Dekouvèt → SCSI INQUIRY → WRITE(10) → READ(10)",
+    "description": "Sesyon iSCSI konplè: koneksyon TCP, negosyasyon Login de-etap (sekirite + operasyonèl), SCSI INQUIRY pou dekouvri LUN, WRITE(10) avèk kontwòl fliks R2T, ak READ(10). Pwotokòl SAN ki pi lajman deplwaye — TCP/IP estanda, pa bezwen materyèl espesyal."
+  },
+  "roce-v2-rc-connection-rdma-write-read": {
+    "title": "RoCEv2 RC: Antrènman Lyen → Koneksyon QP → RDMA WRITE → RDMA READ",
+    "description": "Echanj RoCEv2 Konekte Fyab konplè sou 100GbE: lyen fizik, ARP, konfigirasyon CM, RDMA WRITE, RDMA READ."
+  },
+  "fc-fabric-login-scsi-io": {
+    "title": "FC Fabric: FLOGI → Sèvè Non → PLOGI → PRLI → SCSI I/O",
+    "description": "Sekans koneksyon SAN Fibre Channel konplè atravè yon switch fabric: lyen fizik, FLOGI, dekouvèt Sèvè Non, PLOGI, PRLI, apresa SCSI INQUIRY, WRITE(10), ak READ(10)."
+  },
+  "nvme-tcp-cdc-discovery-io": {
+    "title": "NVMe/TCP: mDNS → Dekouvèt CDC → DIM → Koneksyon Subsistèm → I/O",
+    "description": "Fliks NVMe konplè sou TCP avèk dekouvèt twa-nivo: mDNS → CDC (enskripsyon DIM, referans DDC) → DDC sou depo (detay Kontwolè IO) → koneksyon IOC, Idantifye Kontwolè/Espas non, NVMe Ekriti ak Lekti."
+  },
+  "gpudirect-rdma-write-to-gpu": {
+    "title": "GPUDirect RDMA: RDMA WRITE Dirèkteman nan Memwa GPU",
+    "description": "GPUDirect RDMA ki montre RDMA WRITE ki rive dirèkteman nan GPU HBM pa nvidia-peermem, ki kontounen memwa prensipal DRAM nèt. Kouvri cuMemAlloc, ekspozisyon GPU BAR1, enskripsyon MR kont memwa GPU, ak chemen done DMA zewo-kopi."
+  },
+  "gpudirect-storage-nvme-to-gpu": {
+    "title": "GPUDirect Storage: NVMe Lekti Dirèkteman nan Memwa GPU (PCIe Lokal)",
+    "description": "GPUDirect Storage (GDS) ki montre done NVMe SSD li dirèkteman nan memwa GPU pa API cuFile ak nvidia-fs, ki kontounen kach paj CPU nèt. Konpare chemen depo tradisyonèl (3 kopi) avèk DMA P2P zewo-kopi GDS."
+  },
+  "s3-rdma-object-put-get": {
+    "title": "S3/RDMA: Objè PUT ak GET sou RoCEv2 (Achitekti Bibliyotèk NVIDIA)",
+    "description": "Fliks S3/RDMA avan-estanda ki itilize bibliyotèk NVIDIA RDMA pou depo konpatib S3: Inisyalizasyon Bibliyotèk, koneksyon QP pa UD SEND, S3 PUT (envèse — kliyan RDMA WRITE nan sèvè), S3 GET (sèvè RDMA WRITE nan kliyan). Chemen done zewo CPU."
+  },
+  "gpudirect-storage-rdma-remote": {
+    "title": "GPUDirect Storage: NVMe-oF Lekti/Ekriti Adistans nan Memwa GPU sou RoCEv2",
+    "description": "GPUDirect Storage sou tisi RoCEv2: cuFileRead deklanche NVMe-oF READ avèk RDMA WRITE ki poze done dirèkteman nan GPU HBM; cuFileWrite deklanche NVMe-oF WRITE avèk RDMA READ ki rale done nan GPU HBM. Zewo rebondi nan memwa prensipal."
+  },
+  "arp-ndp-resolution": {
+    "title": "ARP & NDP: Rezolisyon Adrès IPv4 ak Dekouvèt Vwazen IPv6",
+    "description": "Konparezon kote-a-kote: ARP difizyon Demann/Repons ak ARP Gratwit (IPv4) kont NDP multidifizyon ne-solisitasyon Solisitasyon/Anonsman Vwazen ak Anonsman Routeur avèk SLAAC (IPv6). Montre poukisa NDP pi efikas ak pi sekirize pase ARP."
+  },
+  "smb-direct-negotiate-rdma-io": {
+    "title": "SMB Direct: Negosyasyon → Kanal RDMA → Lekti & Ekriti Fichye sou RoCEv2",
+    "description": "SMB Direct (MS-SMBD) sou RoCEv2: negosyasyon SMB Direct, dyalèk SMB 3.1.1, konfigirasyon sesyon/pyebwa, apresa WRITE fichye (sèvè RDMA READ done nan tanpon kliyan) ak READ (sèvè RDMA WRITE done nan tanpon kliyan). Chemen done zewo-kopi pou travay Hyper-V sou SMB."
+  },
+  "tls-1.3-handshake": {
+    "title": "TLS 1.3: Salitasyon Konplè → Done Aplikasyon Chifre → Fèmti Alèt",
+    "description": "Fliks TLS 1.3 (RFC 8446) konplè: salitasyon TCP, salitasyon TLS 1-RTT avèk echanj kle x25519 (ClientHello key_share + ServerHello key_share), vòl sèvè chifre (EncryptedExtensions + Certificate + CertificateVerify + Finished), done aplikasyon sou AES-256-GCM, ak fèmti close_notify avèk dousè."
+  },
+  "gpu-to-gpu-rdma-tensor-transfer": {
+    "title": "GPU-a-GPU RDMA: Transfè Tensè Ant Noud pa RoCEv2",
+    "description": "Transfè tensè GPU-a-GPU bout-an-bout avèk GPUDirect RDMA sou RoCEv2: alokasyon CUDA, ekspozisyon nvidia-peermem BAR1, enskripsyon MR, konfigirasyon QP, RDMA WRITE (pouse) ak RDMA READ (rale) — tout GPU HBM a GPU HBM avèk zewo rebondi nan memwa prensipal."
+  },
+  "checking-email": {
+    "title": "Tcheke Imèl Ou: Kisa ki Vrèman Pase Lè Ou Klike sou Bwat Resepsyon",
+    "description": "Ou klike sou makè Gmail ou. Avan yon sèl imèl parèt, anviwon 20 echanj pwotokòl fèt nan mwens pase 500ms: rechèch DNS, salitasyon TCP 3-etap, chifreman TLS 1.3, ak chajman miltiplèks HTTP/2 pou HTML, JavaScript, ak done bwat resepsyon — tout sou yon sèl koneksyon."
+  },
+  "nccl-allreduce-rocev2": {
+    "title": "NCCL AllReduce: Algorit Anwo sou RoCEv2 (4 GPU)",
+    "description": "NCCL Ring-AllReduce sou 4 noud GPU pa RoCEv2: faz Reduce-Scatter (3 etap, akimile sòm pasyèl gradyan) apresa faz AllGather (3 etap, difize rezilta final). Tout mouvman done pa GPUDirect RDMA WRITE — GPU HBM a GPU HBM, zewo kopi CPU."
+  },
+  "ipv6-slaac-autoconfiguration": {
+    "title": "IPv6 SLAAC: Anonsman Routeur → DAD → Oto-konfigirasyon Adrès",
+    "description": "Kijan aparèy IPv6 konfigire pwòp adrès yo san sèvè DHCP: Solisitasyon Routeur, Anonsman Routeur avèk enfòmasyon prefiks, jenerasyon adrès EUI-64 ak adrès prive, Deteksyon Adrès Doub pa multidifizyon ne-solisitasyon, ak RDNSS pou DNS."
+  },
+  "ipv6-vs-ipv4-header-comparison": {
+    "title": "IPv6 kont IPv4 Antèt: Poukisa IPv6 Pi Rapid sou Fil",
+    "description": "Konparezon kote-a-kote: antèt IPv4 a 13-chan avèk longè varyab ak rekalkilasyon checksum chak etap kont antèt IPv6 a 8-chan fiks 40-oktè san checksum epi san fragmantasyon routeur."
+  },
+  "happy-eyeballs-dual-stack": {
+    "title": "Happy Eyeballs: Kijan Navigatè Ou Chwazi IPv4 kont IPv6",
+    "description": "Algorit Happy Eyeballs (RFC 8305) an aksyon: demann DNS paralèl AAAA+A, kous koneksyon ki prefere IPv6 avèk yon revèy repli 250ms, ak repli transparan IPv4 lè IPv6 pa fonksyone."
+  },
+  "dhcpv6-stateful-stateless": {
+    "title": "DHCPv6: Avèk Eta kont San Eta — Lè RA Pa Sifi",
+    "description": "Twa mòd DHCPv6 kote-a-kote: San Eta (O=1, M=0) pou enfòmasyon DNS/NTP akote SLAAC, Avèk Eta (M=1) avèk echanj 4-mesaj SARR konplè pou atribisyon adrès jere, ak Delegasyon Prefiks kote yon ISP delege yon /48 bay yon routeur lakay."
+  },
+  "nat64-dns64-ipv6-only-to-ipv4": {
+    "title": "NAT64/DNS64: Kliyan IPv6-Sèlman ki Pale ak Sèvè IPv4-Sèlman",
+    "description": "Teknoloji kle tranzisyon IPv6 federal: DNS64 sentèz anrejistreman AAAA nan anrejistreman A avèk prefiks byen koni 64:ff9b::/96, NAT64 tradui pakè IPv6 an IPv4 sou fil la, epi 464XLAT jere aplikasyon ansyen ki kodife adrès IPv4 an di."
+  },
+  "ipv6-path-mtu-discovery": {
+    "title": "IPv6 Dekouvèt MTU Chemen: Fini ak Fragmantasyon Routeur",
+    "description": "Poukisa PMTUD obligatwa nan IPv6: routeur pa ka fragmante, kidonk mesaj ICMPv6 Pakè Twò Gwo di sous la pou itilize pakè pi piti."
+  }
+}

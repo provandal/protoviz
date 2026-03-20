@@ -1,0 +1,102 @@
+{
+  "meta": {
+    "title": "NVMe-oF/RDMA: Discovery → Fabrics Connect → RoCEv2上のNVMe Write & Read",
+    "description": "RDMA (RoCEv2) トランスポートを使用した完全なNVMe over Fabrics。物理リンク確立とARP解決から、CMベースのRDMA接続セットアップ、Discovery ControllerへのNVMe-oF Fabrics Connect、Discovery Log Page取得、IO Controller接続、Identify Controller/Namespace、NVMe WriteおよびRead操作まで。NVMe/TCPシナリオとの対比 — ここではNVMeコマンドはRDMA SENDで、データはRDMA WRITE (コントローラ→ホスト) とRDMA READ (ホスト→コントローラ) で、完了はRDMA SENDで送信されます。データパスにCPUは介在しません。",
+    "learning_objectives": [
+      "NVMe-oFがRDMAをトランスポートバインディングとして使用する方法を理解 — コマンドはSEND、データはWRITE/READ",
+      "NVMe-oF Fabrics Connectに先立つRDMA CM接続セットアップを見る",
+      "RDMA上のAdminおよびIOキューを確立するFabrics Connectコマンドを追跡",
+      "IO Controllerを見つけるためにRDMA経由で返されるDiscovery Log Pageを観察",
+      "NVMe Writeを追跡: ホストがRDMA SENDでコマンドを送信、コントローラがRDMA READでデータを取得",
+      "NVMe Readを追跡: ホストがRDMA SENDでコマンドを送信、コントローラがRDMA WRITEでデータを配送",
+      "RDMAデータ配置のためのSGL (Scatter-Gather List) の使用を理解",
+      "RDMAトランスポートバインディングとTCPの比較 — ゼロコピー vs カーネル介在データパス"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "物理リンクアップ — 両セグメントで100GbE、PFC有効",
+      "detail": "両方の100GbEリンクがRS-FEC付きオートネゴシエーションでアップします。ロスレスRoCEv2トランスポートのために優先度3でPFCが有効です。"
+    },
+    "1": {
+      "text": "ARPリクエスト — ホストがストレージターゲットのMACアドレスを解決",
+      "detail": "NVMeホストがRDMA接続を確立する前に、ターゲットのMACアドレスが必要です。ARPリクエストがブロードキャストされ、スイッチが全ポートにフラッディングします。"
+    },
+    "2": {
+      "text": "ARP応答 — ターゲットがMAC 00:02:c9:ab:cd:efで応答",
+      "detail": "両側のARPキャッシュが更新されます。ホストはRDMA接続を作成できるようになりました。"
+    },
+    "3": {
+      "text": "CM REQ → ホストがNVMe Admin Queue用のRDMA接続を開始",
+      "detail": "nvme-rdmaドライバがrdma_connect()を呼び出し、IB CM (Connection Manager) がCM REQを送信します。UD (Unreliable Datagram) 経由で送信され、QPパラメータ、RDMAリソース、NVMe-oF RDMA固有のプライベートデータを携帯します。"
+    },
+    "4": {
+      "text": "CM REP ← ターゲットがRDMA接続を受け入れ、QPを割り当て",
+      "detail": "ターゲットのnvme-rdmaドライバが接続を受け入れます。QPを割り当て、受信WQE (NVMeコマンドカプセル用) をポストし、CM REPを送信します。"
+    },
+    "5": {
+      "text": "CM RTU → RDMA接続確立 — Admin Queue準備完了",
+      "detail": "ホストがCM RTU (Ready To Use) を送信、両QPがRTS (Ready To Send) に遷移します。RDMA接続が完全に確立されました。NVMe-oF/RDMAはキューごとに1つのRDMA RC QPを使用します。"
+    },
+    "6": {
+      "text": "Fabrics Connect → ホストがDiscovery Controllerに接続",
+      "detail": "RDMA接続が確立したので、ホストはNVMe Fabrics ConnectコマンドをRDMA SEND (BTH opcode 0x04) で送信します。コマンドカプセルはRDMA経由でターゲットの受信バッファに直接着地します。"
+    },
+    "7": {
+      "text": "Fabrics Connect応答 ← Discovery Controller準備完了",
+      "detail": "ターゲットがFabrics Connectを受け入れ、動的コントローラID (Discovery Controllerは0xFFFF) を返します。ホストのAdmin QueueがDiscovery Controllerに関連付けられました。"
+    },
+    "8": {
+      "text": "Get Log Page → ホストがRDMA SENDでDiscovery Logを要求",
+      "detail": "ホストがGet Log Pageコマンド (LID 0x70) をRDMA SENDで送信します。コマンドにKeyed SGLディスクリプタが含まれ、ターゲットにデータをRDMA WRITEする先を正確に指示します。"
+    },
+    "9": {
+      "text": "RDMA WRITE ← ターゲットがDiscovery Log Pageをホストメモリに直接配送",
+      "detail": "ターゲットがDiscovery Log Pageを読み取り、rkeyと仮想アドレスを使用してホストの事前登録済みバッファに直接RDMA WRITEします。ホストCPUは介在しません — RNICハードウェアがDMAでデータを配置します。"
+    },
+    "10": {
+      "text": "完了 ← Discovery Log Page取得成功",
+      "detail": "ターゲットがRDMA SENDでNVMe完了を送信します。RDMAの順序保証により、RDMA WRITE (データ) はこのSEND (完了) が到着する前にホストメモリに可視であることが保証されます。"
+    },
+    "11": {
+      "text": "Fabrics Connect → ホストがIO Queueをストレージサブシステムに接続",
+      "detail": "ホストが2番目のRDMA接続を確立し (別のCM REQ/REP/RTU、簡略化)、IO Queue 1 (QID=1) のFabrics Connectを送信します。"
+    },
+    "12": {
+      "text": "Fabrics Connect応答 ← IO Controller準備完了、CNTLID=0x0041",
+      "detail": "ターゲットがコントローラID 0x0041を割り当て、IOキューがNVMe I/O操作の準備ができました。"
+    },
+    "13": {
+      "text": "NVMe Write → ホストが4KB書き込みコマンドを送信 (RDMA SEND)",
+      "detail": "ホストアプリケーションがLBA 0に4KB書き込みを発行。nvme-rdmaドライバ: 1. 書き込みデータバッファをMR (Memory Region) として登録 2. NVMe Writeコマンドカプセルを構築 (データバッファを指すKeyed SGL付き) 3. RDMA SENDで送信。"
+    },
+    "14": {
+      "text": "RDMA READ ← ターゲットがホストメモリから書き込みデータを取得",
+      "detail": "ターゲットのNVMeドライバがRDMA READを発行し、ホストのバッファから4KB書き込みデータを取得します。ターゲットRNICがRDMA READ Request (BTH opcode 0x0C) を送信します。"
+    },
+    "15": {
+      "text": "RDMA READ Response → 4KB書き込みデータがターゲットに配送",
+      "detail": "ホストRNICが4KBデータペイロードを返します。ターゲットが受信し、NVMeターゲットドライバがLBA 0のバックエンドNVMe SSDに書き込みます。"
+    },
+    "16": {
+      "text": "NVMe Write完了 ← 4KBがLBA 0に正常に書き込まれました",
+      "detail": "ターゲットがNVMe Writeの完了を確認。NVMe完了はRDMA SENDでホストの完了キュー (受信WQE) に配送されます。NVMe Writeのデータパス: RDMA SEND (コマンド) → RDMA READ (データ取得) → RDMA SEND (完了)。"
+    },
+    "17": {
+      "text": "NVMe Read → ホストが4KB読み取りコマンドを送信 (RDMA SEND)",
+      "detail": "ホストが同じLBA 0のNVMe Readコマンド (4KB) を送信します。コマンドにはKeyed SGLが含まれ、ターゲットに読み取りデータをRDMA WRITEする先を指示します。"
+    },
+    "18": {
+      "text": "RDMA WRITE ← ターゲットが4KB読み取りデータをホストメモリに直接配送",
+      "detail": "ターゲットがNVMe SSDのLBA 0から4KBを読み取り、SGLのrkeyと仮想アドレスを使用してホストの登録済みバッファに直接RDMA WRITEします。ゼロコピー — ホストCPUは介在しません。"
+    },
+    "19": {
+      "text": "NVMe Read完了 ← 4KBがLBA 0から正常に読み取り完了",
+      "detail": "ターゲットがRDMA SENDで完了を送信。RDMAの順序保証により、WRITEデータはこの完了が到着する前に可視です。NVMe Readのデータパス: RDMA SEND (コマンド) → RDMA WRITE (データ配送) → RDMA SEND (完了)。"
+    },
+    "20": {
+      "text": "⟳ シナリオ完了 — NVMe-oF/RDMAのDiscoveryとI/O",
+      "detail": "このシナリオではRDMAトランスポートバインディングを使用したNVMe over Fabricsを実演しました:\n1. LINK — PFC付き100GbE物理確立\n2. ARP — アドレス解決\n3. RDMA CM — QP接続確立\n4. DISCOVERY — Discovery ControllerへのFabrics ConnectとLog Page取得\n5. IO — NVMe Write (RDMA READでデータ取得) とNVMe Read (RDMA WRITEでデータ配送)"
+    }
+  }
+}

@@ -1,0 +1,85 @@
+{
+  "meta": {
+    "title": "SMB Direct : negociation → canal RDMA → lecture et ecriture de fichier sur RoCEv2",
+    "description": "SMB Direct (MS-SMBD) permet le partage de fichiers SMB 3.x sur les transports RDMA (RoCEv2, iWARP). Apres que la negociation SMB sur TCP decouvre la capacite RDMA, la connexion migre vers un canal RDMA. Les lectures de fichiers utilisent RDMA READ (le serveur tire depuis le tampon client) et les ecritures de fichiers utilisent RDMA WRITE (le serveur pousse les donnees dans le tampon client), les deux contournant le chemin de donnees CPU. Ce scenario couvre : connexion TCP, SMB2 NEGOTIATE avec capacites RDMA, negociation SMB Direct, etablissement du canal RDMA, SMB2 SESSION_SETUP, TREE_CONNECT, CREATE, WRITE via RDMA et READ via RDMA.",
+    "learning_objectives": [
+      "Comprendre comment SMB3 decouvre la capacite RDMA pendant NEGOTIATE",
+      "Voir la negociation SMB Direct (MS-SMBD) qui etablit le canal RDMA",
+      "Suivre comment les donnees de fichier contournent entierement TCP une fois le canal RDMA actif",
+      "Suivre SMB2 WRITE avec RDMA : le client offre un descripteur de tampon, le serveur fait un RDMA READ des donnees",
+      "Suivre SMB2 READ avec RDMA : le serveur fait un RDMA WRITE des donnees dans le tampon enregistre du client",
+      "Comprendre la gestion de credits SMB Direct pour le controle de flux",
+      "Apprecier le benefice de dechargement CPU : le chemin de donnees du serveur de fichiers est zero-copie"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Liaison physique active — reseau sans perte 100GbE pour SMB Direct",
+      "detail": "Les deux hotes se connectent via 100GbE avec PFC active (requis pour le transport sans perte RoCEv2). SMB Direct sous Windows detecte les NIC capables RDMA via les fournisseurs NetworkDirect (ND) enregistres dans le systeme.\nSMB Direct est supporte sur : • Windows Server 2012 et ulterieur (integre) • Windows 10/11 Enterprise/Pro (client) • Samba 4.x avec support RDMA • Materiel RNIC : ConnectX, E810, EFA, etc."
+    },
+    "1": {
+      "text": "QP RDMA connectes — SMB Direct etablit le canal RDMA",
+      "detail": "Avant la negociation SMB Direct, la connexion RDMA sous-jacente doit etre etablie. Le client se connecte au listener RDMA du serveur (port 5445) via CM REQ/REP/RTU (ou MPA iWARP si utilisant le transport iWARP).\nUne fois le QP dans l'etat RTS, la negociation SMB Direct peut commencer sur RDMA SEND/RECV."
+    },
+    "2": {
+      "text": "Requete de negociation SMB Direct — le client propose les parametres RDMA",
+      "detail": "Le client envoie un message de negociation SMB Direct via RDMA SEND proposant : • Credits : 255 (controle de flux pour les messages bases sur SEND) • Taille d'envoi preferee : 1364 octets • Taille maximale fragmentee : 1 Mo (pour les grands messages SMB repartis sur plusieurs SEND) • Taille maximale de lecture/ecriture : 1 Mo (pour les transferts en masse via RDMA READ/WRITE)\nLa gestion de credits est critique : chaque RDMA SEND consomme un credit chez le recepteur. Sans credits, l'emetteur doit attendre — cela empeche le debordement de la file de reception."
+    },
+    "3": {
+      "text": "Reponse de negociation SMB Direct — canal RDMA etabli",
+      "detail": "Le serveur accepte les parametres SMB Direct. Le canal RDMA est maintenant actif — tous les messages SMB2 suivants seront transportes via RDMA SEND/RECV au lieu de TCP.\nValeurs cles negociees : • Credits : 255 (bidirectionnel) • RDMA Read/Write max : 1 Mo • Cela signifie que les donnees de fichier jusqu'a 1 Mo peuvent etre transferees en une seule operation RDMA READ ou WRITE"
+    },
+    "4": {
+      "text": "SMB2 NEGOTIATE — dialecte 3.1.1 avec capacite de transformation RDMA",
+      "detail": "Echange SMB2 NEGOTIATE standard, mais maintenant transporte sur le canal RDMA SMB Direct (via RDMA SEND). Le client propose SMB 3.1.1 et inclut le contexte de negociation RDMA Transform, qui permet le chiffrement des charges utiles RDMA dans SMB 3.1.1.\nSans RDMA Transform, le chiffrement SMB (AES-128-CCM/GCM) forcerait toutes les donnees a passer par SEND/RECV (annulant le benefice zero-copie de RDMA). RDMA Transform chiffre sur place dans le tampon memoire enregistre avant RDMA READ/WRITE."
+    },
+    "5": {
+      "text": "Reponse SMB2 NEGOTIATE — SMB 3.1.1 confirme",
+      "detail": "Le serveur selectionne le dialecte SMB 3.1.1. Capacites MULTI_CHANNEL et LARGE_MTU confirmees."
+    },
+    "6": {
+      "text": "SMB2 SESSION_SETUP + TREE_CONNECT — authentification et connexion au partage",
+      "detail": "Session SMB2 et connexion d'arborescence standard, transportees sur RDMA. SESSION_SETUP authentifie via Kerberos (domaine) ou NTLM. TREE_CONNECT connecte \\\\server\\share$ pour l'acces aux fichiers.\nDans un scenario Hyper-V sur SMB, le partage heberge des fichiers de disque virtuel VHDx. SMB Direct est le transport recommande pour le stockage de VM en direct — il offre une latence plus faible et un debit plus eleve que TCP, critiques pour la migration en direct Hyper-V et les CSV (Cluster Shared Volumes)."
+    },
+    "7": {
+      "text": "Session etablie, partage connecte",
+      "detail": "Session et connexion d'arborescence reussies. Le client peut maintenant ouvrir des fichiers."
+    },
+    "8": {
+      "text": "SMB2 CREATE — ouvrir vm01.vhdx en lecture/ecriture",
+      "detail": "Le client ouvre le fichier de disque virtuel Hyper-V. C'est une charge de travail SMB Direct typique : Hyper-V stocke les images de disque VM sur des partages SMB distants, et toutes les E/S VM circulent via SMB Direct."
+    },
+    "9": {
+      "text": "Reponse CREATE — handle de fichier pour vm01.vhdx (100 Go)",
+      "detail": "Le serveur retourne un handle de fichier persistant."
+    },
+    "10": {
+      "text": "SMB2 WRITE avec descripteur de tampon RDMA — 1 Mo vers vm01.vhdx",
+      "detail": "Le client envoie une commande SMB2 WRITE via RDMA SEND, mais au lieu de donnees en ligne, il inclut un SMB_DIRECT_BUFFER_DESCRIPTOR_V1 contenant : • Offset memoire (adresse virtuelle) du tampon enregistre • R_Key (cle distante) pour l'acces RDMA • Longueur des donnees\nLe champ Channel = SMB2_CHANNEL_RDMA_V1 indique au serveur de faire un RDMA READ des donnees depuis ce descripteur de tampon plutot que d'attendre des donnees en ligne.\nC'est le modele « inverse » : le client expose sa memoire et le serveur tire les donnees — l'oppose d'une ecriture de fichier traditionnelle ou le client pousse les donnees. Ce modele est efficace car : 1. Le serveur controle le rythme (pas de debordement du tampon de reception) 2. Le serveur peut lire les donnees directement dans son cache de systeme de fichiers 3. Zero copie CPU des deux cotes"
+    },
+    "11": {
+      "text": "RDMA READ — le serveur recupere 1 Mo de donnees d'ecriture depuis la memoire du client",
+      "detail": "Le RNIC du serveur emet un RDMA READ pour recuperer 1 Mo de donnees d'ecriture directement depuis le tampon memoire enregistre du client. Aucun CPU n'intervient dans le transfert de donnees — c'est moteur DMA a moteur DMA sur le reseau sans perte RoCEv2.\nUne fois le RDMA READ termine, le serveur a les donnees du fichier dans son tampon local et peut les ecrire sur le disque (ou son cache de systeme de fichiers)."
+    },
+    "12": {
+      "text": "Reponse SMB2 WRITE — 1 Mo ecrit avec succes",
+      "detail": "Le serveur confirme 1 Mo ecrit. L'ensemble du chemin de donnees etait zero-copie."
+    },
+    "13": {
+      "text": "SMB2 READ avec descripteur de tampon RDMA — 1 Mo depuis vm01.vhdx",
+      "detail": "Le client envoie un SMB2 READ avec Channel = SMB2_CHANNEL_RDMA_V1 et un descripteur de tampon. Le serveur fera un RDMA WRITE des donnees du fichier directement dans le tampon memoire enregistre du client.\nPour Hyper-V sur SMB, c'est ainsi que fonctionnent les lectures VM : l'hyperviseur emet une lecture VHDx, qui devient un SMB READ sur RDMA. Les donnees du fichier atterrissent dans la memoire de la VM via RDMA WRITE sans aucune copie CPU sur le serveur de fichiers."
+    },
+    "14": {
+      "text": "RDMA WRITE — le serveur pousse 1 Mo de donnees de lecture dans la memoire du client",
+      "detail": "Le RNIC du serveur fait un RDMA WRITE de 1 Mo de donnees de fichier directement dans le tampon enregistre du client. Le chemin de donnees :\n  Disque/cache serveur → memoire serveur → DMA RNIC → reseau →\n  DMA RNIC client → tampon enregistre du client\n\nLe CPU du serveur ne fait qu'initier le RDMA WRITE (poste un WQE) ; le deplacement reel des donnees est entierement pilote par le materiel."
+    },
+    "15": {
+      "text": "Reponse SMB2 READ — donnees deja dans le tampon du client (zero donnee en ligne)",
+      "detail": "La reponse READ ne contient que l'etat — les donnees du fichier ont deja ete livrees via RDMA WRITE. Le Data Remaining = 0 de la reponse confirme que toutes les donnees ont ete transferees.\nComparez avec SMB sur TCP : les 1 Mo complets de donnees de fichier seraient en ligne dans la reponse SMB2 READ, necessitant que le CPU du serveur copie les donnees dans les tampons d'envoi TCP et que le CPU du client copie depuis les tampons de reception TCP."
+    },
+    "16": {
+      "text": "Scenario termine — E/S de fichier SMB Direct sur RoCEv2",
+      "detail": "Ce scenario a demontre SMB Direct (MS-SMBD) :\nMISE EN PLACE :\n  Connexion QP RDMA → negociation SMB Direct (credits, taille max R/W)\n  → SMB2 NEGOTIATE (3.1.1) → SESSION_SETUP → TREE_CONNECT → CREATE\n\nECRITURE DE FICHIER (SMB2_CHANNEL_RDMA_V1) :\n  Client : commande WRITE + descripteur de tampon (via RDMA SEND)\n  Serveur : RDMA READ recupere 1 Mo depuis le tampon client (zero-copie)\n  Serveur : reponse WRITE (via RDMA SEND)\n\nLECTURE DE FICHIER (SMB2_CHANNEL_RDMA_V1) :\n  Client : commande READ + descripteur de tampon (via RDMA SEND)\n  Serveur : RDMA WRITE pousse 1 Mo dans le tampon client (zero-copie)\n  Serveur : reponse READ — pas de donnees en ligne (via RDMA SEND)\n\nPoints cles : • Messages de controle (commandes, reponses) → RDMA SEND/RECV • Donnees en masse (contenu de fichier) → RDMA READ/WRITE (zero-copie) • WRITE utilise RDMA READ (le serveur tire depuis le client) • READ utilise RDMA WRITE (le serveur pousse vers le client) • Controle de flux base sur les credits empeche le debordement de la file de reception • SMB 3.1.1 RDMA Transform permet le chiffrement avec zero-copie\nCas d'utilisation principaux : • Hyper-V sur SMB (VHDx sur partages distants) • SQL Server sur SMB (fichiers de base de donnees sur partages SMB Direct) • CSV (Cluster Shared Volumes) pour les clusters de basculement • Toute charge de travail fichier Windows beneficiant d'une faible latence"
+    }
+  }
+}

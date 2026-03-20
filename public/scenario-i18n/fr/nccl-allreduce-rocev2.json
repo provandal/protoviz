@@ -1,0 +1,62 @@
+{
+  "meta": {
+    "title": "NCCL AllReduce : algorithme en anneau sur RoCEv2 (4 GPU)",
+    "description": "NCCL (NVIDIA Collective Communications Library) Ring-AllReduce sur 4 noeuds GPU connectes via RoCEv2. AllReduce est le schema de communication dominant dans l'entrainement IA distribue — chaque etape de synchronisation de gradient dans l'entrainement en parallelisme de donnees est un AllReduce. Ce scenario montre l'algorithme en anneau : chaque GPU envoie un bloc a son voisin dans l'anneau via RDMA WRITE, accumule les sommes partielles pendant une phase Reduce-Scatter (N-1 etapes), puis diffuse le resultat final pendant une phase AllGather (N-1 etapes). Avec 4 GPU, l'anneau se termine en 6 etapes au total. Tout le mouvement de donnees utilise GPUDirect RDMA — memoire GPU a memoire GPU sans toucher la DRAM hote.",
+    "learning_objectives": [
+      "Comprendre pourquoi AllReduce est critique pour l'entrainement IA distribue (synchronisation de gradient)",
+      "Voir comment l'algorithme en anneau decompose AllReduce en Reduce-Scatter + AllGather",
+      "Suivre les operations RDMA WRITE transportant les blocs de gradient entre les voisins de l'anneau GPU",
+      "Observer comment chaque GPU accumule les sommes partielles pendant Reduce-Scatter",
+      "Comprendre pourquoi le Ring AllReduce atteint une utilisation optimale de la bande passante : 2(N-1)/N",
+      "Voir GPUDirect RDMA en action — les donnees se deplacent de GPU a GPU sans rebond par la DRAM hote",
+      "Apprecier la difference entre les algorithmes AllReduce en anneau, en arbre et autres",
+      "Comprendre le role de NCCL dans les frameworks comme PyTorch DDP et DeepSpeed"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Liaison physique active — reseau sans perte 100GbE pour les 4 noeuds GPU",
+      "detail": "Les 4 noeuds GPU se connectent au commutateur via 100GbE avec PFC et ECN actives. Dans un vrai cluster d'entrainement IA, la topologie reseau pourrait etre un fat-tree ou une conception optimisee en rails avec plusieurs niveaux de commutateurs. Ce scenario simplifie a un seul commutateur pour plus de clarte.\nNCCL sonde la topologie (via nvidia-smi topo, NVML, et les requetes de peripherique IB) pour determiner l'algorithme collectif optimal. Pour le RoCEv2 inter-noeuds avec 4 GPU, il selectionne typiquement l'algorithme en anneau."
+    },
+    "1": {
+      "text": "Initialisation NCCL terminee — topologie en anneau etablie, QP connectes, tampons GPU enregistres",
+      "detail": "ncclCommInitRank() est termine. NCCL a : 1. Effectue l'amorcage via TCP pour echanger les adresses (NCCL_COMM_ID) 2. Detecte la capacite GPUDirect RDMA (nvidia-peermem charge) 3. Cree les QP RDMA entre les voisins de l'anneau :\n   Anneau : GPU 0 → GPU 1 → GPU 2 → GPU 3 → GPU 0\n4. Enregistre les tampons memoire GPU comme regions memoire RDMA via\n   ibv_reg_mr() avec nvidia-peermem fournissant les correspondances BAR1 GPU\n5. Echange les rkey et adresses de tampon hors bande\nChaque GPU a des tampons d'envoi et de reception dans la HBM GPU (High Bandwidth Memory). NCCL utilise le double tampon et le pipeline pour recouvrir le calcul avec la communication — pendant qu'un bloc est transfere, le noyau GPU reduit le bloc precedent.\nTopologie en anneau pour 4 GPU :\n  GPU 0 → GPU 1 → GPU 2 → GPU 3 → GPU 0 (anneau-suivant)\n  GPU 0 ← GPU 3 ← GPU 2 ← GPU 1 ← GPU 0 (anneau-precedent)"
+    },
+    "2": {
+      "text": "ncclAllReduce() appele — tenseur de gradient de 1 Mo, 4 blocs × 256 Ko",
+      "detail": "La boucle d'entrainement appelle ncclAllReduce(sendbuf, recvbuf, count, ncclFloat, ncclSum, comm, stream). Cela declenche l'algorithme Ring AllReduce.\nEntree : chaque GPU a un tenseur de gradient de 1 Mo (262 144 valeurs float32) de la passe arriere. L'objectif : chaque GPU se retrouve avec la SOMME des gradients des 4 GPU (pour la mise a jour de l'optimiseur SGD/Adam).\nNCCL divise le tenseur en N=4 blocs de 256 Ko chacun :\n  Bloc 0 : octets [0, 256 Ko)\n  Bloc 1 : octets [256 Ko, 512 Ko)\n  Bloc 2 : octets [512 Ko, 768 Ko)\n  Bloc 3 : octets [768 Ko, 1 Mo)\n\nL'algorithme en anneau comporte deux phases : Phase 1 — Reduce-Scatter (N-1 = 3 etapes) :\n  Chaque GPU envoie un bloc a l'anneau-suivant, recoit un de l'anneau-precedent,\n  et accumule (somme) le bloc recu avec le sien. Apres 3 etapes,\n  chaque GPU detient le resultat ENTIEREMENT REDUIT pour exactement un bloc.\n\nPhase 2 — AllGather (N-1 = 3 etapes) :\n  Chaque GPU envoie son bloc entierement reduit autour de l'anneau.\n  Apres 3 etapes, chaque GPU a tous les 4 blocs entierement reduits.\n\nTotal de donnees transferees par GPU : 2 × (N-1)/N × TailleDonnees\n  = 2 × 3/4 × 1 Mo = 1,5 Mo envoye + 1,5 Mo recu\nC'est optimal — la bande passante croit lineairement avec N."
+    },
+    "3": {
+      "text": "Reduce-Scatter etape 1 — tous les GPU envoient chunk[rang] a l'anneau-suivant",
+      "detail": "Les 4 GPU envoient simultanement un bloc a leur voisin anneau-suivant :\n  GPU 0 envoie bloc 0 → GPU 1   (via RDMA WRITE dans la HBM du GPU 1)\n  GPU 1 envoie bloc 1 → GPU 2\n  GPU 2 envoie bloc 2 → GPU 3\n  GPU 3 envoie bloc 3 → GPU 0\n\nNous montrons GPU 0 → GPU 1 comme liaison representative. Le RDMA WRITE atterrit directement dans le tampon de reception HBM du GPU 1 via GPUDirect RDMA — le moteur DMA du RNIC ecrit dans la memoire BAR1 GPU mappee par nvidia-peermem. Aucun CPU n'intervient dans le transfert de donnees.\nApres reception, GPU 1 lance un noyau CUDA pour calculer :\n  recv_buf[bloc 0] = recv_buf[bloc 0] + local[bloc 0]\nCela ajoute le gradient de GPU 0 a celui de GPU 1 pour le bloc 0."
+    },
+    "4": {
+      "text": "Reduce-Scatter etape 1 (inverse) — GPU 0 recoit un bloc du rang 3",
+      "detail": "Simultanement, GPU 0 recoit un bloc du rang 3 (son anneau-precedent). Tous les transferts se font en parallele — l'anneau est bidirectionnel avec des liaisons full-duplex. Chaque GPU envoie et recoit simultanement.\nGPU 0 accumule : local[bloc 3] += recu[bloc 3 du rang 3]"
+    },
+    "5": {
+      "text": "Reduce-Scatter etape 2 — les sommes partielles tournent autour de l'anneau",
+      "detail": "Chaque GPU envoie son bloc ACCUMULE (somme partielle de l'etape 1) a son voisin anneau-suivant. Les sommes partielles tournent autour de l'anneau, grossissant a chaque etape.\n\n  GPU 0 envoie bloc accumule → GPU 1 (contient maintenant la somme de 2 GPU)\n  GPU 1 envoie bloc accumule → GPU 2\n  GPU 2 envoie bloc accumule → GPU 3\n  GPU 3 envoie bloc accumule → GPU 0\n\nApres cette etape, chaque bloc contient la somme des gradients de 3 GPU.\nNote : la taille des donnees par transfert reste constante a 256 Ko quel que soit le nombre de GPU participants. C'est pourquoi le Ring AllReduce passe bien a l'echelle — bande passante par GPU = 2(N-1)/N × TailleDonnees, approchant 2× TailleDonnees quand N croit. Comparez avec le AllReduce naif (tous-vers-un-vers-tous) qui cree un goulot d'etranglement a la racine."
+    },
+    "6": {
+      "text": "Reduce-Scatter etape 3 (finale) — chaque GPU detient maintenant un bloc entierement reduit",
+      "detail": "Derniere etape Reduce-Scatter. Apres que GPU 1 recoit et accumule :\n  bloc de GPU 1 = somme des gradients de GPU 0 + GPU 1 + GPU 2 + GPU 3\n\nChaque GPU detient maintenant la SOMME COMPLETE pour exactement un bloc :\n  GPU 0 : bloc 0 entierement reduit\n  GPU 1 : bloc 1 entierement reduit\n  GPU 2 : bloc 2 entierement reduit\n  GPU 3 : bloc 3 entierement reduit\n\nLe Reduce-Scatter est termine. La reduction (sommation) est faite. Mais chaque GPU ne possede que 1/4 du resultat final. AllGather distribue les blocs restants."
+    },
+    "7": {
+      "text": "AllGather etape 1 — les GPU diffusent leurs blocs entierement reduits",
+      "detail": "Maintenant chaque GPU envoie son bloc entierement reduit autour de l'anneau :\n  GPU 0 envoie bloc 0 entierement reduit → GPU 1\n  GPU 1 envoie bloc 1 entierement reduit → GPU 2\n  GPU 2 envoie bloc 2 entierement reduit → GPU 3\n  GPU 3 envoie bloc 3 entierement reduit → GPU 0\n\nContrairement a Reduce-Scatter, AllGather N'ACCUMULE PAS — il copie simplement le bloc recu a la bonne position dans le tampon de sortie. Apres l'etape 1, chaque GPU a 2 des 4 blocs reduits.\nLe RDMA WRITE cible directement la position du tampon de sortie final — le bloc 0 va a l'offset 0, le bloc 1 a l'offset 256 Ko, etc."
+    },
+    "8": {
+      "text": "AllGather etape 2 — chaque GPU a maintenant 3 des 4 blocs reduits",
+      "detail": "Les blocs continuent de tourner autour de l'anneau. Apres cette etape, chaque GPU a recu 3 des 4 blocs entierement reduits plus le sien — il ne manque qu'un seul bloc."
+    },
+    "9": {
+      "text": "AllGather etape 3 (finale) — tous les GPU ont le resultat reduit complet",
+      "detail": "Derniere etape AllGather. Chaque GPU a maintenant les 4 blocs entierement reduits assembles dans son tampon de sortie. Le AllReduce est termine.\nResultat : chaque GPU a un tampon identique de 1 Mo contenant la SOMME des gradients des 4 GPU. L'optimiseur (SGD, Adam, etc.) peut maintenant mettre a jour les poids du modele de maniere identique sur chaque GPU, gardant les copies du modele synchronisees."
+    },
+    "10": {
+      "text": "⟳ Scenario termine — NCCL Ring-AllReduce sur RoCEv2",
+      "detail": "Ce scenario a demontre le Ring-AllReduce de NCCL sur 4 noeuds GPU :\nPhase 1 — REDUCE-SCATTER (3 etapes) :\n  Chaque GPU envoie un bloc par etape a son voisin anneau-suivant.\n  Le recepteur accumule (somme) les donnees recues avec les siennes.\n  Apres N-1=3 etapes, chaque GPU detient le resultat entierement reduit\n  pour exactement un bloc (1/N du tenseur total).\n\nPhase 2 — ALLGATHER (3 etapes) :\n  Chaque GPU envoie son bloc entierement reduit autour de l'anneau.\n  Le recepteur copie (sans accumulation) dans le tampon de sortie.\n  Apres N-1=3 etapes, chaque GPU a tous les N blocs entierement reduits.\n\nTotal : 2(N-1) = 6 etapes pour 4 GPU.\nCaracteristiques de performance : • Donnees par GPU par etape : TailleDonnees/N = 256 Ko • Total des donnees envoyees par GPU : 2 × (N-1)/N × TailleDonnees = 1,5 Mo • Utilisation de bande passante : 2(N-1)/N = 75 % du maximum theorique\n  (approche 100 % quand N → ∞)\n• Tous les transferts utilisent RDMA WRITE via GPUDirect — zero copie CPU\nPourquoi le Ring AllReduce pour l'entrainement IA : • Entrainement en parallelisme de donnees : chaque GPU traite differents mini-lots\n  mais doit synchroniser les gradients avant l'etape de l'optimiseur\n• AllReduce(Sum) est appele apres chaque passe arriere — typiquement\n  des milliers de fois par epoque\n• A grande echelle (centaines de GPU), la latence AllReduce impacte directement\n  le debit d'entrainement : meme 1 ms supplementaire par etape × 100 000 etapes = 100 s\n\nAlgorithmes alternatifs que NCCL peut choisir : • Tree AllReduce — meilleur pour les petits messages (latence plus faible) • CollNet (SHARP) — reduction dans le reseau (le commutateur fait la somme) • Hybride NVLink + RDMA — NVLink intra-noeud, RDMA inter-noeud\nLe reseau sans perte RoCEv2 (PFC + ECN/DCQCN) est critique : les paquets abandonnes causeraient des delais d'attente RDMA, revenant a la retransmission et detruisant les performances AllReduce."
+    }
+  }
+}

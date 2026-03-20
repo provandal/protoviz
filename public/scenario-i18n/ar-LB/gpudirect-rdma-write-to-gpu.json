@@ -1,0 +1,121 @@
+{
+  "meta": {
+    "title": "GPUDirect RDMA: RoCEv2 WRITE مباشرة لذاكرة GPU",
+    "description": "سيناريو GPUDirect RDMA بيوضّح كيف RDMA WRITE بيوصل مباشرة لذاكرة GPU بدل host DRAM، باستخدام kernel module nvidia-peermem. اللحظة التعليمية الأساسية هي المقارنة بين RDMA WRITE التقليدي (لـ host DRAM) وGPUDirect RDMA WRITE (مباشرة لـ GPU HBM عبر PCIe BAR، بدون bounce buffer CPU). التدفّق بيبلّش بتأسيس الرابط الفيزيائي، بيكمّل بتخصيص ذاكرة CUDA GPU وتسجيل nvidia-peermem peer memory، تسجيل IB Memory Region مقابل عنوان GPU BAR، إقامة QP عبر CM REQ/REP/RTU، RDMA WRITE بيدفع 4MB tensor buffer مباشرة بـ GPU HBM بيتجاوز CPU بالكامل، وRDMA READ بيسترجع نفس الـ buffer.",
+    "learning_objectives": [
+      "فهم كيف nvidia-peermem بيكشف ذاكرة GPU لنظام RDMA عبر peer_memory_client API",
+      "شوف كيف cuMemAlloc بيخصّص GPU HBM وكيف GPU BAR1 aperture بيربط الذاكرة الفيزيائية GPU لمساحة عناوين PCIe",
+      "تتبّع ibv_reg_mr() مقابل عنوان GPU افتراضي — nvidia-peermem بيعترض التسجيل ليثبّت صفحات GPU بدل صفحات host",
+      "راقب مسار DMA: RNIC بيكتب مباشرة لـ GPU HBM عبر PCIe peer-to-peer، بدون ما يلمس host DRAM أو CPU caches",
+      "قارن RDMA WRITE التقليدي (RNIC → host DRAM) مع GPUDirect RDMA WRITE (RNIC → GPU HBM عبر BAR1)",
+      "تابع تبادل IB Connection Manager MAD لنقل Queue Pair من RESET لـ RTS",
+      "شوف كيف RDMA READ من ذاكرة GPU كمان بيتجاوز CPU"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Link A: إشارة مكتشفة — AI Node ↔ Switch port A",
+      "detail": "transceiver بصري على عقدة AI بيكتشف ضوء من switch port A. Auto-Negotiation بيبلّش."
+    },
+    "1": {
+      "text": "Link B: إشارة مكتشفة — Switch port B ↔ Remote Server",
+      "detail": "transceiver بصري على الخادم البعيد بيكتشف ضوء من switch port B. AN بيبلّش بشكل مستقل."
+    },
+    "2": {
+      "text": "Link A: AN خلص — 100GbE متفق عليه، Link Training بيبلّش",
+      "detail": "الطرفين بيتفقو على 100GBASE-SR4 مع RS(544,514) FEC إجباري."
+    },
+    "3": {
+      "text": "Link B: AN خلص — 100GbE متفق عليه، Link Training بيبلّش",
+      "detail": "AN بيخلص على switch port B ↔ remote server."
+    },
+    "4": {
+      "text": "Link A طلع — AI Node ↔ Switch على 100Gbps مع RS-FEC",
+      "detail": "Link Training خلص. PFC (802.1Qbb) مفعّل على priority 3."
+    },
+    "5": {
+      "text": "Link B طلع — Switch ↔ Remote Server على 100Gbps مع RS-FEC",
+      "detail": "الرابطين طلعو — السويتش بيقدر يمرّر إطارات L2 بين منافذو."
+    },
+    "6": {
+      "text": "ARP Request: مين عندو 192.168.1.20؟",
+      "detail": "RoCEv2 بيستعمل عنونة IP. لازم الوصول IP يتأسّس أولاً."
+    },
+    "7": {
+      "text": "ARP Reply: 192.168.1.20 عنوان MAC تبعو 00:02:c9:ab:cd:ef",
+      "detail": ""
+    },
+    "8": {
+      "text": "GPU / CUDA Runtime تهيّأ — cuInit() وcuDeviceGet()",
+      "detail": "التطبيق بيهيّئ CUDA driver API. cuInit(0) بيحمّل CUDA driver وبيعدّد GPUs. cuDeviceGet() بيختار GPU الهدف (مثلاً NVIDIA H100). cuCtxCreate() بيأنشئ CUDA context. الـ GPU هلق جاهز لتخصيص الذاكرة."
+    },
+    "9": {
+      "text": "ذاكرة GPU متخصّصة — cuMemAlloc() بترجّع 4MB GPU HBM buffer",
+      "detail": "cuMemAlloc(&devPtr, 4194304) بيخصّص 4MB buffer بـ GPU High Bandwidth Memory (HBM). الـ device pointer المسترجع هو عنوان افتراضي GPU بمساحة عناوين GPU الخاصة. هالذاكرة على GPU die، متصلة عبر HBM3 بـ bandwidth ~3.35 TB/s. المؤشر مش قابل للوصول مباشرة من CPU أو RNIC — لازم يتربط عبر GPU PCIe BAR1 aperture لوصول peer-to-peer."
+    },
+    "10": {
+      "text": "nvidia-peermem kernel module محمّل — ذاكرة GPU مكشوفة لنظام RDMA",
+      "detail": "modprobe nvidia-peermem بيحمّل الـ kernel module. هالـ module بيسجّل حالو كـ IB peer_memory_client عبر ib_register_peer_memory_client(). لمّا ibv_reg_mr() لاحقاً ينادى مع عنوان GPU افتراضي، IB core رح ينادي nvidia_peermem_acquire() للتحقّق إذا العنوان تبع ذاكرة GPU. إذا أيوا، nvidia_peermem_get_pages() بينادي nvidia_p2p_get_pages() لتثبيت صفحات GPU الفيزيائية ويرجّع عناوين PCIe BAR1 تبعها. هالعناوين BAR1 بعدين بتنحفظ بجدول MTT تبع RNIC."
+    },
+    "11": {
+      "text": "GPU BAR1 mapping تأسّس — GPU HBM قابل للوصول على عنوان PCIe",
+      "detail": "nvidia-peermem بينادي nvidia_p2p_get_pages() اللي بيثبّت صفحات GPU الفيزيائية وبيرجّع عناوين PCIe BAR1 الفيزيائية. BAR1 aperture هي نافذة PCIe اللي أجهزة خارجية (متل RNIC) بتقدر توصل ذاكرة GPU عبرها. هيدا المُمكّن الأساسي بالـ hardware: PCIe بيسمح بمعاملات peer-to-peer بين endpoints (RNIC وGPU) بدون مرور عبر CPU."
+    },
+    "12": {
+      "text": "Memory Region مسجّل مقابل عنوان GPU BAR عبر ibv_reg_mr()",
+      "detail": "ibv_reg_mr() بينادى مع عنوان GPU الافتراضي. IB core عبر nvidia-peermem بيكتشف إنو ذاكرة GPU:\n1. nvidia_peermem_acquire() بيأكّد إنو العنوان تبع ذاكرة NVIDIA GPU\n2. nvidia_peermem_get_pages() بيجيب عناوين BAR1 الفيزيائية\n3. هالعناوين بتنكتب بـ MTT تبع RNIC\n4. MLX5_CMD_OP_CREATE_MKEY بيأنشئ MR جدول صفحاتو بيشير لعناوين GPU BAR1\nالـ lkey وrkey المسترجعين هلق ممكن يستعملو لعمليات RDMA — شفّاف للخادم البعيد."
+    },
+    "13": {
+      "text": "الخادم البعيد بيسجّل Memory Region عبر ibv_reg_mr() (host DRAM)",
+      "detail": "الخادم البعيد بيسجّل Memory Region عادي مبني على host DRAM. ibv_reg_mr() بيثبّت صفحات host فيزيائية. هيدا مسار تسجيل MR العادي — بدون GPU."
+    },
+    "14": {
+      "text": "QP منشأ على الطرفين — حالة: RESET",
+      "detail": "ibv_create_qp() بيخصّص Queue Pair. الـ QP بيبلّش بحالة RESET."
+    },
+    "15": {
+      "text": "QP تحوّل RESET → INIT عبر ibv_modify_qp()",
+      "detail": "modify_qp(RESET→INIT) بيحدد: P_Key index، رقم المنفذ، access flags (IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ لهدف GPUDirect)."
+    },
+    "16": {
+      "text": "CM REQ مبعوت — عقدة AI بتقترح معطيات QP، بتشارك GPU MR rkey",
+      "detail": "rdma_connect() بيشغّل ib_send_cm_req(). بيبعت QPN، PSN، path MTU=4096، وprivate data فيه rkey المبني على GPU وعنوان GPU BAR الافتراضي. الخادم البعيد رح يستعمل هالـ rkey ليكتب مباشرة بذاكرة GPU بدون ما يعرف إنها ذاكرة GPU — الـ rkey شفّاف."
+    },
+    "17": {
+      "text": "CM REP مستلم — الخادم البعيد بيقبل، بيوفّر QPN وPSN",
+      "detail": "الخادم البعيد بيخزّن GPU rkey من CM REQ private data — رح يستعملو بـ RETH header تبع RDMA WRITE الجاي."
+    },
+    "18": {
+      "text": "CM RTU مبعوت — الـ QPs تحوّلو لـ RTS. اتصال GPUDirect RDMA تأسّس.",
+      "detail": "الـ QP هلق شغّال بالكامل. الخادم البعيد بيقدر يعمل RDMA WRITEs بيستهدف rkey المبني على GPU — البيانات رح تمشي مباشرة من الشبكة لـ GPU HBM."
+    },
+    "19": {
+      "text": "الخادم البعيد بيحط RDMA WRITE بيستهدف ذاكرة GPU على عقدة AI",
+      "detail": "ibv_post_send() مع IBV_WR_RDMA_WRITE على الخادم البعيد. الـ WR بيحدد: local SG list بيشير لـ host DRAM source buffer، remote vaddr = عنوان GPU BAR، remote rkey = مفتاح MR المبني على GPU. من منظور الخادم البعيد، هيدا مطابق لـ RDMA WRITE عادي — ما بيعرف (ولا بيحتاج يعرف) إنو الذاكرة المستهدفة هي GPU HBM."
+    },
+    "20": {
+      "text": "RDMA WRITE لـ GPU — 4MB مدفوعة مباشرة لـ GPU HBM، صفر CPU على عقدة AI",
+      "detail": "RNIC الخادم البعيد بيعمل DMA من host DRAM، بيغلّف وبيبعت. RNIC عقدة AI: بيستلم الباكيت → بيتحقّق من ICRC → بيدوّر على rkey 0xGPU01234 بجدول MR → بيلاقي MTT entries بيشيرو لعناوين GPU BAR1 الفيزيائية → محرّك DMA بيكتب الحمولة مباشرة لـ GPU HBM عبر PCIe peer-to-peer.\n\nمقارنة المسار الحاسمة:\nRDMA WRITE التقليدي: شبكة → RNIC → PCIe → Host DRAM → cudaMemcpy → GPU HBM\nGPUDirect RDMA WRITE: شبكة → RNIC → PCIe → GPU HBM (مباشرة، صفر نسخ)\n\nالمسار التقليدي بيتطلّب: (1) RNIC DMA لـ host DRAM، (2) CPU interrupt، (3) cudaMemcpy() H2D، (4) GPU DMA من host DRAM. GPUDirect بيلغي خطوات 2-4 بالكامل. لنقولات بيانات تدريب AI كبيرة، هيدا بينصّف استهلاك PCIe bandwidth وبيلغي تدخّل CPU."
+    },
+    "21": {
+      "text": "ACK من RNIC عقدة AI — WRITE لـ GPU خلص، CQE محطوط على الخادم البعيد",
+      "detail": "RNIC عقدة AI بشكل مستقل بيولّد RC ACK بعد إتمام GPU DMA. بدون تدخّل CPU على عقدة AI — GPU استلم البيانات، RNIC ولّد ACK، وCPU عقدة AI ما انقطع أبداً."
+    },
+    "22": {
+      "text": "الخادم البعيد بيحط RDMA READ بيستهدف ذاكرة GPU على عقدة AI",
+      "detail": "ibv_post_send() مع IBV_WR_RDMA_READ. RNIC عقدة AI رح يعمل PCIe peer-to-peer read من GPU HBM ويبعت البيانات — بدون CPU على عقدة AI."
+    },
+    "23": {
+      "text": "RDMA READ Request من ذاكرة GPU — بدون بيانات بهالاتجاه",
+      "detail": "الخادم البعيد بيبعت BTH(opcode=0x0C) + RETH بيحدد شو يقرا من ذاكرة GPU. RNIC عقدة AI بشكل مستقل رح: يدوّر على rkey → يلاقي صفحات GPU BAR1 بـ MTT → DMA يقرا من GPU HBM عبر PCIe P2P → يبني response packets → يبعت."
+    },
+    "24": {
+      "text": "RDMA READ Response — RNIC عقدة AI بيعمل DMA من GPU HBM وبيبعت البيانات",
+      "detail": "RNIC عقدة AI: بيستلم READ request → بيتحقّق من rkey → MTT lookup بيلاقي عناوين GPU BAR1 → محرّك DMA بيعمل PCIe P2P read من GPU HBM → بيبني response packet مع AETH+payload → بيبعت.\nصفر تدخّل CPU على عقدة AI. GPU ما انقطع — ولا CUDA kernel توقّف."
+    },
+    "25": {
+      "text": "السيناريو خلص — نقل بيانات GPUDirect RDMA لذاكرة GPU",
+      "detail": "ملخص: رابطين 100GbE مستقلين طلعو. عقدة AI خصّصت GPU HBM عبر cuMemAlloc، حمّلت nvidia-peermem لكشف ذاكرة GPU لنظام RDMA، سجّلت IB Memory Region مقابل عنوان GPU BAR1، وأسّست اتصال RC QP. الخادم البعيد عمل RDMA WRITE 4MB وصل مباشرة لـ GPU HBM — صفر تدخّل CPU على عقدة AI، صفر bounce عبر host DRAM. بعدين عمل RDMA READ استرجع البيانات مباشرة من GPU HBM — مجدداً صفر تدخّل CPU.\n\nالنقطة الأساسية: GPUDirect RDMA بيلغي CPU من مسار البيانات بالكامل. بالـ RDMA التقليدي + cudaMemcpy، كل بايت بيعبر PCIe bus مرتين (شبكة→host DRAM، بعدين host DRAM→GPU). مع GPUDirect RDMA، كل بايت بيعبر PCIe مرة وحدة (شبكة→GPU مباشرة). هيدا بينصّف استهلاك PCIe bandwidth وبيلغي حمل CPU — حاسم لتوسيع تدريب AI الموزّع عبر مئات GPUs."
+    }
+  }
+}

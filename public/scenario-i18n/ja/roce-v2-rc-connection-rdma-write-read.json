@@ -1,0 +1,100 @@
+{
+  "meta": {
+    "title": "RoCEv2 RC: リンクトレーニング → QP接続 → RDMA WRITE → RDMA READ",
+    "description": "100GbE上の完全なRoCEv2 Reliable Connected (RC) 交換。物理リンク確立 (オートネゴシエーション、リンクトレーニング、RS-FEC)、IP/ARPセットアップ、IB Connection Manager (CM) によるQP確立、Memory Region登録、RDMA WRITE (4KBゼロコピープッシュ)、RDMA READ (4KBリモートフェッチ) まで。すべてのヘッダフィールドを詳細に解説します。",
+    "learning_objectives": [
+      "100GbEでのオートネゴシエーションとリンクトレーニングのプロセスを理解する",
+      "ibv_reg_mr()によるMemory Region登録とRDMAキー (lkey/rkey) の役割を見る",
+      "QPステートマシン: RESET → INIT → RTR → RTSの遷移を追跡",
+      "CM REQ/REP/RTUハンドシェイクでQPパラメータを交換する様子を観察",
+      "RDMA WRITEのゼロコピープッシュ — ターゲットCPUが介在しないことを理解",
+      "RDMA READのリモートフェッチと、リクエスト/レスポンスの2パケット交換を見る"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "リンクa: 信号検出 — イニシエータ ↔ スイッチポートA",
+      "detail": "イニシエータのRNICがスイッチポートAで信号を検出します。オートネゴシエーションが開始されます。"
+    },
+    "1": {
+      "text": "リンクB: 信号検出 — スイッチポートB ↔ ターゲット",
+      "detail": "ターゲット側のリンクでも信号が検出されます。"
+    },
+    "2": {
+      "text": "リンクA: AN完了 — 100GbE合意、リンクトレーニング開始",
+      "detail": "100GbEの速度が合意され、リンクトレーニングフェーズが開始されます。SerDesレーンのイコライゼーションを実行します。"
+    },
+    "3": {
+      "text": "リンクB: AN完了 — 100GbE合意、リンクトレーニング開始",
+      "detail": "ターゲット側リンクでも同様に100GbEが合意されます。"
+    },
+    "4": {
+      "text": "リンクA UP — イニシエータ ↔ スイッチ 100Gbps RS-FEC付き",
+      "detail": "リンクトレーニングが完了し、RS-FECが有効な100Gbpsリンクがアップしました。"
+    },
+    "5": {
+      "text": "リンクB UP — スイッチ ↔ ターゲット 100Gbps RS-FEC付き",
+      "detail": "ターゲット側リンクもRS-FEC付き100Gbpsでアップしました。"
+    },
+    "6": {
+      "text": "ARPリクエスト: 192.168.1.20はMACアドレスは何ですか？",
+      "detail": "イニシエータがターゲットのMACアドレスを解決するためにARPリクエストをブロードキャストします。"
+    },
+    "7": {
+      "text": "ARP応答: 192.168.1.20は00:02:c9:ab:cd:efです",
+      "detail": "ARPキャッシュが更新され、RDMA接続を確立できるようになりました。"
+    },
+    "8": {
+      "text": "両側でibv_reg_mr()によりMemory Regionを登録",
+      "detail": "両側がibv_reg_mr()でメモリ領域をRDMAサブシステムに登録します。RNICがアクセスできるように、メモリがピン留めされ、物理アドレスがDMA用に変換されます。lkeyはローカルアクセス用、rkeyはリモートアクセス用です。"
+    },
+    "9": {
+      "text": "QP作成 — ステート: RESET",
+      "detail": "両側でibv_create_qp()によりQueue Pairが作成されます。初期ステートはRESETです。"
+    },
+    "10": {
+      "text": "QP遷移 RESET → INIT (ibv_modify_qp())",
+      "detail": "ibv_modify_qp()でQPをINITステートに遷移します。ポート番号、アクセスフラグ、pkeyを設定します。"
+    },
+    "11": {
+      "text": "CM REQ送信 — QPパラメータを提案",
+      "detail": "IB Connection ManagerがCM REQを送信し、QPN、PSN、MTU、RDMAリソースを提案します。相手側が受け入れれば接続が確立されます。"
+    },
+    "12": {
+      "text": "CM REP受信 — ターゲットが受け入れ、QPNとPSNを提供",
+      "detail": "ターゲットがCM REPで応答し、自分のQPNとPSNを提供します。両側のQPがRTR (Ready To Receive) に遷移します。"
+    },
+    "13": {
+      "text": "CM RTU送信 — 両QPがRTSに遷移。接続確立。",
+      "detail": "イニシエータがCM RTU (Ready To Use) を送信、両QPがRTS (Ready To Send) に遷移します。RDMA操作が可能になりました。"
+    },
+    "14": {
+      "text": "アプリケーションがRDMA WRITE Work RequestをSend Queueにポスト",
+      "detail": "アプリケーションがibv_post_send()でRDMA WRITE Work Requestをポストします。リモート側のアドレスとrkeyを指定します。"
+    },
+    "15": {
+      "text": "RDMA WRITE — 4KBをリモートメモリにプッシュ、ターゲットCPU介在なし",
+      "detail": "イニシエータRNICが4KBをターゲットのメモリに直接書き込みます。ターゲットCPUは全く介在しません — RNICハードウェアがDMAでメモリに配置します。これがゼロコピーの主要な利点です。"
+    },
+    "16": {
+      "text": "ターゲットRNICからACK — WRITE完了、イニシエータ側にCQEポスト",
+      "detail": "ターゲットRNICがACKを返し、イニシエータのCompletion QueueにCQE (Completion Queue Entry) がポストされます。"
+    },
+    "17": {
+      "text": "アプリケーションがRDMA READ Work Requestをポスト",
+      "detail": "アプリケーションがibv_post_send()でRDMA READ Work Requestをポストします。リモート側のアドレスとrkeyを指定します。"
+    },
+    "18": {
+      "text": "RDMA READ Request — この方向にデータなし",
+      "detail": "イニシエータRNICがRDMA READ Requestを送信します。このパケットにデータペイロードはなく、リモートアドレスとrkeyのみを携帯します。"
+    },
+    "19": {
+      "text": "RDMA READ Response — ターゲットRNICがメモリからDMAしデータを送信",
+      "detail": "ターゲットRNICが指定されたメモリアドレスから4KBをDMAで読み取り、レスポンスパケットで送信します。ターゲットCPUは介在しません。"
+    },
+    "20": {
+      "text": "シナリオ完了",
+      "detail": "このシナリオではRoCEv2 RCの完全なライフサイクルを実演しました: 物理リンク確立、ARP解決、MR登録、QPステートマシン遷移、CMハンドシェイク、RDMA WRITEとREADによるゼロコピーデータ転送。"
+    }
+  }
+}

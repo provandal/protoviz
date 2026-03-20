@@ -1,0 +1,194 @@
+{
+  "meta": {
+    "title": "NVMe/TCP: mDNS → Dekouvèt CDC → DIM → Koneksyon Sousistèm → IO",
+    "description": "Yon echanj NVMe sou TCP (NVMe-oF/TCP) konplè depi dekouvèt sèvis inisyal jis nan operasyon IO. Yon machin Linux ki ap egzekite nvme-stas dekouvri yon Kontwolè Dekouvèt Santralize (CDC) atravè mDNS, anrejistre ak DIM (TP8013), rekipere Paj Jounal Dekouvèt CDC ki gen referans DDC, konekte ak Kontwolè Dekouvèt Dirèk (DDC) sou enstalayon depo a pou aprann detay Kontwolè IO, answit konekte ak Kontwolè IO pou fè operasyon Ekriti ak Lekti NVMe. Demontre tout yerachi dekouvèt twa nivo: CDC → DDC → IOC.",
+    "learning_objectives": [
+      "Konprann kijan nvme-stas (stafd) dekouvri CDC yo atravè anons sèvis mDNS (_nvme-disc._tcp)",
+      "Swiv inisyalizasyon koneksyon NVMe-oF/TCP: echanj PDU ICReq/ICResp ak negosyasyon paramèt",
+      "Obsève kòmand Fabrics Connect ki etabli yon fil atant Admin bay yon Kontwolè Dekouvèt",
+      "Wè kijan DIM (Jesyon Enfòmasyon Dekouvèt, TP8013) anrejistre yon machin ak yon CDC",
+      "Konprann Paj Jounal Dekouvèt: kijan machin yo aprann ki sousistèm ak kontwolè ki disponib",
+      "Trase tout koneksyon Kontwolè IO: Fabrics Connect → Identifye Kontwolè → Identifye Espas Non",
+      "Gade kòmand Ekriti ak Lekti NVMe ki sikile sou TCP ak PDU CapsuleCmd, R2T, H2CData, ak C2HData",
+      "Konprann yerachi kontwolè CDC → DDC → IOC nan achitekti dekouvèt NVMe-oF"
+    ]
+  },
+  "timeline": {
+    "0": {
+      "text": "Demann mDNS: _nvme-disc._tcp.local",
+      "detail": "Demon stafd machin nan (pati de nvme-stas) mande mDNS pou kontwolè dekouvèt NVMe. Li voye yon demann DNS milticast nan 224.0.0.251:5353 ki chèche anrejistreman PTR ki matche ak tip sèvis _nvme-disc._tcp. Sa a se mekanis DNS-SD (Dekouvèt Sèvis Baze sou DNS, RFC 6763) espesifye nan TP8009 pou dekouvèt CDC otomatik."
+    },
+    "1": {
+      "text": "Repons mDNS: CDC nan 192.168.100.50:8009",
+      "detail": "CDC a reponn ak anrejistreman mDNS ki anonse sèvis dekouvèt li. Anrejistreman PTR mape _nvme-disc._tcp.local nan non enstans sèvis la. Anrejistreman SRV bay non machin sib ak pò (8009). Anrejistreman TXT pote pè kle-valè: p=tcp (tip transpò) ak nqn=nqn.2014-08.org.nvmexpress.discovery (NQN dekouvèt byen koni)."
+    },
+    "2": {
+      "text": "TCP SYN → Pò CDC 8009",
+      "detail": "stafd kòmanse yon koneksyon TCP ak CDC a nan 192.168.100.50:8009. Pò 8009 se trsvcid (ID Sèvis Transpò) pa defo pou kontwolè dekouvèt NVMe."
+    },
+    "3": {
+      "text": "TCP SYN-ACK ← CDC",
+      "detail": "Pil TCP CDC a reponn ak SYN-ACK, li konfime SYN machin nan epi voye pwòp nimewo sekans pa li."
+    },
+    "4": {
+      "text": "TCP ACK — koneksyon etabli ak CDC",
+      "detail": "Machin nan konplete salitasyon 3 etap la. Koneksyon TCP ak CDC a kounye a etabli. Kouch NVMe-oF/TCP a ap voye ICReq pwochen."
+    },
+    "5": {
+      "text": "ICReq → CDC (Inisyalize Koneksyon NVMe/TCP)",
+      "detail": "Premye PDU NVMe-oF/TCP apre salitasyon TCP. Machin nan voye yon Demann Inisyalizasyon Koneksyon (ICReq) pou negosye paramèt NVMe/TCP. Chan kle: Vèsyon Fòma PDU, tip dijès mande, Alinman Done PDU Machin, ak R2T annatant maks."
+    },
+    "6": {
+      "text": "ICResp ← CDC (Paramèt koneksyon aksepte)",
+      "detail": "CDC a reponn ak ICResp ki konfime paramèt negosye yo. CPDA kontwolè a (Alinman Done PDU Kontwolè) ak tip dijès aksepte retounen. MaxData endike done maksimòm kontwolè a ka jere pa R2T. Ak ICReq/ICResp fini, kouch transpò NVMe/TCP a inisyalize epi pare pou kòmand NVMe."
+    },
+    "7": {
+      "text": "Fabrics Connect → CDC (Fil Atant Admin, NQN Dekouvèt)",
+      "detail": "Machin nan voye yon kòmand NVMe Fabrics Connect pou etabli yon asosyasyon fil atant Admin ak CDC a. Kòmand lan itilize opcode 0x7F (Fabrics) ak fctype=0x01 (Connect). ID Fil Atant 0 endike fil atant Admin. Done Connect (1024 oktè) pote idantite machin: Host ID (UUID), Host NQN, ak NQN Sousistèm sib (nqn.2014-08.org.nvmexpress.discovery)."
+    },
+    "8": {
+      "text": "Repons Fabrics Connect ← CDC (CNTLID=65)",
+      "detail": "CDC a aksepte Fabrics Connect epi asiyen ID Kontwolè 65 bay machin sa a. Fil atant admin an kounye a etabli — machin nan ka voye kòmand admin bay CDC a, enkli DIM ak Get Log Page."
+    },
+    "9": {
+      "text": "DIM Anrejistre → CDC (TP8013)",
+      "detail": "Machin nan voye yon kòmand Jesyon Enfòmasyon Dekouvèt (DIM) pou anrejistre ak CDC a. DIM defini nan TP8013 epi pèmèt machin yo anrejistre/dezanrejistre ak kontwolè dekouvèt. Anrejistreman an gen NQN machin nan, Host ID (UUID), non machin, ak vèsyon OS."
+    },
+    "10": {
+      "text": "Repons DIM Anrejistre ← CDC (Siksè)",
+      "detail": "CDC a konfime anrejistreman machin nan. Machin nan kounye a nan baz done CDC a epi li ap resevwa paj jounal dekouvèt filtre pa konfigirasyon zonaj — sèlman sousistèm machin sa a gen otorizasyon aksede ap parèt."
+    },
+    "11": {
+      "text": "Get Log Page → CDC (Jounal Dekouvèt, LID 0x70)",
+      "detail": "Machin nan mande Paj Jounal Dekouvèt (LID 0x70) nan CDC a. Sa a se yon kòmand admin Get Log Page NVMe estanda. Jounal dekouvèt la gen antre pou tout sousistèm aksesib pou machin sa a, filtre pa konfigirasyon zonaj CDC a."
+    },
+    "12": {
+      "text": "Paj Jounal Dekouvèt ← CDC (2 referans DDC)",
+      "detail": "CDC a retounen jounal dekouvèt la ak 2 antre referans DDC: 1) DDC sou enstalayon depo 1 (subtype=1, Sousistèm Dekouvèt) nan 192.168.100.51:8009 2) DDC sou enstalayon depo 2 (subtype=1, Sousistèm Dekouvèt) nan 192.168.100.52:8009 Sa yo se referans — CDC a dirije machin nan pou konekte ak chak DDC (Kontwolè Dekouvèt Dirèk) pou aprann ki Kontwolè IO ki disponib sou enstalayon depo sa a."
+    },
+    "13": {
+      "text": "TCP SYN → Pò DDC 8009 (enstalayon depo)",
+      "detail": "stafd swiv referans DDC nan jounal dekouvèt CDC a. Li kòmanse yon koneksyon TCP ak Kontwolè Dekouvèt Dirèk (DDC) sou enstalayon depo 1 nan 192.168.100.51:8009. Sa a se dezyèm nivo yerachi dekouvèt twa nivo a: CDC (rezo an antye) → DDC (pa enstalayon) → IOC (pa sousistèm)."
+    },
+    "14": {
+      "text": "TCP SYN-ACK ← DDC",
+      "detail": "DDC enstalayon depo a konfime tantativ koneksyon TCP a."
+    },
+    "15": {
+      "text": "TCP ACK — koneksyon etabli ak DDC",
+      "detail": "Salitasyon TCP ak DDC sou enstalayon depo a fini."
+    },
+    "16": {
+      "text": "ICReq → DDC (Inisyalize Koneksyon NVMe/TCP)",
+      "detail": "Inisyalizasyon NVMe/TCP ak DDC a — menm echanj ICReq/ICResp tankou ak CDC a."
+    },
+    "17": {
+      "text": "ICResp ← DDC (Paramèt koneksyon aksepte)",
+      "detail": "DDC aksepte paramèt transpò NVMe/TCP."
+    },
+    "18": {
+      "text": "Fabrics Connect → DDC (Fil Atant Admin, NQN Dekouvèt)",
+      "detail": "Machin nan voye Fabrics Connect bay DDC a itilize NQN sousistèm dekouvèt byen koni (nqn.2014-08.org.nvmexpress.discovery) — menm NQN itilize pou koneksyon CDC a. Ni CDC ni DDC se Kontwolè Dekouvèt; yo diferan nan pòte (CDC = santralize/rezo an antye, DDC = lokal nan enstalayon depo) men yo itilize menm pwotokòl dekouvèt ak NQN."
+    },
+    "19": {
+      "text": "Repons Fabrics Connect ← DDC (CNTLID=1)",
+      "detail": "DDC a aksepte koneksyon an epi asiyen CNTLID=1. Fil atant admin ak DDC a etabli — machin nan ka kounye a mande jounal dekouvèt DDC a pou aprann ki Kontwolè IO sou enstalayon depo sa a."
+    },
+    "20": {
+      "text": "DIM Anrejistre → DDC (TP8013)",
+      "detail": "Machin nan anrejistre ak DDC a atravè DIM, menm jan li te fè ak CDC a. Sa asire DDC a retounen antre jounal dekouvèt filtre pa konfigirasyon zonaj pou machin espesifik sa a."
+    },
+    "21": {
+      "text": "Repons DIM Anrejistre ← DDC (Siksè)",
+      "detail": "DDC a konfime anrejistreman machin nan. Machin nan ka kounye a mande paj jounal dekouvèt DDC a pou aprann ki Kontwolè IO sou enstalayon depo sa a ki aksesib."
+    },
+    "22": {
+      "text": "Get Log Page → DDC (Jounal Dekouvèt, LID 0x70)",
+      "detail": "Machin nan mande Paj Jounal Dekouvèt nan DDC a. Kontrèman ak jounal CDC a ki te gen referans DDC, jounal DDC a gen antre sousistèm NVM aktyèl yo — espesifikman Kontwolè IO sou enstalayon depo sa a ki aksesib pou machin sa a."
+    },
+    "23": {
+      "text": "Jounal Dekouvèt DDC ← DDC (subsys-alpha nan 4420)",
+      "detail": "DDC a retounen jounal dekouvèt li ak 1 antre: Sousistèm NVM A (nqn.2024-01.com.storage:subsys-alpha) nan 192.168.100.51:4420. Sa a se NQN Kontwolè IO ke stacd ap itilize pou konekte. Yerachi dekouvèt twa nivo a kounye a konplè: CDC (rezo an antye) → DDC (pa enstalayon) → IOC (pa sousistèm)."
+    },
+    "24": {
+      "text": "TCP SYN → Pò Kontwolè IO 4420",
+      "detail": "stacd kòmanse yon koneksyon TCP ak Kontwolè IO a nan 192.168.100.51:4420 — adrès ak pò aprann nan jounal dekouvèt DDC a. Pò 4420 se pò IANA asiyen pou NVMe sou Fabrics."
+    },
+    "25": {
+      "text": "TCP SYN-ACK ← Kontwolè IO",
+      "detail": "Kontwolè IO konfime tantativ koneksyon TCP a."
+    },
+    "26": {
+      "text": "TCP ACK — koneksyon etabli ak Kontwolè IO",
+      "detail": "Salitasyon TCP ak Kontwolè IO a fini."
+    },
+    "27": {
+      "text": "ICReq → Kontwolè IO",
+      "detail": "Inisyalizasyon NVMe/TCP — menm echanj ICReq/ICResp tankou ak CDC a."
+    },
+    "28": {
+      "text": "ICResp ← Kontwolè IO",
+      "detail": "Kontwolè IO aksepte paramèt transpò NVMe/TCP."
+    },
+    "29": {
+      "text": "Fabrics Connect → Kontwolè IO (subsys-alpha)",
+      "detail": "Machin nan konekte ak Kontwolè IO a itilize NQN sousistèm aprann nan jounal dekouvèt DDC a (nqn.2024-01.com.storage:subsys-alpha). Sa a kreye asosyasyon fil atant Admin. Kontrèman ak koneksyon CDC ak DDC ki te itilize NQN dekouvèt byen koni, sa a itilize NQN sousistèm depo aktyèl la — sa konplete dènye nivo yerachi CDC → DDC → IOC."
+    },
+    "30": {
+      "text": "Repons Fabrics Connect ← Kontwolè IO (CNTLID=1)",
+      "detail": "Kontwolè IO aksepte koneksyon an epi asiyen CNTLID=1. Fil atant admin an etabli — machin nan ka kounye a idantifye kontwolè a ak espas non li yo."
+    },
+    "31": {
+      "text": "Identifye Kontwolè (CNS=0x01)",
+      "detail": "Machin nan voye Identifye Kontwolè (admin opcode 0x06, CNS=1) pou aprann kapasite kontwolè a: nimewo seri, modèl, vèsyon firmware, gwosè transfè done maks (MDTS), kantite espas non, ak fonksyonalite sipòte."
+    },
+    "32": {
+      "text": "Repons Identifye Kontwolè (4 espas non, MDTS=256KB)",
+      "detail": "Kontwolè IO a retounen idantite li: modèl \"NVMe-oF/TCP Storage Array\", firmware v2.1.0, MDTS=6 (transfè maks 256KB), ak 4 espas non. Drivè machin nan itilize MDTS pou plafone gwosè demann IO ak nn (Kantite Espas Non) pou konnen konbyen espas non pou enumere."
+    },
+    "33": {
+      "text": "Identifye Espas Non (NSID=1, CNS=0x00)",
+      "detail": "Machin nan idantifye Espas Non 1 pou aprann gwosè li, fòma LBA, ak kapasite. CNS=0 ak yon NSID espesifik retounen done idantite espas non an enkli gwosè total (nsze), kapasite (ncap), itilizasyon aktyèl (nuse), ak fòma LBA."
+    },
+    "34": {
+      "text": "Repons Identifye Espas Non (NSID=1, ~1TB, LBA 512B)",
+      "detail": "Espas Non 1 gen ~1TB kapasite (1,953,525,168 × LBA 512 oktè), 25% itilize. Fòma LBA 0: 512 oktè pa LBA, pa gen metadata, pi bon pèfòmans relatif. Kouch blòk machin nan ap prezante sa a kòm /dev/nvmeXnY."
+    },
+    "35": {
+      "text": "Fabrics Connect Fil Atant IO 1",
+      "detail": "Machin nan kreye Fil Atant IO 1 atravè Fabrics Connect ak QID=1. Fil atant IO itilize pou kòmand Lekti/Ekriti NVMe (kòmand admin itilize QID=0). Gwosè SQ fikse a 128 antre."
+    },
+    "36": {
+      "text": "Fil Atant IO 1 etabli — pare pou IO",
+      "detail": "Fil Atant IO 1 etabli. Machin nan ka kounye a soumèt kòmand Lekti ak Ekriti NVMe. Aparèy blòk /dev/nvme0n1 kounye a konplètman operasyonèl."
+    },
+    "37": {
+      "text": "Kòmand Ekriti NVMe (4KB nan LBA 0x1000)",
+      "detail": "Machin nan soumèt yon kòmand Ekriti NVMe 4KB nan Espas Non 1 nan LBA 0x1000. SQE Ekriti a (64 oktè) voye kòm yon PDU CapsuleCmd sou Fil Atant IO 1. Kòmand lan espesifye 8 LBA (NLB baze sou 0=7) × 512 oktè = 4096 oktè. Sou NVMe/TCP, done ekriti pa voye anliy ak kòmand lan — kontwolè a dwe premyèman voye yon PDU R2T pou mande done yo."
+    },
+    "38": {
+      "text": "R2T ← Kontwolè (mande done ekriti 4KB)",
+      "detail": "Kontwolè IO a voye yon PDU Pare-pou-Transfere (R2T) ki mande done ekriti nan machin nan. R2T a espesifye etikèt transfè, offsèt done (0 = kòmansman), ak longè (4096 oktè). Sa a se mekanis kontwòl fliks NVMe/TCP — kontwolè a kontwole kilè ak konbyen done machin nan voye."
+    },
+    "39": {
+      "text": "H2CData → Kontwolè (chaj itil ekriti 4KB)",
+      "detail": "Machin nan voye done ekriti 4KB nan yon PDU H2CData (Done Machin-a-Kontwolè). Etikèt transfè a matche ak R2T a. Drapo LAST endike sa a se dènye PDU done pou kòmand sa a."
+    },
+    "40": {
+      "text": "Konpleyon Ekriti ← Kontwolè (Siksè)",
+      "detail": "Kontwolè IO a konplete ekriti a epi retounen yon CapsuleResp ak estati 0x0000 (Siksè). 4KB a ekri nan LBA 0x1000 sou Espas Non 1."
+    },
+    "41": {
+      "text": "Kòmand Lekti NVMe (4KB nan LBA 0x1000)",
+      "detail": "Machin nan li retounen menm 4KB nan LBA 0x1000. SQE Lekti a voye kòm yon CapsuleCmd sou Fil Atant IO 1. Kontrèman ak Ekriti, kòmand Lekti pa bezwen yon R2T — kontwolè a voye done dirèkteman atravè PDU C2HData."
+    },
+    "42": {
+      "text": "C2HData ← Kontwolè (chaj itil lekti 4KB)",
+      "detail": "Kontwolè IO a voye done lekti 4KB nan yon PDU C2HData (Done Kontwolè-a-Machin). Pou lekti, done sikile soti nan kontwolè bay machin san salitasyon R2T — kontwolè a voye done touswit li disponib nan medya a. Drapo LAST make sa a kòm dènye PDU done."
+    },
+    "43": {
+      "text": "Konpleyon Lekti ← Kontwolè (Siksè)",
+      "detail": "Lekti konplete ak siksè. Done 4KB nan LBA 0x1000 livre bay machin nan. Tout sik lavi NVMe/TCP kounye a demontre: dekouvèt mDNS → anrejistreman CDC → jounal dekouvèt CDC (referans DDC) → koneksyon DDC → jounal dekouvèt DDC (detay IOC) → koneksyon IOC → identifikasyon kontwolè → enimerasyon espas non → konfigirasyon fil atant IO → Ekriti → Lekti. Yerachi dekouvèt twa nivo (CDC → DDC → IOC) konplè."
+    }
+  }
+}
