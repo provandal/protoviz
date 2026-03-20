@@ -16,6 +16,13 @@ import { useTranslation } from 'react-i18next';
 // If geolingua is installed (npm install geolingua three), the globe icon
 // appears. If not, Vite's optionalDep plugin resolves it to an empty module
 // and only the dropdown is shown. No crash either way.
+let geoLinguaModule = null;
+const geoLinguaReady = import('geolingua')
+  .then(m => {
+    if (m.GeoLingua) geoLinguaModule = m;
+  })
+  .catch(() => {});
+
 const GeoLinguaLazy = lazy(() =>
   import('geolingua').then(m => {
     if (!m.GeoLingua) throw new Error('geolingua not installed');
@@ -152,26 +159,141 @@ class GeoLinguaErrorBoundary extends React.Component {
   }
 }
 
-// --- GeoLingua globe icon (loads only if geolingua is installed) ---
+// --- GeoLingua globe icon + modal ---
+// The icon shows in the header; clicking it opens a centered overlay with
+// the full interactive globe. This avoids the popover-positioning issue
+// where icon mode tries to open upward from the top of the page.
 
 function GeoLinguaIcon({ onLanguageSelect }) {
+  const [available, setAvailable] = useState(false);
+  const [showGlobe, setShowGlobe] = useState(false);
   const base = import.meta.env.BASE_URL;
+  const overlayRef = useRef(null);
+
+  useEffect(() => {
+    geoLinguaReady.then(() => {
+      if (geoLinguaModule) setAvailable(true);
+    });
+  }, []);
+
+  if (!available) return null;
+
+  const handleSelect = (locale) => {
+    onLanguageSelect(locale);
+    // Close after a brief delay so the user sees the selection feedback
+    setTimeout(() => setShowGlobe(false), 600);
+  };
 
   return (
-    <GeoLinguaErrorBoundary>
-      <Suspense fallback={null}>
-        <GeoLinguaLazy
-          initialMode="icon"
-          theme="space"
-          onLanguageSelect={onLanguageSelect}
-          showSkip={false}
-          voiceDetectionEnabled={false}
-          persist={false}
-          iconSrc={`${base}geolingua-icon.png`}
-          style={{ display: 'inline-flex' }}
+    <>
+      {/* Globe icon button */}
+      <button
+        onClick={() => setShowGlobe(true)}
+        aria-label="Open language globe"
+        title="GeoLingua"
+        style={{
+          width: 36,
+          height: 36,
+          borderRadius: '50%',
+          border: '2px solid #334155',
+          background: '#1e293b',
+          cursor: 'pointer',
+          padding: 0,
+          overflow: 'hidden',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          transition: 'border-color 0.2s, transform 0.15s',
+        }}
+        onMouseEnter={e => { e.currentTarget.style.borderColor = '#3b82f6'; e.currentTarget.style.transform = 'scale(1.1)'; }}
+        onMouseLeave={e => { e.currentTarget.style.borderColor = '#334155'; e.currentTarget.style.transform = 'scale(1)'; }}
+      >
+        <img
+          src={`${base}geolingua-icon.png`}
+          alt="GeoLingua"
+          width={32}
+          height={32}
+          style={{ borderRadius: '50%', objectFit: 'cover' }}
         />
-      </Suspense>
-    </GeoLinguaErrorBoundary>
+      </button>
+
+      {/* Full-screen overlay with globe */}
+      {showGlobe && (
+        <div
+          ref={overlayRef}
+          onClick={(e) => { if (e.target === overlayRef.current) setShowGlobe(false); }}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.7)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999,
+            backdropFilter: 'blur(4px)',
+          }}
+        >
+          <div style={{
+            width: 520,
+            maxWidth: '95vw',
+            height: 600,
+            maxHeight: '90vh',
+            borderRadius: 16,
+            overflow: 'hidden',
+            boxShadow: '0 16px 64px rgba(0,0,0,0.5)',
+            position: 'relative',
+          }}>
+            {/* Close button */}
+            <button
+              onClick={() => setShowGlobe(false)}
+              aria-label="Close"
+              style={{
+                position: 'absolute',
+                top: 8,
+                right: 8,
+                zIndex: 10,
+                width: 32,
+                height: 32,
+                borderRadius: '50%',
+                border: '1px solid #334155',
+                background: 'rgba(15, 23, 42, 0.8)',
+                color: '#94a3b8',
+                cursor: 'pointer',
+                fontSize: 18,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              ×
+            </button>
+
+            <GeoLinguaErrorBoundary>
+              <Suspense fallback={
+                <div style={{
+                  width: '100%', height: '100%',
+                  background: '#0a0f1a',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  color: '#64748b', fontSize: 14,
+                }}>
+                  Loading globe...
+                </div>
+              }>
+                <GeoLinguaLazy
+                  initialMode="full"
+                  theme="space"
+                  onLanguageSelect={handleSelect}
+                  showSkip={false}
+                  voiceDetectionEnabled={false}
+                  persist={false}
+                  style={{ width: '100%', height: '100%' }}
+                />
+              </Suspense>
+            </GeoLinguaErrorBoundary>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
