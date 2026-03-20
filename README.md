@@ -20,6 +20,8 @@ ProtoViz is an open-source, browser-based platform that turns protocol exchanges
 
 ### Features
 
+- **14 Languages** — Full internationalization: English, Spanish, French, German, Portuguese (BR), Russian, Ukrainian, Mandarin, Japanese, Korean, Hindi, Hebrew, Lebanese Arabic, and Haitian Creole — with RTL support and CJK font stacks
+- **[GeoLingua](https://github.com/provandal/geolingua) Integration** — Interactive globe language selector with dropdown fallback
 - **Animated Sequence Diagrams** — Phase-grouped timeline with play/pause/step and scrubbing
 - **OSI Stack Visualization** — Live 7-layer state for each actor, updated per step
 - **Wireshark-style Packet Inspector** — Drill into every header field with expandable details, spec references, and kernel source links
@@ -34,9 +36,9 @@ ProtoViz is an open-source, browser-based platform that turns protocol exchanges
 - **Scenario Gallery** — Browse, filter, and search available scenarios
 - **MCP Server** — Protocol knowledge tools for AI agents via Model Context Protocol
 
-### Scenarios (16)
+### Scenarios (23)
 
-The library spans 5 protocol families across 3 difficulty levels (2 beginner, 3 intermediate, 11 advanced).
+The library spans 6 protocol families across 3 difficulty levels (5 beginner, 6 intermediate, 12 advanced).
 
 #### Networking Fundamentals
 
@@ -44,18 +46,25 @@ The library spans 5 protocol families across 3 difficulty levels (2 beginner, 3 
 |----------|----------|------------|
 | TCP: 3-Way Handshake → Data Transfer → FIN Teardown | TCP | Beginner |
 | ARP & NDP: IPv4 Address Resolution and IPv6 Neighbor Discovery | ARP / NDP | Beginner |
+| Checking Your Email: What Really Happens When You Click Inbox | DNS, TCP, TLS 1.3, HTTP/2 | Beginner |
 | TLS 1.3: Full Handshake → Encrypted Application Data → Alert Close | TLS 1.3 | Intermediate |
 
-#### Lossless Ethernet & Congestion Control
+#### IPv6
+
+| Scenario | Protocol | Difficulty |
+|----------|----------|------------|
+| IPv6 SLAAC: Router Advertisement → DAD → Address Autoconfiguration | ICMPv6 / NDP | Beginner |
+| IPv6 vs IPv4 Header: Why IPv6 Is Faster on the Wire | IPv6 / IPv4 | Beginner |
+| Happy Eyeballs: How Your Browser Chooses IPv4 vs IPv6 | TCP / DNS / IPv6 / IPv4 | Beginner |
+| DHCPv6: Stateful vs Stateless — When RA Isn't Enough | DHCPv6 / ICMPv6 | Intermediate |
+| NAT64/DNS64: IPv6-Only Client Talking to an IPv4-Only Server | NAT64 / DNS64 | Intermediate |
+| IPv6 Path MTU Discovery: No More Router Fragmentation | ICMPv6 / IPv6 | Intermediate |
+
+#### Lossless Ethernet & RDMA
 
 | Scenario | Protocol | Difficulty |
 |----------|----------|------------|
 | PFC Pause → ECN Marking → DCQCN Rate Control | RoCEv2 Congestion Control | Intermediate |
-
-#### RDMA
-
-| Scenario | Protocol | Difficulty |
-|----------|----------|------------|
 | RoCEv2 RC: Link Training → QP Connection → RDMA WRITE → RDMA READ | RoCEv2 | Advanced |
 | SMB Direct: Negotiate → RDMA Channel → File Read & Write over RoCEv2 | SMB Direct (SMB 3.x over RDMA) | Advanced |
 | S3/RDMA: Object PUT and GET over RoCEv2 | S3/RDMA | Advanced |
@@ -203,32 +212,28 @@ protoviz/
 │   │   ├── layout/          # Split layout, bottom pane, popout view
 │   │   ├── chat/            # AI chat panel (scenario viewer)
 │   │   ├── troubleshooter/  # PCAP upload, packet list, findings, trace chat
+│   │   ├── common/          # Language selector (GeoLingua + dropdown)
 │   │   └── about/           # About panel
-│   ├── hooks/               # useScenario, usePlayback, useKeyboardNav, usePopout, useAnnotations
+│   ├── hooks/               # useScenario, usePlayback, useKeyboardNav, usePopout, useAnnotations, useDirection
+│   ├── i18n/                # i18next configuration (14 languages)
 │   ├── pcap/                # PCAP parser, tshark JSON reader, dissectors, rule engine
 │   ├── store/               # Zustand state management
-│   ├── utils/               # Constants, state engine, scenario normalizer
-│   └── styles/
+│   ├── utils/               # Constants, state engine, normalizer, translation overlays
+│   └── styles/              # Global CSS with RTL overrides and CJK font stacks
 ├── public/
-│   ├── scenarios/           # YAML scenario files + index.json manifest
-│   │   ├── tcp/             # TCP 3-way handshake
-│   │   ├── arp-ndp/         # ARP & NDP address resolution
-│   │   ├── tls/             # TLS 1.3 handshake
-│   │   ├── pfc-ecn-dcqcn/   # PFC/ECN/DCQCN congestion control
-│   │   ├── roce/            # RoCEv2 RC connection + RDMA ops
-│   │   ├── smb-direct/      # SMB Direct over RoCEv2
-│   │   ├── s3-rdma/         # S3/RDMA object storage
-│   │   ├── iscsi/           # iSCSI login and I/O
-│   │   ├── fc/              # Fibre Channel fabric login + SCSI
-│   │   ├── nvme-rdma/       # NVMe-oF/RDMA discovery + I/O
-│   │   ├── nvme-tcp/        # NVMe-oF/TCP with CDC discovery
-│   │   ├── gpudirect/       # GPUDirect RDMA write to GPU
-│   │   ├── gpudirect-storage/ # GPUDirect Storage (local + remote)
-│   │   ├── gpu-to-gpu/      # GPU-to-GPU tensor transfer
-│   │   └── nccl/            # NCCL AllReduce ring algorithm
+│   ├── scenarios/           # YAML scenario files + index.json manifest (23 scenarios)
+│   ├── locales/             # UI chrome translations (14 languages × 193+ keys)
+│   ├── gallery-i18n/        # Gallery card translations (title, description per scenario)
+│   ├── scenario-i18n/       # Scenario content overlays (timeline, walkthroughs, meta)
+│   │   ├── ar-LB/           #   Lebanese Arabic (23 scenarios)
+│   │   ├── ht/              #   Haitian Creole (23 scenarios)
+│   │   ├── zh-CN/           #   Mandarin Simplified (23 scenarios)
+│   │   ├── he/              #   Hebrew (23 scenarios)
+│   │   ├── ...              #   + 9 more languages (es, fr, de, hi, pt-BR, ja, ru, ko, uk)
+│   │   └── README.md
 │   └── rules/               # Declarative compliance rules (JSON)
 ├── mcp/                     # MCP server for AI agents
-├── tools/                   # Python PCAP converter
+├── tools/                   # Python PCAP converter, translation extraction
 ├── .github/workflows/       # GitHub Pages deployment
 ├── scenario.schema.json     # JSON Schema for scenario validation
 └── index.html               # Vite entry point
