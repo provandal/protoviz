@@ -1,12 +1,27 @@
 /**
- * Lightweight language selector for ProtoViz.
+ * Language selector for ProtoViz.
  *
- * Designed to be replaced with GeoLingua (<GeoLingua />) once the package
- * is published to npm. Integration point: onLanguageSelect callback receives
- * a BCP 47 locale string, same as GeoLingua's API.
+ * Tries to load GeoLingua (npm install geolingua three) for the interactive
+ * globe icon. Falls back gracefully to a built-in dropdown if not installed.
+ *
+ * To add GeoLingua to any project:
+ *   npm install geolingua three
+ *   import { GeoLingua } from 'geolingua';
+ *   <GeoLingua initialMode="icon" theme="space" onLanguageSelect={fn} />
  */
-import { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, lazy, Suspense } from 'react';
 import { useTranslation } from 'react-i18next';
+
+// --- GeoLingua dynamic import (optional dependency) ---
+// If geolingua is installed (npm install geolingua three), the globe icon
+// appears. If not, Vite's optionalDep plugin resolves it to an empty module
+// and only the dropdown is shown. No crash either way.
+const GeoLinguaLazy = lazy(() =>
+  import('geolingua').then(m => {
+    if (!m.GeoLingua) throw new Error('geolingua not installed');
+    return { default: m.GeoLingua };
+  })
+);
 
 const LANGUAGES = [
   { code: 'en',    flag: '🇺🇸', name: 'English' },
@@ -25,7 +40,9 @@ const LANGUAGES = [
   { code: 'ht',    flag: '🇭🇹', name: 'Kreyòl Ayisyen' },
 ];
 
-export default function LanguageSelector() {
+// --- Dropdown selector (always available) ---
+
+function DropdownSelector({ onLanguageSelect }) {
   const { i18n } = useTranslation();
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
@@ -42,8 +59,7 @@ export default function LanguageSelector() {
   }, [open]);
 
   const handleSelect = (code) => {
-    i18n.changeLanguage(code);
-    localStorage.setItem('protoviz_locale', code);
+    onLanguageSelect(code);
     setOpen(false);
   };
 
@@ -114,6 +130,65 @@ export default function LanguageSelector() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// --- Error boundary for GeoLingua (catches import/render failures) ---
+
+class GeoLinguaErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  componentDidCatch() {
+    // GeoLingua not installed or failed to render — silently fall back
+  }
+  render() {
+    return this.state.hasError ? null : this.props.children;
+  }
+}
+
+// --- GeoLingua globe icon (loads only if geolingua is installed) ---
+
+function GeoLinguaIcon({ onLanguageSelect }) {
+  const base = import.meta.env.BASE_URL;
+
+  return (
+    <GeoLinguaErrorBoundary>
+      <Suspense fallback={null}>
+        <GeoLinguaLazy
+          initialMode="icon"
+          theme="space"
+          onLanguageSelect={onLanguageSelect}
+          showSkip={false}
+          voiceDetectionEnabled={false}
+          persist={false}
+          iconSrc={`${base}geolingua-icon.png`}
+          style={{ display: 'inline-flex' }}
+        />
+      </Suspense>
+    </GeoLinguaErrorBoundary>
+  );
+}
+
+// --- Main export ---
+
+export default function LanguageSelector() {
+  const { i18n } = useTranslation();
+
+  const handleLanguageSelect = (code) => {
+    i18n.changeLanguage(code);
+    localStorage.setItem('protoviz_locale', code);
+  };
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <GeoLinguaIcon onLanguageSelect={handleLanguageSelect} />
+      <DropdownSelector onLanguageSelect={handleLanguageSelect} />
     </div>
   );
 }
