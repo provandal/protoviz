@@ -180,8 +180,10 @@ function GeoLinguaIcon({ onLanguageSelect }) {
 
   const handleSelect = (locale) => {
     onLanguageSelect(locale);
-    // Close after a brief delay so the user sees the selection feedback
-    setTimeout(() => setShowGlobe(false), 600);
+    // Only auto-close if the globe overlay is actually open (not a mount-time detection)
+    if (showGlobe) {
+      setTimeout(() => setShowGlobe(false), 600);
+    }
   };
 
   return (
@@ -285,7 +287,7 @@ function GeoLinguaIcon({ onLanguageSelect }) {
                   onLanguageSelect={handleSelect}
                   showSkip={false}
                   voiceDetectionEnabled={true}
-                  detectBrowserLanguage={false}
+                  detectBrowserLanguage={true}
                   persist={false}
                   style={{ width: '100%', height: '100%' }}
                 />
