@@ -285,6 +285,7 @@ function GeoLinguaIcon({ onLanguageSelect }) {
                   onLanguageSelect={handleSelect}
                   showSkip={false}
                   voiceDetectionEnabled={false}
+                  detectBrowserLanguage={false}
                   persist={false}
                   style={{ width: '100%', height: '100%' }}
                 />
