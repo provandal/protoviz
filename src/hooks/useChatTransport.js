@@ -127,8 +127,9 @@ export default function useChatTransport() {
       } else if (type === 'peer_count') {
         setPeerCount(payload.count || 0);
       } else if (type === 'peers') {
-        setPeerNicknames(payload.nicknames || []);
-        setPeerCount(payload.nicknames?.length || 0);
+        const others = (payload.nicknames || []).filter(n => n !== nickname);
+        setPeerNicknames(others);
+        setPeerCount(others.length);
       }
     };
 
