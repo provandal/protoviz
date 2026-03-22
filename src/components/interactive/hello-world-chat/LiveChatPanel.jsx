@@ -156,13 +156,18 @@ export default function LiveChatPanel() {
             padding: 40, lineHeight: 2,
           }}>
             {t('helloChat.emptyChat', 'Send a message to see it travel through the network stack.')}
-            {mode === 1 && (() => {
+            {(() => {
               const shareUrl = `${window.location.origin}${window.location.pathname}#/live/hello-world-chat?room=${roomCode}&mode=${mode}`;
+              const hint = mode === 1
+                ? t('helloChat.openTab', 'Open another tab at this URL to chat with yourself.')
+                : mode === 2
+                  ? t('helloChat.shareUrlNetwork', 'Share this URL with someone on your network to chat peer-to-peer.')
+                  : t('helloChat.shareUrlAnywhere', 'Share this URL with anyone to start chatting.');
               return (
               <>
                 <br /><br />
                 <span style={{ color: '#64748b', fontSize: 12 }}>
-                  {t('helloChat.openTab', 'Open another tab at this URL to chat with yourself.')}
+                  {hint}
                 </span>
                 <br />
                 <code

@@ -237,6 +237,8 @@
     "peers": "peer(s)",
     "emptyChat": "Send a message to see it travel through the network stack.",
     "openTab": "Open another tab at this URL to chat with yourself.",
+    "shareUrlNetwork": "Share this URL with someone on your network to chat peer-to-peer.",
+    "shareUrlAnywhere": "Share this URL with anyone to start chatting.",
     "inputPlaceholder": "Type a message...",
     "noPacket": "Send or receive a message to see the protocol layers.",
     "protocolStack": "Protocol Stack",
