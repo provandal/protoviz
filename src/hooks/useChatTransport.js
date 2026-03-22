@@ -247,9 +247,12 @@ export default function useChatTransport() {
         setPeerNicknames(peerNames);
         setPeerCount(peerNames.length);
 
-        // When a second peer joins and we don't have a connection yet, the first peer initiates
+        // Exactly one peer must initiate the offer — use alphabetical tiebreaker
         if (peerNames.length >= 1 && !pc && !isOfferer) {
-          startOffer();
+          const allNames = [nickname, ...peerNames].sort();
+          if (allNames[0] === nickname) {
+            startOffer();
+          }
         }
       } else if (type === 'signal') {
         handleSignal(payload);
