@@ -3,16 +3,10 @@ import useChatStore, { macFromString, ipFromString, portFromString } from '../st
 
 const RELAY_URL = import.meta.env.VITE_RELAY_URL || 'wss://protoviz.provandal.deno.net';
 
-const ICE_SERVERS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun.cloudflare.com:3478' },
-];
-
 /**
  * Chat transport abstraction.
  * Mode 1: BroadcastChannel (same machine)
- * Mode 2: WebRTC RTCDataChannel (P2P, signaling via relay)
+ * Mode 2: WebSocket relay (same network — future: WebRTC P2P upgrade)
  * Mode 3: WebSocket relay (anywhere)
  */
 export default function useChatTransport() {
@@ -27,10 +21,7 @@ export default function useChatTransport() {
   const localIp = useChatStore(s => s.localIp);
 
   const channelRef = useRef(null);   // BroadcastChannel (Mode 1)
-  const wsRef = useRef(null);        // WebSocket (Mode 3)
-  const pcRef = useRef(null);        // RTCPeerConnection (Mode 2)
-  const dcRef = useRef(null);        // RTCDataChannel (Mode 2)
-  const sigWsRef = useRef(null);     // Signaling WebSocket (Mode 2)
+  const wsRef = useRef(null);        // WebSocket (Mode 2 & 3)
   const [peerCount, setPeerCount] = useState(0);
 
   // Helper: parse a received chat message into a pending message
@@ -107,194 +98,12 @@ export default function useChatTransport() {
     };
   }, [mode, roomCode, nickname]);
 
-  // ─── Mode 2: WebRTC P2P with signaling via relay ───────────────────
+  // ─── Mode 2 & 3: WebSocket relay ──────────────────────────────────
+  // Mode 2 (Same Network) and Mode 3 (Anywhere) both use the relay.
+  // The only difference is the UI label; transport is identical.
+  // True WebRTC P2P upgrade for Mode 2 is a future enhancement.
   useEffect(() => {
-    if (mode !== 2) return;
-
-    let sigWs;
-    let pc;
-    let dc;
-    let isOfferer = false;
-    let cleanedUp = false;
-
-    // Set up the DataChannel message handler (used by both offerer and answerer)
-    function setupDataChannel(channel) {
-      dc = channel;
-      dcRef.current = dc;
-
-      dc.onopen = () => {
-        if (cleanedUp) return;
-        setConnectionStatus('connected');
-        // Close the signaling WebSocket — we're P2P now
-        if (sigWs && sigWs.readyState === WebSocket.OPEN) {
-          sigWs.close();
-        }
-      };
-
-      dc.onmessage = (event) => {
-        let data;
-        try { data = JSON.parse(event.data); } catch { return; }
-        if (data.type === 'chat_message') {
-          handleReceivedMessage(data.payload);
-        }
-      };
-
-      dc.onclose = () => {
-        if (cleanedUp) return;
-        setConnectionStatus('disconnected');
-        dcRef.current = null;
-      };
-    }
-
-    // Create the RTCPeerConnection
-    function createPeerConnection() {
-      pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-      pcRef.current = pc;
-
-      pc.onicecandidate = (e) => {
-        if (!e.candidate) return;
-        // Send ICE candidate to the other peer via signaling relay
-        if (sigWs && sigWs.readyState === WebSocket.OPEN) {
-          sigWs.send(JSON.stringify({
-            type: 'signal',
-            payload: { signalType: 'ice', candidate: e.candidate },
-          }));
-        }
-      };
-
-      pc.oniceconnectionstatechange = () => {
-        if (cleanedUp) return;
-        if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-          setConnectionStatus('disconnected');
-        }
-      };
-
-      // Answerer receives the DataChannel here
-      pc.ondatachannel = (event) => {
-        setupDataChannel(event.channel);
-      };
-
-      return pc;
-    }
-
-    // Start the offer (called when we're the first peer in the room)
-    async function startOffer() {
-      isOfferer = true;
-      createPeerConnection();
-
-      // Offerer creates the DataChannel
-      const channel = pc.createDataChannel('protoviz-chat');
-      setupDataChannel(channel);
-
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      sigWs.send(JSON.stringify({
-        type: 'signal',
-        payload: { signalType: 'offer', sdp: pc.localDescription },
-      }));
-    }
-
-    // Handle incoming signaling messages
-    async function handleSignal(payload) {
-      if (payload.signalType === 'offer') {
-        // We're the answerer
-        if (!pc) createPeerConnection();
-        await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        sigWs.send(JSON.stringify({
-          type: 'signal',
-          payload: { signalType: 'answer', sdp: pc.localDescription },
-        }));
-      } else if (payload.signalType === 'answer') {
-        // We're the offerer, received the answer
-        if (pc) {
-          await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-        }
-      } else if (payload.signalType === 'ice') {
-        // ICE candidate from the other peer
-        if (pc) {
-          try {
-            await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
-          } catch { /* ignore late ICE candidates */ }
-        }
-      }
-    }
-
-    // Connect to the signaling relay
-    setConnectionStatus('connecting');
-
-    try {
-      sigWs = new WebSocket(`${RELAY_URL}?room=${roomCode}&nick=${encodeURIComponent(nickname)}`);
-    } catch {
-      setConnectionStatus('disconnected');
-      return;
-    }
-    sigWsRef.current = sigWs;
-
-    sigWs.onopen = () => {
-      sigWs.send(JSON.stringify({ type: 'join', payload: { sender: nickname } }));
-    };
-
-    sigWs.onmessage = (event) => {
-      let data;
-      try { data = JSON.parse(event.data); } catch { return; }
-      const { type, payload } = data;
-
-      if (type === 'peers') {
-        const peerNames = (payload.nicknames || []).filter(n => n !== nickname);
-        setPeerNicknames(peerNames);
-        setPeerCount(peerNames.length);
-
-        // Exactly one peer must initiate the offer — use alphabetical tiebreaker
-        if (peerNames.length >= 1 && !pc && !isOfferer) {
-          const allNames = [nickname, ...peerNames].sort();
-          if (allNames[0] === nickname) {
-            startOffer();
-          }
-        }
-      } else if (type === 'signal') {
-        handleSignal(payload);
-      }
-    };
-
-    sigWs.onerror = () => {
-      if (!cleanedUp) setConnectionStatus('disconnected');
-    };
-    sigWs.onclose = () => {
-      sigWsRef.current = null;
-      // Only mark disconnected if we don't have a P2P channel
-      if (!dc || dc.readyState !== 'open') {
-        if (!cleanedUp) setConnectionStatus('disconnected');
-      }
-    };
-
-    // Signaling heartbeat (keep WS alive until P2P is established)
-    const heartbeat = setInterval(() => {
-      if (sigWs.readyState === WebSocket.OPEN) {
-        sigWs.send(JSON.stringify({ type: 'ping' }));
-      }
-    }, 25000);
-
-    return () => {
-      cleanedUp = true;
-      clearInterval(heartbeat);
-      if (dc) { try { dc.close(); } catch { /* */ } }
-      dcRef.current = null;
-      if (pc) { try { pc.close(); } catch { /* */ } }
-      pcRef.current = null;
-      if (sigWs.readyState === WebSocket.OPEN || sigWs.readyState === WebSocket.CONNECTING) {
-        sigWs.close();
-      }
-      sigWsRef.current = null;
-      setConnectionStatus('disconnected');
-    };
-  }, [mode, roomCode, nickname]);
-
-  // ─── Mode 3: WebSocket relay ───────────────────────────────────────
-  useEffect(() => {
-    if (mode !== 3) return;
+    if (mode !== 2 && mode !== 3) return;
     let ws;
     try {
       ws = new WebSocket(`${RELAY_URL}?room=${roomCode}&nick=${encodeURIComponent(nickname)}`);
@@ -382,9 +191,7 @@ export default function useChatTransport() {
     // Send via transport
     if (mode === 1 && channelRef.current) {
       channelRef.current.postMessage(msg);
-    } else if (mode === 2 && dcRef.current?.readyState === 'open') {
-      dcRef.current.send(JSON.stringify(msg));
-    } else if (mode === 3 && wsRef.current?.readyState === WebSocket.OPEN) {
+    } else if ((mode === 2 || mode === 3) && wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(msg));
     }
 
