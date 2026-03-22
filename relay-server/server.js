@@ -13,7 +13,7 @@ const url = require('url');
 
 const PORT = process.env.PORT || 8080;
 const MAX_CLIENTS_PER_ROOM = 10;
-const MAX_MESSAGE_SIZE = 1024; // 1KB
+const MAX_MESSAGE_SIZE = 16_384; // 16KB — SDP offers for WebRTC are typically 2–4KB
 const HEARTBEAT_INTERVAL = 30000;
 
 // Room storage: Map<roomCode, Set<{ws, nick}>>
