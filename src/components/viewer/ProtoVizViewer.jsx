@@ -192,6 +192,18 @@ export default function ProtoVizViewer() {
               {ev.phase}
             </span>
             <span style={{ color: '#475569', fontSize: 9 }}>{t('viewer.stepCompact', { current: step + 1, total })}</span>
+            <span
+              onClick={() => navigate('/troubleshooter')}
+              style={{
+                color: '#3b82f6',
+                fontSize: 9,
+                cursor: 'pointer',
+                textDecoration: 'underline',
+                textUnderlineOffset: 2,
+              }}
+            >
+              {t('viewer.analyzeCapture')}
+            </span>
           </div>
         </div>
 
@@ -269,6 +281,18 @@ export default function ProtoVizViewer() {
             {ev.phase}
           </span>
           <span style={{ color: '#475569', fontSize: 10 }}>{t('viewer.step', { current: step + 1, total })}</span>
+          <span
+            onClick={() => navigate('/troubleshooter')}
+            style={{
+              color: '#3b82f6',
+              fontSize: 10,
+              cursor: 'pointer',
+              textDecoration: 'underline',
+              textUnderlineOffset: 2,
+            }}
+          >
+            {t('viewer.analyzeCapture')}
+          </span>
           <LanguageSelector />
         </div>
       </div>

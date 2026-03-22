@@ -1,0 +1,14 @@
+{
+  "name": "protoviz-relay-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WebSocket relay server for ProtoViz Hello World Chat",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

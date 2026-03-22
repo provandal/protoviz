@@ -16,7 +16,8 @@
   "difficulty": {
     "beginner": "Débutant",
     "intermediate": "Intermédiaire",
-    "advanced": "Avancé"
+    "advanced": "Avancé",
+    "elementary": "Élémentaire"
   },
   "filter": {
     "searchPlaceholder": "Rechercher des scénarios...",
@@ -36,7 +37,8 @@
     "target": "Cible",
     "popoutTitle": "Ouvrir dans une fenêtre séparée",
     "bytesUnit": "{{count}} bytes",
-    "bytesTotal": "{{count}} bytes au total"
+    "bytesTotal": "{{count}} bytes au total",
+    "analyzeCapture": "Analysez votre capture"
   },
   "tabs": {
     "explain": "Expliquer",
@@ -217,6 +219,50 @@
     "suggestRst": "Pourquoi y a-t-il un TCP RST ?",
     "suggestPsn": "Expliquez l'écart de RoCE PSN",
     "suggestNext": "Que devrais-je vérifier ensuite ?"
+  },
+  "helloChat": {
+    "title": "Chat Hello World",
+    "subtitle": "Envoyez un vrai message et regardez chaque couche protocolaire s'animer pendant que vos données traversent la pile réseau.",
+    "modeSameMachine": "Même machine",
+    "modeSameMachineDesc": "Deux onglets de navigateur sur cet ordinateur. Les messages voyagent via BroadcastChannel — ils ne quittent jamais votre machine.",
+    "modeSameNetwork": "Même réseau",
+    "modeSameNetworkDesc": "Deux appareils sur votre WiFi local ou LAN. Les messages passent par un relais mais restent sur votre réseau.",
+    "modeAnywhere": "N'importe où sur Terre",
+    "modeAnywhereDesc": "Deux appareils n'importe où dans le monde. Les messages voyagent via un relais cloud — routage internet réel.",
+    "nickname": "Votre pseudo",
+    "nicknamePlaceholder": "p. ex., Alice",
+    "roomCode": "Code de salle (laissez vide pour créer une nouvelle salle)",
+    "start": "Commencer à discuter",
+    "geoDetected": "Région détectée",
+    "peers": "participant(s)",
+    "emptyChat": "Envoyez un message pour le voir traverser la pile réseau.",
+    "openTab": "Ouvrez un autre onglet à cette URL pour discuter avec vous-même.",
+    "inputPlaceholder": "Tapez un message...",
+    "noPacket": "Envoyez ou recevez un message pour voir les couches protocolaires.",
+    "protocolStack": "Pile protocolaire",
+    "physicalLayer": "Couche physique",
+    "encapsulating": "Encapsulation ↓",
+    "decapsulating": "Décapsulation ↑",
+    "pause": "Pause",
+    "resume": "Reprendre",
+    "step": "Étape",
+    "skip": "Passer",
+    "fieldValue": "Valeur",
+    "whyMatters": "Pourquoi est-ce important ?",
+    "syntheticField": "Ce champ est simulé — dans ce mode, la valeur est générée pour vous montrer à quoi cela ressemblerait sur un vrai réseau.",
+    "endiannessTitle": "Boutisme : ordre des octets réseau",
+    "endiannessExplain": "Votre CPU (x86) stocke ce nombre avec l'octet le moins significatif en premier (petit-boutiste). Mais la norme réseau (RFC 1700) exige l'octet le plus significatif en premier (gros-boutiste). C'est l'« ordre des octets réseau ».",
+    "hostOrder": "Ordre hôte (petit-boutiste) :",
+    "networkOrder": "Ordre réseau (gros-boutiste) :",
+    "endiannessC": "En C, convertissez avec : htons() pour 16 bits, htonl() pour 32 bits (hôte vers réseau). Et ntohs()/ntohl() pour l'inverse.",
+    "endiannessScenario": "Scénario complet sur le boutisme",
+    "bitstreamLabel": "Ces bits voyageraient sous forme d'impulsions électriques dans un câble ou d'ondes radio via le WiFi.",
+    "clickToCopy": "Cliquez pour copier",
+    "joinSubtitle": "Vous avez été invité dans un salon de discussion. Entrez votre nom pour rejoindre.",
+    "joiningRoom": "Rejoindre le salon",
+    "join": "Rejoindre le chat",
+    "replayAnimation": "Cliquez pour rejouer l'animation",
+    "clickToReplay": "(cliquez pour rejouer)"
   },
   "common": {
     "save": "Enregistrer",

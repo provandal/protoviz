@@ -9,8 +9,8 @@ meta:
     forbidden from fragmenting packets — only the source host may fragment.
     This scenario contrasts the IPv4 approach (any router can fragment) with
     IPv6 PMTUD working correctly (ICMPv6 Packet Too Big informs the source),
-    and then demonstrates the dreaded "PMTUD black hole" that occurs when a
-    firewall blocks ICMPv6. The topology features a bottleneck tunnel link
+    and then demonstrates the dreaded "PMTUD black hole" that occurs when
+    an overly conservative ACL policy inadvertently drops ICMPv6. The topology features a bottleneck tunnel link
     with MTU 1280 (the minimum IPv6 link MTU per RFC 8200) between two
     routers, showing exactly why ICMPv6 type 2 must never be filtered.
 
@@ -20,7 +20,7 @@ meta:
     - "Observe the difference between IPv4 router fragmentation (DF=0) and IPv6 source-only fragmentation"
     - "See how the IPv6 Fragment extension header (Next Header 44) works when the source must fragment"
     - "Understand TCP MSS adjustment based on PMTUD results — most applications never see MTU issues"
-    - "Recognize the PMTUD black hole problem caused by firewalls blocking ICMPv6"
+    - "Recognize the PMTUD black hole problem caused by ACL policies that inadvertently drop ICMPv6"
     - "Know which ICMPv6 messages must never be filtered (RFC 4890)"
     - "Identify tunnels (6in4, GRE, IPsec) as the most common cause of reduced MTU on IPv6 paths"
 
@@ -1068,7 +1068,7 @@ frames:
             description: "TCP MSS adjusted to 1220 — all future segments use this size without any packet drops"
 
   # ══════════════════════════════════════════════════════════════════
-  # Part 3 — PMTUD Black Hole (ICMPv6 blocked by firewall)
+  # Part 3 — PMTUD Black Hole (ICMPv6 dropped by ACL policy)
   # ══════════════════════════════════════════════════════════════════
 
   - id: "ipv6_blackhole_pkt1"
@@ -1130,7 +1130,7 @@ frames:
 
   - id: "icmpv6_pkt_too_big_blocked"
     name: "ICMPv6 Packet Too Big (BLOCKED)"
-    description: "Router 1 sends Packet Too Big, but a firewall blocks it before it reaches Host A"
+    description: "Router 1 sends Packet Too Big, but an overly conservative ACL policy drops it before it reaches Host A"
     from: "router1"
     to: "host_a"
     via: []
@@ -1167,7 +1167,7 @@ frames:
             abbrev: "ipv6.dst"
             bits: 128
             value: "2001:db8:a::1"
-            description: "Host A — but the firewall will drop this before delivery"
+            description: "Host A — but the ACL policy will drop this before delivery"
 
       - name: "ICMPv6 Packet Too Big"
         abbrev: "icmpv6"
@@ -1193,7 +1193,7 @@ frames:
             abbrev: "icmpv6.original"
             bits: 9536
             value: "First 1192 bytes of the dropped original packet"
-            description: "Included to help Host A identify which flow/socket needs updating — but blocked by firewall"
+            description: "Included to help Host A identify which flow/socket needs updating — but dropped by ACL policy"
 
   - id: "ipv6_blackhole_retx1"
     name: "IPv6 Retransmit 1 (1500 B, still too big)"
@@ -1603,11 +1603,11 @@ timeline:
     t_ns: 300000000
     frame_id: "ipv6_blackhole_pkt1"
     annotation:
-      text: "Black Hole Scenario: Host A sends 1500-byte IPv6 packet (firewall blocks ICMPv6)"
+      text: "Black Hole Scenario: Host A sends 1500-byte IPv6 packet (ACL policy inadvertently drops ICMPv6)"
       detail: >
-        Now consider a network where a misconfigured firewall between Router 1 and Host A
-        drops all ICMPv6 messages. This is tragically common in enterprise networks where
-        security administrators apply blanket rules like 'deny all ICMP.' Host A sends the
+        Now consider a network where an overly conservative ACL policy between Router 1 and Host A
+        inadvertently drops ICMPv6 messages. This is common in enterprise networks where
+        firewall rules permit only a few explicit ICMPv6 types and inadvertently omit essential ones. Host A sends the
         same 1500-byte packet as before. Router 1 will drop it (too large for the 1280-byte
         tunnel) and send a Packet Too Big message — but this time, the message will never
         arrive.
@@ -1640,13 +1640,13 @@ timeline:
     t_ns: 300020000
     frame_id: "icmpv6_pkt_too_big_blocked"
     annotation:
-      text: "FIREWALL BLOCKS ICMPv6 — Packet Too Big message is silently dropped!"
+      text: "ACL POLICY DROPS ICMPv6 — Packet Too Big message is silently filtered!"
       detail: >
-        The ICMPv6 Packet Too Big message from Router 1 hits a firewall that has been
-        configured to block all ICMPv6 traffic. The firewall silently drops the message.
+        The ICMPv6 Packet Too Big message from Router 1 hits an ACL policy that inadvertently
+        omits ICMPv6 type 2 from its permit list. The policy silently drops the message.
         Host A will NEVER learn that its packets are too large. This is the root cause
         of the PMTUD black hole. RFC 4890 Section 4.3.1 is explicit: ICMPv6 Packet Too
-        Big messages (type 2) MUST NOT be dropped by firewalls. Blocking them breaks IPv6
+        Big messages (type 2) must always be permitted. Omitting them from ACL policies breaks IPv6
         connectivity for any path with a reduced MTU.
     state_after:
       - actor_id: "host_a"
@@ -1654,7 +1654,7 @@ timeline:
           - layer: 3
             state_fields:
               path_mtu: 1500
-              pmtu_state: "stale — no Packet Too Big received (firewall blocked)"
+              pmtu_state: "stale — no Packet Too Big received (ACL policy filtered)"
 
   - id: "evt_blackhole_no_response"
     type: "state_change"
@@ -1663,8 +1663,8 @@ timeline:
       text: "Host A never receives the Packet Too Big — it has no idea what went wrong"
       detail: >
         Host A's TCP stack is waiting for an ACK from Host B that will never come. The data
-        segment was dropped by Router 1, and the ICMPv6 notification was blocked by the
-        firewall. From Host A's perspective, the packet simply vanished. TCP's retransmission
+        segment was dropped by Router 1, and the ICMPv6 notification was dropped by the
+        ACL policy. From Host A's perspective, the packet simply vanished. TCP's retransmission
         timer (RTO) starts counting down. Host A has no mechanism to distinguish between
         'the packet was lost due to congestion' and 'the packet was dropped due to MTU.'
         Without PMTUD feedback, it will keep retransmitting at the same size.
@@ -1727,16 +1727,16 @@ timeline:
     type: "state_change"
     t_ns: 310100000
     annotation:
-      text: "This is why you must NEVER block ICMPv6 Packet Too Big (type 2). Firewalls that block all ICMPv6 break IPv6."
+      text: "ICMPv6 Packet Too Big (type 2) must always be permitted. ACL policies that inadvertently omit essential types break IPv6."
       detail: >
-        RFC 4890 provides explicit guidance: ICMPv6 Packet Too Big (type 2) messages MUST
-        be allowed through firewalls. Blocking them creates PMTUD black holes that silently
+        RFC 4890 provides explicit guidance: ICMPv6 Packet Too Big (type 2) messages must always
+        be permitted in ACL policies. Omitting them creates PMTUD black holes that silently
         break IPv6 connectivity for any path with a reduced MTU. This includes tunneled links
         (6in4, GRE, IPsec, VXLAN), VPN connections, and any network segment with non-standard
-        MTU. The fix is simple: configure firewalls to allow ICMPv6 type 2 in both directions.
+        MTU. The fix is simple: review ACL policies to ensure ICMPv6 type 2 is permitted in both directions.
         Better yet, follow RFC 4890's complete recommendations for which ICMPv6 types to
-        allow. The era of 'block all ICMP for security' is over — in IPv6, ICMPv6 is essential
-        infrastructure, not optional.
+        allow. IPv6 depends on ICMPv6 for core functions — ACL policies must be reviewed to ensure
+        essential types (1-4) are always permitted.
 
 # ─────────────────────────────────────────────────────────────────
 # GLOSSARY
@@ -1786,7 +1786,7 @@ glossary:
         url: "https://datatracker.ietf.org/doc/html/rfc8200#section-4.5"
 
   - term: "PMTUD Black Hole"
-    definition: "A condition where ICMPv6 Packet Too Big messages are blocked (typically by a firewall), preventing the source from learning the correct Path MTU. Packets larger than the bottleneck MTU are silently dropped, and the source keeps retransmitting at the wrong size. The connection appears to hang."
+    definition: "A condition where ICMPv6 Packet Too Big messages are inadvertently filtered (typically by an overly conservative ACL policy), preventing the source from learning the correct Path MTU. Packets larger than the bottleneck MTU are silently dropped, and the source keeps retransmitting at the wrong size. The connection appears to hang."
     spec_refs:
       - document: "RFC 8201"
         section: "4"
@@ -1834,14 +1834,14 @@ glossary:
 walkthroughs:
   - id: "default"
     title: "IPv6 Path MTU Discovery: From IPv4 Fragmentation to PMTUD Black Holes"
-    description: "Walk through why IPv6 forbids router fragmentation, how PMTUD discovers the correct packet size, and what goes catastrophically wrong when firewalls block ICMPv6"
+    description: "Walk through why IPv6 forbids router fragmentation, how PMTUD discovers the correct packet size, and what goes catastrophically wrong when ACL policies inadvertently drop ICMPv6"
     steps:
       - step: 0
         narration: >
           In IPv4, routers can fragment. In IPv6, only the SOURCE can fragment. This is a
           fundamental design change. Let's see why this matters by first looking at how IPv4
           handles an oversized packet, then watching IPv6 Path MTU Discovery in action, and
-          finally seeing the devastating failure that occurs when ICMPv6 is blocked.
+          finally seeing what goes catastrophically wrong when ACL policies inadvertently drop ICMPv6.
         highlight_fields: []
 
       - step: 1
@@ -1938,9 +1938,9 @@ walkthroughs:
 
       - step: 11
         narration: >
-          Now for the nightmare scenario: what happens when a firewall blocks ICMPv6. Host A
+          Now for the nightmare scenario: what happens when an ACL policy inadvertently drops ICMPv6. Host A
           sends a 1500-byte packet. Router 1 drops it (too big for the tunnel) and sends a
-          Packet Too Big message -- but a firewall between Router 1 and Host A silently drops
+          Packet Too Big message -- but an overly conservative ACL policy between Router 1 and Host A inadvertently filters
           all ICMPv6 traffic. Host A never learns about the MTU constraint. This is called the
           PMTUD black hole, and it is the number one reason IPv6 connectivity breaks in enterprise
           networks.
@@ -1966,12 +1966,12 @@ walkthroughs:
 
       - step: 14
         narration: >
-          The fix is simple and non-negotiable: NEVER block ICMPv6 Packet Too Big (type 2).
+          The fix is simple and non-negotiable: ICMPv6 Packet Too Big (type 2) must always be permitted.
           RFC 4890 documents exactly which ICMPv6 messages must not be filtered. At minimum,
           allow type 1 (Destination Unreachable), type 2 (Packet Too Big), type 3 (Time
           Exceeded), and type 4 (Parameter Problem). For IPv6 to function correctly, ICMPv6
           is essential infrastructure -- it is not optional like ICMP was sometimes treated in
-          IPv4. Firewalls that block all ICMPv6 break IPv6.
+          IPv4. ACL policies that inadvertently omit essential types break IPv6.
         highlight_fields: []
 
       - step: 15
@@ -1979,7 +1979,7 @@ walkthroughs:
           Let's recap the three scenarios we observed: (1) IPv4 with DF=0 -- routers fragment,
           it works but creates performance and security problems. (2) IPv6 PMTUD working correctly
           -- one dropped packet triggers a Packet Too Big message, the source learns the path MTU,
-          and all future packets are correctly sized. (3) PMTUD black hole -- a firewall blocks
+          and all future packets are correctly sized. (3) PMTUD black hole -- an ACL policy inadvertently drops
           ICMPv6, the source never learns the correct MTU, and the connection silently dies.
           The lesson is clear: IPv6 PMTUD is elegant and efficient, but it absolutely requires
           ICMPv6 Packet Too Big to function. Protect it.

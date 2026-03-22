@@ -90,5 +90,13 @@
   "ipv6-path-mtu-discovery": {
     "title": "IPv6 Path MTU Discovery: Sem Mais Fragmentação no Roteador",
     "description": "Por que o PMTUD é obrigatório no IPv6: roteadores não podem fragmentar, então mensagens ICMPv6 Packet Too Big informam a origem para usar pacotes menores."
+  },
+  "hello-world-chat": {
+    "title": "Chat Hello World: veja sua mensagem percorrer a pilha de rede",
+    "description": "Envie uma mensagem de chat real e veja-a ser encapsulada em cabeçalhos WebSocket, TLS, TCP, IP e Ethernet — camada por camada — e depois viajar como bits no fio. Seu primeiro olhar dentro da pilha de rede, ao vivo."
+  },
+  "byte-order-endianness": {
+    "title": "Endianness: por que redes e CPUs discordam na ordem dos bytes",
+    "description": "Little-endian vs big-endian: como sua CPU armazena 0x0050 de um jeito mas a rede espera de outro. Veja o bug real quando você esquece htons()."
   }
 }

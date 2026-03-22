@@ -1,0 +1,11 @@
+{
+  "meta": {
+    "title": "Chat Hello World : regardez votre message traverser la pile réseau",
+    "description": "Envoyez un vrai message et regardez-le s'envelopper dans les en-têtes WebSocket, TLS, TCP, IP et Ethernet — couche par couche — puis voyager sous forme de bits sur le fil. Votre premier regard à l'intérieur de la pile réseau, en direct.",
+    "learning_objectives": [
+      "Comprendre comment les données sont encapsulées couche par couche dans le modèle OSI",
+      "Reconnaître les champs d'en-tête clés dans TCP/IP, Ethernet et WebSocket",
+      "Voir comment votre message devient des bits sur le fil réel"
+    ]
+  }
+}

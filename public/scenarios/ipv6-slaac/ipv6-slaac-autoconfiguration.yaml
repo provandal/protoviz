@@ -22,6 +22,7 @@ meta:
     - "Understand Duplicate Address Detection (DAD) and why it uses the unspecified address (::)"
     - "Trace global address generation by combining the RA prefix with an interface ID"
     - "Learn what privacy/temporary addresses are and why they exist (RFC 8981)"
+    - "Distinguish the three IID generation modes: EUI-64 (MAC-derived), stable-private (RFC 7217), and random/temporary (RFC 8981)"
     - "See the complete address state machine: tentative -> valid -> preferred"
     - "Contrast each step with IPv4 equivalents -- DHCP, ARP, static config"
 
@@ -61,6 +62,10 @@ meta:
       section: "1"
       title: "Temporary Address Extensions for Stateless Address Autoconfiguration in IPv6"
       url: "https://www.rfc-editor.org/rfc/rfc8981"
+    - document: "RFC 7217"
+      section: "1"
+      title: "A Method for Generating Semantically Opaque Interface Identifiers with IPv6 SLAAC"
+      url: "https://www.rfc-editor.org/rfc/rfc7217"
     - document: "RFC 8106"
       section: "1"
       title: "IPv6 Router Advertisement Options for DNS Configuration"
@@ -71,6 +76,11 @@ meta:
     messages from RFC 4861, privacy extensions from RFC 8981, and DNS options
     from RFC 8106. Protocol descriptions are based on public RFCs and
     open-source implementations.
+
+  source_references:
+    - repo: "torvalds/linux"
+      path: "net/ipv6/addrconf.c"
+      description: "IPv6 address configuration — SLAAC, DAD, addr_gen_mode, privacy extensions"
 
 # ---------------------------------------------------------------------
 # TOPOLOGY
@@ -1001,13 +1011,28 @@ timeline:
       detail: >
         The very first thing an IPv6 host does on link-up is generate a
         link-local address. This address is formed by combining the well-known
-        prefix fe80::/10 with an interface identifier (IID). The IID can be:
+        prefix fe80::/10 with an interface identifier (IID). The IID can be
+        generated in one of three ways:
 
-        1. EUI-64: derived from the MAC address (52:54:00:A1:B2:C3) by inserting
-           FF:FE in the middle and flipping the Universal/Local bit. This gives
-           fe80::5054:ff:fea1:b2c3.
+        1. EUI-64 (MAC-derived): derived from the MAC address (52:54:00:A1:B2:C3)
+           by inserting FF:FE in the middle and flipping the Universal/Local bit.
+           This gives fe80::5054:ff:fea1:b2c3. Default on most Linux distributions.
 
-        2. Random (RFC 8981): a cryptographically random 64-bit value.
+        2. Stable-private (RFC 7217): a hash of prefix + interface name + secret
+           key + network-specific data. Produces the same address on the same
+           network but a different address on different networks. Not derived
+           from the MAC, so hardware cannot be fingerprinted. Default on
+           Windows 10+ and macOS.
+
+        3. Random/temporary (RFC 8981): a cryptographically random 64-bit value
+           that rotates periodically. Used for outbound connections to prevent
+           cross-network tracking.
+
+        On Linux, the mode is controlled by the sysctl:
+        net.ipv6.conf.<iface>.addr_gen_mode (0=EUI-64, 2=stable-private, 3=random).
+
+        Enterprise networks often prefer stable-private (known addresses for ACLs
+        and monitoring) while privacy-sensitive deployments prefer random/temporary.
 
         This address is TENTATIVE -- the host cannot use it yet. It must first
         verify that no other host on the link already has this address.
@@ -1238,11 +1263,20 @@ timeline:
 
           2001:db8:1::3f8a:7e92:d4
 
-        The random IID changes periodically (default preferred lifetime
-        is typically 24 hours, but can be shorter). When the host initiates
-        outbound connections (browsing the web, etc.), it uses the privacy
-        address as the source. The stable SLAAC address is still used for
-        inbound connections (servers, SSH, etc.).
+        The random IID changes periodically. The rotation is controlled by
+        kernel sysctl parameters (on Linux):
+        - net.ipv6.conf.<iface>.use_tempaddr: 0=off, 1=generate but do not
+          prefer, 2=generate and prefer for outbound connections (default on
+          most desktop distributions).
+        - net.ipv6.conf.<iface>.temp_prefered_lft: how long a temporary
+          address is preferred before being deprecated (default: 86400s = 24h).
+        - net.ipv6.conf.<iface>.temp_valid_lft: how long a temporary address
+          remains valid after deprecation (default: 604800s = 7 days).
+
+        When the host initiates outbound connections (browsing the web, etc.),
+        it uses the privacy address as the source. The stable SLAAC address
+        (EUI-64 or stable-private, depending on addr_gen_mode) is still used
+        for inbound connections (servers, SSH, etc.).
 
         This solves a real-world privacy problem: without privacy addresses,
         your laptop would have the same interface ID on every Wi-Fi network
@@ -1515,6 +1549,17 @@ glossary:
   - term: "Tentative Address"
     definition: "An IPv6 address state (RFC 4862). An address is tentative from the moment it is generated until Duplicate Address Detection (DAD) completes. A tentative address cannot be used as a source address for normal traffic -- only DAD probe packets use it as the target."
 
+  - term: "Stable-Private Address (RFC 7217)"
+    definition: "An IPv6 interface identifier generated by hashing the network prefix, interface name, and a secret key. Produces the same IID on the same network but a different IID on different networks. Not derived from the MAC address, preventing hardware fingerprinting. Default on Windows 10+ and macOS. Controlled on Linux via net.ipv6.conf.<iface>.addr_gen_mode=2."
+    spec_refs:
+      - document: "RFC 7217"
+        section: "5"
+        title: "Generating Stable IIDs"
+        url: "https://www.rfc-editor.org/rfc/rfc7217#section-5"
+
+  - term: "addr_gen_mode"
+    definition: "Linux sysctl (net.ipv6.conf.<iface>.addr_gen_mode) that controls how IPv6 interface identifiers are generated. Values: 0 = EUI-64 (MAC-derived), 1 = none (stable-privacy disabled, legacy), 2 = stable-privacy (RFC 7217 hash), 3 = random. Affects both link-local and SLAAC global addresses."
+
 # ---------------------------------------------------------------------
 # WALKTHROUGHS
 # ---------------------------------------------------------------------
@@ -1548,12 +1593,16 @@ walkthroughs:
         narration: >
           The very first thing the host does is generate a link-local address. This is
           an address that starts with fe80:: and only works on the local network segment.
-          The host creates it by combining fe80::/64 with an interface ID derived from
-          its MAC address (called EUI-64). The result here is fe80::5054:ff:fea1:b2c3.
+          There are three ways to generate the interface ID:
+          (1) EUI-64: derived from the MAC address -- default on most Linux systems.
+          (2) Stable-private (RFC 7217): a hash that produces the same address on the
+          same network but different addresses elsewhere -- default on Windows and macOS.
+          (3) Random (RFC 8981): a random value that rotates periodically.
 
-          But the host cannot use this address yet -- it is marked TENTATIVE. What if
-          another device on the network already has this address? The host must check
-          first, using a process called Duplicate Address Detection (DAD).
+          This scenario uses EUI-64, giving fe80::5054:ff:fea1:b2c3. But the host cannot
+          use this address yet -- it is marked TENTATIVE. What if another device on the
+          network already has this address? The host must check first, using Duplicate
+          Address Detection (DAD).
         highlight_fields: []
 
       - step: 3
@@ -1626,14 +1675,16 @@ walkthroughs:
       - step: 9
         narration: >
           But wait -- there is a privacy concern. The global SLAAC address contains the
-          interface ID derived from the MAC address. This ID is the same on every network
-          the host joins. A coffee shop, an airport, your home, your office -- the same
-          suffix every time. This makes it trivially easy to track your device across
-          networks.
+          interface ID derived from the MAC address (when using EUI-64) or a stable hash
+          (when using RFC 7217). In either case, the stable address can be observed by
+          remote servers across sessions. RFC 7217 mitigates local-network fingerprinting
+          (different address on each network), but does not prevent a single server from
+          recognizing return visits.
 
           To solve this, RFC 8981 (Privacy Extensions) tells the host to generate an
           additional temporary address with a random interface ID. The host creates
-          2001:db8:1::3f8a:7e92:d4 with a randomly chosen suffix.
+          2001:db8:1::3f8a:7e92:d4 with a randomly chosen suffix. This address rotates
+          periodically, preventing cross-session tracking by remote servers.
         highlight_fields: []
 
       - step: 10

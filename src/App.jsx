@@ -5,6 +5,7 @@ import PopoutView from './components/layout/PopoutView';
 import Gallery from './components/gallery/Gallery';
 import TroubleshooterPage from './components/troubleshooter/TroubleshooterPage';
 import ScenarioCreator from './components/creator/ScenarioCreator';
+import InteractiveScenarioLoader from './components/interactive/InteractiveScenarioLoader';
 import useDirection from './hooks/useDirection';
 
 const DEFAULT_SCENARIO = 'roce-v2-rc-connection-rdma-write-read';
@@ -38,6 +39,7 @@ export default function App() {
           <Route path="/" element={<Gallery />} />
           <Route path="/troubleshooter" element={<TroubleshooterPage />} />
           <Route path="/create" element={<ScenarioCreator />} />
+          <Route path="/live/:slug" element={<InteractiveScenarioLoader />} />
           <Route path="/:scenarioSlug/step/:stepNum" element={<ProtoVizViewer />} />
           <Route path="/:scenarioSlug" element={<ProtoVizViewer />} />
         </Routes>

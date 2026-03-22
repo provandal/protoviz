@@ -1,15 +1,15 @@
 {
   "meta": {
     "title": "IPv6 路径 MTU 发现：为什么路由器不能分片",
-    "description": "对比 IPv4 路由器分片与 IPv6 路径 MTU 发现（PMTUD）。展示 IPv4 的任意路由器分片、IPv6 的 Packet Too Big 消息、源端分片，以及当防火墙阻止 ICMPv6 时的 PMTUD 黑洞问题。",
+    "description": "对比 IPv4 路由器分片与 IPv6 路径 MTU 发现（PMTUD）。展示 IPv4 的任意路由器分片、IPv6 的 Packet Too Big 消息、源端分片，以及当过于保守的 ACL 策略意外丢弃 ICMPv6 时的 PMTUD 黑洞问题。",
     "learning_objectives": [
       "理解 IPv4 中任何路由器都可以分片的问题",
       "观察 IPv6 中只有源端可以分片",
       "跟踪 ICMPv6 Packet Too Big 消息触发路径 MTU 更新",
       "观察源端分片如何使用 Fragment 扩展头",
       "理解 PMTUD 缓存如何优化后续数据包",
-      "观察 PMTUD 黑洞：防火墙阻止 ICMPv6 导致连接挂起",
-      "理解为什么绝对不能阻止 ICMPv6 Packet Too Big（类型 2）",
+      "观察 PMTUD 黑洞：ACL 策略意外丢弃 ICMPv6 导致连接挂起",
+      "理解为什么 ICMPv6 Packet Too Big（类型 2）必须始终被允许",
       "将 IPv4 分片与 IPv6 PMTUD 进行对比"
     ]
   },
@@ -75,20 +75,20 @@
       "detail": "IPv6 路径 MTU 发现（RFC 8201）是一种干净、高效的机制。代价是每发现一个新瓶颈只需一个被丢弃的数据包和一个 ICMPv6 消息。此后，每个后续数据包都是完美大小的。对比 IPv4 路由器分片，它在整个流的生命周期中对每个超大数据包都施加开销。PMTUD 还将分片决策集中在源端，源端对自己的流有完整的了解，可以做出智能选择（例如调整 TCP MSS vs. 使用 Fragment 扩展头）。"
     },
     "15": {
-      "text": "黑洞场景：主机 A 发送 1500 字节 IPv6 数据包（防火墙阻止 ICMPv6）",
-      "detail": "现在考虑一个网络，其中路由器 1 和主机 A 之间有一个配置错误的防火墙，丢弃所有 ICMPv6 消息。这在企业网络中非常常见，安全管理员会应用像「拒绝所有 ICMP」这样的笼统规则。主机 A 发送与之前相同的 1500 字节数据包。路由器 1 会丢弃它（对 1280 字节隧道太大）并发送 Packet Too Big 消息——但这次，该消息永远不会到达。"
+      "text": "黑洞场景：主机 A 发送 1500 字节 IPv6 数据包（ACL 策略意外丢弃 ICMPv6）",
+      "detail": "现在考虑一个网络，其中路由器 1 和主机 A 之间有一个过于保守的 ACL 策略意外丢弃了 ICMPv6 消息。这在企业网络中很常见，ACL 规则仅允许少数几种明确的 ICMPv6 类型，而意外遗漏了必要的类型。主机 A 发送与之前相同的 1500 字节数据包。路由器 1 会丢弃它（对 1280 字节隧道太大）并发送 Packet Too Big 消息——但这次，该消息永远不会到达。"
     },
     "16": {
       "text": "路由器 1 丢弃 1500 字节数据包（对 1280 字节隧道太大）",
       "detail": "路由器 1 出于与之前相同的原因丢弃数据包——它超过了下一跳 1280 字节的 MTU，而 IPv6 路由器不能分片。路由器 1 正确生成 ICMPv6 Packet Too Big（类型 2，代码 0，MTU=1280）消息并将其发向主机 A。"
     },
     "17": {
-      "text": "防火墙阻止 ICMPv6 — Packet Too Big 消息被静默丢弃！",
-      "detail": "来自路由器 1 的 ICMPv6 Packet Too Big 消息遇到了被配置为阻止所有 ICMPv6 流量的防火墙。防火墙静默丢弃该消息。主机 A 将永远不会知道其数据包太大。这是 PMTUD 黑洞的根本原因。RFC 4890 第 4.3.1 节明确指出：ICMPv6 Packet Too Big 消息（类型 2）绝对不能被防火墙丢弃。阻止它们会使任何路径 MTU 缩减的 IPv6 连接断开。"
+      "text": "ACL 策略意外丢弃 ICMPv6 — Packet Too Big 消息被静默过滤！",
+      "detail": "来自路由器 1 的 ICMPv6 Packet Too Big 消息遇到了允许列表中意外遗漏了 ICMPv6 类型 2 的 ACL 策略。策略静默丢弃该消息。主机 A 将永远不会知道其数据包太大。这是 PMTUD 黑洞的根本原因。RFC 4890 第 4.3.1 节明确指出：ICMPv6 Packet Too Big 消息（类型 2）必须始终被允许。在 ACL 策略中遗漏它们会使任何路径 MTU 缩减的 IPv6 连接断开。"
     },
     "18": {
       "text": "主机 A 永远收不到 Packet Too Big — 它不知道出了什么问题",
-      "detail": "主机 A 的 TCP 栈正在等待一个永远不会来的 ACK。数据段被路由器 1 丢弃，ICMPv6 通知被防火墙阻止。从主机 A 的角度看，数据包就这样消失了。TCP 的重传计时器（RTO）开始倒计时。主机 A 没有机制区分「数据包因拥塞丢失」和「数据包因 MTU 被丢弃」。没有 PMTUD 反馈，它将继续以相同大小重传。"
+      "detail": "主机 A 的 TCP 栈正在等待一个永远不会来的 ACK。数据段被路由器 1 丢弃，ICMPv6 通知被 ACL 策略丢弃。从主机 A 的角度看，数据包就这样消失了。TCP 的重传计时器（RTO）开始倒计时。主机 A 没有机制区分「数据包因拥塞丢失」和「数据包因 MTU 被丢弃」。没有 PMTUD 反馈，它将继续以相同大小重传。"
     },
     "19": {
       "text": "TCP 重传超时 — 主机 A 重发相同的 1500 字节数据包（仍然太大）",
@@ -103,14 +103,14 @@
       "detail": "经过多次指数退避的重传后，TCP 最终会放弃并重置连接（Linux 默认：net.ipv4.tcp_retries2 = 15，可能需要超过 13 分钟）。用户看到超时或连接重置。这就是 PMTUD 黑洞——企业网络中 IPv6 连接中断的头号原因。某些 TCP 栈实现了 RFC 4821（分组层 PMTUD），可以在反复超时后探测更小的数据包，但这并未普遍部署。"
     },
     "22": {
-      "text": "这就是为什么你绝对不能阻止 ICMPv6 Packet Too Big（类型 2）。阻止所有 ICMPv6 的防火墙会破坏 IPv6 网络。",
-      "detail": "RFC 4890 提供了明确的指导：ICMPv6 Packet Too Big（类型 2）消息绝对不能被防火墙丢弃。阻止它们会为任何路径 MTU 缩减的连接创建 PMTUD 黑洞，静默破坏 IPv6 连接。这包括隧道链路（6in4、GRE、IPsec、VXLAN）、VPN 连接和任何非标准 MTU 的网段。修复方法很简单：配置防火墙允许双向的 ICMPv6 类型 2。更好的做法是遵循 RFC 4890 的完整建议，了解应该允许哪些 ICMPv6 类型。「为了安全阻止所有 ICMP」的时代已经过去——在 IPv6 中，ICMPv6 是必不可少的基础设施，而非可选项。"
+      "text": "ICMPv6 Packet Too Big（类型 2）必须始终被允许。意外遗漏必要类型的 ACL 策略会破坏 IPv6 网络。",
+      "detail": "RFC 4890 提供了明确的指导：ICMPv6 Packet Too Big（类型 2）消息必须始终被允许。在 ACL 策略中遗漏它们会为任何路径 MTU 缩减的连接创建 PMTUD 黑洞，静默破坏 IPv6 连接。这包括隧道链路（6in4、GRE、IPsec、VXLAN）、VPN 连接和任何非标准 MTU 的网段。修复方法很简单：审查 ACL 策略确保 ICMPv6 类型 2 在双向都被允许。更好的做法是遵循 RFC 4890 的完整建议，了解应该允许哪些 ICMPv6 类型。IPv6 的核心功能依赖 ICMPv6 ——ACL 策略必须经过审查以确保必要类型（1-4）始终被允许。"
     }
   },
   "walkthroughs": {
     "default": {
       "title": "IPv6 路径 MTU 发现：从 IPv4 分片到 PMTUD 黑洞",
-      "description": "对比 IPv4 分片与 IPv6 PMTUD，并展示防火墙阻止 ICMPv6 的后果",
+      "description": "对比 IPv4 分片与 IPv6 PMTUD，并展示 ACL 策略意外丢弃 ICMPv6 的后果",
       "steps": {}
     }
   }

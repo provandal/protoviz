@@ -1,0 +1,11 @@
+{
+  "meta": {
+    "title": "Chat Bonjou Mond: Gade Mesaj Ou Travèse Pile Rezo a",
+    "description": "Voye yon vrè mesaj chat epi gade li anbale nan antèt WebSocket, TLS, TCP, IP, ak Ethernet — kouch pa kouch — epi vwayaje kòm bit sou fil la. Premye gade ou anndan pile rezo a, an dirèk.",
+    "learning_objectives": [
+      "Konprann kijan done yo anbale kouch pa kouch nan modèl OSI a",
+      "Rekonèt chan antèt kle nan TCP/IP, Ethernet, ak WebSocket",
+      "Wè kijan mesaj ou vin bit sou fil reyèl la"
+    ]
+  }
+}

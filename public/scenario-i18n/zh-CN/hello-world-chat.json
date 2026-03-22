@@ -1,0 +1,11 @@
+{
+  "meta": {
+    "title": "Hello World 聊天：观看你的消息穿越网络栈",
+    "description": "发送一条真实的聊天消息，观看它被逐层包裹在 WebSocket、TLS、TCP、IP 和以太网头部中——然后作为比特在线路上传输。你对网络栈内部的首次实时观察。",
+    "learning_objectives": [
+      "理解数据如何在OSI模型中逐层封装",
+      "识别TCP/IP、以太网和WebSocket中的关键头部字段",
+      "观察你的消息如何变成实际线路上的比特"
+    ]
+  }
+}

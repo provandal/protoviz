@@ -90,5 +90,13 @@
   "ipv6-path-mtu-discovery": {
     "title": "IPv6 路径 MTU 发现：不再有路由器分片",
     "description": "为何 PMTUD 在 IPv6 中是强制性的：路由器不能分片，因此 ICMPv6 数据包过大消息通知源端使用更小的数据包。"
+  },
+  "hello-world-chat": {
+    "title": "Hello World 聊天：观看你的消息穿越网络栈",
+    "description": "发送一条真实的聊天消息，观看它被逐层包裹在 WebSocket、TLS、TCP、IP 和以太网头部中——然后作为比特在线路上传输。你对网络栈内部的首次实时观察。"
+  },
+  "byte-order-endianness": {
+    "title": "字节序：为什么网络和CPU在字节顺序上存在分歧",
+    "description": "小端序与大端序：你的CPU以一种方式存储 0x0050，但网络期望另一种方式。看看忘记 htons() 时真正发生的错误。"
   }
 }

@@ -14,6 +14,7 @@
     "disclaimer": "Protokollbeschreibungen basieren auf Open-Source-Implementierungen (Linux kernel, rdma-core) und öffentlichen RFCs. Spezifikationsreferenzen sind Zitate zur weiterführenden Lektüre — kein proprietärer Text wurde reproduziert."
   },
   "difficulty": {
+    "elementary": "Grundlegend",
     "beginner": "Anfänger",
     "intermediate": "Fortgeschritten",
     "advanced": "Experte"
@@ -36,7 +37,8 @@
     "target": "Ziel",
     "popoutTitle": "In separatem Fenster öffnen",
     "bytesUnit": "{{count}} bytes",
-    "bytesTotal": "{{count}} bytes insgesamt"
+    "bytesTotal": "{{count}} bytes insgesamt",
+    "analyzeCapture": "Eigenen Mitschnitt analysieren"
   },
   "tabs": {
     "explain": "Erklären",

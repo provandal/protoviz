@@ -132,7 +132,9 @@ export default function Gallery() {
                 <ScenarioCard
                   key={s.slug}
                   scenario={s}
-                  onClick={() => navigate(`/${s.slug}`)}
+                  onClick={() => navigate(
+                    s.type === 'interactive' ? `/live/${s.slug}` : `/${s.slug}`
+                  )}
                 />
               ))}
             </div>

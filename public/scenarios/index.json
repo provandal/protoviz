@@ -230,5 +230,27 @@
       "tags": ["IPv6", "PMTUD", "Path MTU Discovery", "ICMPv6", "fragmentation", "Packet Too Big", "black hole", "MTU", "intermediate", "education", "WIP"],
       "path": "ipv6-pmtud/ipv6-path-mtu-discovery.yaml"
     }
+    ,
+    {
+      "slug": "hello-world-chat",
+      "title": "Hello World Chat: Watch Your Message Traverse the Network Stack",
+      "protocol": "TCP/IP + WebSocket",
+      "protocol_family": "TCP/IP",
+      "difficulty": "elementary",
+      "description": "Send a real chat message and watch it get wrapped in WebSocket, TLS, TCP, IP, and Ethernet headers — layer by layer — then travel as bits on the wire. Your first look inside the network stack, live.",
+      "tags": ["TCP", "IP", "Ethernet", "WebSocket", "TLS", "OSI model", "beginner", "interactive", "live", "education"],
+      "path": null,
+      "type": "interactive"
+    },
+    {
+      "slug": "byte-order-endianness",
+      "title": "Endianness: Why Networks and CPUs Disagree on Byte Order",
+      "protocol": "TCP/IP",
+      "protocol_family": "TCP/IP",
+      "difficulty": "beginner",
+      "description": "Little-endian vs big-endian: how your CPU stores 0x0050 one way but the network expects it another. See the real bug that happens when you forget htons(), and learn the four functions that fix it.",
+      "tags": ["endianness", "byte order", "htons", "ntohs", "network byte order", "TCP/IP", "beginner", "education"],
+      "path": "endianness/byte-order-endianness.yaml"
+    }
   ]
 }

@@ -90,5 +90,13 @@
   "ipv6-path-mtu-discovery": {
     "title": "IPv6 Path MTU Discovery: 라우터 단편화의 종말",
     "description": "PMTUD가 IPv6에서 필수인 이유: 라우터가 단편화할 수 없으므로 ICMPv6 Packet Too Big 메시지가 출발지에 더 작은 패킷을 사용하도록 지시한다."
+  },
+  "hello-world-chat": {
+    "title": "Hello World 채팅: 메시지가 네트워크 스택을 통과하는 과정 관찰",
+    "description": "실제 채팅 메시지를 보내고 WebSocket, TLS, TCP, IP, Ethernet 헤더로 레이어별로 캡슐화된 후 비트로 전선을 타고 이동하는 과정을 실시간으로 관찰하세요."
+  },
+  "byte-order-endianness": {
+    "title": "엔디언: 네트워크와 CPU가 바이트 순서에 동의하지 않는 이유",
+    "description": "리틀 엔디언 vs 빅 엔디언: CPU는 0x0050을 한 가지 방식으로 저장하지만 네트워크는 다른 방식을 기대합니다. htons()를 빠뜨렸을 때의 실제 버그를 확인하세요."
   }
 }

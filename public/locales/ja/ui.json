@@ -14,6 +14,7 @@
     "disclaimer": "プロトコルの説明はオープンソース実装（Linux kernel、rdma-core）と公開RFCに基づいています。仕様参照はさらなる参考のための引用であり、独自のテキストは複製されていません。"
   },
   "difficulty": {
+    "elementary": "入門",
     "beginner": "初級",
     "intermediate": "中級",
     "advanced": "上級"
@@ -36,7 +37,8 @@
     "target": "ターゲット",
     "popoutTitle": "別ウィンドウで開く",
     "bytesUnit": "{{count}} bytes",
-    "bytesTotal": "合計 {{count}} bytes"
+    "bytesTotal": "合計 {{count}} bytes",
+    "analyzeCapture": "キャプチャを分析する"
   },
   "tabs": {
     "explain": "解説",

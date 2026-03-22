@@ -14,6 +14,7 @@
     "disclaimer": "प्रोटोकॉल विवरण ओपन-सोर्स कार्यान्वयन (Linux kernel, rdma-core) और सार्वजनिक RFC पर आधारित हैं। स्पेसिफ़िकेशन संदर्भ आगे की रीडिंग के लिए उद्धरण हैं — कोई मालिकाना पाठ पुनर्प्रस्तुत नहीं किया गया है।"
   },
   "difficulty": {
+    "elementary": "प्राथमिक",
     "beginner": "शुरुआती",
     "intermediate": "मध्यवर्ती",
     "advanced": "उन्नत"
@@ -36,7 +37,8 @@
     "target": "लक्ष्य",
     "popoutTitle": "अलग विंडो में खोलें",
     "bytesUnit": "{{count}} bytes",
-    "bytesTotal": "कुल {{count}} bytes"
+    "bytesTotal": "कुल {{count}} bytes",
+    "analyzeCapture": "अपना कैप्चर विश्लेषण करें"
   },
   "tabs": {
     "explain": "व्याख्या",

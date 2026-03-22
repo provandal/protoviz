@@ -1,0 +1,11 @@
+{
+  "meta": {
+    "title": "Chat Hola Mundo: observa tu mensaje recorrer la pila de red",
+    "description": "Envía un mensaje de chat real y obsérvalo envolverse en cabeceras WebSocket, TLS, TCP, IP y Ethernet — capa por capa — y luego viajar como bits por el cable. Tu primera mirada dentro de la pila de red, en vivo.",
+    "learning_objectives": [
+      "Entender cómo los datos se encapsulan capa por capa en el modelo OSI",
+      "Reconocer los campos de cabecera clave en TCP/IP, Ethernet y WebSocket",
+      "Ver cómo tu mensaje se convierte en bits en el cable real"
+    ]
+  }
+}

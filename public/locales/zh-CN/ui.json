@@ -16,7 +16,8 @@
   "difficulty": {
     "beginner": "初级",
     "intermediate": "中级",
-    "advanced": "高级"
+    "advanced": "高级",
+    "elementary": "入门"
   },
   "filter": {
     "searchPlaceholder": "搜索场景...",
@@ -36,7 +37,8 @@
     "target": "目标方",
     "popoutTitle": "弹出到独立窗口",
     "bytesUnit": "{{count}} bytes",
-    "bytesTotal": "共 {{count}} bytes"
+    "bytesTotal": "共 {{count}} bytes",
+    "analyzeCapture": "分析您的抓包"
   },
   "tabs": {
     "explain": "解释",
@@ -217,6 +219,50 @@
     "suggestRst": "为什么会有 TCP RST？",
     "suggestPsn": "解释 RoCE PSN 间隔",
     "suggestNext": "接下来我应该检查什么？"
+  },
+  "helloChat": {
+    "title": "Hello World 聊天",
+    "subtitle": "发送一条真实消息，观看每一层协议在数据穿越网络栈时实时动画。",
+    "modeSameMachine": "同一台机器",
+    "modeSameMachineDesc": "此电脑上的两个浏览器标签页。消息通过 BroadcastChannel 传输——永远不会离开你的机器。",
+    "modeSameNetwork": "同一网络",
+    "modeSameNetworkDesc": "本地 WiFi 或局域网上的两台设备。消息通过中继服务器路由，但留在你的网络内。",
+    "modeAnywhere": "世界任何地方",
+    "modeAnywhereDesc": "世界上任意两台设备。消息通过云端中继传输——真正的互联网路由。",
+    "nickname": "你的昵称",
+    "nicknamePlaceholder": "例如：Alice",
+    "roomCode": "房间代码（留空以创建新房间）",
+    "start": "开始聊天",
+    "geoDetected": "检测到的区域",
+    "peers": "参与者",
+    "emptyChat": "发送一条消息以查看它如何穿越网络栈。",
+    "openTab": "在此URL打开另一个标签页与自己聊天。",
+    "inputPlaceholder": "输入消息...",
+    "noPacket": "发送或接收消息以查看协议层。",
+    "protocolStack": "协议栈",
+    "physicalLayer": "物理层",
+    "encapsulating": "封装中 ↓",
+    "decapsulating": "解封装中 ↑",
+    "pause": "暂停",
+    "resume": "继续",
+    "step": "单步",
+    "skip": "跳过",
+    "fieldValue": "值",
+    "whyMatters": "为什么这很重要？",
+    "syntheticField": "此字段为模拟值——在此模式下，该值是生成的，用于展示在真实网络上的样子。",
+    "endiannessTitle": "字节序：网络字节序",
+    "endiannessExplain": "你的CPU（x86）以最低有效字节优先存储此数字（小端序）。但网络标准（RFC 1700）要求最高有效字节优先（大端序）。这被称为\u201c网络字节序\u201d。",
+    "hostOrder": "主机序（小端序）：",
+    "networkOrder": "网络序（大端序）：",
+    "endiannessC": "在C语言中，使用：htons() 转换16位，htonl() 转换32位（主机到网络）。以及 ntohs()/ntohl() 进行反向转换。",
+    "endiannessScenario": "完整字节序场景",
+    "bitstreamLabel": "这些比特将作为电脉冲通过电缆传输或作为无线电波通过WiFi传输。",
+    "clickToCopy": "点击复制",
+    "joinSubtitle": "你被邀请加入一个聊天室。输入你的名字即可加入。",
+    "joiningRoom": "正在加入房间",
+    "join": "加入聊天",
+    "replayAnimation": "点击重播动画",
+    "clickToReplay": "（点击重播）"
   },
   "common": {
     "save": "保存",

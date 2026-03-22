@@ -16,7 +16,8 @@
   "difficulty": {
     "beginner": "Principiante",
     "intermediate": "Intermedio",
-    "advanced": "Avanzado"
+    "advanced": "Avanzado",
+    "elementary": "Elemental"
   },
   "filter": {
     "searchPlaceholder": "Buscar escenarios...",
@@ -36,7 +37,8 @@
     "target": "Destino",
     "popoutTitle": "Abrir en ventana separada",
     "bytesUnit": "{{count}} bytes",
-    "bytesTotal": "{{count}} bytes en total"
+    "bytesTotal": "{{count}} bytes en total",
+    "analyzeCapture": "Analiza tu captura"
   },
   "tabs": {
     "explain": "Explicar",
@@ -217,6 +219,50 @@
     "suggestRst": "¿Por qué hay un TCP RST?",
     "suggestPsn": "Explica el desfase de RoCE PSN",
     "suggestNext": "¿Qué debería verificar a continuación?"
+  },
+  "helloChat": {
+    "title": "Chat Hola Mundo",
+    "subtitle": "Envía un mensaje real y observa cómo cada capa de protocolo se anima mientras tus datos recorren la pila de red.",
+    "modeSameMachine": "Misma máquina",
+    "modeSameMachineDesc": "Dos pestañas del navegador en este equipo. Los mensajes viajan por BroadcastChannel — nunca salen de tu máquina.",
+    "modeSameNetwork": "Misma red",
+    "modeSameNetworkDesc": "Dos dispositivos en tu WiFi local o LAN. Los mensajes pasan por un relay pero se quedan en tu red.",
+    "modeAnywhere": "Cualquier lugar del mundo",
+    "modeAnywhereDesc": "Dos dispositivos en cualquier parte del mundo. Los mensajes viajan a través de un relay en la nube — enrutamiento real por Internet.",
+    "nickname": "Tu apodo",
+    "nicknamePlaceholder": "p. ej., Alice",
+    "roomCode": "Código de sala (déjalo vacío para crear una nueva sala)",
+    "start": "Empezar a chatear",
+    "geoDetected": "Región detectada",
+    "peers": "participante(s)",
+    "emptyChat": "Envía un mensaje para verlo recorrer la pila de red.",
+    "openTab": "Abre otra pestaña en esta URL para chatear contigo mismo.",
+    "inputPlaceholder": "Escribe un mensaje...",
+    "noPacket": "Envía o recibe un mensaje para ver las capas de protocolo.",
+    "protocolStack": "Pila de protocolos",
+    "physicalLayer": "Capa física",
+    "encapsulating": "Encapsulando ↓",
+    "decapsulating": "Desencapsulando ↑",
+    "pause": "Pausa",
+    "resume": "Reanudar",
+    "step": "Paso",
+    "skip": "Saltar",
+    "fieldValue": "Valor",
+    "whyMatters": "¿Por qué es importante?",
+    "syntheticField": "Este campo es simulado — en este modo, el valor se genera para mostrarte cómo se vería en una red real.",
+    "endiannessTitle": "Endianismo: orden de bytes de red",
+    "endiannessExplain": "Tu CPU (x86) almacena este número con el byte menos significativo primero (little-endian). Pero el estándar de red (RFC 1700) requiere el byte más significativo primero (big-endian). Esto se llama \"orden de bytes de red\".",
+    "hostOrder": "Orden del host (little-endian):",
+    "networkOrder": "Orden de red (big-endian):",
+    "endiannessC": "En C, conviertes con: htons() para 16 bits, htonl() para 32 bits (host a red). Y ntohs()/ntohl() para lo inverso.",
+    "endiannessScenario": "Escenario completo de endianismo",
+    "bitstreamLabel": "Estos bits viajarían como pulsos eléctricos por un cable o como ondas de radio por WiFi.",
+    "clickToCopy": "Haz clic para copiar",
+    "joinSubtitle": "Has sido invitado a una sala de chat. Ingresa tu nombre para unirte.",
+    "joiningRoom": "Uniéndose a la sala",
+    "join": "Unirse al chat",
+    "replayAnimation": "Haz clic para repetir la animación",
+    "clickToReplay": "(clic para repetir)"
   },
   "common": {
     "save": "Guardar",

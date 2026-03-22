@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next';
 
 const DIFFICULTY_COLORS = {
+  elementary: { bg: '#052e16', color: '#a3e635', border: '#65a30d' },
   beginner: { bg: '#052e16', color: '#4ade80', border: '#16a34a' },
   intermediate: { bg: '#172554', color: '#60a5fa', border: '#2563eb' },
   advanced: { bg: '#3b0764', color: '#c084fc', border: '#7c3aed' },
@@ -43,6 +44,17 @@ export default function ScenarioCard({ scenario, onClick }) {
         }}>
           {t(`difficulty.${scenario.difficulty}`, scenario.difficulty)}
         </span>
+        {scenario.type === 'interactive' && (
+          <span style={{
+            background: '#052e16', color: '#4ade80',
+            fontSize: 9, fontWeight: 700, padding: '2px 8px', borderRadius: 3,
+            border: '1px solid #16a34a44',
+            animation: 'pvz-live-pulse 2s ease-in-out infinite',
+            marginInlineStart: 'auto',
+          }}>
+            ● LIVE
+          </span>
+        )}
       </div>
 
       {/* Title */}

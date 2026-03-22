@@ -14,6 +14,7 @@
     "disclaimer": "프로토콜 설명은 오픈소스 구현(Linux kernel, rdma-core)과 공개 RFC를 기반으로 합니다. 사양 참조는 추가 참고를 위한 인용이며, 독점 텍스트는 복제되지 않았습니다."
   },
   "difficulty": {
+    "elementary": "입문",
     "beginner": "초급",
     "intermediate": "중급",
     "advanced": "고급"
@@ -36,7 +37,8 @@
     "target": "대상",
     "popoutTitle": "별도 창으로 열기",
     "bytesUnit": "{{count}} bytes",
-    "bytesTotal": "총 {{count}} bytes"
+    "bytesTotal": "총 {{count}} bytes",
+    "analyzeCapture": "캡처 분석하기"
   },
   "tabs": {
     "explain": "설명",

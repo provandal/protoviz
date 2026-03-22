@@ -1,14 +1,14 @@
 {
   "meta": {
     "title": "IPv6 Path MTU Discovery: Poukisa Router Yo Pa Ka Fragmante",
-    "description": "Path MTU Discovery (PMTUD) obligatwa nan IPv6 paske router yo entèdi fragmante pakè — sèlman machin sous la ka fragmante. Senaryo sa a kontraste apwòch IPv4 la (nenpòt router ka fragmante ak DF=0) ak PMTUD IPv6 (router jete pakè twò gwo epi voye ICMPv6 Packet Too Big), answit montre senaryo katastwofik twou nwa PMTUD lè firewall bloke ICMPv6.",
+    "description": "Path MTU Discovery (PMTUD) obligatwa nan IPv6 paske router yo entèdi fragmante pakè — sèlman machin sous la ka fragmante. Senaryo sa a kontraste apwòch IPv4 la (nenpòt router ka fragmante ak DF=0) ak PMTUD IPv6 (router jete pakè twò gwo epi voye ICMPv6 Packet Too Big), answit montre senaryo katastwofik twou nwa PMTUD lè yon politik ACL twò konsèvatif jete ICMPv6 pa aksidan.",
     "learning_objectives": [
       "Konprann poukisa IPv6 elimine fragmantasyon router — yon chanjman konsepsyon fondamantal soti nan IPv4",
       "Swiv fliks mesaj ICMPv6 Packet Too Big epi wè kijan li deklanche mizajou kach Path MTU",
       "Obsève diferans ant fragmantasyon router IPv4 (DF=0) ak fragmantasyon sèlman-sous IPv6",
       "Wè kijan antèt ekstansyon Fragment IPv6 (Next Header 44) fonksyone lè sous la dwe fragmante",
       "Konprann ajisteman TCP MSS baze sou rezilta PMTUD — pifò aplikasyon pa janm wè pwoblèm MTU",
-      "Rekonèt pwoblèm twou nwa PMTUD ki koze pa firewall ki bloke ICMPv6",
+      "Rekonèt pwoblèm twou nwa PMTUD ki koze pa politik ACL ki jete ICMPv6 pa aksidan",
       "Konnen ki mesaj ICMPv6 ki pa dwe janm filtre (RFC 4890)",
       "Idantifye tinèl (6in4, GRE, IPsec) kòm koz ki pi komen MTU redwi sou chemen IPv6"
     ]
@@ -75,20 +75,20 @@
       "detail": "IPv6 Path MTU Discovery (RFC 8201) se yon mekanis pwòp ak efikas. Depans la se yon sèl pakè jete ak yon sèl mesaj ICMPv6 pa nouvo goulèt-detranglman dekouvri. Apre sa, chak pakè ki vin apre pafètman gwosè. Konpare sa a ak fragmantasyon router IPv4 kote chak pakè ki twò gwo fragmante a chak sèl — gaspiye CPU router, kreye pwoblèm reyasanblaj, epi pèmèt atak."
     },
     "15": {
-      "text": "Senaryo Twou Nwa: Machin A voye pakè IPv6 1500 oktè (firewall bloke ICMPv6)",
-      "detail": "Kounye a konsidere yon rezo kote yon firewall mal konfigire ant Router 1 ak Machin A jete tout mesaj ICMPv6. Sa a trajikman komen nan rezo antrepriz kote administratè sekirite aplike règ blanch tankou «refize tout ICMP.» Machin A voye menm pakè 1500 oktè a."
+      "text": "Senaryo Twou Nwa: Machin A voye pakè IPv6 1500 oktè (politik ACL jete ICMPv6 pa aksidan)",
+      "detail": "Kounye a konsidere yon rezo kote yon politik ACL twò konsèvatif ant Router 1 ak Machin A jete mesaj ICMPv6 pa aksidan. Sa a komen nan rezo antrepriz kote règ filtraj pèmèt sèlman kèk tip ICMPv6 eksplisit epi omèt pa aksidan tip esansyèl yo. Machin A voye menm pakè 1500 oktè a."
     },
     "16": {
       "text": "Router 1 jete pakè 1500 oktè a (twò gwo pou tinèl 1280 oktè)",
       "detail": "Router 1 jete pakè a pou menm rezon ke anvan — li depase MTU pwochen-sèl 1280 oktè epi router IPv6 pa ka fragmante. Router 1 kòrèkteman jenere yon mesaj ICMPv6 Packet Too Big (tip 2, kòd 0, MTU=1280) epi voye li nan direksyon Machin A."
     },
     "17": {
-      "text": "FIREWALL BLOKE ICMPv6 — mesaj Packet Too Big jete an silans!",
-      "detail": "Mesaj ICMPv6 Packet Too Big soti nan Router 1 frape yon firewall ki te konfigire pou bloke tout trafik ICMPv6. Firewall la jete mesaj la an silans. Machin A ap JANM aprann ke pakè li yo twò gwo. Sa a se koz rasin pwoblèm twou nwa PMTUD — yon entèmedyè devore mesaj ICMPv6 ki esansyèl pou fonksyònman nòmal rezo IPv6."
+      "text": "POLITIK ACL JETE ICMPv6 PA AKSIDAN — mesaj Packet Too Big filtre an silans!",
+      "detail": "Mesaj ICMPv6 Packet Too Big soti nan Router 1 frape yon politik ACL ki omèt ICMPv6 tip 2 nan lis pèmisyon li. Politik la jete mesaj la an silans. Machin A ap JANM aprann ke pakè li yo twò gwo. Sa a se koz rasin pwoblèm twou nwa PMTUD. RFC 4890 Seksyon 4.3.1 eksplisit: mesaj ICMPv6 Packet Too Big (tip 2) dwe toujou pèmèt. Omèt yo nan politik ACL kase konektivite IPv6 pou nenpòt chemen ak yon MTU redwi."
     },
     "18": {
       "text": "Machin A pa janm resevwa Packet Too Big — li pa gen okenn ide kisa ki pa bon",
-      "detail": "Pil TCP Machin A ap tann yon ACK soti nan Machin B ki pa pral janm vini. Segman done a te jete pa Router 1, epi notifikasyon ICMPv6 la te bloke pa firewall la. Nan pèspektiv Machin A, pakè a te senpleman disparèt. Mekanis retransmisyon TCP ap vin an jeu — men li ap retransmèt nan menm gwosè paske li pa konnen gen yon pwoblèm MTU."
+      "detail": "Pil TCP Machin A ap tann yon ACK soti nan Machin B ki pa pral janm vini. Segman done a te jete pa Router 1, epi notifikasyon ICMPv6 la te filtre pa politik ACL la. Nan pèspektiv Machin A, pakè a te senpleman disparèt. Mekanis retransmisyon TCP ap vin an jeu — men li ap retransmèt nan menm gwosè paske li pa konnen gen yon pwoblèm MTU."
     },
     "19": {
       "text": "Delè retransmisyon TCP — Machin A revoye menm pakè 1500 oktè a (toujou twò gwo)",
@@ -103,16 +103,16 @@
       "detail": "Apre plizyè retransmisyon ak backoff eksponansyèl, TCP ap finalman abandone epi reinisyalize koneksyon an (pa defo Linux: net.ipv4.tcp_retries2 = 15, ki ka pran plis ke 13 minit). Itilizatè a wè yon timeout oswa reinisyalizasyon koneksyon. Sa a se twou nwa PMTUD — pakè antre men done pa janm pase paske pakè done yo twò gwo epi sous la pa janm enfòme."
     },
     "22": {
-      "text": "Se poutèt sa ou pa DWE janm bloke ICMPv6 Packet Too Big (tip 2). Firewall ki bloke tout ICMPv6 kase IPv6.",
-      "detail": "RFC 4890 bay gidans eksplisit: mesaj ICMPv6 Packet Too Big (tip 2) DWE pèmèt pase nan firewall. Bloke yo kreye twou nwa PMTUD ki an silans kase konektivite IPv6 pou nenpòt chemen ak yon MTU redwi. Sa gen ladan lyen tinèl (6in4, GRE, IPsec, WireGuard), VPN ki redwi MTU, epi nenpòt lyen ak yon MTU pi ba pase 1500.\nOMenm minimòm, pèmèt: tip 1 (Destination Unreachable), tip 2 (Packet Too Big), tip 3 (Time Exceeded), tip 4 (Parameter Problem), tip 128/129 (Echo Request/Reply), tip 133-137 (NDP). Bloke sa yo kase IPv6 nan fason ki difisil pou dyagnostike."
+      "text": "ICMPv6 Packet Too Big (tip 2) dwe toujou pèmèt. Politik ACL ki pa aksidan omèt tip esansyèl yo kase IPv6.",
+      "detail": "RFC 4890 bay gidans eksplisit: mesaj ICMPv6 Packet Too Big (tip 2) dwe toujou pèmèt nan politik ACL. Omèt yo kreye twou nwa PMTUD ki an silans kase konektivite IPv6 pou nenpòt chemen ak yon MTU redwi. Sa gen ladan lyen tinèl (6in4, GRE, IPsec, WireGuard), VPN ki redwi MTU, epi nenpòt lyen ak yon MTU pi ba pase 1500.\nOMenm minimòm, pèmèt: tip 1 (Destination Unreachable), tip 2 (Packet Too Big), tip 3 (Time Exceeded), tip 4 (Parameter Problem), tip 128/129 (Echo Request/Reply), tip 133-137 (NDP). IPv6 depann sou ICMPv6 pou fonksyon nwayo — politik ACL dwe revize pou asire tip esansyèl (1-4) toujou pèmèt."
     }
   },
   "walkthroughs": {
     "default": {
       "title": "IPv6 Path MTU Discovery: Soti nan Fragmantasyon IPv4 rive nan Twou Nwa PMTUD",
-      "description": "Travèse poukisa IPv6 entèdi fragmantasyon router, kijan PMTUD dekouvri gwosè pakè kòrèk, ak kisa ki ale terib mal lè firewall bloke ICMPv6",
+      "description": "Travèse poukisa IPv6 entèdi fragmantasyon router, kijan PMTUD dekouvri gwosè pakè kòrèk, ak kisa ki ale terib mal lè politik ACL jete ICMPv6 pa aksidan",
       "steps": {
-        "0": "Nan IPv4, router ka fragmante. Nan IPv6, SÈLMAN SOUS la ka fragmante. Sa a se yon chanjman konsepsyon fondamantal. Ann wè poukisa sa enpòtan lè nou premye gade kijan IPv4 jere yon pakè twò gwo, answit gade IPv6 Path MTU Discovery an aksyon, epi finalman wè kisa ki ale katastwofik mal lè firewall bloke ICMPv6.",
+        "0": "Nan IPv4, router ka fragmante. Nan IPv6, SÈLMAN SOUS la ka fragmante. Sa a se yon chanjman konsepsyon fondamantal. Ann wè poukisa sa enpòtan lè nou premye gade kijan IPv4 jere yon pakè twò gwo, answit gade IPv6 Path MTU Discovery an aksyon, epi finalman wè kisa ki ale katastwofik mal lè politik ACL jete ICMPv6 pa aksidan.",
         "1": "Nou kòmanse ak apwòch IPv4 la pou konparezon. Machin A voye yon pakè IPv4 1500 oktè ak drapo Don't Fragment dezaktive (DF=0), sa vle di nenpòt router sou chemen an pèmèt kase li an moso. Pakè a gen 1460 oktè done aplikasyon nan yon antèt IP 20 oktè ak yon antèt TCP 20 oktè.",
         "2": "Router 1 resevwa pakè a epi cheke MTU pwochen-sèl — li sèlman 1280 oktè (yon lyen tinèl). Pakè 1500 oktè a pa pral antre. Men depi DF=0, Router 1 pèmèt fragmante. Li fann pakè a an de fragman ki pataje menm Identification, chak ase piti pou pase nan tinèl la.",
         "3": "Machin B resevwa toude fragman, reyasanble yo lè li itilize chan Identification, epi rekipere pakè orijinal la. Sa mache, men apwòch sa a gen pwoblèm grav: fragman ka rive nan dezòd, pèdi yon fragman gaspiye bann pasant tout lòt yo, atak ti-fragman ka kontoune firewall, epi NAT gen difikilte ak fragman.",
@@ -123,11 +123,11 @@
         "8": "Machin A retransmèt done yo kòm yon pakè 1280 oktè (40 IPv6 + 20 TCP + 1220 done). Router 1 kounye a transmèt li avèk siksè — pakè a antre nan MTU tinèl 1280 oktè. Yon sèl pakè jete ak yon sèl mesaj ICMPv6 se tout sa li te pran pou dekouvri goulèt-detranglman an.",
         "9": "Si sous la bezwen voye yon datagram pi gwo pase MTU chemen an (komen ak UDP), li ka itilize antèt ekstansyon Fragment IPv6 (Next Header = 44). Sa a se fragmantasyon SOUS, pa fragmantasyon router. Antèt Fragment gen Fragment Offset, drapo M (plis fragman), ak yon Identification 32-bit. Chak fragman endividyèlman antre nan MTU chemen an.",
         "10": "Ak MTU chemen an kache, pakè ki vin apre itilize gwosè kòrèk 1280 oktè depi kòmansman. Pa gen pakè ki jete, pa gen mesaj ICMPv6 ki nesesè. PMTUD elegan: dekouvri goulèt-detranglman an yon sèl fwa, answit optimize tout pakè ki vin apre. Kach la finalman ekspire (Linux: 10 minit pa defo) pou pèmèt eseyaj gwosè pi gwo ankò.",
-        "11": "Kounye a pou senaryo kochma: kisa ki rive lè yon firewall bloke ICMPv6. Machin A voye yon pakè 1500 oktè. Router 1 jete li (twò gwo pou tinèl la) epi voye yon mesaj Packet Too Big — men yon firewall ant Router 1 ak Machin A an silans jete tout mesaj ICMPv6. Machin A pa janm aprann pakè li yo twò gwo.",
+        "11": "Kounye a pou senaryo kochma: kisa ki rive lè yon politik ACL jete ICMPv6 pa aksidan. Machin A voye yon pakè 1500 oktè. Router 1 jete li (twò gwo pou tinèl la) epi voye yon mesaj Packet Too Big — men yon politik ACL twò konsèvatif ant Router 1 ak Machin A filtre pa aksidan tout trafik ICMPv6. Machin A pa janm aprann pakè li yo twò gwo. Sa a se twou nwa PMTUD, epi li se rezon nimewo en ki kase konektivite IPv6 nan rezo antrepriz.",
         "12": "Machin A tann yon TCP ACK ki pa pral janm vini. Apre delè retransmisyon (apeprè 1 segond), li retransmèt segman an — nan menm gwosè 1500 oktè, paske li pa te janm resevwa yon mesaj Packet Too Big. Router 1 jete li ankò. Packet Too Big la bloke ankò. RTO double a 2 segond. Answit 4 segond. Answit 8.",
         "13": "Pati enstidye nan yon twou nwa PMTUD se ke ti pakè toujou mache. TCP ACK (40 oktè), rekèt DNS, ak ping tout reyisi paske yo byen anba 1280 oktè. Sèlman segman ki pote done ki depase MTU goulèt-detranglman an echwe. Sa kreye sentòm dewoutan kote «rezo a mache» men «telechajman bloke» oswa «koneksyon bloke apre handshake.»",
-        "14": "Solisyon an senp epi pa negosyab: PA JANM bloke ICMPv6 Packet Too Big (tip 2). RFC 4890 dokimante egzakteman ki mesaj ICMPv6 ki pa dwe filtre. Omwen, pèmèt tip 1 (Destination Unreachable), tip 2 (Packet Too Big), tip 3 (Time Exceeded), tip 4 (Parameter Problem), ak tip 128/129 (Echo). Bloke sa yo kase IPv6 nan fason ki difisil pou dyagnostike.",
-        "15": "Ann rezime twa senaryo nou obsève: (1) IPv4 ak DF=0 — router fragmante, sa mache men kreye pwoblèm pèfòmans ak sekirite. (2) IPv6 PMTUD ki mache kòrèkteman — yon sèl pakè jete deklanche yon mesaj Packet Too Big, sous la aprann MTU kòrèk la, epi tout pakè ki vin apre optimize. (3) Twou nwa PMTUD — yon firewall bloke ICMPv6, sous la pa janm aprann MTU kòrèk la, epi koneksyon an vin enposib an silans. Leson an klè: IPv6 PMTUD se yon pi bon konsepsyon pase fragmantasyon router IPv4, men li DEPANN sou ICMPv6 ki rive."
+        "14": "Solisyon an senp epi pa negosyab: ICMPv6 Packet Too Big (tip 2) dwe toujou pèmèt. RFC 4890 dokimante egzakteman ki mesaj ICMPv6 ki pa dwe filtre. Omwen, pèmèt tip 1 (Destination Unreachable), tip 2 (Packet Too Big), tip 3 (Time Exceeded), tip 4 (Parameter Problem), ak tip 128/129 (Echo). Politik ACL ki pa aksidan omèt tip esansyèl yo kase IPv6 nan fason ki difisil pou dyagnostike.",
+        "15": "Ann rezime twa senaryo nou obsève: (1) IPv4 ak DF=0 — router fragmante, sa mache men kreye pwoblèm pèfòmans ak sekirite. (2) IPv6 PMTUD ki mache kòrèkteman — yon sèl pakè jete deklanche yon mesaj Packet Too Big, sous la aprann MTU kòrèk la, epi tout pakè ki vin apre optimize. (3) Twou nwa PMTUD — yon politik ACL jete ICMPv6 pa aksidan, sous la pa janm aprann MTU kòrèk la, epi koneksyon an vin enposib an silans. Leson an klè: IPv6 PMTUD se yon pi bon konsepsyon pase fragmantasyon router IPv4, men li DEPANN sou ICMPv6 ki rive."
       }
     }
   }

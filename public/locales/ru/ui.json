@@ -14,6 +14,7 @@
     "disclaimer": "Описания протоколов основаны на реализациях с открытым исходным кодом (Linux kernel, rdma-core) и публичных RFC. Ссылки на спецификации приведены для дальнейшего изучения — проприетарный текст не воспроизводился."
   },
   "difficulty": {
+    "elementary": "Начальный",
     "beginner": "Начинающий",
     "intermediate": "Средний",
     "advanced": "Продвинутый"
@@ -36,7 +37,8 @@
     "target": "Цель",
     "popoutTitle": "Открыть в отдельном окне",
     "bytesUnit": "{{count}} bytes",
-    "bytesTotal": "{{count}} bytes всего"
+    "bytesTotal": "{{count}} bytes всего",
+    "analyzeCapture": "Проанализируйте свой захват"
   },
   "tabs": {
     "explain": "Объяснение",

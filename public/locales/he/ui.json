@@ -14,6 +14,7 @@
     "disclaimer": "תיאורי הפרוטוקולים מבוססים על מימושי קוד פתוח (Linux kernel, rdma-core) ו-RFC ציבוריים. הפניות למפרטים הן ציטוטים לקריאה נוספת — לא שוכפל שום טקסט קנייני."
   },
   "difficulty": {
+    "elementary": "בסיסי",
     "beginner": "מתחיל",
     "intermediate": "בינוני",
     "advanced": "מתקדם"
@@ -36,7 +37,8 @@
     "target": "יעד",
     "popoutTitle": "פתיחה בחלון נפרד",
     "bytesUnit": "{{count}} bytes",
-    "bytesTotal": "סה״כ {{count}} bytes"
+    "bytesTotal": "סה״כ {{count}} bytes",
+    "analyzeCapture": "נתח את הלכידה שלך"
   },
   "tabs": {
     "explain": "הסבר",

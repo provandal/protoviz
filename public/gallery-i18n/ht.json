@@ -90,5 +90,13 @@
   "ipv6-path-mtu-discovery": {
     "title": "IPv6 Dekouvèt MTU Chemen: Fini ak Fragmantasyon Routeur",
     "description": "Poukisa PMTUD obligatwa nan IPv6: routeur pa ka fragmante, kidonk mesaj ICMPv6 Pakè Twò Gwo di sous la pou itilize pakè pi piti."
+  },
+  "hello-world-chat": {
+    "title": "Chat Bonjou Mond: Gade Mesaj Ou Travèse Pile Rezo a",
+    "description": "Voye yon vrè mesaj chat epi gade li anbale nan antèt WebSocket, TLS, TCP, IP, ak Ethernet — kouch pa kouch — epi vwayaje kòm bit sou fil la. Premye gade ou anndan pile rezo a, an dirèk."
+  },
+  "byte-order-endianness": {
+    "title": "Andyanis: Poukisa Rezo ak CPU Pa Dakò sou Lòd Bayt",
+    "description": "Little-endian vs big-endian: kijan CPU ou estoke 0x0050 yon fason men rezo a atann li yon lòt fason. Gade vrè erè ki rive lè ou bliye htons()."
   }
 }

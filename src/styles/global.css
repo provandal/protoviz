@@ -307,3 +307,50 @@ body {
 :root[lang="ar-LB"] body {
   font-family: 'IBM Plex Sans', 'Noto Sans Hebrew', 'Noto Sans Arabic', system-ui, sans-serif;
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   Hello World Chat — interactive scenario animations
+   ═══════════════════════════════════════════════════════════════ */
+
+/* LIVE badge pulse */
+@keyframes pvz-live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Layer encapsulation glow */
+@keyframes pvz-layer-glow {
+  0% { box-shadow: inset 0 0 0 1px var(--layer-color), 0 0 0px var(--layer-color); }
+  50% { box-shadow: inset 0 0 0 2px var(--layer-color), 0 0 12px var(--layer-color); }
+  100% { box-shadow: inset 0 0 0 1px var(--layer-color), 0 0 0px var(--layer-color); }
+}
+
+.pvz-layer-active {
+  animation: pvz-layer-glow 0.6s ease-in-out;
+}
+
+/* Bitstream scroll */
+@keyframes pvz-bitstream-scroll-ltr {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+@keyframes pvz-bitstream-scroll-rtl {
+  from { transform: translateX(0); }
+  to { transform: translateX(50%); }
+}
+
+.pvz-bitstream-scroll {
+  animation: pvz-bitstream-scroll-ltr 8s linear infinite;
+  will-change: transform;
+}
+
+[dir="rtl"] .pvz-bitstream-scroll {
+  animation-name: pvz-bitstream-scroll-rtl;
+}
+
+/* Layer card entrance */
+@keyframes pvz-layer-enter {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}

@@ -16,7 +16,8 @@
   "difficulty": {
     "beginner": "Debitan",
     "intermediate": "Entèmedyè",
-    "advanced": "Avanse"
+    "advanced": "Avanse",
+    "elementary": "Elemantè"
   },
   "filter": {
     "searchPlaceholder": "Chèche senaryo...",
@@ -36,7 +37,8 @@
     "target": "Sib",
     "popoutTitle": "Ouvri nan yon fenèt apa",
     "bytesUnit": "{{count}} bytes",
-    "bytesTotal": "{{count}} bytes total"
+    "bytesTotal": "{{count}} bytes total",
+    "analyzeCapture": "Analize fichye ou"
   },
   "tabs": {
     "explain": "Eksplike",
@@ -217,6 +219,50 @@
     "suggestRst": "Poukisa gen yon TCP RST?",
     "suggestPsn": "Eksplike diferans PSN RoCE la",
     "suggestNext": "Kisa mwen ta dwe verifye apre?"
+  },
+  "helloChat": {
+    "title": "Chat Bonjou Mond",
+    "subtitle": "Voye yon vrè mesaj epi gade chak kouch pwotokòl anime pandan done ou vwayaje nan pile rezo a.",
+    "modeSameMachine": "Menm Machin",
+    "modeSameMachineDesc": "De onglè navigatè sou òdinatè sa a. Mesaj yo vwayaje nan BroadcastChannel — yo pa janm kite machin ou.",
+    "modeSameNetwork": "Menm Rezo",
+    "modeSameNetworkDesc": "De aparèy sou WiFi lokal ou oswa LAN. Mesaj yo pase nan yon relè men yo rete sou rezo ou.",
+    "modeAnywhere": "Nenpòt kote sou Latè",
+    "modeAnywhereDesc": "De aparèy nenpòt kote nan mond lan. Mesaj yo vwayaje nan yon relè nan nyaj — vrè routaj entènèt.",
+    "nickname": "Non jwèt ou",
+    "nicknamePlaceholder": "pa egzanp, Alice",
+    "roomCode": "Kòd chanm (kite vid pou kreye yon nouvo chanm)",
+    "start": "Kòmanse Pale",
+    "geoDetected": "Rejyon detekte",
+    "peers": "patisipan",
+    "emptyChat": "Voye yon mesaj pou wè li vwayaje nan pile rezo a.",
+    "openTab": "Ouvri yon lòt onglè nan URL sa a pou pale ak tèt ou.",
+    "inputPlaceholder": "Tape yon mesaj...",
+    "noPacket": "Voye oswa resevwa yon mesaj pou wè kouch pwotokòl yo.",
+    "protocolStack": "Pile Pwotokòl",
+    "physicalLayer": "Kouch Fizik",
+    "encapsulating": "Ankapsilasyon ↓",
+    "decapsulating": "Dekapsilasyon ↑",
+    "pause": "Poz",
+    "resume": "Kontinye",
+    "step": "Etap",
+    "skip": "Sote",
+    "fieldValue": "Valè",
+    "whyMatters": "Poukisa sa enpòtan?",
+    "syntheticField": "Chan sa a se yon simulasyon — nan mòd sa a, valè a jenere pou montre ou ki jan li ta sanble sou yon vrè rezo.",
+    "endiannessTitle": "Andyanis: Lòd Bayt Rezo",
+    "endiannessExplain": "Pwosesè ou a (x86) estoke nimewo sa a ak bayt ki gen mwens valè an premye (little-endian). Men estanda rezo a (RFC 1700) mande bayt ki gen plis valè an premye (big-endian). Sa rele \"lòd bayt rezo\".",
+    "hostOrder": "Lòd machin (little-endian):",
+    "networkOrder": "Lòd rezo (big-endian):",
+    "endiannessC": "Nan C, ou konvèti ak: htons() pou 16-bit, htonl() pou 32-bit (machin-a-rezo). Epi ntohs()/ntohl() pou envès la.",
+    "endiannessScenario": "Senaryo andyanis konplè",
+    "bitstreamLabel": "Bit sa yo ta vwayaje kòm enpilsyon elektrik nan yon kab oswa ond radyo nan WiFi.",
+    "clickToCopy": "Klike pou kopye",
+    "joinSubtitle": "Yo envite ou nan yon sal chat. Antre non ou pou w jwenn.",
+    "joiningRoom": "Ap jwenn sal",
+    "join": "Jwenn Chat",
+    "replayAnimation": "Klike pou rejwe animasyon an",
+    "clickToReplay": "(klike pou rejwe)"
   },
   "common": {
     "save": "Anrejistre",

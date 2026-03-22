@@ -90,5 +90,13 @@
   "ipv6-path-mtu-discovery": {
     "title": "IPv6 Path MTU Discovery: ルーターフラグメンテーションの廃止",
     "description": "PMTUDがIPv6で必須である理由：ルーターはフラグメントできないため、ICMPv6 Packet Too Bigメッセージが送信元により小さなパケットの使用を指示する。"
+  },
+  "hello-world-chat": {
+    "title": "Hello World チャット：メッセージがネットワークスタックを通過する様子を観察",
+    "description": "実際のチャットメッセージを送信し、WebSocket、TLS、TCP、IP、Ethernetヘッダーに一層ずつ包まれ、ワイヤー上をビットとして伝送される様子をリアルタイムで観察します。"
+  },
+  "byte-order-endianness": {
+    "title": "エンディアンネス：ネットワークとCPUがバイト順で一致しない理由",
+    "description": "リトルエンディアンとビッグエンディアン：CPUは0x0050をある方法で格納しますが、ネットワークは別の方法を期待します。htons()を忘れた時の実際のバグを見てみましょう。"
   }
 }

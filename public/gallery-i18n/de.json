@@ -90,5 +90,13 @@
   "ipv6-path-mtu-discovery": {
     "title": "IPv6 Pfad-MTU-Erkennung: Keine Router-Fragmentierung mehr",
     "description": "Warum PMTUD in IPv6 verpflichtend ist: Router können nicht fragmentieren, daher teilen ICMPv6-Paket-zu-groß-Nachrichten der Quelle mit, kleinere Pakete zu verwenden."
+  },
+  "hello-world-chat": {
+    "title": "Hello World Chat: Beobachte deine Nachricht durch den Netzwerk-Stack",
+    "description": "Sende eine echte Chat-Nachricht und beobachte, wie sie Schicht für Schicht in WebSocket-, TLS-, TCP-, IP- und Ethernet-Header verpackt wird — und dann als Bits über die Leitung wandert. Dein erster Blick in den Netzwerk-Stack, live."
+  },
+  "byte-order-endianness": {
+    "title": "Endianness: Warum Netzwerke und CPUs sich bei der Byte-Reihenfolge nicht einig sind",
+    "description": "Little-Endian vs. Big-Endian: Wie deine CPU 0x0050 auf eine Art speichert, das Netzwerk es aber anders erwartet. Sieh den echten Bug, wenn man htons() vergisst."
   }
 }
