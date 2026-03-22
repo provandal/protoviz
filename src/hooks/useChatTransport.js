@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import useChatStore, { macFromString, ipFromString, portFromString } from '../store/chatStore';
 
-const RELAY_URL = import.meta.env.VITE_RELAY_URL || 'wss://protoviz-relay.deno.dev';
+const RELAY_URL = import.meta.env.VITE_RELAY_URL || 'wss://protoviz.provandal.deno.net';
 
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },

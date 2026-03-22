@@ -262,7 +262,8 @@
     "joiningRoom": "Ap jwenn sal",
     "join": "Jwenn Chat",
     "replayAnimation": "Klike pou rejwe animasyon an",
-    "clickToReplay": "(klike pou rejwe)"
+    "clickToReplay": "(klike pou rejwe)",
+    "relayTemporarilyUnavailable": "Sèvè relè a pa disponib pou kounye a. Ou ka toujou itilize mòd \"Menm Machin\" oswa héberger relè a ou menm."
   },
   "common": {
     "save": "Anrejistre",

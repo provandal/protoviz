@@ -220,6 +220,9 @@
     "suggestPsn": "Erkläre die RoCE PSN-Lücke",
     "suggestNext": "Was sollte ich als Nächstes prüfen?"
   },
+  "helloChat": {
+    "relayTemporarilyUnavailable": "Der Relay-Server ist vorübergehend nicht verfügbar. Sie können den Modus \"Selber Rechner\" verwenden oder den Relay selbst hosten."
+  },
   "common": {
     "save": "Speichern",
     "cancel": "Abbrechen",

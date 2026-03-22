@@ -262,7 +262,8 @@
     "joiningRoom": "Rejoindre le salon",
     "join": "Rejoindre le chat",
     "replayAnimation": "Cliquez pour rejouer l'animation",
-    "clickToReplay": "(cliquez pour rejouer)"
+    "clickToReplay": "(cliquez pour rejouer)",
+    "relayTemporarilyUnavailable": "Le serveur relais est temporairement indisponible. Vous pouvez utiliser le mode \"Même Machine\" ou héberger le relais vous-même."
   },
   "common": {
     "save": "Enregistrer",

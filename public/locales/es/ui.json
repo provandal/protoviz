@@ -262,7 +262,8 @@
     "joiningRoom": "Uniéndose a la sala",
     "join": "Unirse al chat",
     "replayAnimation": "Haz clic para repetir la animación",
-    "clickToReplay": "(clic para repetir)"
+    "clickToReplay": "(clic para repetir)",
+    "relayTemporarilyUnavailable": "El servidor relay no está disponible temporalmente. Puedes usar el modo \"Misma Máquina\" o alojar el relay tú mismo."
   },
   "common": {
     "save": "Guardar",

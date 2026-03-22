@@ -220,6 +220,9 @@
     "suggestPsn": "RoCE PSNギャップを説明して",
     "suggestNext": "次に何を確認すべきですか？"
   },
+  "helloChat": {
+    "relayTemporarilyUnavailable": "リレーサーバーは一時的に利用できません。「同じマシン」モードを使用するか、リレーを自分でホストできます。"
+  },
   "common": {
     "save": "保存",
     "cancel": "キャンセル",

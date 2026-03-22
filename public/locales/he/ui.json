@@ -220,6 +220,9 @@
     "suggestPsn": "הסבר את פער RoCE PSN",
     "suggestNext": "מה עליי לבדוק עכשיו?"
   },
+  "helloChat": {
+    "relayTemporarilyUnavailable": "שרת הממסר אינו זמין זמנית. אפשר להשתמש במצב \"אותו מחשב\" או לארח את הממסר בעצמך."
+  },
   "common": {
     "save": "שמירה",
     "cancel": "ביטול",

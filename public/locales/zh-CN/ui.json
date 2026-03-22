@@ -262,7 +262,8 @@
     "joiningRoom": "正在加入房间",
     "join": "加入聊天",
     "replayAnimation": "点击重播动画",
-    "clickToReplay": "（点击重播）"
+    "clickToReplay": "（点击重播）",
+    "relayTemporarilyUnavailable": "中继服务器暂时不可用。您仍然可以使用\u201c同一台电脑\u201d模式，或自行托管中继服务器。"
   },
   "common": {
     "save": "保存",

@@ -220,6 +220,9 @@
     "suggestPsn": "Explique o gap de RoCE PSN",
     "suggestNext": "O que devo verificar em seguida?"
   },
+  "helloChat": {
+    "relayTemporarilyUnavailable": "O servidor relay está temporariamente indisponível. Você pode usar o modo \"Mesma Máquina\" ou hospedar o relay você mesmo."
+  },
   "common": {
     "save": "Salvar",
     "cancel": "Cancelar",

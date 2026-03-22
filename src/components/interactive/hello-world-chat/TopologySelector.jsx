@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import useChatStore from '../../../store/chatStore';
 import LanguageSelector from '../../common/LanguageSelector';
 
-const RELAY_URL = import.meta.env.VITE_RELAY_URL || 'wss://protoviz-relay.deno.dev';
+const RELAY_URL = import.meta.env.VITE_RELAY_URL || 'wss://protoviz.provandal.deno.net';
 
 const MODES = [
   {
@@ -296,11 +296,6 @@ export default function TopologySelector({ initialRoom = '', initialMode = null 
                               ? t('helloChat.relayChecking', 'Checking relay...')
                               : t('helloChat.relayOffline', 'Relay server offline')}
                         </span>
-                        {relayStatus === 'offline' && isSelected && (
-                          <span style={{ color: '#64748b' }}>
-                            — {t('helloChat.relaySetupHint', 'see setup instructions below')}
-                          </span>
-                        )}
                       </div>
                     )}
                   </div>
@@ -355,107 +350,27 @@ export default function TopologySelector({ initialRoom = '', initialMode = null 
             : t('helloChat.start', 'Start Chatting')}
         </button>
 
-        {/* Relay setup instructions — shown when user selected Mode 2/3 but relay is offline */}
+        {/* Brief offline notice — relay is normally always online */}
         {!isJoining && needsRelayButOffline && (
           <div style={{
-            marginTop: 24, maxWidth: 520, width: '100%',
-            background: '#0f172a', border: '1px solid #1e293b', borderRadius: 10,
-            padding: '20px 24px',
+            marginTop: 16, maxWidth: 420, width: '100%',
+            background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8,
+            padding: '14px 18px', textAlign: 'center',
           }}>
-            <div style={{
-              color: '#ef4444', fontSize: 13, fontWeight: 700, marginBottom: 12,
-              display: 'flex', alignItems: 'center', gap: 8,
-            }}>
-              <span style={{
-                width: 8, height: 8, borderRadius: '50%', background: '#ef4444',
-                display: 'inline-block',
-              }} />
+            <div style={{ color: '#ef4444', fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
               {t('helloChat.relayOffline', 'Relay server offline')}
             </div>
-            <div style={{ color: '#94a3b8', fontSize: 12, lineHeight: 1.8 }}>
-              <p style={{ color: '#e2e8f0', margin: '0 0 12px 0' }}>
-                {t('helloChat.relayExplain', 'This mode requires a lightweight relay server to connect browsers. The relay is a small open-source program that forwards messages between participants.')}
-              </p>
-              <p style={{ color: '#94a3b8', margin: '0 0 16px 0', fontSize: 11 }}>
-                {t('helloChat.relayPrivacy', 'The relay sees only encrypted room codes — it cannot read your messages and stores nothing.')}
-              </p>
-
-              <div style={{ color: '#e2e8f0', fontWeight: 600, marginBottom: 10, fontSize: 12 }}>
-                {t('helloChat.setupTitle', 'How to get started:')}
-              </div>
-
-              {/* Self-host option */}
-              <div style={{
-                background: '#1e293b', border: '1px solid #334155', borderRadius: 8,
-                padding: '12px 16px', marginBottom: 10,
-              }}>
-                <div style={{ color: '#e2e8f0', fontSize: 11, fontWeight: 700, marginBottom: 6 }}>
-                  {t('helloChat.setupSelfHost', '1. Run it yourself (2 minutes)')}
-                </div>
-                <div style={{ color: '#94a3b8', fontSize: 11, marginBottom: 8 }}>
-                  {t('helloChat.setupCloneInstructions', 'Clone the ProtoViz repo, then run the relay:')}
-                </div>
-                <code style={{
-                  display: 'block', background: '#020817', color: '#60a5fa',
-                  padding: '10px 14px', borderRadius: 6, fontSize: 11,
-                  fontFamily: "'IBM Plex Mono', monospace", lineHeight: 2,
-                  border: '1px solid #1e293b',
-                }}>
-                  git clone https://github.com/provandal/protoviz.git<br />
-                  cd protoviz/relay-server<br />
-                  npm install && npm start
-                </code>
-                <div style={{ color: '#64748b', fontSize: 10, marginTop: 6 }}>
-                  {t('helloChat.setupLocalNote', 'Runs on port 8080. Set VITE_RELAY_URL=ws://localhost:8080 in .env if running the app locally.')}
-                </div>
-              </div>
-
-              {/* Cloud deploy option */}
-              <div style={{
-                background: '#1e293b', border: '1px solid #334155', borderRadius: 8,
-                padding: '12px 16px', marginBottom: 10,
-              }}>
-                <div style={{ color: '#e2e8f0', fontSize: 11, fontWeight: 700, marginBottom: 6 }}>
-                  {t('helloChat.setupCloud', '2. Deploy to the cloud for free')}
-                </div>
-                <ol style={{
-                  color: '#94a3b8', fontSize: 11, lineHeight: 2,
-                  margin: '0', paddingInlineStart: 18,
-                }}>
-                  <li>{t('helloChat.setupCloudStep1', 'Fork the ProtoViz repo on GitHub')}</li>
-                  <li>{t('helloChat.setupCloudStep2', 'Go to console.deno.com and sign in (free)')}</li>
-                  <li>{t('helloChat.setupCloudStep3', 'Click "New Project" → "Deploy from GitHub"')}</li>
-                  <li>{t('helloChat.setupCloudStep4', 'Select your forked protoviz repository')}</li>
-                  <li>{t('helloChat.setupCloudStep5', 'Set the entry point to relay-server/deno-relay.ts')}</li>
-                  <li>{t('helloChat.setupCloudStep6', 'Name the project (e.g., protoviz-relay) and click Deploy')}</li>
-                </ol>
-                <div style={{ color: '#64748b', fontSize: 10, marginTop: 6 }}>
-                  {t('helloChat.setupCloudNote', 'Your relay URL will be https://your-project-name.deno.dev. It auto-deploys on every push.')}
-                </div>
-              </div>
-
-              {/* Links */}
-              <div style={{
-                display: 'flex', gap: 16, marginTop: 4, fontSize: 11,
-              }}>
-                <a
-                  href="https://github.com/provandal/protoviz/tree/main/relay-server"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ color: '#3b82f6', textDecoration: 'none' }}
-                >
-                  {t('helloChat.setupViewSource', 'View relay source on GitHub')}
-                </a>
-                <a
-                  href="https://dash.deno.com"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ color: '#3b82f6', textDecoration: 'none' }}
-                >
-                  {t('helloChat.setupDenoDashboard', 'Deno Deploy dashboard')}
-                </a>
-              </div>
+            <div style={{ color: '#94a3b8', fontSize: 11, lineHeight: 1.6 }}>
+              {t('helloChat.relayTemporarilyUnavailable', 'The relay server is temporarily unavailable. You can still use "Same Machine" mode, or self-host the relay.')}
             </div>
+            <a
+              href="https://github.com/provandal/protoviz/tree/main/relay-server"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: '#3b82f6', textDecoration: 'none', fontSize: 11, marginTop: 8, display: 'inline-block' }}
+            >
+              {t('helloChat.setupViewSource', 'View relay source on GitHub')}
+            </a>
           </div>
         )}
       </div>
