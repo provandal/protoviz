@@ -15,7 +15,8 @@ meta:
     - Recognize the bug caused by missing htons()/htonl() calls
     - Learn the four conversion functions (htons, htonl, ntohs, ntohl)
   authors:
-    - Erik Smith
+    - name: "Erik Smith"
+      org: "Dell Technologies"
   created: "2026-03-20"
   tags:
     - endianness
@@ -27,231 +28,347 @@ meta:
     - beginner
     - education
   primary_specs:
-    - id: rfc1700
-      title: "RFC 1700 — Assigned Numbers (defines network byte order)"
+    - document: "RFC 1700"
+      title: "Assigned Numbers (defines network byte order)"
       url: "https://datatracker.ietf.org/doc/html/rfc1700"
-    - id: rfc791
-      title: "RFC 791 — Internet Protocol (fields are big-endian)"
+    - document: "RFC 791"
+      title: "Internet Protocol (fields are big-endian)"
       url: "https://datatracker.ietf.org/doc/html/rfc791"
 
-actors:
-  - id: cpu
-    label: "Your CPU (x86)"
-    description: "An x86 processor that stores numbers in little-endian order"
-    color: "#3b82f6"
-    x: 15
-    y: 50
-  - id: memory
-    label: "RAM"
-    description: "System memory showing byte layout at specific addresses"
-    color: "#8b5cf6"
-    x: 40
-    y: 50
-  - id: nic
-    label: "Network Card"
-    description: "The NIC that puts bytes on the wire in network byte order"
-    color: "#0f766e"
-    x: 65
-    y: 50
-  - id: wire
-    label: "The Wire"
-    description: "Ethernet cable carrying bytes in big-endian (network) order"
-    color: "#92400e"
-    x: 85
-    y: 50
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: cpu
+      type: host
+      label: "Your CPU (x86)"
+      description: "An x86 processor that stores numbers in little-endian order"
+      hardware: "Intel/AMD x86_64"
+      ip: "192.168.1.100"
+      mac: "00:11:22:33:44:01"
+      position: left
 
-timeline:
-  # Phase 1: The Setup
-  - step: 0
-    type: phase_label
-    phase: "The Setup"
-    label: "What is endianness?"
-    detail: >
-      You have a 16-bit number: 0x0050 (decimal 80 — the HTTP port number).
-      This is two bytes: 0x00 and 0x50. But which byte goes first in memory?
+    - id: nic
+      type: host
+      label: "Network Card"
+      description: "The NIC that reads bytes from memory and puts them on the wire"
+      hardware: "10GbE NIC"
+      ip: "192.168.1.100"
+      mac: "00:11:22:33:44:01"
+      position: right
 
-  - step: 1
-    type: note
-    phase: "The Setup"
-    label: "Little-endian: least significant byte first"
-    detail: >
-      Your x86 CPU stores the LEAST significant byte at the LOWEST address.
-      So 0x0050 becomes: address 0 = 0x50, address 1 = 0x00.
-      It looks "backwards" to humans, but the CPU likes it this way because
-      it can start adding from the low byte without knowing the total size.
+# ─────────────────────────────────────────────────────────────────
+# FRAMES
+# ─────────────────────────────────────────────────────────────────
+frames:
+  - id: broken_packet
+    name: "IPv4 Header (endianness bug)"
     from: cpu
-    to: memory
+    to: nic
+    total_bytes: 20
+    headers:
+      - name: "IPv4"
+        layer: 3
+        fields:
+          - name: "Version + IHL"
+            abbrev: "ip.ver_ihl"
+            bits: 8
+            value: "0x45"
+            description: "Correct — single-byte fields are not affected by endianness"
+          - name: "Total Length (BUGGY)"
+            abbrev: "ip.total_length"
+            bits: 16
+            value: "0x5000 (should be 0x0050)"
+            description: >
+              BUG: The programmer wrote header->total_length = 80 without calling htons().
+              x86 stored this as 0x50, 0x00 in memory (little-endian). The NIC copied those
+              exact bytes onto the wire. The receiver interprets them as big-endian: 0x5000 = 20,480.
+              The packet is only 80 bytes, but the receiver thinks it's 20,480 bytes.
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.1.100"
+            description: "IP addresses use inet_pton() which stores them in network byte order automatically"
 
-  - step: 2
+  - id: fixed_packet
+    name: "IPv4 Header (correct)"
+    from: cpu
+    to: nic
+    total_bytes: 20
+    headers:
+      - name: "IPv4"
+        layer: 3
+        fields:
+          - name: "Version + IHL"
+            abbrev: "ip.ver_ihl"
+            bits: 8
+            value: "0x45"
+            description: "Single-byte field — endianness does not apply"
+          - name: "Total Length (CORRECT)"
+            abbrev: "ip.total_length"
+            bits: 16
+            value: "0x0050 (decimal 80)"
+            description: >
+              htons(80) correctly converts to network byte order. On x86, this swaps the two
+              bytes: 0x50,0x00 → 0x00,0x50. The wire now carries 0x0050 and the receiver reads
+              it correctly as 80. On a big-endian CPU, htons() is a no-op — the bytes are already
+              in the right order.
+            spec_refs:
+              - document: "RFC 791"
+                section: "3.1"
+                title: "Internet Header Format — Total Length field"
+                url: "https://datatracker.ietf.org/doc/html/rfc791#section-3.1"
+            kernel_ref:
+              file: "net/ipv4/ip_output.c"
+              function: "ip_build_and_send_pkt"
+              notes: "iph->tot_len = htons(skb->len)"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.1.100"
+            description: "inet_pton(AF_INET, \"192.168.1.100\", &addr) stores this in network order automatically"
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+  # Phase 1: The Setup — What is endianness?
+  - id: evt_setup_intro
     type: note
-    phase: "The Setup"
-    label: "Big-endian: most significant byte first"
-    detail: >
-      Network byte order is big-endian: most significant byte first.
-      So 0x0050 becomes: byte 0 = 0x00, byte 1 = 0x50.
-      This is how humans naturally read numbers — left to right, big digit first.
-      SPARC, PowerPC, and network protocols all use this order.
-    from: memory
+    annotation:
+      text: "What is endianness?"
+      detail: >
+        You have a 16-bit number: 0x0050 (decimal 80 — the HTTP port number).
+        That's two bytes: 0x00 and 0x50. But which byte comes first when you store
+        it in memory? That depends on your CPU's "endianness" — the order it arranges
+        bytes for multi-byte values. This matters because your CPU and the network
+        disagree on the correct order.
+    from: cpu
+    to: cpu
+
+  - id: evt_little_endian
+    type: note
+    annotation:
+      text: "Little-endian: least significant byte first"
+      detail: >
+        Your x86 CPU stores the LEAST significant byte at the LOWEST address.
+        So 0x0050 is stored as: address 0 → 0x50, address 1 → 0x00.
+
+        It looks "backwards" to humans, but the CPU prefers it: when adding numbers,
+        it can start with the least significant byte immediately, without needing to
+        know how many bytes the number occupies. Intel x86, AMD64, ARM (default mode),
+        and RISC-V all use little-endian.
+
+        Memory layout for port 80 (0x0050) on x86:
+          Address 0x1000: 0x50  (least significant byte)
+          Address 0x1001: 0x00  (most significant byte)
+    from: cpu
+    to: cpu
+
+  - id: evt_big_endian
+    type: note
+    annotation:
+      text: "Big-endian: most significant byte first (network byte order)"
+      detail: >
+        Network byte order is big-endian: the most significant byte goes first.
+        So 0x0050 is sent as: byte 0 → 0x00, byte 1 → 0x50.
+
+        This is how humans naturally read numbers — left to right, biggest digit first.
+        When you see "0050" you read it as fifty, not five-thousand-and-something.
+        SPARC, PowerPC, and all internet protocol headers use big-endian.
+
+        Wire layout for port 80 (0x0050):
+          Byte 0: 0x00  (most significant byte — sent first)
+          Byte 1: 0x50  (least significant byte — sent second)
+    from: cpu
     to: nic
 
   # Phase 2: Why Both Exist
-  - step: 3
-    type: phase_label
-    phase: "Why Both Exist"
-    label: "A historical accident"
-    detail: >
-      In the 1970s, different CPU designers made different choices.
-      Intel chose little-endian. Motorola chose big-endian.
-      When the internet was designed, they had to pick one standard for the wire.
-      RFC 1700 chose big-endian and called it "network byte order."
-
-  - step: 4
+  - id: evt_history
     type: note
-    phase: "Why Both Exist"
-    label: "RFC 1700 establishes network byte order"
-    detail: >
-      "The convention in the documentation of Internet Protocols is to express
-      numbers in decimal and to picture data in 'big-endian' order."
-      Every multi-byte field in every protocol header — IP addresses, port numbers,
-      lengths, checksums — is big-endian on the wire, regardless of CPU architecture.
-    from: nic
-    to: wire
+    annotation:
+      text: "A historical accident — why two byte orders exist"
+      detail: >
+        In the 1970s, different CPU designers made different choices for good reasons.
+        Intel chose little-endian because it simplifies multi-precision arithmetic.
+        Motorola chose big-endian because it matches human reading order.
 
-  # Phase 3: The Bug
-  - step: 5
-    type: phase_label
-    phase: "The Bug"
-    label: "What happens when you forget to convert"
-    detail: >
-      A programmer writes: header->total_length = 80; on an x86 machine.
-      The CPU stores this as 0x50 0x00 (little-endian).
-      The NIC sends those exact bytes onto the wire.
-      The receiver reads them as 0x5000 = 20,480 instead of 80.
-
-  - step: 6
-    type: frame_tx
-    phase: "The Bug"
-    label: "Broken packet: receiver sees wrong length"
-    detail: >
-      The IP Total Length field says 20,480 bytes but the packet is only 80 bytes.
-      The receiver either drops the packet (length exceeds frame),
-      waits for bytes that will never arrive, or reads garbage past the end.
-      One missing function call — and the connection fails silently.
-    from: cpu
-    to: wire
-    frame:
-      id: broken-packet
-      name: "IPv4 Header (endianness bug)"
-      headers:
-        - protocol: IPv4
-          fields:
-            - name: Version + IHL
-              abbrev: ip.ver_ihl
-              bits: 8
-              value: "0x45"
-              desc: "Correct — single-byte fields are not affected by endianness"
-            - name: Total Length (BUGGY)
-              abbrev: ip.total_length
-              bits: 16
-              value: "0x5000 (should be 0x0050)"
-              desc: "BUG: stored in host byte order (little-endian) instead of network byte order"
-            - name: Source IP
-              abbrev: ip.src
-              bits: 32
-              value: "192.168.1.100"
-              desc: "IP addresses are also multi-byte — but inet_pton() handles conversion for you"
-
-  # Phase 4: The Fix
-  - step: 7
-    type: phase_label
-    phase: "The Fix"
-    label: "Four functions that fix everything"
-    detail: >
-      The C standard library provides four conversion functions.
-      On a big-endian CPU, these are no-ops. On x86, they swap bytes.
-      htons() = host-to-network-short (16-bit).
-      htonl() = host-to-network-long (32-bit).
-      ntohs() = network-to-host-short (16-bit).
-      ntohl() = network-to-host-long (32-bit).
-
-  - step: 8
-    type: note
-    phase: "The Fix"
-    label: "Correct code: htons(80) → 0x0050 on wire"
-    detail: >
-      header->total_length = htons(80);
-      On x86, htons(80) swaps the bytes: 0x50,0x00 → 0x00,0x50.
-      Now the wire carries 0x0050 — exactly what the receiver expects.
-      On a big-endian CPU, htons() does nothing because the bytes are already right.
-    from: cpu
-    to: wire
-
-  - step: 9
-    type: frame_tx
-    phase: "The Fix"
-    label: "Fixed packet: correct length on the wire"
-    detail: >
-      With htons(), the Total Length field correctly reads 80 (0x0050).
-      The receiver processes exactly 80 bytes — no more, no less.
-      Rule: every multi-byte integer you put into a packet header must go through
-      htons()/htonl(). Every multi-byte integer you read out must go through ntohs()/ntohl().
-    from: cpu
-    to: wire
-    frame:
-      id: fixed-packet
-      name: "IPv4 Header (correct)"
-      headers:
-        - protocol: IPv4
-          fields:
-            - name: Version + IHL
-              abbrev: ip.ver_ihl
-              bits: 8
-              value: "0x45"
-              desc: "Single-byte field — endianness does not apply"
-            - name: Total Length (CORRECT)
-              abbrev: ip.total_length
-              bits: 16
-              value: "0x0050 (decimal 80)"
-              desc: "htons(80) correctly converts to network byte order"
-            - name: Source IP
-              abbrev: ip.src
-              bits: 32
-              value: "192.168.1.100"
-              desc: "inet_pton(AF_INET, \"192.168.1.100\", &addr) stores this in network order"
-
-  - step: 10
-    type: note
-    phase: "The Fix"
-    label: "Linux kernel source: where the conversion happens"
-    detail: >
-      In the Linux kernel, ip_build_and_send_pkt() calls:
-        iph->tot_len = htons(skb->len);
-      See: net/ipv4/ip_output.c
-      Every protocol implementation does this. TCP sequence numbers, UDP lengths,
-      ICMP checksums — all converted before being written to the header struct.
+        When the internet was standardized, someone had to pick one byte order for the wire.
+        RFC 1700 (1994) chose big-endian and gave it the name "network byte order."
+        Danny Cohen's famous 1980 paper "On Holy Wars and a Plea for Peace" documents
+        the debate — the terms "big-endian" and "little-endian" come from Gulliver's
+        Travels, where kingdoms went to war over which end of an egg to crack first.
     from: cpu
     to: nic
 
+  - id: evt_rfc1700
+    type: note
+    annotation:
+      text: "RFC 1700 establishes network byte order"
+      detail: >
+        "The convention in the documentation of Internet Protocols is to express
+        numbers in decimal and to picture data in 'big-endian' order."  — RFC 1700
+
+        This means every multi-byte field in every protocol header — IP addresses,
+        port numbers, lengths, checksums, sequence numbers — MUST be in big-endian
+        order on the wire. This applies regardless of what CPU architecture the sender
+        or receiver uses.
+
+        Fields affected: IP Total Length, IP ID, Fragment Offset, TCP Src/Dst Port,
+        TCP Sequence Number, TCP Acknowledgment Number, TCP Window Size, UDP Length,
+        and hundreds more across every internet protocol.
+    from: cpu
+    to: nic
+
+  # Phase 3: The Bug
+  - id: evt_bug_intro
+    type: note
+    annotation:
+      text: "What happens when you forget to convert"
+      detail: >
+        A C programmer writes this on an x86 machine:
+
+          struct iphdr *iph = ...;
+          iph->tot_len = 80;    // ← BUG: no conversion!
+
+        The CPU stores 80 (0x0050) in little-endian: memory gets 0x50, 0x00.
+        The NIC reads those bytes from memory and puts them on the wire unchanged.
+        The receiver reads byte 0 = 0x50, byte 1 = 0x00, interprets as big-endian:
+        0x5000 = 20,480. It expects a 20,480-byte packet but only 80 bytes arrive.
+
+        The connection fails, often silently. No compiler warning, no runtime error —
+        just wrong data on the wire.
+    from: cpu
+    to: nic
+
+  - id: evt_broken_packet
+    type: frame_tx
+    frame_id: broken_packet
+    annotation:
+      text: "Broken packet: receiver sees length 20,480 instead of 80"
+      detail: >
+        The IP Total Length field contains 0x5000 on the wire — the receiver interprets
+        this as 20,480 bytes. The actual packet is only 80 bytes. Depending on the
+        implementation, the receiver will either:
+        (1) Drop the packet because the length exceeds the Ethernet frame,
+        (2) Wait for the remaining 20,400 bytes that will never arrive, or
+        (3) Read garbage bytes past the end of the packet into adjacent memory.
+
+        One missing function call. One swapped pair of bytes. Silent failure.
+
+  # Phase 4: The Fix
+  - id: evt_fix_intro
+    type: note
+    annotation:
+      text: "Four functions that fix everything"
+      detail: >
+        The POSIX C library provides four byte-order conversion functions.
+        On a big-endian CPU, they are no-ops. On x86, they swap bytes.
+
+        Sending (host → network):
+          htons(x) — host-to-network-short — converts a 16-bit value
+          htonl(x) — host-to-network-long — converts a 32-bit value
+
+        Receiving (network → host):
+          ntohs(x) — network-to-host-short — converts a 16-bit value
+          ntohl(x) — network-to-host-long — converts a 32-bit value
+
+        The correct code:
+          iph->tot_len = htons(80);    // ← 0x0050 on wire. Always correct.
+
+        On x86, htons(80) swaps bytes: 0x50,0x00 → 0x00,0x50.
+        On SPARC, htons(80) returns 80 unchanged — bytes are already right.
+    from: cpu
+    to: nic
+
+  - id: evt_fixed_packet
+    type: frame_tx
+    frame_id: fixed_packet
+    annotation:
+      text: "Fixed packet: correct length 80 (0x0050) on the wire"
+      detail: >
+        With htons(), the Total Length field correctly reads 0x0050 = 80.
+        The receiver processes exactly 80 bytes — no more, no less.
+
+        The rule is simple: every multi-byte integer you write into a packet header
+        must pass through htons() or htonl(). Every multi-byte integer you read from
+        a packet header must pass through ntohs() or ntohl(). No exceptions.
+
+        Modern languages handle this differently:
+        - Python: struct.pack('!H', 80) — the '!' means network (big-endian) order
+        - Go: binary.BigEndian.PutUint16(buf, 80) — explicit endian choice
+        - Rust: 80u16.to_be_bytes() — to big-endian bytes
+
+  - id: evt_kernel_source
+    type: note
+    annotation:
+      text: "Linux kernel: where the conversion happens in real code"
+      detail: >
+        In the Linux kernel's net/ipv4/ip_output.c, the function ip_build_and_send_pkt()
+        builds an IPv4 header and calls:
+
+          iph->tot_len = htons(skb->len);
+
+        Every protocol implementation does this. TCP source/destination ports:
+          th->source = htons(inet->inet_sport);  // net/ipv4/tcp_output.c
+
+        UDP length:
+          uh->len = htons(skb->len);  // net/ipv4/udp.c
+
+        The kernel never puts a raw host-order integer into a header field.
+        If you're writing network code and touching header fields, always ask:
+        "Did I convert this to network byte order?"
+    from: cpu
+    to: nic
+
+  - id: evt_summary
+    type: note
+    annotation:
+      text: "Summary: the three things to remember"
+      detail: >
+        1. x86 is little-endian (least significant byte first).
+           Networks are big-endian (most significant byte first).
+
+        2. Every multi-byte field in every protocol header must be in network byte
+           order (big-endian) on the wire. Use htons()/htonl() when writing,
+           ntohs()/ntohl() when reading.
+
+        3. Single-byte fields (like IP Version/IHL) and byte arrays (like IP addresses
+           stored via inet_pton()) are NOT affected by endianness — only multi-byte
+           integers need conversion.
+
+        If you ever see mysterious "wrong values" in packet captures where the
+        numbers look like they have their bytes swapped — now you know why.
+    from: cpu
+    to: cpu
+
+# ─────────────────────────────────────────────────────────────────
+# WALKTHROUGHS
+# ─────────────────────────────────────────────────────────────────
 walkthroughs:
   - id: endianness-tour
     title: "Endianness Guided Tour"
     description: "Step through the endianness concept from basics to the fix"
     steps:
-      - step: 0
+      - event_id: evt_setup_intro
         narration: "Let's start with a simple question: you have the number 0x0050. That's two bytes. Which byte goes at the lower memory address?"
-      - step: 1
+      - event_id: evt_little_endian
         narration: "x86 CPUs store the least significant byte first. So 0x0050 becomes 0x50 at address 0 and 0x00 at address 1. This is little-endian."
-      - step: 2
+      - event_id: evt_big_endian
         narration: "Networks use big-endian: most significant byte first. 0x0050 becomes 0x00 at byte 0 and 0x50 at byte 1. This is 'network byte order.'"
-      - step: 4
+      - event_id: evt_rfc1700
         narration: "RFC 1700 established this convention. Every multi-byte field in every internet protocol header uses big-endian."
-      - step: 6
+      - event_id: evt_broken_packet
         narration: "Here's the bug. A programmer wrote the length as-is from x86 memory. The receiver sees 0x5000 = 20,480 instead of 80. Silent data corruption."
-      - step: 8
+      - event_id: evt_fixed_packet
         narration: "The fix: htons(80) swaps the bytes on x86 so the wire carries 0x0050. On big-endian CPUs, htons() is a no-op."
-      - step: 10
+      - event_id: evt_kernel_source
         narration: "The Linux kernel uses htons()/htonl() everywhere. Check net/ipv4/ip_output.c to see it in action."
 
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
 glossary:
   - term: Little-endian
     definition: "Byte order where the least significant byte is stored at the lowest memory address. Used by x86, ARM (default), and RISC-V."
@@ -260,7 +377,7 @@ glossary:
   - term: Network byte order
     definition: "Big-endian byte order as mandated by RFC 1700 for all multi-byte fields in internet protocol headers."
   - term: htons()
-    definition: "Host-to-network-short. Converts a 16-bit integer from host byte order to network byte order."
+    definition: "Host-to-network-short. Converts a 16-bit integer from host byte order to network byte order. On x86, swaps bytes. On big-endian CPUs, a no-op."
   - term: htonl()
     definition: "Host-to-network-long. Converts a 32-bit integer from host byte order to network byte order."
   - term: ntohs()
