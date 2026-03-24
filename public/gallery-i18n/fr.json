@@ -98,5 +98,17 @@
   "byte-order-endianness": {
     "title": "Boutisme : pourquoi les réseaux et les CPU ne sont pas d'accord sur l'ordre des octets",
     "description": "Petit-boutiste vs gros-boutiste : comment votre CPU stocke 0x0050 d'une façon mais le réseau l'attend d'une autre. Voyez le vrai bug quand on oublie htons()."
+  },
+  "fc-sp3-secure-hba-edif": {
+    "title": "FC-SP-3 Secure HBA : Authentification Fabric → Clé de session → I/O chiffré",
+    "description": "Un complément au scénario FC Fabric. Reprend à PLOGI et ajoute la couche de sécurité FC-SP-3 : authentification mutuelle DH-CHAP, établissement d'association de sécurité avec encapsulation de clé post-quantique ML-KEM-1024, dérivation de clé de session AES-256-GCM et trames FC chiffrées."
+  },
+  "parallel-to-serial-scsi-pcie": {
+    "title": "[DRAFT] Parallèle vs Série : Des bus SCSI aux voies PCIe",
+    "description": "Pourquoi l'industrie a-t-elle abandonné les bus parallèles au profit des liaisons série ? Ce scénario retrace un échange de commande SCSI parallèle, expose les limites physiques qui ont condamné le bus parallèle et montre comment PCIe a résolu chaque problème avec une architecture série à paires différentielles."
+  },
+  "nvme-tcp-vertical-stack-connect-write": {
+    "title": "[DRAFT] NVMe/TCP : Trace verticale complète de la pile — Connexion → Écriture",
+    "description": "Tous les autres scénarios ProtoViz suivent les paquets horizontalement — de l'initiateur à la cible. Ce scénario va verticalement : un établissement de connexion TCP et une commande NVMe WRITE de 4 Ko, tracés depuis l'appel système en espace utilisateur à travers chaque couche du noyau, à travers le fil et remontant la pile cible."
   }
 }

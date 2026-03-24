@@ -251,6 +251,36 @@
       "description": "Little-endian vs big-endian: how your CPU stores 0x0050 one way but the network expects it another. See the real bug that happens when you forget htons(), and learn the four functions that fix it.",
       "tags": ["endianness", "byte order", "htons", "ntohs", "network byte order", "TCP/IP", "beginner", "education"],
       "path": "endianness/byte-order-endianness.yaml"
+    },
+    {
+      "slug": "fc-sp3-secure-hba-edif",
+      "title": "FC-SP-3 Secure HBA: Fabric Authentication → Session Key → Encrypted I/O",
+      "protocol": "FC-SP-3 / DH-CHAP / AES-256-GCM",
+      "protocol_family": "SAN",
+      "difficulty": "intermediate",
+      "description": "A companion to the FC Fabric scenario. Picks up at PLOGI and adds the FC-SP-3 security layer: DH-CHAP mutual authentication, Security Association establishment with ML-KEM-1024 post-quantum key encapsulation, AES-256-GCM session key derivation, and encrypted FC frames — all negotiated automatically as part of PRLI.",
+      "tags": ["FC-SP-3", "DH-CHAP", "AES-256-GCM", "Fibre Channel", "SAN", "encryption", "post-quantum", "ML-KEM", "CNSA 2.0", "education"],
+      "path": "fc-sp/fc-sp3-secure-hba-edif.yaml"
+    },
+    {
+      "slug": "parallel-to-serial-scsi-pcie",
+      "title": "[DRAFT] Parallel vs. Serial: From SCSI Buses to PCIe Lanes",
+      "protocol": "SCSI / PCIe",
+      "protocol_family": "Interconnect Fundamentals",
+      "difficulty": "beginner",
+      "description": "Why did the industry abandon parallel buses in favor of serial links? This scenario walks through a parallel SCSI command exchange, exposes the physical limits that killed the parallel bus, and shows how PCIe solved each problem with a serial differential-pair architecture.",
+      "tags": ["fundamentals", "SCSI", "PCIe", "parallel", "serial", "interconnect", "beginner", "history", "education"],
+      "path": "parallel-to-serial/parallel-to-serial-scsi-pcie.yaml"
+    },
+    {
+      "slug": "nvme-tcp-vertical-stack-connect-write",
+      "title": "[DRAFT] NVMe/TCP: Full Vertical Stack Trace — Connect → Write",
+      "protocol": "NVMe/TCP",
+      "protocol_family": "NVMe-oF",
+      "difficulty": "expert",
+      "description": "Every other ProtoViz scenario follows packets horizontally — initiator to target across the wire. This scenario goes vertical: one TCP connection establishment and one 4 KB NVMe WRITE command, traced from user-space syscall down through every kernel layer, across the wire, and back up the target stack to completion.",
+      "tags": ["NVMe-oF", "NVMe/TCP", "kernel", "io_uring", "TCP", "vertical-stack", "expert", "sk_buff", "DMA", "deep-dive", "Linux", "storage", "education"],
+      "path": "nvme-tcp-vertical/nvme-tcp-vertical-stack-connect-write.yaml"
     }
   ]
 }

@@ -42,11 +42,11 @@ export default function OsiStack({ actorId, label, layers, stepEvent }) {
                 {Object.entries(layer.fields).map(([k, v]) => (
                   <div key={k} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '1px 0' }}>
                     <span style={{ color: '#475569', fontSize: 9, fontFamily: 'monospace' }}>{k}</span>
-                    <span style={{
+                    <span title={String(v)} style={{
                       color: String(v).includes('RTS') || String(v).includes('UP') || String(v).includes('ESTABLISHED') || String(v).includes('complete') ? '#34d399' :
                              String(v).includes('down') || String(v).includes('RESET') || String(v).includes('idle') || v === false ? '#475569' :
                              '#fbbf24',
-                      fontSize: 9, fontFamily: 'monospace', fontWeight: 600, maxWidth: 120, textAlign: endAlign(), overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      fontSize: 9, fontFamily: 'monospace', fontWeight: 600, maxWidth: 200, textAlign: endAlign(), overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                     }}>{String(v)}</span>
                   </div>
                 ))}

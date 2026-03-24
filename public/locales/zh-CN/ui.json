@@ -17,7 +17,8 @@
     "beginner": "初级",
     "intermediate": "中级",
     "advanced": "高级",
-    "elementary": "入门"
+    "elementary": "入门",
+    "expert": "专家"
   },
   "filter": {
     "searchPlaceholder": "搜索场景...",

@@ -17,7 +17,8 @@
     "beginner": "Debitan",
     "intermediate": "Entèmedyè",
     "advanced": "Avanse",
-    "elementary": "Elemantè"
+    "elementary": "Elemantè",
+    "expert": "Ekspè"
   },
   "filter": {
     "searchPlaceholder": "Chèche senaryo...",

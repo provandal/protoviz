@@ -17,7 +17,8 @@
     "elementary": "Elementary",
     "beginner": "Beginner",
     "intermediate": "Intermediate",
-    "advanced": "Advanced"
+    "advanced": "Advanced",
+    "expert": "Expert"
   },
   "filter": {
     "searchPlaceholder": "Search scenarios...",

@@ -98,5 +98,17 @@
   "byte-order-endianness": {
     "title": "Andyanis: Poukisa Rezo ak CPU Pa Dakò sou Lòd Bayt",
     "description": "Little-endian vs big-endian: kijan CPU ou estoke 0x0050 yon fason men rezo a atann li yon lòt fason. Gade vrè erè ki rive lè ou bliye htons()."
+  },
+  "fc-sp3-secure-hba-edif": {
+    "title": "FC-SP-3 Secure HBA: Otantifikasyon Fabric → Kle Sesyon → I/O Chifre",
+    "description": "Yon senaryo konplemantè pou senaryo FC Fabric la. Kòmanse nan PLOGI epi ajoute kouch sekirite FC-SP-3: otantifikasyon mityèl DH-CHAP, etablisman Asosyasyon Sekirite avèk ankapsilasyon kle pos-kantik ML-KEM-1024, derivasyon kle sesyon AES-256-GCM, ak kadè FC chifre."
+  },
+  "parallel-to-serial-scsi-pcie": {
+    "title": "[DRAFT] Paralèl kont Seri: Soti nan Bis SCSI rive nan Chemen PCIe",
+    "description": "Poukisa endistri a te abandone bis paralèl pou lyen seri? Senaryo sa a travèse yon echanj kòmand SCSI paralèl, ekspoze limit fizik ki te touye bis paralèl la, epi montre kijan PCIe te rezoud chak pwoblèm avèk yon achitekti pè diferansyèl seri."
+  },
+  "nvme-tcp-vertical-stack-connect-write": {
+    "title": "[DRAFT] NVMe/TCP: Tras Pile Vètikal Konplè — Koneksyon → Ekriti",
+    "description": "Chak lòt senaryo ProtoViz suiv pakè orizontalman — soti nan inisyatè rive nan sib atravè fil la. Senaryo sa a ale vètikalman: yon sèl koneksyon TCP ak yon sèl kòmand NVMe WRITE 4 KB, trase depi apèl sistèm espas itilizatè atravè chak kouch kernel, atravè fil la, epi remonte pile sib la jiska achèvman."
   }
 }

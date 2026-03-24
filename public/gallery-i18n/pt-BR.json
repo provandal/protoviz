@@ -98,5 +98,17 @@
   "byte-order-endianness": {
     "title": "Endianness: por que redes e CPUs discordam na ordem dos bytes",
     "description": "Little-endian vs big-endian: como sua CPU armazena 0x0050 de um jeito mas a rede espera de outro. Veja o bug real quando você esquece htons()."
+  },
+  "fc-sp3-secure-hba-edif": {
+    "title": "FC-SP-3 Secure HBA: Autenticação Fabric → Chave de sessão → I/O criptografado",
+    "description": "Um complemento ao cenário FC Fabric. Começa no PLOGI e adiciona a camada de segurança FC-SP-3: autenticação mútua DH-CHAP, estabelecimento de Associação de Segurança com encapsulamento de chave pós-quântico ML-KEM-1024, derivação de chave de sessão AES-256-GCM e quadros FC criptografados."
+  },
+  "parallel-to-serial-scsi-pcie": {
+    "title": "[DRAFT] Paralelo vs Serial: De barramentos SCSI a faixas PCIe",
+    "description": "Por que a indústria abandonou barramentos paralelos em favor de links seriais? Este cenário percorre uma troca de comandos SCSI paralela, expõe os limites físicos que mataram o barramento paralelo e mostra como o PCIe resolveu cada problema com uma arquitetura serial de pares diferenciais."
+  },
+  "nvme-tcp-vertical-stack-connect-write": {
+    "title": "[DRAFT] NVMe/TCP: Rastreamento vertical completo da pilha — Conexão → Escrita",
+    "description": "Todos os outros cenários ProtoViz seguem pacotes horizontalmente — do iniciador ao alvo. Este cenário vai verticalmente: uma conexão TCP e um comando NVMe WRITE de 4 KB, rastreados desde a chamada de sistema no espaço do usuário através de cada camada do kernel, pelo fio e subindo a pilha do alvo."
   }
 }

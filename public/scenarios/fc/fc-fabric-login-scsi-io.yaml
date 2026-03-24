@@ -134,13 +134,13 @@ topology:
 # ─────────────────────────────────────────────────────────────────
 # LAYER DEFINITIONS (per actor)
 # FC uses FC-0 through FC-4 rather than the OSI model.
-# Mapped to viewer layers 1-7 for display.
+# Layer numbers match the FC layer designation directly (FC-0=0, FC-1=1, FC-2=2, FC-4=4).
 # ─────────────────────────────────────────────────────────────────
 osi_layers:
   initiator:
-    - layer: 7
-      name: "SCSI / Block Device"
-      components: ["scsi_mod", "sd_mod", "scsi_scan.c", "block layer"]
+    - layer: 4
+      name: "FC-4 Upper Layer Protocol"
+      components: ["FCP-4", "lpfc_scsi.c", "SCSI sd_mod", "block layer"]
       state_schema:
         scsi_state:
           type: "string"
@@ -154,11 +154,6 @@ osi_layers:
           type: "string"
           description: "Last SCSI command issued"
           initial: "none"
-
-    - layer: 6
-      name: "FCP-4 (FC-4 ULP)"
-      components: ["lpfc_scsi.c", "FCP command/response mapping"]
-      state_schema:
         fcp_state:
           type: "string"
           description: "FCP process login state with target"
@@ -168,22 +163,9 @@ osi_layers:
           description: "Current FCP I/O tag (OX_ID)"
           initial: "null"
 
-    - layer: 5
-      name: "FC-2 Exchanges"
-      components: ["lpfc_sli.c", "exchange management", "sequence control"]
-      state_schema:
-        ox_id_next:
-          type: "string"
-          description: "Next originator exchange ID to allocate"
-          initial: "0x0001"
-        active_exchanges:
-          type: "integer"
-          description: "Number of active exchanges"
-          initial: 0
-
-    - layer: 4
-      name: "FC-2 Framing"
-      components: ["lpfc_hw.h", "frame header construction", "CRC"]
+    - layer: 2
+      name: "FC-2 Framing / Signaling"
+      components: ["lpfc_sli.c", "lpfc_els.c", "lpfc_ct.c", "lpfc_hw.h", "FC-LS", "FC-GS"]
       state_schema:
         my_fcid:
           type: "string"
@@ -193,11 +175,14 @@ osi_layers:
           type: "integer"
           description: "Buffer-to-buffer credit (frames we can send before ACK)"
           initial: 0
-
-    - layer: 3
-      name: "FC Login / Fabric Services"
-      components: ["lpfc_els.c", "lpfc_ct.c", "FC-LS", "FC-GS"]
-      state_schema:
+        ox_id_next:
+          type: "string"
+          description: "Next originator exchange ID to allocate"
+          initial: "0x0001"
+        active_exchanges:
+          type: "integer"
+          description: "Number of active exchanges"
+          initial: 0
         fabric_login:
           type: "string"
           description: "Fabric login state (FLOGI)"
@@ -215,8 +200,8 @@ osi_layers:
           description: "Port login state with target"
           initial: "none"
 
-    - layer: 2
-      name: "FC-1 Encode"
+    - layer: 1
+      name: "FC-1 Encoding"
       components: ["64b/66b encoding", "word sync"]
       state_schema:
         encoding:
@@ -226,7 +211,7 @@ osi_layers:
           type: "boolean"
           initial: false
 
-    - layer: 1
+    - layer: 0
       name: "FC-0 Physical"
       components: ["64GFC SFP56", "850nm VCSEL"]
       state_schema:
@@ -242,9 +227,9 @@ osi_layers:
           initial: false
 
   target:
-    - layer: 7
-      name: "SCSI Target / LUNs"
-      components: ["SCSI target mode", "block storage backend"]
+    - layer: 4
+      name: "FC-4 Upper Layer Protocol"
+      components: ["SCSI target mode", "FCP target processing", "XFER_RDY generation", "block storage backend"]
       state_schema:
         target_state:
           type: "string"
@@ -256,26 +241,13 @@ osi_layers:
         last_cmd_received:
           type: "string"
           initial: "none"
-
-    - layer: 6
-      name: "FCP-4 (FC-4 ULP)"
-      components: ["FCP target processing", "XFER_RDY generation"]
-      state_schema:
         fcp_state:
           type: "string"
           initial: "none"
 
-    - layer: 5
-      name: "FC-2 Exchanges"
-      components: ["exchange management"]
-      state_schema:
-        active_exchanges:
-          type: "integer"
-          initial: 0
-
-    - layer: 4
-      name: "FC-2 Framing"
-      components: ["frame header", "CRC"]
+    - layer: 2
+      name: "FC-2 Framing / Signaling"
+      components: ["frame header", "CRC", "FC-LS", "ELS handling", "exchange management"]
       state_schema:
         my_fcid:
           type: "string"
@@ -284,11 +256,9 @@ osi_layers:
         bb_credit:
           type: "integer"
           initial: 16
-
-    - layer: 3
-      name: "FC Login State"
-      components: ["FC-LS", "ELS handling"]
-      state_schema:
+        active_exchanges:
+          type: "integer"
+          initial: 0
         fabric_login:
           type: "string"
           initial: "complete"
@@ -297,15 +267,15 @@ osi_layers:
           description: "Port login state with initiator host"
           initial: "none"
 
-    - layer: 2
-      name: "FC-1 Encode"
+    - layer: 1
+      name: "FC-1 Encoding"
       components: ["64b/66b encoding"]
       state_schema:
         encoding:
           type: "string"
           initial: "64b/66b"
 
-    - layer: 1
+    - layer: 0
       name: "FC-0 Physical"
       components: ["64GFC SFP56"]
       state_schema:
@@ -321,9 +291,9 @@ osi_layers:
           initial: false
 
   switch:
-    - layer: 3
-      name: "Fabric Services"
-      components: ["Name Server", "FCID assignment", "Zone enforcement"]
+    - layer: 2
+      name: "FC-2 Frame Forwarding / Fabric Services"
+      components: ["D_ID routing", "BB_Credit management", "Name Server", "FCID assignment", "Zone enforcement"]
       state_schema:
         ns_entries:
           type: "integer"
@@ -337,10 +307,6 @@ osi_layers:
           type: "string"
           description: "Next FCID to assign"
           initial: "0x010100"
-    - layer: 2
-      name: "FC Frame Forwarding"
-      components: ["D_ID routing", "BB_Credit management"]
-      state_schema:
         fwd_table_entries:
           type: "integer"
           description: "FCIDs in routing table"
@@ -353,7 +319,7 @@ osi_layers:
           type: "integer"
           description: "BB_Credit available toward storage"
           initial: 16
-    - layer: 1
+    - layer: 0
       name: "FC-0 Physical (per-port)"
       components: ["64GFC SFP56"]
       state_schema:
@@ -386,7 +352,7 @@ frames:
     headers:
       - name: "FC Frame Header"
         abbrev: "fc"
-        layer: 4
+        layer: 2
         total_bytes: 24
         fields:
           - name: "R_CTL"
@@ -444,6 +410,11 @@ frames:
             bits: 8
             value: "0x00"
             description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
           - name: "SEQ_CNT"
             abbrev: "fc.seq_cnt"
             bits: 16
@@ -471,7 +442,7 @@ frames:
             description: "Relative offset — 0 for ELS frames"
       - name: "FLOGI Payload (ELS)"
         abbrev: "fc.els.flogi"
-        layer: 3
+        layer: 2
         total_bytes: 116
         fields:
           - name: "LS_Command"
@@ -518,6 +489,34 @@ frames:
             bits: 128
             value: "Class 3 supported"
             description: "Class 3 (connectionless, no confirmation) — the standard FC class for modern SANs"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
 
   # ── FLOGI ACC ─────────────────────────────────────────────────
   - id: "flogi_acc"
@@ -533,7 +532,7 @@ frames:
     headers:
       - name: "FC Frame Header"
         abbrev: "fc"
-        layer: 4
+        layer: 2
         total_bytes: 24
         fields:
           - name: "R_CTL"
@@ -546,6 +545,11 @@ frames:
             bits: 24
             value: "0x010100"
             description: "Newly assigned FCID for the host — this is the fabric's answer"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
           - name: "S_ID"
             abbrev: "fc.s_id"
             bits: 24
@@ -561,6 +565,21 @@ frames:
             bits: 24
             value: "0x980000"
             description: "Exchange responder, last sequence, end sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
           - name: "OX_ID"
             abbrev: "fc.ox_id"
             bits: 16
@@ -571,9 +590,14 @@ frames:
             bits: 16
             value: "0x0001"
             description: "Responder Exchange ID assigned by fabric"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
       - name: "FLOGI ACC Payload"
         abbrev: "fc.els.flogi_acc"
-        layer: 3
+        layer: 2
         total_bytes: 116
         fields:
           - name: "LS_Command"
@@ -591,6 +615,34 @@ frames:
             bits: 64
             value: "20:01:00:05:73:01:02:03"
             description: "Switch port's World Wide Port Name"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
 
   # ── PLOGI to Name Server ──────────────────────────────────────
   - id: "plogi_ns"
@@ -607,7 +659,7 @@ frames:
     headers:
       - name: "FC Frame Header"
         abbrev: "fc"
-        layer: 4
+        layer: 2
         total_bytes: 24
         fields:
           - name: "R_CTL"
@@ -625,6 +677,11 @@ frames:
                 section: "4.2"
                 title: "Well-known addresses — Name Server"
                 url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
           - name: "S_ID"
             abbrev: "fc.s_id"
             bits: 24
@@ -635,14 +692,44 @@ frames:
             bits: 8
             value: "0x01"
             description: "ELS"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x290000"
+            description: "Exchange originator, first+last sequence, sequence initiative"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
           - name: "OX_ID"
             abbrev: "fc.ox_id"
             bits: 16
             value: "0x0002"
             description: "New exchange for this PLOGI"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — 0xFFFF means unassigned"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
       - name: "PLOGI Payload"
         abbrev: "fc.els.plogi"
-        layer: 3
+        layer: 2
         total_bytes: 116
         fields:
           - name: "LS_Command"
@@ -665,6 +752,34 @@ frames:
             bits: 128
             value: "Max concurrent sequences, open sequences"
             description: "Negotiates class 3 parameters for subsequent communication"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
 
   # ── PLOGI ACC from Name Server ────────────────────────────────
   - id: "plogi_ns_acc"
@@ -678,7 +793,7 @@ frames:
     headers:
       - name: "FC Frame Header"
         abbrev: "fc"
-        layer: 4
+        layer: 2
         total_bytes: 24
         fields:
           - name: "R_CTL"
@@ -690,6 +805,11 @@ frames:
             abbrev: "fc.d_id"
             bits: 24
             value: "0x010100"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
           - name: "S_ID"
             abbrev: "fc.s_id"
             bits: 24
@@ -699,13 +819,43 @@ frames:
             abbrev: "fc.type"
             bits: 8
             value: "0x01"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x980000"
+            description: "Exchange responder, last sequence, end sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
           - name: "OX_ID"
             abbrev: "fc.ox_id"
             bits: 16
             value: "0x0002"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0002"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
       - name: "PLOGI ACC"
         abbrev: "fc.els.plogi_acc"
-        layer: 3
+        layer: 2
         total_bytes: 116
         fields:
           - name: "LS_Command"
@@ -713,6 +863,34 @@ frames:
             bits: 32
             value: "0x02000000"
             description: "LS_ACC"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
 
   # ── GID_FT Request ────────────────────────────────────────────
   - id: "gid_ft_req"
@@ -729,7 +907,7 @@ frames:
     headers:
       - name: "FC Frame Header"
         abbrev: "fc"
-        layer: 4
+        layer: 2
         total_bytes: 24
         fields:
           - name: "R_CTL"
@@ -747,6 +925,11 @@ frames:
             bits: 24
             value: "0xFFFFFC"
             description: "Name Server"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
           - name: "S_ID"
             abbrev: "fc.s_id"
             bits: 24
@@ -761,13 +944,43 @@ frames:
                 section: "4.3"
                 title: "CT frame TYPE identifier"
                 url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x290000"
+            description: "Exchange originator, first+last sequence, sequence initiative"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
           - name: "OX_ID"
             abbrev: "fc.ox_id"
             bits: 16
             value: "0x0003"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — 0xFFFF means unassigned"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
       - name: "CT Header + GID_FT"
         abbrev: "fc.ct"
-        layer: 3
+        layer: 2
         total_bytes: 24
         fields:
           - name: "CT Revision"
@@ -809,6 +1022,34 @@ frames:
             bits: 8
             value: "0x08"
             description: "0x08 = FCP (SCSI over FC) — we want to find SCSI targets"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
 
   # ── GID_FT Response ───────────────────────────────────────────
   - id: "gid_ft_resp"
@@ -824,7 +1065,7 @@ frames:
     headers:
       - name: "FC Frame Header"
         abbrev: "fc"
-        layer: 4
+        layer: 2
         total_bytes: 24
         fields:
           - name: "R_CTL"
@@ -836,6 +1077,11 @@ frames:
             abbrev: "fc.d_id"
             bits: 24
             value: "0x010100"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
           - name: "S_ID"
             abbrev: "fc.s_id"
             bits: 24
@@ -845,13 +1091,43 @@ frames:
             bits: 8
             value: "0x20"
             description: "CT"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x980000"
+            description: "Exchange responder, last sequence, end sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
           - name: "OX_ID"
             abbrev: "fc.ox_id"
             bits: 16
             value: "0x0003"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0003"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
       - name: "CT Response + Port ID List"
         abbrev: "fc.ct.resp"
-        layer: 3
+        layer: 2
         total_bytes: 12
         fields:
           - name: "CT Command/Response"
@@ -864,6 +1140,34 @@ frames:
             bits: 32
             value: "0x010200"
             description: "Storage array FCID — this is the target we need to log in to"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
 
   # ── PLOGI to Target ───────────────────────────────────────────
   - id: "plogi_target"
@@ -881,7 +1185,7 @@ frames:
     headers:
       - name: "FC Frame Header"
         abbrev: "fc"
-        layer: 4
+        layer: 2
         total_bytes: 24
         fields:
           - name: "R_CTL"
@@ -894,6 +1198,11 @@ frames:
             bits: 24
             value: "0x010200"
             description: "Storage array FCID discovered from Name Server"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
           - name: "S_ID"
             abbrev: "fc.s_id"
             bits: 24
@@ -902,13 +1211,43 @@ frames:
             abbrev: "fc.type"
             bits: 8
             value: "0x01"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x290000"
+            description: "Exchange originator, first+last sequence, sequence initiative"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
           - name: "OX_ID"
             abbrev: "fc.ox_id"
             bits: 16
             value: "0x0004"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — 0xFFFF means unassigned"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
       - name: "PLOGI Payload"
         abbrev: "fc.els.plogi"
-        layer: 3
+        layer: 2
         total_bytes: 116
         fields:
           - name: "LS_Command"
@@ -924,6 +1263,34 @@ frames:
             abbrev: "fc.els.wwnn"
             bits: 64
             value: "20:00:00:0e:1e:12:34:56"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
 
   # ── PLOGI ACC from Target ─────────────────────────────────────
   - id: "plogi_target_acc"
@@ -938,7 +1305,7 @@ frames:
     headers:
       - name: "FC Frame Header"
         abbrev: "fc"
-        layer: 4
+        layer: 2
         total_bytes: 24
         fields:
           - name: "R_CTL"
@@ -950,6 +1317,11 @@ frames:
             abbrev: "fc.d_id"
             bits: 24
             value: "0x010100"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
           - name: "S_ID"
             abbrev: "fc.s_id"
             bits: 24
@@ -958,13 +1330,43 @@ frames:
             abbrev: "fc.type"
             bits: 8
             value: "0x01"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x980000"
+            description: "Exchange responder, last sequence, end sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
           - name: "OX_ID"
             abbrev: "fc.ox_id"
             bits: 16
             value: "0x0004"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0004"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
       - name: "PLOGI ACC"
         abbrev: "fc.els.plogi_acc"
-        layer: 3
+        layer: 2
         total_bytes: 116
         fields:
           - name: "LS_Command"
@@ -982,6 +1384,34 @@ frames:
             bits: 64
             value: "50:00:00:0e:1e:ab:cd:00"
             description: "Storage node WWNN"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
 
   # ── PRLI ──────────────────────────────────────────────────────
   - id: "prli"
@@ -1000,7 +1430,7 @@ frames:
     headers:
       - name: "FC Frame Header"
         abbrev: "fc"
-        layer: 4
+        layer: 2
         total_bytes: 24
         fields:
           - name: "R_CTL"
@@ -1012,6 +1442,11 @@ frames:
             abbrev: "fc.d_id"
             bits: 24
             value: "0x010200"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
           - name: "S_ID"
             abbrev: "fc.s_id"
             bits: 24
@@ -1020,13 +1455,43 @@ frames:
             abbrev: "fc.type"
             bits: 8
             value: "0x01"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x290000"
+            description: "Exchange originator, first+last sequence, sequence initiative"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
           - name: "OX_ID"
             abbrev: "fc.ox_id"
             bits: 16
             value: "0x0005"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — 0xFFFF means unassigned"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
       - name: "PRLI Payload"
         abbrev: "fc.els.prli"
-        layer: 6
+        layer: 4
         total_bytes: 20
         fields:
           - name: "LS_Command"
@@ -1069,6 +1534,34 @@ frames:
             bits: 1
             value: 0
             description: "Write operations DO require XFER_RDY from target before data transfer"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
 
   # ── PRLI ACC ──────────────────────────────────────────────────
   - id: "prli_acc"
@@ -1085,7 +1578,7 @@ frames:
     headers:
       - name: "FC Frame Header"
         abbrev: "fc"
-        layer: 4
+        layer: 2
         total_bytes: 24
         fields:
           - name: "R_CTL"
@@ -1097,10 +1590,40 @@ frames:
             abbrev: "fc.d_id"
             bits: 24
             value: "0x010100"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
           - name: "S_ID"
             abbrev: "fc.s_id"
             bits: 24
             value: "0x010200"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x980000"
+            description: "Exchange responder, last sequence, end sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
           - name: "OX_ID"
             abbrev: "fc.ox_id"
             bits: 16
@@ -1111,9 +1634,14 @@ frames:
             bits: 16
             value: "0x0005"
             description: "Responder Exchange ID assigned by storage for this PRLI exchange"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
       - name: "PRLI ACC Payload"
         abbrev: "fc.els.prli_acc"
-        layer: 6
+        layer: 4
         total_bytes: 20
         fields:
           - name: "LS_Command"
@@ -1136,6 +1664,34 @@ frames:
             bits: 4
             value: "0x01"
             description: "0x01 = Request executed (accepted)"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
 
   # ── INQUIRY ───────────────────────────────────────────────────
   - id: "fcp_inquiry_cmd"
@@ -1153,7 +1709,7 @@ frames:
     headers:
       - name: "FC Frame Header"
         abbrev: "fc"
-        layer: 4
+        layer: 2
         total_bytes: 24
         fields:
           - name: "R_CTL"
@@ -1170,6 +1726,11 @@ frames:
             abbrev: "fc.d_id"
             bits: 24
             value: "0x010200"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
           - name: "S_ID"
             abbrev: "fc.s_id"
             bits: 24
@@ -1179,14 +1740,44 @@ frames:
             bits: 8
             value: "0x08"
             description: "0x08 = FCP (SCSI over Fibre Channel)"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x290000"
+            description: "Exchange originator, first+last sequence, sequence initiative"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
           - name: "OX_ID"
             abbrev: "fc.ox_id"
             bits: 16
             value: "0x0010"
             description: "Exchange ID for this SCSI I/O"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — 0xFFFF means unassigned"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
       - name: "FCP_CMND"
         abbrev: "fcp.cmnd"
-        layer: 6
+        layer: 4
         total_bytes: 32
         fields:
           - name: "FCP_LUN"
@@ -1214,6 +1805,34 @@ frames:
             bits: 32
             value: 96
             description: "FCP Data Length — expected data transfer length"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
 
   # ── INQUIRY Response ──────────────────────────────────────────
   - id: "fcp_inquiry_data"
@@ -1228,7 +1847,7 @@ frames:
     headers:
       - name: "FC Frame Header"
         abbrev: "fc"
-        layer: 4
+        layer: 2
         total_bytes: 24
         fields:
           - name: "R_CTL"
@@ -1240,6 +1859,11 @@ frames:
             abbrev: "fc.d_id"
             bits: 24
             value: "0x010100"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
           - name: "S_ID"
             abbrev: "fc.s_id"
             bits: 24
@@ -1248,14 +1872,44 @@ frames:
             abbrev: "fc.type"
             bits: 8
             value: "0x08"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x880000"
+            description: "Exchange responder, end sequence — single read data frame"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x01"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
           - name: "OX_ID"
             abbrev: "fc.ox_id"
             bits: 16
             value: "0x0010"
             description: "Same exchange as INQUIRY command"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0010"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
       - name: "INQUIRY Data"
         abbrev: "scsi.inquiry"
-        layer: 7
+        layer: 4
         total_bytes: 96
         fields:
           - name: "Device Type"
@@ -1273,6 +1927,34 @@ frames:
             bits: 128
             value: "PowerStore"
             description: "Product identification"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
 
   # ── INQUIRY FCP_RSP ───────────────────────────────────────────
   - id: "fcp_inquiry_rsp"
@@ -1287,7 +1969,7 @@ frames:
     headers:
       - name: "FC Frame Header"
         abbrev: "fc"
-        layer: 4
+        layer: 2
         total_bytes: 24
         fields:
           - name: "R_CTL"
@@ -1304,6 +1986,11 @@ frames:
             abbrev: "fc.d_id"
             bits: 24
             value: "0x010100"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
           - name: "S_ID"
             abbrev: "fc.s_id"
             bits: 24
@@ -1312,13 +1999,43 @@ frames:
             abbrev: "fc.type"
             bits: 8
             value: "0x08"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x990000"
+            description: "Exchange responder, last sequence, end sequence, SI transfer — closes exchange"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x02"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
           - name: "OX_ID"
             abbrev: "fc.ox_id"
             bits: 16
             value: "0x0010"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0010"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
       - name: "FCP_RSP"
         abbrev: "fcp.rsp"
-        layer: 6
+        layer: 4
         total_bytes: 24
         fields:
           - name: "SCSI Status"
@@ -1331,6 +2048,34 @@ frames:
             bits: 32
             value: 0
             description: "No residual — all requested data was transferred"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
 
   # ── WRITE(10) Command ─────────────────────────────────────────
   - id: "fcp_write_cmd"
@@ -1347,7 +2092,7 @@ frames:
     headers:
       - name: "FC Frame Header"
         abbrev: "fc"
-        layer: 4
+        layer: 2
         total_bytes: 24
         fields:
           - name: "R_CTL"
@@ -1359,6 +2104,11 @@ frames:
             abbrev: "fc.d_id"
             bits: 24
             value: "0x010200"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
           - name: "S_ID"
             abbrev: "fc.s_id"
             bits: 24
@@ -1367,13 +2117,43 @@ frames:
             abbrev: "fc.type"
             bits: 8
             value: "0x08"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x290000"
+            description: "Exchange originator, first+last sequence, sequence initiative"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
           - name: "OX_ID"
             abbrev: "fc.ox_id"
             bits: 16
             value: "0x0020"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — 0xFFFF means unassigned"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
       - name: "FCP_CMND"
         abbrev: "fcp.cmnd"
-        layer: 6
+        layer: 4
         total_bytes: 32
         fields:
           - name: "FCP_LUN"
@@ -1406,6 +2186,34 @@ frames:
             bits: 32
             value: 4096
             description: "FCP Data Length — 4096 bytes to write"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
 
   # ── WRITE XFER_RDY ────────────────────────────────────────────
   - id: "fcp_write_xfer_rdy"
@@ -1423,7 +2231,7 @@ frames:
     headers:
       - name: "FC Frame Header"
         abbrev: "fc"
-        layer: 4
+        layer: 2
         total_bytes: 24
         fields:
           - name: "R_CTL"
@@ -1440,6 +2248,11 @@ frames:
             abbrev: "fc.d_id"
             bits: 24
             value: "0x010100"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
           - name: "S_ID"
             abbrev: "fc.s_id"
             bits: 24
@@ -1448,13 +2261,43 @@ frames:
             abbrev: "fc.type"
             bits: 8
             value: "0x08"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x890000"
+            description: "Exchange responder, end sequence, SI transfer"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x01"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
           - name: "OX_ID"
             abbrev: "fc.ox_id"
             bits: 16
             value: "0x0020"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0020"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
       - name: "FCP_XFER_RDY"
         abbrev: "fcp.xfer_rdy"
-        layer: 6
+        layer: 4
         total_bytes: 12
         fields:
           - name: "DATA_RO"
@@ -1467,6 +2310,34 @@ frames:
             bits: 32
             value: 4096
             description: "Host may send up to 4096 bytes of write data"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
 
   # ── WRITE Data (frame 1 of 2) ──────────────────────────────────
   - id: "fcp_write_data_1"
@@ -1484,7 +2355,7 @@ frames:
     headers:
       - name: "FC Frame Header"
         abbrev: "fc"
-        layer: 4
+        layer: 2
         total_bytes: 24
         fields:
           - name: "R_CTL"
@@ -1496,6 +2367,11 @@ frames:
             abbrev: "fc.d_id"
             bits: 24
             value: "0x010200"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
           - name: "S_ID"
             abbrev: "fc.s_id"
             bits: 24
@@ -1509,6 +2385,16 @@ frames:
             bits: 24
             value: "0x010000"
             description: "First sequence — exchange originator, first but not last frame in sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x02"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
           - name: "SEQ_CNT"
             abbrev: "fc.seq_cnt"
             bits: 16
@@ -1518,6 +2404,11 @@ frames:
             abbrev: "fc.ox_id"
             bits: 16
             value: "0x0020"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0020"
+            description: "Responder Exchange ID"
           - name: "Parameter (Relative Offset)"
             abbrev: "fc.parameter"
             bits: 32
@@ -1525,7 +2416,7 @@ frames:
             description: "Data starts at byte offset 0"
       - name: "Write Data Payload"
         abbrev: "fcp.data"
-        layer: 7
+        layer: 4
         total_bytes: 2048
         fields:
           - name: "Data"
@@ -1533,6 +2424,34 @@ frames:
             bits: 16384
             value: "[2048 bytes — first half of write data]"
             description: "First 2048 bytes (blocks 0-3) of the 4KB write"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
 
   # ── WRITE Data (frame 2 of 2) ──────────────────────────────────
   - id: "fcp_write_data_2"
@@ -1550,7 +2469,7 @@ frames:
     headers:
       - name: "FC Frame Header"
         abbrev: "fc"
-        layer: 4
+        layer: 2
         total_bytes: 24
         fields:
           - name: "R_CTL"
@@ -1562,6 +2481,11 @@ frames:
             abbrev: "fc.d_id"
             bits: 24
             value: "0x010200"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
           - name: "S_ID"
             abbrev: "fc.s_id"
             bits: 24
@@ -1575,6 +2499,16 @@ frames:
             bits: 24
             value: "0x090000"
             description: "Last sequence — exchange originator, last frame in sequence (end sequence bit set)"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x02"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
           - name: "SEQ_CNT"
             abbrev: "fc.seq_cnt"
             bits: 16
@@ -1584,6 +2518,11 @@ frames:
             abbrev: "fc.ox_id"
             bits: 16
             value: "0x0020"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0020"
+            description: "Responder Exchange ID"
           - name: "Parameter (Relative Offset)"
             abbrev: "fc.parameter"
             bits: 32
@@ -1591,7 +2530,7 @@ frames:
             description: "Data starts at byte offset 2048 (0x800) — second half of transfer"
       - name: "Write Data Payload"
         abbrev: "fcp.data"
-        layer: 7
+        layer: 4
         total_bytes: 2048
         fields:
           - name: "Data"
@@ -1599,6 +2538,34 @@ frames:
             bits: 16384
             value: "[2048 bytes — second half of write data]"
             description: "Final 2048 bytes (blocks 4-7) of the 4KB write"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
 
   # ── WRITE FCP_RSP ──────────────────────────────────────────────
   - id: "fcp_write_rsp"
@@ -1615,7 +2582,7 @@ frames:
     headers:
       - name: "FC Frame Header"
         abbrev: "fc"
-        layer: 4
+        layer: 2
         total_bytes: 24
         fields:
           - name: "R_CTL"
@@ -1627,6 +2594,11 @@ frames:
             abbrev: "fc.d_id"
             bits: 24
             value: "0x010100"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
           - name: "S_ID"
             abbrev: "fc.s_id"
             bits: 24
@@ -1635,13 +2607,43 @@ frames:
             abbrev: "fc.type"
             bits: 8
             value: "0x08"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x990000"
+            description: "Exchange responder, last sequence, end sequence, SI transfer — closes exchange"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x03"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
           - name: "OX_ID"
             abbrev: "fc.ox_id"
             bits: 16
             value: "0x0020"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0020"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
       - name: "FCP_RSP"
         abbrev: "fcp.rsp"
-        layer: 6
+        layer: 4
         total_bytes: 24
         fields:
           - name: "SCSI Status"
@@ -1649,6 +2651,34 @@ frames:
             bits: 8
             value: "0x00"
             description: "GOOD — write committed successfully"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
 
   # ── READ(10) Command ──────────────────────────────────────────
   - id: "fcp_read_cmd"
@@ -1665,7 +2695,7 @@ frames:
     headers:
       - name: "FC Frame Header"
         abbrev: "fc"
-        layer: 4
+        layer: 2
         total_bytes: 24
         fields:
           - name: "R_CTL"
@@ -1677,6 +2707,11 @@ frames:
             abbrev: "fc.d_id"
             bits: 24
             value: "0x010200"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
           - name: "S_ID"
             abbrev: "fc.s_id"
             bits: 24
@@ -1685,13 +2720,43 @@ frames:
             abbrev: "fc.type"
             bits: 8
             value: "0x08"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x290000"
+            description: "Exchange originator, first+last sequence, sequence initiative"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
           - name: "OX_ID"
             abbrev: "fc.ox_id"
             bits: 16
             value: "0x0021"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — 0xFFFF means unassigned"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
       - name: "FCP_CMND"
         abbrev: "fcp.cmnd"
-        layer: 6
+        layer: 4
         total_bytes: 32
         fields:
           - name: "FCP_LUN"
@@ -1722,6 +2787,34 @@ frames:
             abbrev: "fcp.dl"
             bits: 32
             value: 4096
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
 
   # ── READ Data ──────────────────────────────────────────────────
   - id: "fcp_read_data_1"
@@ -1739,7 +2832,7 @@ frames:
     headers:
       - name: "FC Frame Header"
         abbrev: "fc"
-        layer: 4
+        layer: 2
         total_bytes: 24
         fields:
           - name: "R_CTL"
@@ -1751,6 +2844,11 @@ frames:
             abbrev: "fc.d_id"
             bits: 24
             value: "0x010100"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
           - name: "S_ID"
             abbrev: "fc.s_id"
             bits: 24
@@ -1764,6 +2862,16 @@ frames:
             bits: 24
             value: "0x800000"
             description: "Exchange responder, first but not last frame in sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x01"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
           - name: "SEQ_CNT"
             abbrev: "fc.seq_cnt"
             bits: 16
@@ -1773,6 +2881,11 @@ frames:
             abbrev: "fc.ox_id"
             bits: 16
             value: "0x0021"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0021"
+            description: "Responder Exchange ID"
           - name: "Parameter (Relative Offset)"
             abbrev: "fc.parameter"
             bits: 32
@@ -1780,7 +2893,7 @@ frames:
             description: "Data starts at byte offset 0"
       - name: "Read Data Payload"
         abbrev: "fcp.data"
-        layer: 7
+        layer: 4
         total_bytes: 2048
         fields:
           - name: "Data"
@@ -1788,6 +2901,34 @@ frames:
             bits: 16384
             value: "[2048 bytes — first half of read data]"
             description: "First 2048 bytes (blocks 0-3) of the 4KB read"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
 
   - id: "fcp_read_data_2"
     name: "FCP_DATA: Read Payload (2/2)"
@@ -1803,7 +2944,7 @@ frames:
     headers:
       - name: "FC Frame Header"
         abbrev: "fc"
-        layer: 4
+        layer: 2
         total_bytes: 24
         fields:
           - name: "R_CTL"
@@ -1815,6 +2956,11 @@ frames:
             abbrev: "fc.d_id"
             bits: 24
             value: "0x010100"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
           - name: "S_ID"
             abbrev: "fc.s_id"
             bits: 24
@@ -1828,6 +2974,16 @@ frames:
             bits: 24
             value: "0x880000"
             description: "Exchange responder, last frame in sequence (end sequence bit set)"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x01"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
           - name: "SEQ_CNT"
             abbrev: "fc.seq_cnt"
             bits: 16
@@ -1837,6 +2993,11 @@ frames:
             abbrev: "fc.ox_id"
             bits: 16
             value: "0x0021"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0021"
+            description: "Responder Exchange ID"
           - name: "Parameter (Relative Offset)"
             abbrev: "fc.parameter"
             bits: 32
@@ -1844,7 +3005,7 @@ frames:
             description: "Data starts at byte offset 2048 (0x800) — second half of transfer"
       - name: "Read Data Payload"
         abbrev: "fcp.data"
-        layer: 7
+        layer: 4
         total_bytes: 2048
         fields:
           - name: "Data"
@@ -1852,6 +3013,34 @@ frames:
             bits: 16384
             value: "[2048 bytes — second half of read data]"
             description: "Final 2048 bytes (blocks 4-7) — should match what was written"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
 
   # ── READ FCP_RSP ───────────────────────────────────────────────
   - id: "fcp_read_rsp"
@@ -1866,7 +3055,7 @@ frames:
     headers:
       - name: "FC Frame Header"
         abbrev: "fc"
-        layer: 4
+        layer: 2
         total_bytes: 24
         fields:
           - name: "R_CTL"
@@ -1878,6 +3067,11 @@ frames:
             abbrev: "fc.d_id"
             bits: 24
             value: "0x010100"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
           - name: "S_ID"
             abbrev: "fc.s_id"
             bits: 24
@@ -1886,13 +3080,43 @@ frames:
             abbrev: "fc.type"
             bits: 8
             value: "0x08"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x990000"
+            description: "Exchange responder, last sequence, end sequence, SI transfer — closes exchange"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x02"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
           - name: "OX_ID"
             abbrev: "fc.ox_id"
             bits: 16
             value: "0x0021"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0021"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
       - name: "FCP_RSP"
         abbrev: "fcp.rsp"
-        layer: 6
+        layer: 4
         total_bytes: 24
         fields:
           - name: "SCSI Status"
@@ -1900,6 +3124,34 @@ frames:
             bits: 8
             value: "0x00"
             description: "GOOD — read completed, data integrity verified"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
 
 # ─────────────────────────────────────────────────────────────────
 # TIMELINE
@@ -1918,14 +3170,14 @@ timeline:
     state_after:
       - actor_id: "initiator"
         layers:
-          - layer: 1
+          - layer: 0
             name: "FC-0 Physical"
             state_fields:
               phy_state: "initializing"
               signal_detect: true
       - actor_id: "switch"
         layers:
-          - layer: 1
+          - layer: 0
             name: "FC-0 Physical (per-port)"
             state_fields:
               port_a_phy: "initializing"
@@ -1939,14 +3191,14 @@ timeline:
     state_after:
       - actor_id: "target"
         layers:
-          - layer: 1
+          - layer: 0
             name: "FC-0 Physical"
             state_fields:
               phy_state: "initializing"
               signal_detect: true
       - actor_id: "switch"
         layers:
-          - layer: 1
+          - layer: 0
             name: "FC-0 Physical (per-port)"
             state_fields:
               port_b_phy: "initializing"
@@ -1962,18 +3214,18 @@ timeline:
     state_after:
       - actor_id: "initiator"
         layers:
-          - layer: 1
+          - layer: 0
             name: "FC-0 Physical"
             state_fields:
               phy_state: "UP"
               speed: "64GFC"
-          - layer: 2
-            name: "FC-1 Encode"
+          - layer: 1
+            name: "FC-1 Encoding"
             state_fields:
               word_sync: true
       - actor_id: "switch"
         layers:
-          - layer: 1
+          - layer: 0
             name: "FC-0 Physical (per-port)"
             state_fields:
               port_a_phy: "UP"
@@ -1989,23 +3241,23 @@ timeline:
     state_after:
       - actor_id: "target"
         layers:
-          - layer: 1
+          - layer: 0
             name: "FC-0 Physical"
             state_fields:
               phy_state: "UP"
               speed: "64GFC"
-          - layer: 2
-            name: "FC-1 Encode"
+          - layer: 1
+            name: "FC-1 Encoding"
             state_fields:
               word_sync: true
       - actor_id: "switch"
         layers:
-          - layer: 1
+          - layer: 0
             name: "FC-0 Physical (per-port)"
             state_fields:
               port_b_phy: "UP"
           - layer: 2
-            name: "FC Frame Forwarding"
+            name: "FC-2 Frame Forwarding / Fabric Services"
             state_fields:
               fwd_table_entries: 1
 
@@ -2024,13 +3276,10 @@ timeline:
     state_after:
       - actor_id: "initiator"
         layers:
-          - layer: 3
-            name: "FC Login / Fabric Services"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
             state_fields:
               fabric_login: "FLOGI_SENT"
-          - layer: 5
-            name: "FC-2 Exchanges"
-            state_fields:
               active_exchanges: 1
 
   - id: "evt_flogi_acc"
@@ -2048,29 +3297,20 @@ timeline:
     state_after:
       - actor_id: "initiator"
         layers:
-          - layer: 4
-            name: "FC-2 Framing"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
             state_fields:
               my_fcid: "0x010100"
               bb_credit: 16
-          - layer: 3
-            name: "FC Login / Fabric Services"
-            state_fields:
               fabric_login: "complete"
-          - layer: 5
-            name: "FC-2 Exchanges"
-            state_fields:
               active_exchanges: 0
               ox_id_next: "0x0002"
       - actor_id: "switch"
         layers:
-          - layer: 3
-            name: "Fabric Services"
+          - layer: 2
+            name: "FC-2 Frame Forwarding / Fabric Services"
             state_fields:
               fcid_pool_next: "0x010101"
-          - layer: 2
-            name: "FC Frame Forwarding"
-            state_fields:
               fwd_table_entries: 2
 
   # ── Phase 3: Name Server ───────────────────────────────────────
@@ -2087,8 +3327,8 @@ timeline:
     state_after:
       - actor_id: "initiator"
         layers:
-          - layer: 3
-            name: "FC Login / Fabric Services"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
             state_fields:
               ns_login: "PLOGI_SENT"
 
@@ -2102,8 +3342,8 @@ timeline:
     state_after:
       - actor_id: "initiator"
         layers:
-          - layer: 3
-            name: "FC Login / Fabric Services"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
             state_fields:
               ns_login: "complete"
 
@@ -2121,8 +3361,8 @@ timeline:
     state_after:
       - actor_id: "initiator"
         layers:
-          - layer: 5
-            name: "FC-2 Exchanges"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
             state_fields:
               active_exchanges: 1
 
@@ -2140,13 +3380,10 @@ timeline:
     state_after:
       - actor_id: "initiator"
         layers:
-          - layer: 3
-            name: "FC Login / Fabric Services"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
             state_fields:
               target_fcid: "0x010200"
-          - layer: 5
-            name: "FC-2 Exchanges"
-            state_fields:
               active_exchanges: 0
               ox_id_next: "0x0004"
 
@@ -2165,13 +3402,10 @@ timeline:
     state_after:
       - actor_id: "initiator"
         layers:
-          - layer: 3
-            name: "FC Login / Fabric Services"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
             state_fields:
               target_plogi: "PLOGI_SENT"
-          - layer: 5
-            name: "FC-2 Exchanges"
-            state_fields:
               active_exchanges: 1
 
   - id: "evt_plogi_target_acc"
@@ -2186,19 +3420,16 @@ timeline:
     state_after:
       - actor_id: "initiator"
         layers:
-          - layer: 3
-            name: "FC Login / Fabric Services"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
             state_fields:
               target_plogi: "complete"
-          - layer: 5
-            name: "FC-2 Exchanges"
-            state_fields:
               active_exchanges: 0
               ox_id_next: "0x0005"
       - actor_id: "target"
         layers:
-          - layer: 3
-            name: "FC Login State"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
             state_fields:
               host_plogi: "complete"
 
@@ -2218,8 +3449,8 @@ timeline:
     state_after:
       - actor_id: "initiator"
         layers:
-          - layer: 6
-            name: "FCP-4 (FC-4 ULP)"
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
             state_fields:
               fcp_state: "PRLI_SENT"
 
@@ -2236,18 +3467,15 @@ timeline:
     state_after:
       - actor_id: "initiator"
         layers:
-          - layer: 6
-            name: "FCP-4 (FC-4 ULP)"
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
             state_fields:
               fcp_state: "complete"
-          - layer: 7
-            name: "SCSI / Block Device"
-            state_fields:
               scsi_state: "scanning"
       - actor_id: "target"
         layers:
-          - layer: 6
-            name: "FCP-4 (FC-4 ULP)"
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
             state_fields:
               fcp_state: "complete"
 
@@ -2265,12 +3493,12 @@ timeline:
     state_after:
       - actor_id: "initiator"
         layers:
-          - layer: 7
-            name: "SCSI / Block Device"
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
             state_fields:
               last_cmd: "INQUIRY"
-          - layer: 5
-            name: "FC-2 Exchanges"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
             state_fields:
               active_exchanges: 1
 
@@ -2286,8 +3514,8 @@ timeline:
     state_after:
       - actor_id: "target"
         layers:
-          - layer: 7
-            name: "SCSI Target / LUNs"
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
             state_fields:
               last_cmd_received: "INQUIRY"
 
@@ -2303,13 +3531,13 @@ timeline:
     state_after:
       - actor_id: "initiator"
         layers:
-          - layer: 7
-            name: "SCSI / Block Device"
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
             state_fields:
               scsi_state: "online"
               lun_count: 1
-          - layer: 5
-            name: "FC-2 Exchanges"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
             state_fields:
               active_exchanges: 0
               ox_id_next: "0x0020"
@@ -2328,16 +3556,13 @@ timeline:
     state_after:
       - actor_id: "initiator"
         layers:
-          - layer: 7
-            name: "SCSI / Block Device"
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
             state_fields:
               last_cmd: "WRITE(10)"
-          - layer: 6
-            name: "FCP-4 (FC-4 ULP)"
-            state_fields:
               io_tag: "0x0020"
-          - layer: 5
-            name: "FC-2 Exchanges"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
             state_fields:
               active_exchanges: 1
 
@@ -2355,8 +3580,8 @@ timeline:
     state_after:
       - actor_id: "target"
         layers:
-          - layer: 7
-            name: "SCSI Target / LUNs"
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
             state_fields:
               last_cmd_received: "WRITE(10)"
 
@@ -2395,12 +3620,12 @@ timeline:
     state_after:
       - actor_id: "initiator"
         layers:
-          - layer: 7
-            name: "SCSI / Block Device"
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
             state_fields:
               last_cmd: "WRITE complete"
-          - layer: 5
-            name: "FC-2 Exchanges"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
             state_fields:
               active_exchanges: 0
               ox_id_next: "0x0021"
@@ -2418,16 +3643,13 @@ timeline:
     state_after:
       - actor_id: "initiator"
         layers:
-          - layer: 7
-            name: "SCSI / Block Device"
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
             state_fields:
               last_cmd: "READ(10)"
-          - layer: 6
-            name: "FCP-4 (FC-4 ULP)"
-            state_fields:
               io_tag: "0x0021"
-          - layer: 5
-            name: "FC-2 Exchanges"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
             state_fields:
               active_exchanges: 1
 
@@ -2444,8 +3666,8 @@ timeline:
     state_after:
       - actor_id: "target"
         layers:
-          - layer: 7
-            name: "SCSI Target / LUNs"
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
             state_fields:
               last_cmd_received: "READ(10)"
 
@@ -2472,12 +3694,12 @@ timeline:
     state_after:
       - actor_id: "initiator"
         layers:
-          - layer: 7
-            name: "SCSI / Block Device"
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
             state_fields:
               last_cmd: "READ complete"
-          - layer: 5
-            name: "FC-2 Exchanges"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
             state_fields:
               active_exchanges: 0
 

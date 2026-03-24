@@ -118,6 +118,9 @@ function checkSequencePattern(rule, packets) {
     }
   }
 
+  // No RoCE traffic present — skip sequence check entirely
+  if (opcodes.length === 0) return findings;
+
   // Check if expected sequence appears
   let matchIdx = 0;
   for (const op of opcodes) {

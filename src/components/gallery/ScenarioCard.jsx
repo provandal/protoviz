@@ -5,6 +5,7 @@ const DIFFICULTY_COLORS = {
   beginner: { bg: '#052e16', color: '#4ade80', border: '#16a34a' },
   intermediate: { bg: '#172554', color: '#60a5fa', border: '#2563eb' },
   advanced: { bg: '#3b0764', color: '#c084fc', border: '#7c3aed' },
+  expert: { bg: '#450a0a', color: '#fb7185', border: '#e11d48' },
 };
 
 export default function ScenarioCard({ scenario, onClick }) {

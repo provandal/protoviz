@@ -17,7 +17,8 @@
     "elementary": "בסיסי",
     "beginner": "מתחיל",
     "intermediate": "בינוני",
-    "advanced": "מתקדם"
+    "advanced": "מתקדם",
+    "expert": "מומחה"
   },
   "filter": {
     "searchPlaceholder": "חיפוש תרחישים...",

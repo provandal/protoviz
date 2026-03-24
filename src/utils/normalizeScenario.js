@@ -119,7 +119,7 @@ function normalizeTimelineEvent(ev, idx, phase, frameMap, endpointIds) {
         id: frame.id,
         name: frame.name,
         bytes: frame.total_bytes,
-        headers: (frame.headers || []).map(normalizeHeader),
+        headers: (frame.headers || []).map(normalizeHeader).sort((a, b) => b.layer - a.layer),
       };
     }
   }
@@ -193,6 +193,16 @@ function inferPhase(event, lastPhase) {
   if (/scenario complete|summary|end of scenario/i.test(text)
       || /^evt_done$|^evt_complete$|^evt_summary$/.test(id)) return 'Summary';
 
+  // io_uring phases (vertical stack)
+  if (/\bio_uring\b|\bsqe\b.*submit|\bkiocb\b|io_uring_enter/i.test(text)
+      || /sqe_|kiocb_/.test(id)) return 'io_uring';
+  // NVMe/TCP target-side phases (vertical stack)
+  if (/\bnvmet\b|target.*receive|target.*execute|blk_mq.*complete/i.test(text)
+      || /nvmet_tcp|nvmet_core/.test(id)) return 'NVMe/TCP Target';
+  // NVMe/TCP PDU construction (vertical stack)
+  if (/nvme_tcp_cmd_pdu|nvme_tcp_data_pdu|pdu.*construct/i.test(text)
+      || /nvme_tcp_cmd_pdu|nvme_tcp_data_pdu/.test(id)) return 'NVMe/TCP PDU';
+
   // NVMe-oF/TCP phases (check before generic patterns)
   if (/\bmdns\b|_nvme-disc/i.test(text) || /mdns/.test(id)) return 'mDNS Discovery';
   if (/\bddc\b|direct discovery controller/i.test(text) || /ddc/.test(id)) return 'DDC Discovery';
@@ -216,6 +226,16 @@ function inferPhase(event, lastPhase) {
   if (/\br2t\b|ready.?to.?transfer/i.test(text)
       || /write_r2t/.test(id)) return 'NVMe Write';
   if (/\bc2hdata\b/i.test(text) || /read_c2h/.test(id)) return 'NVMe Read';
+
+  // FC-SP-3 security phases
+  if (/\bdh-?chap\b|mutual auth|fabric auth/i.test(text)
+      || /auth_neg|dhchap_/.test(id)) return 'DH-CHAP';
+  if (/security association|\bsa\b.*init|\bsa\b.*setup|session key|key deriv/i.test(text)
+      || /sa_init|sa_setup/.test(id)) return 'SA Establishment';
+  if (/re-?key|key refresh|session.*refresh/i.test(text)
+      || /rekey/.test(id)) return 'Re-key';
+  if (/encrypted.*frame|aes.*gcm.*frame|decrypt|ciphertext/i.test(text)
+      || /fcp_write_enc|array_decrypt|encrypt/.test(id)) return 'Encrypted I/O';
 
   // FC-specific phases (check before generic patterns)
   if (/\bflogi\b/.test(text) || /flogi/.test(id)) return 'FLOGI';
@@ -331,6 +351,21 @@ function inferPhase(event, lastPhase) {
       || /tls_app_data/.test(id)) return 'TLS Data';
   if (/close_notify|\btls\b.*close|\btls\b.*shutdown/i.test(text)
       || /tls_close/.test(id)) return 'TLS Close';
+
+  // Parallel SCSI phases
+  if (/\bscsi\b.*arbitrat|\bscsi\b.*select|\bscsi\b.*bus/i.test(text)
+      || /scsi_arb|scsi_sel/.test(id)) return 'SCSI Bus';
+  if (/\bscsi\b.*command|\bcdb\b|command descriptor/i.test(text)
+      || /scsi_command/.test(id)) return 'SCSI Command';
+  if (/\bscsi\b.*data.*in|\bscsi\b.*status|data.?phase/i.test(text)
+      || /scsi_data|scsi_status/.test(id)) return 'SCSI Data';
+  if (/parallel.*wall|clock.*skew|signal.*integrity|bus.*contention/i.test(text)
+      || /parallel_wall/.test(id)) return 'Parallel Limits';
+  // PCIe phases
+  if (/\bpcie\b.*link.*train|ltssm|equalization/i.test(text)
+      || /pcie_link/.test(id)) return 'PCIe Link';
+  if (/\btlp\b|transaction.*layer.*packet|memory.*read|completion.*data/i.test(text)
+      || /pcie_tlp/.test(id)) return 'PCIe TLP';
 
   // TCP phases
   if (/\btcp\b.*\bsyn\b|\b3.?way\b.*handshake|handshake.*complete/i.test(text)

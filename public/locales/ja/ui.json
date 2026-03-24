@@ -17,7 +17,8 @@
     "elementary": "入門",
     "beginner": "初級",
     "intermediate": "中級",
-    "advanced": "上級"
+    "advanced": "上級",
+    "expert": "熟練"
   },
   "filter": {
     "searchPlaceholder": "シナリオを検索...",

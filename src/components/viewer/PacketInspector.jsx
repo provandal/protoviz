@@ -2,6 +2,38 @@ import { useTranslation } from 'react-i18next';
 import HeaderBlock from './HeaderBlock';
 import useViewerStore from '../../store/viewerStore';
 
+/**
+ * Build a header tree from the flat (descending-sorted) header list.
+ *
+ * Split headers into contiguous groups (adjacent layers differ by ≤ 1).
+ * When a layer gap > 1 separates groups, the upper group becomes payload
+ * (children) of the first header in the next lower group.
+ */
+function buildHeaderTree(headers) {
+  if (!headers || headers.length === 0) return [];
+
+  // Split into groups at layer gaps > 1
+  const groups = [[]];
+  for (let i = 0; i < headers.length; i++) {
+    groups[groups.length - 1].push(headers[i]);
+    if (i + 1 < headers.length && headers[i].layer - headers[i + 1].layer > 1) {
+      groups.push([]);
+    }
+  }
+
+  // No gaps — all flat wire headers
+  if (groups.length === 1) return groups[0];
+
+  // Merge top-down: each upper group nests as children of the first
+  // header in the group immediately below it
+  for (let g = 0; g < groups.length - 1; g++) {
+    const target = groups[g + 1][0];
+    groups[g + 1][0] = { ...target, children: [...groups[g], ...(target.children || [])] };
+  }
+
+  return groups[groups.length - 1];
+}
+
 export default function PacketInspector({ event }) {
   const { t } = useTranslation();
   const highlightFields = useViewerStore(s => s.highlightFields);
@@ -16,6 +48,8 @@ export default function PacketInspector({ event }) {
       </div>
     );
   }
+
+  const headerTree = buildHeaderTree(event.frame.headers);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -34,7 +68,7 @@ export default function PacketInspector({ event }) {
 
       {/* Header blocks */}
       <div style={{ overflowY: 'auto', flex: 1, padding: 8 }}>
-        {event.frame.headers.map((h, i) => <HeaderBlock key={i} hdr={h} highlightFields={highlightFields} />)}
+        {headerTree.map((h, i) => <HeaderBlock key={i} hdr={h} highlightFields={highlightFields} />)}
       </div>
     </div>
   );

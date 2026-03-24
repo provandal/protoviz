@@ -1,8 +1,9 @@
 /**
- * Full packet dissection pipeline: Ethernet → IPv4 → UDP/TCP → RoCE / ULP
+ * Full packet dissection pipeline: Ethernet → IPv4/IPv6 → UDP/TCP/ICMPv6 → RoCE / ULP
  */
 import { dissectEthernet } from './dissectors/ethernet.js';
 import { dissectIPv4 } from './dissectors/ip.js';
+import { dissectIPv6, dissectICMPv6 } from './dissectors/ipv6.js';
 import { dissectUDP, ROCE_V2_PORT } from './dissectors/udp.js';
 import { dissectTCP } from './dissectors/tcp.js';
 import { dissectBTH, dissectRETH, dissectAETH, RETH_OPCODES, AETH_OPCODES } from './dissectors/roce.js';
@@ -87,6 +88,53 @@ export function dissectPacket(packet) {
       }
     } else {
       summary += ` | ${ip.fields.protocol_name}`;
+    }
+  } else if (eth.nextProtocol === 0x86dd) {
+    const ip6 = dissectIPv6(data, eth.nextOffset);
+    if (!ip6) return { layers, summary: `Truncated IPv6 from ${eth.fields.src_mac}` };
+    layers.push(ip6);
+    summary = `${ip6.fields.src_ip} → ${ip6.fields.dst_ip}`;
+
+    // Layer 4
+    if (ip6.nextProtocol === 17) {
+      const udp = dissectUDP(data, ip6.nextOffset);
+      if (udp) {
+        layers.push(udp);
+        const { layer: ulpLayer, summary: ulpSummary } = dissectPayload(
+          data, udp.nextOffset, udp.fields.src_port, udp.fields.dst_port, 'udp'
+        );
+        if (ulpLayer) layers.push(ulpLayer);
+        summary += ulpSummary
+          ? ` | ${ulpSummary}`
+          : ` | UDP ${udp.fields.src_port}→${udp.fields.dst_port}`;
+      }
+    } else if (ip6.nextProtocol === 6) {
+      const tcp = dissectTCP(data, ip6.nextOffset);
+      if (tcp) {
+        layers.push(tcp);
+        summary += ` | TCP ${tcp.fields.src_port}→${tcp.fields.dst_port} [${tcp.fields.flag_names}]`;
+
+        const payloadOffset = tcp.nextOffset;
+        const payloadLen = data.length - payloadOffset;
+        if (payloadLen > 0) {
+          const { layer: ulpLayer, summary: ulpSummary } = dissectPayload(
+            data, payloadOffset, tcp.fields.src_port, tcp.fields.dst_port, 'tcp'
+          );
+          if (ulpLayer) {
+            layers.push(ulpLayer);
+            if (ulpSummary) summary += ` | ${ulpSummary}`;
+          }
+        }
+      }
+    } else if (ip6.nextProtocol === 58) {
+      const icmp6 = dissectICMPv6(data, ip6.nextOffset);
+      if (icmp6) {
+        layers.push(icmp6);
+        summary += ` | ICMPv6 ${icmp6.fields.type_name}`;
+        if (icmp6.fields.target_address) summary += ` target=${icmp6.fields.target_address}`;
+      }
+    } else {
+      summary += ` | ${ip6.fields.protocol_name}`;
     }
   } else if (eth.nextProtocol === 0x0806) {
     summary = `ARP ${eth.fields.src_mac} → ${eth.fields.dst_mac}`;

@@ -98,5 +98,17 @@
   "byte-order-endianness": {
     "title": "Endianness: Warum Netzwerke und CPUs sich bei der Byte-Reihenfolge nicht einig sind",
     "description": "Little-Endian vs. Big-Endian: Wie deine CPU 0x0050 auf eine Art speichert, das Netzwerk es aber anders erwartet. Sieh den echten Bug, wenn man htons() vergisst."
+  },
+  "fc-sp3-secure-hba-edif": {
+    "title": "FC-SP-3 Secure HBA: Fabric-Authentifizierung → Sitzungsschlüssel → Verschlüsselte I/O",
+    "description": "Ein Begleitszenario zum FC-Fabric-Szenario. Setzt bei PLOGI an und fügt die FC-SP-3-Sicherheitsschicht hinzu: DH-CHAP gegenseitige Authentifizierung, Security-Association-Aufbau mit ML-KEM-1024 Post-Quanten-Schlüsselkapselung, AES-256-GCM-Sitzungsschlüsselableitung und verschlüsselte FC-Frames."
+  },
+  "parallel-to-serial-scsi-pcie": {
+    "title": "[DRAFT] Parallel vs. Seriell: Von SCSI-Bussen zu PCIe-Lanes",
+    "description": "Warum hat die Industrie parallele Busse zugunsten serieller Verbindungen aufgegeben? Dieses Szenario verfolgt einen parallelen SCSI-Befehlsaustausch, legt die physikalischen Grenzen offen, die den parallelen Bus beendeten, und zeigt, wie PCIe jedes Problem mit einer seriellen Differenzialpaar-Architektur löste."
+  },
+  "nvme-tcp-vertical-stack-connect-write": {
+    "title": "[DRAFT] NVMe/TCP: Vollständiger vertikaler Stack-Trace — Verbindung → Schreibvorgang",
+    "description": "Alle anderen ProtoViz-Szenarien verfolgen Pakete horizontal — vom Initiator zum Ziel. Dieses Szenario geht vertikal: ein TCP-Verbindungsaufbau und ein 4-KB-NVMe-WRITE-Befehl, verfolgt vom User-Space-Systemaufruf durch jede Kernel-Schicht, über die Leitung und zurück durch den Ziel-Stack."
   }
 }

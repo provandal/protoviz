@@ -98,5 +98,17 @@
   "byte-order-endianness": {
     "title": "엔디언: 네트워크와 CPU가 바이트 순서에 동의하지 않는 이유",
     "description": "리틀 엔디언 vs 빅 엔디언: CPU는 0x0050을 한 가지 방식으로 저장하지만 네트워크는 다른 방식을 기대합니다. htons()를 빠뜨렸을 때의 실제 버그를 확인하세요."
+  },
+  "fc-sp3-secure-hba-edif": {
+    "title": "FC-SP-3 Secure HBA: Fabric 인증 → 세션 키 → 암호화 I/O",
+    "description": "FC Fabric 시나리오의 보완. PLOGI에서 시작하여 FC-SP-3 보안 계층을 추가: DH-CHAP 상호 인증, ML-KEM-1024 포스트양자 키 캡슐화를 통한 보안 연관 설정, AES-256-GCM 세션 키 도출 및 암호화된 FC 프레임."
+  },
+  "parallel-to-serial-scsi-pcie": {
+    "title": "[DRAFT] 병렬 대 직렬: SCSI 버스에서 PCIe 레인으로",
+    "description": "산업은 왜 직렬 링크를 위해 병렬 버스를 포기했을까? 이 시나리오는 병렬 SCSI 명령 교환을 추적하고, 병렬 버스를 끝낸 물리적 한계를 드러내며, PCIe가 직렬 차동 쌍 아키텍처로 각 문제를 어떻게 해결했는지 보여줍니다."
+  },
+  "nvme-tcp-vertical-stack-connect-write": {
+    "title": "[DRAFT] NVMe/TCP: 전체 수직 스택 추적 — 연결 → 쓰기",
+    "description": "다른 모든 ProtoViz 시나리오는 패킷을 수평으로 추적합니다 — 이니시에이터에서 대상까지. 이 시나리오는 수직으로 진행합니다: 하나의 TCP 연결과 하나의 4KB NVMe WRITE 명령을, 사용자 공간 시스템 호출에서 모든 커널 계층을 거쳐, 와이어를 넘어, 대상 스택을 올라가며 추적합니다."
   }
 }

@@ -17,7 +17,8 @@
     "elementary": "प्राथमिक",
     "beginner": "शुरुआती",
     "intermediate": "मध्यवर्ती",
-    "advanced": "उन्नत"
+    "advanced": "उन्नत",
+    "expert": "विशेषज्ञ"
   },
   "filter": {
     "searchPlaceholder": "परिदृश्य खोजें...",

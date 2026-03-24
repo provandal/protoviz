@@ -98,5 +98,17 @@
   "byte-order-endianness": {
     "title": "字节序：为什么网络和CPU在字节顺序上存在分歧",
     "description": "小端序与大端序：你的CPU以一种方式存储 0x0050，但网络期望另一种方式。看看忘记 htons() 时真正发生的错误。"
+  },
+  "fc-sp3-secure-hba-edif": {
+    "title": "FC-SP-3 Secure HBA：Fabric认证 → 会话密钥 → 加密I/O",
+    "description": "FC Fabric场景的补充。从PLOGI开始，添加FC-SP-3安全层：DH-CHAP双向认证、使用ML-KEM-1024后量子密钥封装的安全关联建立、AES-256-GCM会话密钥派生以及加密FC帧。"
+  },
+  "parallel-to-serial-scsi-pcie": {
+    "title": "[DRAFT] 并行与串行：从SCSI总线到PCIe通道",
+    "description": "为什么行业放弃并行总线转向串行链路？本场景追踪一次并行SCSI命令交换，揭示导致并行总线消亡的物理限制，并展示PCIe如何用串行差分对架构解决了每个问题。"
+  },
+  "nvme-tcp-vertical-stack-connect-write": {
+    "title": "[DRAFT] NVMe/TCP：完整垂直协议栈追踪 — 连接 → 写入",
+    "description": "ProtoViz的所有其他场景都水平追踪数据包 — 从发起方到目标。本场景垂直进行：一个TCP连接和一个4KB NVMe WRITE命令，从用户空间系统调用追踪，穿过每一层内核，跨越线缆，再沿目标协议栈返回。"
   }
 }

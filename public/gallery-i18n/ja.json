@@ -98,5 +98,17 @@
   "byte-order-endianness": {
     "title": "エンディアンネス：ネットワークとCPUがバイト順で一致しない理由",
     "description": "リトルエンディアンとビッグエンディアン：CPUは0x0050をある方法で格納しますが、ネットワークは別の方法を期待します。htons()を忘れた時の実際のバグを見てみましょう。"
+  },
+  "fc-sp3-secure-hba-edif": {
+    "title": "FC-SP-3 Secure HBA: Fabric認証 → セッション鍵 → 暗号化I/O",
+    "description": "FC Fabricシナリオの補完。PLOGIから始まり、FC-SP-3セキュリティ層を追加：DH-CHAP相互認証、ML-KEM-1024ポスト量子鍵カプセル化によるセキュリティアソシエーション確立、AES-256-GCMセッション鍵導出、暗号化FCフレーム。"
+  },
+  "parallel-to-serial-scsi-pcie": {
+    "title": "[DRAFT] パラレル対シリアル：SCSIバスからPCIeレーンへ",
+    "description": "なぜ業界はシリアルリンクのためにパラレルバスを捨てたのか？このシナリオはパラレルSCSIコマンド交換をたどり、パラレルバスを終わらせた物理的限界を明らかにし、PCIeがシリアル差動ペアアーキテクチャでどのように各問題を解決したかを示します。"
+  },
+  "nvme-tcp-vertical-stack-connect-write": {
+    "title": "[DRAFT] NVMe/TCP：完全な垂直スタックトレース — 接続 → 書き込み",
+    "description": "他のすべてのProtoVizシナリオはパケットを水平に追跡します — イニシエータからターゲットへ。このシナリオは垂直に進みます：1つのTCP接続と1つの4KB NVMe WRITEコマンドを、ユーザースペースのシステムコールからすべてのカーネル層を通り、ワイヤを越え、ターゲットスタックを遡ってトレースします。"
   }
 }

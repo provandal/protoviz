@@ -200,7 +200,7 @@ function FrameRow({ ev, dir, span, color, isCurrent, isPast, receiverLabel }) {
       <div className="pvz-seq-label" style={{ color: isPast ? '#334155' : isCurrent ? '#f1f5f9' : '#94a3b8', fontSize: 10, fontWeight: isCurrent ? 700 : 400, transition: 'color 0.2s' }}>
         {ev.label}
       </div>
-      {ev.frame && <div className="pvz-seq-label" style={{ color: '#475569', fontSize: 9 }}>{ev.frame.bytes} bytes</div>}
+      {ev.frame && ev.frame.bytes > 0 && <div className="pvz-seq-label" style={{ color: '#475569', fontSize: 9 }}>{ev.frame.bytes} bytes</div>}
     </div>
   );
 

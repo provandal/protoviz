@@ -17,7 +17,8 @@
     "elementary": "Elementar",
     "beginner": "Iniciante",
     "intermediate": "Intermediário",
-    "advanced": "Avançado"
+    "advanced": "Avançado",
+    "expert": "Especialista"
   },
   "filter": {
     "searchPlaceholder": "Buscar cenários...",

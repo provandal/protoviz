@@ -17,7 +17,8 @@
     "elementary": "Начальный",
     "beginner": "Начинающий",
     "intermediate": "Средний",
-    "advanced": "Продвинутый"
+    "advanced": "Продвинутый",
+    "expert": "Эксперт"
   },
   "filter": {
     "searchPlaceholder": "Поиск сценариев...",

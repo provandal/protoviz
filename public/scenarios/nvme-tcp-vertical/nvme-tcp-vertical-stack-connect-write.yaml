@@ -1,0 +1,2695 @@
+meta:
+  id: "nvme-tcp-vertical-stack-connect-write"
+  title: "[DRAFT] NVMe/TCP: Full Vertical Stack Trace — Connect → Write"
+  protocol: "NVMe/TCP"
+  protocol_family: "Storage Protocols"
+  version: "1.0"
+  description: >
+    Every other ProtoViz scenario follows packets *horizontally* — initiator to target
+    across the wire. This scenario goes *vertical*: one TCP connection establishment
+    and one 4 KB NVMe WRITE command, traced from user-space syscall down through every
+    kernel layer, across the wire, and back up the target stack to completion.
+
+    Act 1 — Connect: A generic application issues io_uring_enter(). Watch the call
+    descend through io_uring, nvme-tcp.c, the TCP/IP stack, the NIC driver, cross
+    the wire, and climb back up the target's nvmet-tcp.c state machine.
+
+    Act 2 — Write: An io_uring SQE becomes a kiocb becomes an nvme_tcp_cmd_pdu
+    becomes an sk_buff becomes DMA descriptors becomes bytes on wire — then the
+    entire journey reverses on the target, ending with a blk_mq completion and
+    an NVMe CQE climbing back to user space.
+
+    The "frames" in this scenario are kernel data structures (sk_buff, io_uring_sqe,
+    nvme_tcp_cmd_pdu), not wire packets. The packet inspector shows struct fields
+    with kernel source cross-links. This is a debugger walkthrough in scenario form.
+
+    Prerequisite: Familiarity with the NVMe/TCP horizontal flow scenario
+    (mDNS → Discovery → Connect → I/O). This scenario assumes the subsystem
+    is already discovered; we start at the connect() syscall.
+  difficulty: "expert"
+  learning_objectives:
+    - "Trace an NVMe/TCP connection from io_uring_enter() through socket creation to nvmet_tcp_state_change() on the target"
+    - "Identify every kernel boundary crossing: user→kernel (syscall), kernel→driver (NAPI/DMA), driver→hardware (MMIO/descriptor ring)"
+    - "Read and interpret io_uring_sqe, io_kiocb, nvme_tcp_cmd_pdu, and sk_buff struct fields"
+    - "Understand how nvme-tcp.c queues PDUs into sk_buff chains and how TCP segments them"
+    - "Trace the target-side path: tcp_rcv_established → nvmet_tcp_io_work → nvmet_req → blk_mq → completion"
+    - "Identify where zero-copy and DMA handoffs occur and why they matter for performance"
+    - "Understand the io_uring completion ring (CQE) path from NVMe completion interrupt back to user space"
+    - "Explain why NVMe/TCP over io_uring achieves near-native NVMe latency despite the full TCP stack"
+  authors:
+    - name: "Erik Smith"
+      org: "Dell Technologies"
+      github: "provandal"
+  created: "2026-03-22"
+  updated: "2026-03-22"
+  tags:
+    - "nvme-tcp"
+    - "nvme-of"
+    - "kernel"
+    - "io_uring"
+    - "tcp"
+    - "vertical-stack"
+    - "expert"
+    - "sk_buff"
+    - "dma"
+    - "deep-dive"
+    - "linux"
+    - "storage"
+  primary_specs:
+    - document: "NVMe/TCP (NVMe-oF TP 8000.2)"
+      section: "3"
+      title: "NVMe/TCP PDU formats"
+      url: "https://nvmexpress.org/specifications/"
+    - document: "NVMe Base Spec 2.0"
+      section: "4"
+      title: "Admin and I/O commands"
+      url: "https://nvmexpress.org/specifications/"
+    - document: "io_uring (liburing)"
+      section: "N/A"
+      title: "io_uring interface"
+      url: "https://kernel.dk/io_uring.pdf"
+    - document: "RFC 793"
+      section: "3"
+      title: "TCP Functional Specification"
+      url: "https://www.rfc-editor.org/rfc/rfc793"
+  source_references:
+    - repo: "torvalds/linux"
+      path: "drivers/nvme/host/tcp.c"
+      description: "NVMe/TCP host driver — initiator-side PDU construction, queue management, socket callbacks"
+    - repo: "torvalds/linux"
+      path: "drivers/nvme/target/tcp.c"
+      description: "NVMe/TCP target driver — nvmet_tcp_state_change, IO work, PDU parsing"
+    - repo: "torvalds/linux"
+      path: "drivers/nvme/target/core.c"
+      description: "nvmet core — request allocation, namespace lookup, completion"
+    - repo: "torvalds/linux"
+      path: "io_uring/io_uring.c"
+      description: "io_uring core — SQE submission, CQE posting, task_work"
+    - repo: "torvalds/linux"
+      path: "net/ipv4/tcp.c"
+      description: "TCP send/receive — tcp_sendmsg, tcp_rcv_established"
+    - repo: "torvalds/linux"
+      path: "net/ipv4/ip_output.c"
+      description: "IP output — ip_queue_xmit, ip_finish_output"
+    - repo: "torvalds/linux"
+      path: "net/core/skbuff.c"
+      description: "sk_buff allocation and manipulation"
+    - repo: "torvalds/linux"
+      path: "drivers/net/ethernet/intel/e1000e/netdev.c"
+      description: "Representative NIC driver — TX descriptor ring, NAPI RX"
+
+topology:
+  actors:
+    # Initiator-side layers (left column, top to bottom)
+    - id: "init_app"
+      type: "host"
+      label: "Application (User Space)"
+      description: "Generic application issuing storage I/O via io_uring. Runs in user space — no direct kernel access."
+      hardware: "User process, ring mapped via mmap()"
+      os: "Linux 6.8"
+      position: "left"
+
+    - id: "init_iouring"
+      type: "host"
+      label: "io_uring (Kernel)"
+      description: "Kernel-side io_uring submission/completion engine. Bridges user-space SQEs to kernel kiocb/bio operations without per-syscall overhead."
+      hardware: "Kernel context — io_uring.c, io_uring/rw.c"
+      position: "left"
+
+    - id: "init_nvme_tcp"
+      type: "host"
+      label: "nvme-tcp.c (Host Driver)"
+      description: "NVMe/TCP host driver. Translates NVMe commands into NVMe/TCP PDUs and manages TCP queue pairs."
+      hardware: "drivers/nvme/host/tcp.c"
+      position: "left"
+
+    - id: "init_tcp_ip"
+      type: "host"
+      label: "TCP/IP Stack (Kernel)"
+      description: "Linux TCP/IP networking stack. Segments PDU data into TCP segments, handles retransmission, congestion control, and IP routing."
+      hardware: "net/ipv4/tcp.c, net/ipv4/ip_output.c"
+      position: "left"
+
+    - id: "init_nic"
+      type: "host"
+      label: "NIC Driver + Hardware (Initiator)"
+      description: "NIC driver (e.g. mlx5/e1000e) managing TX descriptor rings. DMA transfers sk_buff data to NIC hardware without CPU involvement."
+      hardware: "Mellanox ConnectX-6 or Intel X710 — 25GbE"
+      position: "left"
+
+    # Wire
+    - id: "wire"
+      type: "switch"
+      label: "Physical Network (25GbE)"
+      description: "The actual wire — Ethernet frames carrying TCP segments carrying NVMe/TCP PDUs. One round-trip latency ~5–10 µs on a real fabric."
+      position: "center"
+
+    # Target-side layers (right column, bottom to top)
+    - id: "tgt_nic"
+      type: "host"
+      label: "NIC Driver + Hardware (Target)"
+      description: "Target NIC receives Ethernet frames via DMA into RX descriptor ring. NAPI polling delivers sk_buffs to the TCP stack."
+      hardware: "Mellanox ConnectX-6 25GbE — drivers/net/ethernet/mellanox/mlx5/"
+      position: "right"
+
+    - id: "tgt_tcp_ip"
+      type: "host"
+      label: "TCP/IP Stack (Target Kernel)"
+      description: "Target TCP stack. Reassembles segments, delivers ordered byte stream to nvmet-tcp via socket data_ready callback."
+      hardware: "net/ipv4/tcp_input.c, tcp_rcv_established()"
+      position: "right"
+
+    - id: "tgt_nvmet_tcp"
+      type: "host"
+      label: "nvmet-tcp.c (Target Driver)"
+      description: "NVMe/TCP target driver. Parses PDUs from TCP stream, allocates nvmet_req, drives state machine, posts completions."
+      hardware: "drivers/nvme/target/tcp.c"
+      position: "right"
+
+    - id: "tgt_nvmet_core"
+      type: "host"
+      label: "nvmet Core + Block Layer"
+      description: "NVMe target core and Linux block layer. Validates commands against namespace, submits bio to backing device, handles completion."
+      hardware: "drivers/nvme/target/core.c, block/blk-mq.c"
+      position: "right"
+
+    - id: "tgt_app"
+      type: "host"
+      label: "nvmetcli / Kernel Target"
+      description: "The NVMe target is fully kernel-resident (no user-space daemon for I/O path). nvmetcli configures but does not handle I/O. Shown here as the logical endpoint."
+      hardware: "configfs + nvmet kernel modules"
+      position: "right"
+
+  links:
+    - id: "app-iouring"
+      from: "init_app"
+      to: "init_iouring"
+      speed_gbps: 0
+      media: "backplane"
+    - id: "iouring-nvmetcp"
+      from: "init_iouring"
+      to: "init_nvme_tcp"
+      speed_gbps: 0
+      media: "backplane"
+    - id: "nvmetcp-tcpip"
+      from: "init_nvme_tcp"
+      to: "init_tcp_ip"
+      speed_gbps: 0
+      media: "backplane"
+    - id: "tcpip-nic"
+      from: "init_tcp_ip"
+      to: "init_nic"
+      speed_gbps: 0
+      media: "backplane"
+    - id: "nic-wire"
+      from: "init_nic"
+      to: "wire"
+      speed_gbps: 25
+      media: "fiber_sr"
+    - id: "wire-tgt-nic"
+      from: "wire"
+      to: "tgt_nic"
+      speed_gbps: 25
+      media: "fiber_sr"
+    - id: "tgt-nic-tcp"
+      from: "tgt_nic"
+      to: "tgt_tcp_ip"
+      speed_gbps: 0
+      media: "backplane"
+    - id: "tgt-tcp-nvmet"
+      from: "tgt_tcp_ip"
+      to: "tgt_nvmet_tcp"
+      speed_gbps: 0
+      media: "backplane"
+    - id: "tgt-nvmet-core"
+      from: "tgt_nvmet_tcp"
+      to: "tgt_nvmet_core"
+      speed_gbps: 0
+      media: "backplane"
+    - id: "tgt-core-app"
+      from: "tgt_nvmet_core"
+      to: "tgt_app"
+      speed_gbps: 0
+      media: "backplane"
+
+osi_layers:
+  init_app:
+    - layer: 7
+      name: "Application"
+      components: ["Generic app", "io_uring submission/completion rings (mmap'd)"]
+      state_schema:
+        sqe_state:
+          type: "string"
+          description: "State of the io_uring SQE being submitted"
+          initial: "idle"
+        cqe_pending:
+          type: "integer"
+          description: "Number of completions awaited"
+          initial: 0
+
+  init_iouring:
+    - layer: 7
+      name: "Application"
+      components: ["io_uring.c", "io_uring/rw.c", "io_kiocb", "task_work"]
+      state_schema:
+        kiocb_state:
+          type: "string"
+          description: "Current kiocb lifecycle state"
+          initial: "idle"
+        sqe_opcode:
+          type: "string"
+          description: "SQE opcode being processed"
+          initial: "none"
+    - layer: 4
+      name: "Transport"
+      components: ["io_uring fixed-file table", "registered buffers"]
+      state_schema:
+        registered_bufs:
+          type: "boolean"
+          description: "Whether zero-copy registered buffers are in use"
+          initial: false
+
+  init_nvme_tcp:
+    - layer: 7
+      name: "Application"
+      components: ["nvme_tcp_queue", "nvme_tcp_cmd_pdu", "nvmf_connect_command", "nvme_command"]
+      state_schema:
+        queue_state:
+          type: "string"
+          description: "NVMe/TCP queue connection state"
+          initial: "NVME_TCP_Q_DISCONNECTED"
+        pdu_type:
+          type: "string"
+          description: "Current PDU being constructed"
+          initial: "none"
+        cmd_id:
+          type: "integer"
+          description: "Current command ID (cid)"
+          initial: 0
+    - layer: 4
+      name: "Transport"
+      components: ["socket (SOCK_STREAM)", "kernel_sendmsg", "nvme_tcp_try_send"]
+      state_schema:
+        socket_state:
+          type: "string"
+          description: "Underlying TCP socket state"
+          initial: "CLOSED"
+        send_list_depth:
+          type: "integer"
+          description: "PDUs queued for send"
+          initial: 0
+
+  init_tcp_ip:
+    - layer: 4
+      name: "Transport (TCP)"
+      components: ["tcp_sock", "sk_buff", "tcp_sendmsg", "tcp_write_xmit"]
+      state_schema:
+        tcp_state:
+          type: "string"
+          description: "TCP connection state machine"
+          initial: "CLOSED"
+        snd_nxt:
+          type: "integer"
+          description: "Next sequence number to send"
+          initial: 0
+        cwnd:
+          type: "integer"
+          description: "Congestion window (segments)"
+          initial: 10
+        sk_wmem_queued:
+          type: "integer"
+          description: "Bytes in TCP write queue"
+          initial: 0
+    - layer: 3
+      name: "Network (IP)"
+      components: ["ip_queue_xmit", "ip_finish_output", "rtable"]
+      state_schema:
+        dst_ip:
+          type: "string"
+          description: "Resolved next-hop IP"
+          initial: "unresolved"
+        ttl:
+          type: "integer"
+          description: "IP TTL"
+          initial: 64
+
+  init_nic:
+    - layer: 2
+      name: "Data Link"
+      components: ["TX descriptor ring", "DMA engine", "mlx5_wqe / e1000e_tx_desc"]
+      state_schema:
+        tx_ring_head:
+          type: "integer"
+          description: "TX descriptor ring head pointer"
+          initial: 0
+        tx_ring_tail:
+          type: "integer"
+          description: "TX descriptor ring tail pointer"
+          initial: 0
+        dma_state:
+          type: "string"
+          description: "DMA transfer state"
+          initial: "idle"
+    - layer: 1
+      name: "Physical"
+      components: ["25GbE SerDes", "PCS/PMA", "SFP28 optical module"]
+      state_schema:
+        link_state:
+          type: "string"
+          description: "Physical link state"
+          initial: "UP"
+        speed_gbps:
+          type: "integer"
+          description: "Negotiated speed"
+          initial: 25
+
+  wire:
+    - layer: 1
+      name: "Physical"
+      components: ["LC fiber patch", "25GbE optical signal"]
+      state_schema:
+        frame_in_flight:
+          type: "boolean"
+          description: "Whether an Ethernet frame is currently propagating"
+          initial: false
+
+  tgt_nic:
+    - layer: 2
+      name: "Data Link"
+      components: ["RX descriptor ring", "NAPI poll", "DMA engine"]
+      state_schema:
+        rx_ring_head:
+          type: "integer"
+          description: "RX descriptor ring head"
+          initial: 0
+        napi_state:
+          type: "string"
+          description: "NAPI poll state"
+          initial: "idle"
+    - layer: 1
+      name: "Physical"
+      components: ["25GbE SerDes", "SFP28"]
+      state_schema:
+        link_state:
+          type: "string"
+          description: "Physical link state"
+          initial: "UP"
+
+  tgt_tcp_ip:
+    - layer: 4
+      name: "Transport (TCP)"
+      components: ["tcp_rcv_established", "tcp_data_queue", "sk_buff", "data_ready callback"]
+      state_schema:
+        tcp_state:
+          type: "string"
+          description: "TCP state"
+          initial: "LISTEN"
+        rcv_nxt:
+          type: "integer"
+          description: "Next expected sequence number"
+          initial: 0
+        sk_rmem_alloc:
+          type: "integer"
+          description: "Bytes in receive buffer"
+          initial: 0
+    - layer: 3
+      name: "Network (IP)"
+      components: ["ip_rcv", "ip_local_deliver"]
+      state_schema:
+        src_ip:
+          type: "string"
+          description: "Source IP of accepted connection"
+          initial: "unknown"
+
+  tgt_nvmet_tcp:
+    - layer: 7
+      name: "Application"
+      components: ["nvmet_tcp_queue", "nvmet_tcp_io_work", "nvmet_tcp_recv_pdu", "nvmet_tcp_handle_icreq"]
+      state_schema:
+        queue_state:
+          type: "string"
+          description: "nvmet-tcp queue state machine"
+          initial: "NVMET_TCP_Q_CONNECTING"
+        pdu_state:
+          type: "string"
+          description: "Current PDU receive state"
+          initial: "NVMET_TCP_RECV_PDU_HDR"
+        req_state:
+          type: "string"
+          description: "Current nvmet_req state"
+          initial: "idle"
+    - layer: 4
+      name: "Transport"
+      components: ["accepted socket", "nvmet_tcp_data_ready", "kernel_recvmsg"]
+      state_schema:
+        socket_state:
+          type: "string"
+          description: "Accepted socket state"
+          initial: "ESTABLISHED"
+
+  tgt_nvmet_core:
+    - layer: 7
+      name: "Application"
+      components: ["nvmet_req", "nvmet_ns", "nvmet_subsys", "blk_mq_submit_bio", "nvmet_req_complete"]
+      state_schema:
+        req_state:
+          type: "string"
+          description: "nvmet_req processing state"
+          initial: "idle"
+        ns_id:
+          type: "integer"
+          description: "Target namespace ID"
+          initial: 1
+        blk_status:
+          type: "string"
+          description: "Block layer completion status"
+          initial: "pending"
+
+  tgt_app:
+    - layer: 7
+      name: "Application"
+      components: ["configfs nvmet subsystem", "nvmetcli (configuration only — not in I/O path)"]
+      state_schema:
+        subsystem_state:
+          type: "string"
+          description: "nvmet subsystem operational state"
+          initial: "CONFIGURED"
+
+frames:
+  # ═══════════════════════════════════════════════════════════════
+  # ACT 1 — CONNECT
+  # ═══════════════════════════════════════════════════════════════
+
+  - id: "sqe_connect"
+    name: "io_uring SQE — IORING_OP_CONNECT"
+    description: >
+      The application places an io_uring Submission Queue Entry (SQE) into the
+      shared ring buffer — a memory region mmap()'d into both user and kernel
+      address spaces. No syscall is needed to write the SQE; the ring is a
+      lock-free circular buffer. The syscall (io_uring_enter) comes later,
+      or not at all if SQPOLL is enabled.
+
+      This SQE requests a TCP connect() to the NVMe/TCP target on port 4420.
+      nvme-tcp.c issues this internally during queue initialization —
+      the application never calls connect() directly.
+    from: "init_app"
+    to: "init_iouring"
+    timestamp_ns: 0
+    total_bytes: 64
+    color: "#8e44ad"
+    headers:
+      - name: "io_uring_sqe (64 bytes)"
+        abbrev: "sqe"
+        layer: 7
+        total_bytes: 64
+        fields:
+          - name: "opcode"
+            abbrev: "sqe.opcode"
+            bits: 8
+            offset_bits: 0
+            value: "0x10"
+            value_hex: "0x10"
+            description: >
+              IORING_OP_CONNECT = 0x10. Submits a non-blocking connect() to
+              the kernel. io_uring will complete the SQE (post a CQE) when
+              the TCP handshake finishes — the application can submit other
+              work in the meantime.
+            spec_refs:
+              - document: "io_uring"
+                section: "IORING_OP_CONNECT"
+                title: "Connect operation"
+                url: "https://kernel.dk/io_uring.pdf"
+            kernel_ref:
+              file: "io_uring/net.c"
+              function: "io_connect"
+              line_hint: 1847
+              notes: "io_connect() validates the SQE, calls kernel_connect() via socket layer"
+          - name: "flags"
+            abbrev: "sqe.flags"
+            bits: 8
+            offset_bits: 8
+            value: "0x00"
+            description: "No special flags. IOSQE_FIXED_FILE or IOSQE_IO_LINK would appear here."
+          - name: "fd"
+            abbrev: "sqe.fd"
+            bits: 32
+            offset_bits: 32
+            value: 5
+            description: >
+              File descriptor of the TCP socket, created earlier by
+              nvme_tcp_init_connection() via sock_create_kern(). fd=5 is
+              illustrative — the actual fd is assigned by the kernel.
+            kernel_ref:
+              file: "drivers/nvme/host/tcp.c"
+              function: "nvme_tcp_init_connection"
+              line_hint: 1654
+              notes: "sock_create_kern(AF_INET, SOCK_STREAM, IPPROTO_TCP, &queue->sock)"
+          - name: "addr (sockaddr_in *)"
+            abbrev: "sqe.addr"
+            bits: 64
+            offset_bits: 128
+            value: "0xFFFF888012340000"
+            description: >
+              Pointer to sockaddr_in struct in user/kernel memory containing
+              the target IP (192.168.1.100) and port (4420 = 0x114C).
+              4420 is the IANA-assigned well-known port for NVMe/TCP.
+            spec_refs:
+              - document: "NVMe/TCP (TP 8000.2)"
+                section: "3.1"
+                title: "Well-known port"
+          - name: "addr_len"
+            abbrev: "sqe.addr_len"
+            bits: 32
+            offset_bits: 192
+            value: 16
+            description: "sizeof(sockaddr_in) = 16 bytes."
+          - name: "user_data"
+            abbrev: "sqe.user_data"
+            bits: 64
+            offset_bits: 448
+            value: "0x0000000000000001"
+            description: >
+              Opaque tag echoed verbatim into the CQE. nvme-tcp.c uses this
+              to correlate completions with queued commands. The application
+              never sees this for internal driver SQEs.
+            kernel_ref:
+              file: "drivers/nvme/host/tcp.c"
+              function: "nvme_tcp_io_work"
+              line_hint: 1102
+
+  - id: "kiocb_connect"
+    name: "io_kiocb — Kernel I/O Control Block (Connect)"
+    description: >
+      io_uring converts the SQE into an io_kiocb — the kernel's internal
+      representation of an asynchronous I/O operation. The io_kiocb embeds
+      a kiocb (the traditional VFS async I/O handle) and adds io_uring
+      lifecycle fields. This struct lives in kernel memory for the duration
+      of the operation.
+    from: "init_iouring"
+    to: "init_nvme_tcp"
+    timestamp_ns: 500
+    total_bytes: 0
+    color: "#8e44ad"
+    headers:
+      - name: "io_kiocb (kernel struct)"
+        abbrev: "kiocb"
+        layer: 7
+        fields:
+          - name: "opcode"
+            abbrev: "kiocb.opcode"
+            bits: 8
+            value: "IORING_OP_CONNECT"
+            description: "Copied from SQE. Used to dispatch to the correct handler in io_issue_sqe()."
+            kernel_ref:
+              file: "io_uring/io_uring.c"
+              function: "io_issue_sqe"
+              line_hint: 1681
+          - name: "file *"
+            abbrev: "kiocb.file"
+            bits: 64
+            value: "[struct file * for socket fd]"
+            description: >
+              Pointer to the kernel struct file representing the TCP socket.
+              io_uring resolves the fd to a struct file * at submission time,
+              before the ring is processed, to avoid TOCTOU races.
+          - name: "flags (REQ_F_*)"
+            abbrev: "kiocb.flags"
+            bits: 64
+            value: "REQ_F_ASYNC_DATA"
+            description: >
+              io_uring internal flags. REQ_F_ASYNC_DATA means the operation
+              has async context allocated — connect() will sleep in the TCP
+              stack and wake via task_work when the handshake completes.
+            kernel_ref:
+              file: "io_uring/io_uring.h"
+              function: "REQ_F_ASYNC_DATA"
+              line_hint: 183
+          - name: "task *"
+            abbrev: "kiocb.task"
+            bits: 64
+            value: "[struct task_struct * of submitting task]"
+            description: >
+              The task that submitted this request. io_uring uses task_work
+              to deliver completions back to this task's context, avoiding
+              the overhead of signals or eventfd.
+
+  - id: "tcp_syn"
+    name: "TCP SYN — Three-Way Handshake Begins"
+    description: >
+      nvme_tcp_init_connection() calls kernel_connect() → tcp_v4_connect().
+      The TCP stack allocates an sk_buff, builds the SYN segment with ISN
+      (Initial Sequence Number) chosen via secure_tcp_seq(), and queues it
+      for transmission. The socket transitions from CLOSED → SYN_SENT.
+
+      The sk_buff is the fundamental unit of network data in Linux. It contains
+      pointers into a data buffer (not the data itself for large transfers)
+      and a chain of header metadata. Understanding sk_buff is prerequisite
+      to understanding any Linux networking path.
+    from: "init_tcp_ip"
+    to: "wire"
+    via: ["init_nic"]
+    timestamp_ns: 1000
+    total_bytes: 60
+    color: "#2980b9"
+    headers:
+      - name: "sk_buff (kernel struct — TCP SYN)"
+        abbrev: "skb"
+        layer: 4
+        fields:
+          - name: "sk_buff->data"
+            abbrev: "skb.data"
+            bits: 64
+            value: "[ptr to packet data]"
+            description: >
+              Pointer to the start of packet data. sk_buff has head, data,
+              tail, and end pointers defining the packet boundaries within
+              a larger buffer. Headers are added by decrementing data
+              (skb_push) as the packet descends the stack.
+            kernel_ref:
+              file: "include/linux/skbuff.h"
+              function: "struct sk_buff"
+              line_hint: 712
+              notes: "The classic 'room at the front' design — headers prepended, not appended"
+          - name: "sk_buff->len"
+            abbrev: "skb.len"
+            bits: 32
+            value: 40
+            description: "Total length of packet data. SYN with no options = 20B IP + 20B TCP = 40B."
+          - name: "sk_buff->sk"
+            abbrev: "skb.sk"
+            bits: 64
+            value: "[struct sock * — tcp_sock]"
+            description: >
+              Pointer back to the owning socket. Used for memory accounting
+              (sk_wmem_alloc), congestion control, and socket state access.
+          - name: "sk_buff->cb[48]"
+            abbrev: "skb.cb"
+            bits: 384
+            value: "[struct tcp_skb_cb]"
+            description: >
+              Control block — 48 bytes of per-protocol private data.
+              TCP stores SEQ, end_seq, tcp_flags, and sacked state here.
+              This field is overwritten at each layer (TCP, IP, driver)
+              with layer-specific metadata.
+            kernel_ref:
+              file: "include/linux/tcp.h"
+              function: "struct tcp_skb_cb"
+              line_hint: 41
+          - name: "tcp_skb_cb->seq"
+            abbrev: "skb.cb.seq"
+            bits: 32
+            value: "0x7A3F1C00"
+            description: "ISN — Initial Sequence Number. Generated by secure_tcp_seq() to prevent sequence prediction attacks."
+            kernel_ref:
+              file: "net/ipv4/tcp.c"
+              function: "secure_tcp_seq"
+              line_hint: 3421
+      - name: "TCP Header (wire format)"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 20
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            offset_bits: 0
+            value: 49152
+            description: "Ephemeral source port chosen by the kernel. Range: 32768–60999 (default ip_local_port_range)."
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            offset_bits: 16
+            value: 4420
+            description: "NVMe/TCP well-known port. IANA-assigned. nvme-tcp.c hardcodes NVME_TCP_DISC_PORT = 8009 for discovery, 4420 for I/O."
+            spec_refs:
+              - document: "NVMe/TCP (TP 8000.2)"
+                section: "3.1"
+                title: "Port Assignment"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            offset_bits: 32
+            value: "0x7A3F1C00"
+            description: "ISN. Will be acknowledged by target's SYN-ACK."
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 9
+            offset_bits: 103
+            value: "0x002"
+            value_hex: "0x002"
+            description: "SYN=1, all others 0. Initiates three-way handshake."
+          - name: "Window Size"
+            abbrev: "tcp.window"
+            bits: 16
+            offset_bits: 112
+            value: 65535
+            description: "Initial receive window. Will be scaled by TCP window scaling option (WSopt) negotiated in SYN/SYN-ACK."
+      - name: "IP Header"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "192.168.1.10"
+            description: "Initiator IP. Resolved via rtable from ip_route_output_flow()."
+            kernel_ref:
+              file: "net/ipv4/ip_output.c"
+              function: "ip_queue_xmit"
+              line_hint: 533
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "192.168.1.100"
+            description: "NVMe/TCP target IP. Configured in nvme-tcp.c queue initialization."
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "6 = TCP."
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Default Linux TTL. Set in ip_build_and_send_pkt() from sock->sk_ip_ttl."
+      - name: "NIC TX Descriptor (mlx5_wqe)"
+        abbrev: "nic.tx"
+        layer: 2
+        fields:
+          - name: "WQE Control Segment"
+            abbrev: "nic.tx.ctrl"
+            bits: 128
+            value: "[opmod=0, ds_cnt=4, fm_ce_se=0x0A]"
+            description: >
+              mlx5 Work Queue Element control segment. fm_ce_se=0x0A means
+              'signal completion on this WQE' (CE bit set). The NIC DMA engine
+              reads this descriptor ring entry from host memory without
+              CPU involvement.
+            kernel_ref:
+              file: "drivers/net/ethernet/mellanox/mlx5/core/en_tx.c"
+              function: "mlx5e_sq_xmit_wqe"
+              line_hint: 302
+              notes: "Critical handoff: CPU writes descriptor, rings doorbell — NIC DMA takes over"
+          - name: "DMA Address"
+            abbrev: "nic.tx.dma_addr"
+            bits: 64
+            value: "0x00007F4A20000000"
+            description: >
+              Physical address of sk_buff->data as mapped by dma_map_single().
+              The NIC reads packet data directly from this address via IOMMU-
+              mediated DMA — the CPU is not involved in the actual data transfer.
+            kernel_ref:
+              file: "drivers/net/ethernet/mellanox/mlx5/core/en_tx.c"
+              function: "mlx5e_txwqe_build_dsegs"
+              line_hint: 255
+
+  - id: "tcp_synack"
+    name: "TCP SYN-ACK — Target Responds"
+    description: >
+      The target's TCP stack receives the SYN. tcp_rcv_state_process() handles
+      the LISTEN state, calls tcp_v4_conn_request() → tcp_conn_request(), allocates
+      a request socket (struct request_sock), generates its own ISN, and sends SYN-ACK.
+      Target transitions: LISTEN → SYN_RECV. Initiator, on receipt: SYN_SENT → ESTABLISHED.
+    from: "tgt_tcp_ip"
+    to: "init_tcp_ip"
+    via: ["tgt_nic", "wire", "init_nic"]
+    timestamp_ns: 6000
+    total_bytes: 60
+    color: "#27ae60"
+    headers:
+      - name: "TCP SYN-ACK Header"
+        abbrev: "tcp.synack"
+        layer: 4
+        total_bytes: 20
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.synack.srcport"
+            bits: 16
+            value: 4420
+            description: "Target NVMe/TCP port."
+          - name: "Destination Port"
+            abbrev: "tcp.synack.dstport"
+            bits: 16
+            value: 49152
+            description: "Echoed initiator ephemeral port."
+          - name: "Sequence Number (Server ISN)"
+            abbrev: "tcp.synack.seq"
+            bits: 32
+            value: "0x2B8C4A00"
+            description: "Target's ISN. Also generated by secure_tcp_seq() on the target side."
+            kernel_ref:
+              file: "net/ipv4/tcp_input.c"
+              function: "tcp_conn_request"
+              line_hint: 7021
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.synack.ack"
+            bits: 32
+            value: "0x7A3F1C01"
+            description: "ISN+1 — acknowledges the initiator's SYN. Proves the target received seq 0x7A3F1C00."
+          - name: "Flags"
+            abbrev: "tcp.synack.flags"
+            bits: 9
+            value: "0x012"
+            description: "SYN=1, ACK=1."
+      - name: "nvmet-tcp State Transition"
+        abbrev: "nvmet.state"
+        layer: 7
+        fields:
+          - name: "nvmet_tcp_state_change() callback"
+            abbrev: "nvmet.state.cb"
+            bits: 0
+            value: "TCP_ESTABLISHED → NVMET_TCP_Q_CONNECTING"
+            description: >
+              When the TCP connection is established (three-way handshake complete),
+              the socket's state_change callback fires. nvmet_tcp_state_change()
+              is registered as this callback during accept(). It schedules
+              nvmet_tcp_io_work on the queue's io_work workqueue.
+            kernel_ref:
+              file: "drivers/nvme/target/tcp.c"
+              function: "nvmet_tcp_state_change"
+              line_hint: 1423
+              notes: "Critical: this is the boundary where TCP delivers to nvmet. state_change → schedule_work(&queue->io_work)"
+
+  - id: "tcp_ack_complete"
+    name: "TCP ACK — Three-Way Handshake Complete"
+    description: >
+      Initiator sends the final ACK, completing the three-way handshake.
+      Both sides are now in ESTABLISHED state. nvme-tcp.c's socket
+      write_space callback fires, unblocking nvme_tcp_io_work to proceed
+      with the NVMe Fabrics ICReq (Initialize Connection Request).
+    from: "init_tcp_ip"
+    to: "tgt_tcp_ip"
+    via: ["init_nic", "wire", "tgt_nic"]
+    timestamp_ns: 11000
+    total_bytes: 40
+    color: "#2980b9"
+    headers:
+      - name: "TCP ACK"
+        abbrev: "tcp.ack"
+        layer: 4
+        total_bytes: 20
+        fields:
+          - name: "Sequence Number"
+            abbrev: "tcp.ack.seq"
+            bits: 32
+            value: "0x7A3F1C01"
+            description: "ISN+1 — our next byte to send."
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack.ackseq"
+            bits: 32
+            value: "0x2B8C4A01"
+            description: "Target ISN+1 — acknowledges target's SYN."
+          - name: "Flags"
+            abbrev: "tcp.ack.flags"
+            bits: 9
+            value: "0x010"
+            description: "ACK=1 only. Pure acknowledgment, no data."
+      - name: "nvme-tcp Queue State"
+        abbrev: "nvmetcp.q"
+        layer: 7
+        fields:
+          - name: "nvme_tcp_queue->state"
+            abbrev: "nvmetcp.q.state"
+            bits: 0
+            value: "NVME_TCP_Q_CONNECTING"
+            description: >
+              After TCP ESTABLISHED, nvme_tcp_io_work() begins ICReq construction.
+              The queue state transitions: DISCONNECTED → CONNECTING.
+            kernel_ref:
+              file: "drivers/nvme/host/tcp.c"
+              function: "nvme_tcp_init_connection"
+              line_hint: 1701
+
+  - id: "icreq_pdu"
+    name: "NVMe/TCP ICReq — Initialize Connection Request PDU"
+    description: >
+      The first NVMe/TCP PDU sent after TCP connection establishment.
+      ICReq negotiates PDU data digest, header digest, maximum data PDU size,
+      and PDU header version. This is the NVMe/TCP handshake on top of TCP —
+      analogous to TLS ClientHello but for NVMe fabric parameters.
+
+      nvme_tcp_init_connection() constructs this PDU and hands it to
+      nvme_tcp_try_send_data() which calls kernel_sendmsg() into the TCP stack.
+    from: "init_nvme_tcp"
+    to: "tgt_nvmet_tcp"
+    via: ["init_tcp_ip", "init_nic", "wire", "tgt_nic", "tgt_tcp_ip"]
+    timestamp_ns: 12000
+    total_bytes: 128
+    color: "#e67e22"
+    headers:
+      - name: "nvme_tcp_icreq_pdu (NVMe/TCP ICReq)"
+        abbrev: "icreq"
+        layer: 7
+        total_bytes: 128
+        fields:
+          - name: "hdr.type"
+            abbrev: "icreq.type"
+            bits: 8
+            offset_bits: 0
+            value: "0x00"
+            value_hex: "0x00"
+            description: >
+              nvme_tcp_pdu_type = nvme_tcp_icreq (0x00). The PDU type field
+              is the first byte of every NVMe/TCP PDU header — the receiver
+              parses this to determine how to interpret the rest.
+            spec_refs:
+              - document: "NVMe/TCP (TP 8000.2)"
+                section: "3.3.1"
+                title: "PDU Header Format"
+            kernel_ref:
+              file: "drivers/nvme/host/tcp.c"
+              function: "nvme_tcp_init_connection"
+              line_hint: 1695
+          - name: "hdr.flags"
+            abbrev: "icreq.flags"
+            bits: 8
+            offset_bits: 8
+            value: "0x00"
+            description: "No digest flags set — negotiated in ICResp."
+          - name: "hdr.hlen"
+            abbrev: "icreq.hlen"
+            bits: 8
+            offset_bits: 16
+            value: 128
+            description: "Header length = 128 bytes. ICReq has no data payload."
+          - name: "hdr.plenm1"
+            abbrev: "icreq.plenm1"
+            bits: 8
+            offset_bits: 24
+            value: 127
+            description: "PDU length minus 1. (128 - 1) = 127."
+          - name: "pfv (PDU Format Version)"
+            abbrev: "icreq.pfv"
+            bits: 16
+            offset_bits: 32
+            value: 0
+            description: "PDU Format Version = 0. Current NVMe/TCP spec version."
+            spec_refs:
+              - document: "NVMe/TCP (TP 8000.2)"
+                section: "3.3.2"
+                title: "Initialize Connection Request PDU"
+          - name: "hpda (Host PDU Data Alignment)"
+            abbrev: "icreq.hpda"
+            bits: 8
+            offset_bits: 48
+            value: 0
+            description: >
+              Host PDU data alignment. 0 = data immediately follows header.
+              Non-zero values allow alignment padding for DMA alignment —
+              important for performance on some HW that requires DMA-aligned buffers.
+          - name: "digest (digest types)"
+            abbrev: "icreq.digest"
+            bits: 8
+            offset_bits: 56
+            value: "0x00"
+            description: >
+              Requested digest types: bit 0 = HDGST (header digest), bit 1 = DDGST (data digest).
+              0x00 = no digests. Digests add CRC32C over PDU headers/data for end-to-end
+              integrity beyond TCP checksum. Typically disabled for performance.
+          - name: "maxr2t (Max R2T per command)"
+            abbrev: "icreq.maxr2t"
+            bits: 32
+            offset_bits: 64
+            value: 0
+            description: >
+              Maximum number of Ready To Transfer (R2T) PDUs per WRITE command.
+              0 = 1 R2T (default). R2T is the NVMe/TCP flow control mechanism
+              for large WRITE commands — target grants permission before initiator sends data.
+            spec_refs:
+              - document: "NVMe/TCP (TP 8000.2)"
+                section: "3.4"
+                title: "Flow Control"
+
+  - id: "icresp_pdu"
+    name: "NVMe/TCP ICResp — Initialize Connection Response PDU"
+    description: >
+      Target responds to ICReq with agreed-upon parameters. nvmet_tcp_handle_icreq()
+      validates the ICReq, populates the ICResp, and calls kernel_sendmsg() to send it.
+      After ICResp, the queue is ready for Fabrics Connect commands.
+    from: "tgt_nvmet_tcp"
+    to: "init_nvme_tcp"
+    via: ["tgt_tcp_ip", "tgt_nic", "wire", "init_nic", "init_tcp_ip"]
+    timestamp_ns: 18000
+    total_bytes: 128
+    color: "#27ae60"
+    headers:
+      - name: "nvme_tcp_icresp_pdu"
+        abbrev: "icresp"
+        layer: 7
+        total_bytes: 128
+        fields:
+          - name: "hdr.type"
+            abbrev: "icresp.type"
+            bits: 8
+            value: "0x01"
+            value_hex: "0x01"
+            description: "nvme_tcp_icresp = 0x01."
+            kernel_ref:
+              file: "drivers/nvme/target/tcp.c"
+              function: "nvmet_tcp_handle_icreq"
+              line_hint: 892
+          - name: "pfv"
+            abbrev: "icresp.pfv"
+            bits: 16
+            value: 0
+            description: "Confirms PDU Format Version 0."
+          - name: "cpda (Controller PDU Data Alignment)"
+            abbrev: "icresp.cpda"
+            bits: 8
+            value: 0
+            description: "Target's DMA alignment preference. 0 = no padding."
+          - name: "digest"
+            abbrev: "icresp.digest"
+            bits: 8
+            value: "0x00"
+            description: "Agreed digest = none. Both sides must agree — minimum of what both support."
+          - name: "maxdata"
+            abbrev: "icresp.maxdata"
+            bits: 32
+            value: 131072
+            description: >
+              Maximum data PDU size in bytes = 128 KB. Limits the size of
+              individual NVMe/TCP data PDUs. Larger values reduce PDU overhead
+              for large I/Os at the cost of head-of-line blocking risk.
+            spec_refs:
+              - document: "NVMe/TCP (TP 8000.2)"
+                section: "3.3.3"
+                title: "Initialize Connection Response PDU"
+
+  - id: "fabrics_connect"
+    name: "NVMe Fabrics Connect Command (Admin Queue)"
+    description: >
+      After ICReq/ICResp, the initiator sends an NVMe Fabrics Connect command —
+      the NVMe-level handshake that establishes the NVMe controller association.
+      This is an NVMe Admin command (opcode 0x01 with Fabrics command set),
+      carried inside an nvme_tcp_cmd_pdu.
+
+      nvme_tcp_submit_async_event() → nvme_submit_cmd() → nvme_tcp_queue_rq()
+      constructs the PDU and queues it on the send list.
+    from: "init_nvme_tcp"
+    to: "tgt_nvmet_tcp"
+    via: ["init_tcp_ip", "init_nic", "wire", "tgt_nic", "tgt_tcp_ip"]
+    timestamp_ns: 20000
+    total_bytes: 192
+    color: "#e67e22"
+    headers:
+      - name: "nvme_tcp_cmd_pdu (wrapping nvmf_connect_command)"
+        abbrev: "fabconn"
+        layer: 7
+        total_bytes: 192
+        fields:
+          - name: "pdu.hdr.type"
+            abbrev: "fabconn.type"
+            bits: 8
+            value: "0x02"
+            value_hex: "0x02"
+            description: >
+              nvme_tcp_cmd = 0x02. All NVMe commands (both Admin and I/O)
+              use this PDU type. The NVMe command itself is embedded in
+              the 64-byte cmd field.
+            kernel_ref:
+              file: "drivers/nvme/host/tcp.c"
+              function: "nvme_tcp_setup_cmd_pdu"
+              line_hint: 933
+          - name: "pdu.hdr.flags"
+            abbrev: "fabconn.flags"
+            bits: 8
+            value: "0x00"
+            description: "No HDGST, no DDGST. Flags reflect ICResp-negotiated digest settings."
+          - name: "pdu.hdr.hlen"
+            abbrev: "fabconn.hlen"
+            bits: 8
+            value: 72
+            description: "72 = 8 (common PDU header) + 64 (NVMe SQE). No inline data for Connect."
+          - name: "pdu.hdr.plenm1"
+            abbrev: "fabconn.plenm1"
+            bits: 8
+            value: 71
+            description: "PDU length - 1 = 71. Total PDU = 72 bytes."
+          - name: "cmd.common.opcode"
+            abbrev: "fabconn.opcode"
+            bits: 8
+            offset_bits: 64
+            value: "0x7F"
+            value_hex: "0x7F"
+            description: >
+              NVMe Fabrics command opcode = 0x7F. All NVMe-oF fabric-specific
+              commands use this opcode with a fctype subfield to distinguish them.
+            spec_refs:
+              - document: "NVMe Base Spec 2.0"
+                section: "5.26"
+                title: "Fabrics Commands"
+          - name: "cmd.connect.fctype"
+            abbrev: "fabconn.fctype"
+            bits: 8
+            offset_bits: 128
+            value: "0x01"
+            description: "nvme_fabrics_type_connect = 0x01."
+          - name: "cmd.connect.qid"
+            abbrev: "fabconn.qid"
+            bits: 16
+            offset_bits: 256
+            value: 0
+            description: >
+              Queue ID = 0 = Admin Queue. The Admin Queue is always established
+              first. I/O queues (QID 1–N) are connected afterward.
+              This maps to nvme_tcp_alloc_admin_queue() on the initiator.
+            kernel_ref:
+              file: "drivers/nvme/host/tcp.c"
+              function: "nvme_tcp_alloc_admin_queue"
+              line_hint: 1728
+          - name: "cmd.connect.sqsize"
+            abbrev: "fabconn.sqsize"
+            bits: 16
+            offset_bits: 272
+            value: 31
+            description: "Submission Queue size - 1 = 31 (32-entry SQ). Admin queue depth."
+          - name: "cmd.connect.cntlid"
+            abbrev: "fabconn.cntlid"
+            bits: 16
+            offset_bits: 368
+            value: "0xFFFF"
+            description: >
+              Controller ID = 0xFFFF = dynamic allocation requested.
+              Target assigns a CNTLID and returns it in the Connect Response CQE.
+            spec_refs:
+              - document: "NVMe Base Spec 2.0"
+                section: "5.26.1"
+                title: "Fabrics Connect command"
+          - name: "Data: nvmf_connect_data (inline)"
+            abbrev: "fabconn.data"
+            bits: 1024
+            offset_bits: 576
+            value: "[hostid UUID, hostnqn, subnqn]"
+            description: >
+              192 bytes of connection data: host UUID (16B), host NQN
+              (e.g. nqn.2014-08.org.nvmexpress:uuid:...), and subsystem NQN.
+              The target validates the subnqn against configured subsystems.
+              Sent as inline data in the same PDU (no separate Data PDU needed
+              for small payloads that fit within maxdata).
+
+  - id: "fabrics_connect_resp"
+    name: "NVMe Fabrics Connect Response — Admin Queue Established"
+    description: >
+      Target's nvmet_tcp_io_work() receives the Connect command PDU,
+      nvmet_tcp_recv_pdu() routes it to nvmet_execute_connect() →
+      nvmet_alloc_ctrl() which creates the controller context and assigns CNTLID.
+      The response is an nvme_tcp_rsp_pdu wrapping an NVMe CQE.
+    from: "tgt_nvmet_tcp"
+    to: "init_nvme_tcp"
+    via: ["tgt_tcp_ip", "tgt_nic", "wire", "init_nic", "init_tcp_ip"]
+    timestamp_ns: 35000
+    total_bytes: 24
+    color: "#27ae60"
+    headers:
+      - name: "nvme_tcp_rsp_pdu (Fabrics Connect Response)"
+        abbrev: "fabconn.rsp"
+        layer: 7
+        total_bytes: 24
+        fields:
+          - name: "pdu.hdr.type"
+            abbrev: "fabconn.rsp.type"
+            bits: 8
+            value: "0x04"
+            description: "nvme_tcp_rsp = 0x04. Completion PDU."
+            kernel_ref:
+              file: "drivers/nvme/target/tcp.c"
+              function: "nvmet_tcp_queue_response"
+              line_hint: 1156
+          - name: "cqe.status"
+            abbrev: "fabconn.rsp.status"
+            bits: 16
+            value: "0x0000"
+            description: "SC=0 (Success), SCT=0 (Generic). Command completed successfully."
+          - name: "cqe.result.u16 (CNTLID)"
+            abbrev: "fabconn.rsp.cntlid"
+            bits: 16
+            value: 1
+            description: >
+              Assigned Controller ID = 1. The initiator stores this and uses it
+              in subsequent commands. nvme_tcp_queue->ctrl->cntlid = 1.
+            kernel_ref:
+              file: "drivers/nvme/target/core.c"
+              function: "nvmet_alloc_ctrl"
+              line_hint: 1476
+
+  # ═══════════════════════════════════════════════════════════════
+  # ACT 2 — WRITE
+  # ═══════════════════════════════════════════════════════════════
+
+  - id: "sqe_write"
+    name: "io_uring SQE — IORING_OP_WRITE (4 KB NVMe Write)"
+    description: >
+      The application places a WRITE SQE into the submission ring.
+      This is the entry point for all subsequent kernel activity.
+      The SQE encodes: fd (the nvme block device), buffer address,
+      length (4096 bytes), and file offset (LBA * 512).
+
+      A critical performance point: writing the SQE into the ring requires
+      no syscall if SQPOLL is configured (the kernel polls the ring from
+      a dedicated kthread). With SQPOLL, latency from SQE write to
+      kernel processing can be under 1 µs.
+    from: "init_app"
+    to: "init_iouring"
+    timestamp_ns: 50000
+    total_bytes: 64
+    color: "#8e44ad"
+    headers:
+      - name: "io_uring_sqe (64 bytes) — WRITE"
+        abbrev: "sqe.write"
+        layer: 7
+        total_bytes: 64
+        fields:
+          - name: "opcode"
+            abbrev: "sqe.write.opcode"
+            bits: 8
+            offset_bits: 0
+            value: "0x04"
+            value_hex: "0x04"
+            description: >
+              IORING_OP_WRITE = 0x04. Submits a pwrite()-equivalent operation.
+              io_uring dispatches this to io_write() → kiocb_start_write() →
+              the file's write_iter method, which for an NVMe device is
+              blkdev_write_iter() → submit_bio().
+            kernel_ref:
+              file: "io_uring/rw.c"
+              function: "io_write"
+              line_hint: 867
+          - name: "flags"
+            abbrev: "sqe.write.flags"
+            bits: 8
+            offset_bits: 8
+            value: "0x04"
+            description: >
+              IOSQE_FIXED_FILE = 0x01 if using registered file table (faster).
+              0x04 = IOSQE_ASYNC — force async execution (never block submitting task).
+          - name: "fd"
+            abbrev: "sqe.write.fd"
+            bits: 32
+            offset_bits: 32
+            value: 3
+            description: "File descriptor for /dev/nvme0n1 (the NVMe block device)."
+          - name: "addr (user buffer)"
+            abbrev: "sqe.write.addr"
+            bits: 64
+            offset_bits: 128
+            value: "0x00007FFF40000000"
+            description: >
+              User-space virtual address of the 4 KB write buffer.
+              io_uring will import this as an iov_iter and pin the pages
+              (get_user_pages_fast) to prevent eviction during DMA.
+            kernel_ref:
+              file: "io_uring/rw.c"
+              function: "io_import_rw_buffer"
+              line_hint: 312
+          - name: "len"
+            abbrev: "sqe.write.len"
+            bits: 32
+            offset_bits: 192
+            value: 4096
+            description: "4096 bytes = 4 KB = 8 LBAs (at 512B/LBA). One typical page-aligned write."
+          - name: "off (file offset / LBA)"
+            abbrev: "sqe.write.off"
+            bits: 64
+            offset_bits: 256
+            value: "0x0000000000002000"
+            description: "File byte offset = 0x2000 = 8192. LBA = 8192 / 512 = 16. We are writing LBA 16."
+          - name: "user_data"
+            abbrev: "sqe.write.user_data"
+            bits: 64
+            offset_bits: 448
+            value: "0x0000000000000042"
+            description: "Application-assigned tag. Will be echoed in the CQE so the app knows which write completed."
+
+  - id: "nvme_tcp_cmd_pdu_write"
+    name: "nvme_tcp_cmd_pdu — NVMe WRITE Command PDU"
+    description: >
+      nvme_tcp_queue_rq() is called from the block layer with an NVMe request.
+      It allocates an nvme_tcp_cmd_pdu from the queue's cmd_pdu_pool,
+      populates the NVMe Write command (opcode 0x01), and adds it to the
+      queue's send_list. nvme_tcp_io_work() drains the send_list by calling
+      nvme_tcp_try_send() which calls kernel_sendmsg() into TCP.
+
+      For a WRITE, data follows immediately in an nvme_tcp_data_pdu unless
+      the target requires R2T flow control. With maxr2t=0 (negotiated),
+      data is sent inline: cmd_pdu → data_pdu in sequence.
+    from: "init_nvme_tcp"
+    to: "tgt_nvmet_tcp"
+    via: ["init_tcp_ip", "init_nic", "wire", "tgt_nic", "tgt_tcp_ip"]
+    timestamp_ns: 52000
+    total_bytes: 72
+    color: "#e67e22"
+    headers:
+      - name: "nvme_tcp_cmd_pdu (NVMe Write)"
+        abbrev: "nvmetcp.cmd"
+        layer: 7
+        total_bytes: 72
+        fields:
+          - name: "hdr.type"
+            abbrev: "nvmetcp.cmd.type"
+            bits: 8
+            value: "0x02"
+            description: "nvme_tcp_cmd = 0x02."
+            kernel_ref:
+              file: "drivers/nvme/host/tcp.c"
+              function: "nvme_tcp_setup_cmd_pdu"
+              line_hint: 933
+          - name: "hdr.flags"
+            abbrev: "nvmetcp.cmd.flags"
+            bits: 8
+            value: "0x01"
+            description: >
+              NVME_TCP_F_DATA_LAST = 0x01. Set when this cmd_pdu is immediately
+              followed by an nvme_tcp_data_pdu with the final data chunk.
+              Tells the target that no R2T is needed — data follows immediately.
+            spec_refs:
+              - document: "NVMe/TCP (TP 8000.2)"
+                section: "3.5.1"
+                title: "Command PDU"
+          - name: "hdr.hlen"
+            abbrev: "nvmetcp.cmd.hlen"
+            bits: 8
+            value: 72
+            description: "8 (common header) + 64 (NVMe SQE) = 72 bytes."
+          - name: "hdr.pdo (PDU Data Offset)"
+            abbrev: "nvmetcp.cmd.pdo"
+            bits: 8
+            value: 72
+            description: >
+              PDU Data Offset = 72 = hlen. Data begins immediately after the
+              header with no padding (HPDA=0 was negotiated in ICReq/ICResp).
+          - name: "hdr.plenm1"
+            abbrev: "nvmetcp.cmd.plenm1"
+            bits: 32
+            value: 71
+            description: "Command PDU length - 1 = 71. (Data PDU is separate.)"
+          - name: "cmd.write.opcode"
+            abbrev: "nvmetcp.cmd.nvme_opcode"
+            bits: 8
+            offset_bits: 64
+            value: "0x01"
+            value_hex: "0x01"
+            description: >
+              NVMe Write command opcode = 0x01. This is the NVMe SQE opcode,
+              inside the Fabrics PDU, inside TCP. At this point we have:
+              [Ethernet][IP][TCP][NVMe/TCP PDU header][NVMe SQE].
+            spec_refs:
+              - document: "NVMe Base Spec 2.0"
+                section: "7.1"
+                title: "Write command"
+            kernel_ref:
+              file: "drivers/nvme/host/tcp.c"
+              function: "nvme_tcp_queue_rq"
+              line_hint: 1285
+          - name: "cmd.write.cid"
+            abbrev: "nvmetcp.cmd.cid"
+            bits: 16
+            offset_bits: 80
+            value: 42
+            description: "Command ID = 42. The initiator assigns this; the target echoes it in the CQE."
+          - name: "cmd.write.nsid"
+            abbrev: "nvmetcp.cmd.nsid"
+            bits: 32
+            offset_bits: 128
+            value: 1
+            description: "Namespace ID = 1. The target validates this against its configured namespaces."
+          - name: "cmd.write.prp1"
+            abbrev: "nvmetcp.cmd.prp1"
+            bits: 64
+            offset_bits: 384
+            value: "0x0000000000000000"
+            description: >
+              Physical Region Page 1. For NVMe/TCP, PRPs are zeroed — data is
+              in the PDU stream, not in host memory pointed to by PRPs.
+              The target's DMA is into its own memory from the TCP receive buffer.
+          - name: "cmd.write.slba"
+            abbrev: "nvmetcp.cmd.slba"
+            bits: 64
+            offset_bits: 512
+            value: 16
+            description: "Starting LBA = 16. 8 LBAs × 512 bytes = 4096 bytes."
+          - name: "cmd.write.nlb"
+            abbrev: "nvmetcp.cmd.nlb"
+            bits: 16
+            offset_bits: 576
+            value: 7
+            description: "Number of Logical Blocks - 1 = 7 (i.e., 8 LBAs). NVMe uses N-1 encoding."
+
+  - id: "nvme_tcp_data_pdu"
+    name: "nvme_tcp_data_pdu — 4 KB Write Data"
+    description: >
+      Immediately following the cmd_pdu (no round-trip wait, because maxr2t=0),
+      nvme-tcp.c sends the data PDU. nvme_tcp_try_send_data() uses sendpage()
+      or sendmsg() with MSG_ZEROCOPY for registered buffers, allowing the
+      kernel to DMA the user-space write buffer directly from the NIC
+      without copying to an intermediate sk_buff.
+
+      This is the point where 4 KB of user data crosses the kernel boundary
+      and enters the TCP send buffer. TCP segments it into MSS-sized chunks
+      for transmission.
+    from: "init_nvme_tcp"
+    to: "tgt_nvmet_tcp"
+    via: ["init_tcp_ip", "init_nic", "wire", "tgt_nic", "tgt_tcp_ip"]
+    timestamp_ns: 52500
+    total_bytes: 4112
+    color: "#e67e22"
+    headers:
+      - name: "nvme_tcp_data_pdu header"
+        abbrev: "nvmetcp.data"
+        layer: 7
+        total_bytes: 24
+        fields:
+          - name: "hdr.type"
+            abbrev: "nvmetcp.data.type"
+            bits: 8
+            value: "0x05"
+            value_hex: "0x05"
+            description: >
+              nvme_tcp_h2c_data = 0x05 (Host-to-Controller Data PDU).
+              Carries write data from initiator to target.
+            spec_refs:
+              - document: "NVMe/TCP (TP 8000.2)"
+                section: "3.5.6"
+                title: "H2C Data PDU"
+            kernel_ref:
+              file: "drivers/nvme/host/tcp.c"
+              function: "nvme_tcp_setup_h2c_data_pdu"
+              line_hint: 953
+          - name: "hdr.flags"
+            abbrev: "nvmetcp.data.flags"
+            bits: 8
+            value: "0x0C"
+            description: >
+              NVME_TCP_F_DATA_SUCCESS (0x04) | NVME_TCP_F_DATA_LAST (0x08) = 0x0C.
+              DATA_LAST: this is the final data PDU for this command.
+              DATA_SUCCESS: target may post success response without waiting for
+              block layer write completion (for write-through caches).
+          - name: "hdr.hlen"
+            abbrev: "nvmetcp.data.hlen"
+            bits: 8
+            value: 24
+            description: "H2C data PDU header = 24 bytes."
+          - name: "hdr.plenm1"
+            abbrev: "nvmetcp.data.plenm1"
+            bits: 32
+            value: 4135
+            description: "24 + 4096 + header CRC (if enabled) - 1 = 4119. Simplified: 4096 + 24 - 1 = 4119."
+          - name: "cccid (Command CID)"
+            abbrev: "nvmetcp.data.cccid"
+            bits: 16
+            offset_bits: 64
+            value: 42
+            description: "Matches cmd_pdu.cid = 42. Links this data PDU to its command."
+          - name: "datao (Data Offset)"
+            abbrev: "nvmetcp.data.datao"
+            bits: 32
+            offset_bits: 96
+            value: 0
+            description: "Byte offset within the command's data transfer. 0 = start of write data."
+          - name: "datal (Data Length)"
+            abbrev: "nvmetcp.data.datal"
+            bits: 32
+            offset_bits: 128
+            value: 4096
+            description: "4096 bytes of write data follow this header."
+      - name: "TCP Segmentation of 4 KB Data"
+        abbrev: "tcp.seg"
+        layer: 4
+        fields:
+          - name: "MSS (Max Segment Size)"
+            abbrev: "tcp.seg.mss"
+            bits: 0
+            value: "1448 bytes (typical with IP/TCP headers on 1500B MTU)"
+            description: >
+              TCP segments the 4120-byte PDU (24B header + 4096B data) into
+              MSS-sized chunks. 4120 / 1448 ≈ 3 segments. With jumbo frames
+              (9000B MTU, MSS≈8960), one segment handles it. Always prefer
+              jumbo frames for NVMe/TCP — 3× fewer segments, 3× less header overhead.
+          - name: "TSO (TCP Segmentation Offload)"
+            abbrev: "tcp.seg.tso"
+            bits: 0
+            value: "NIC performs segmentation"
+            description: >
+              With TSO enabled (standard on modern NICs), the kernel hands the
+              full 4120-byte PDU to the NIC as a single sk_buff. The NIC hardware
+              segments it into MSS-sized TCP frames without CPU involvement.
+              This is why TSO dramatically reduces CPU utilization for large I/Os.
+            kernel_ref:
+              file: "net/ipv4/tcp.c"
+              function: "tcp_write_xmit"
+              line_hint: 2711
+              notes: "sk_buff with gso_size set — NIC driver checks netif_needs_gso()"
+
+  - id: "nvmet_tcp_recv"
+    name: "nvmet-tcp: PDU Receive and Parse"
+    description: >
+      On the target, the socket's data_ready callback fires when TCP delivers
+      data. nvmet_tcp_data_ready() schedules nvmet_tcp_io_work(). The work
+      handler calls nvmet_tcp_try_recv_pdu() which reads the PDU header,
+      identifies it as nvme_tcp_cmd (0x02), allocates an nvmet_req,
+      and sets up the receive state machine for the data PDU.
+    from: "tgt_tcp_ip"
+    to: "tgt_nvmet_tcp"
+    timestamp_ns: 58000
+    total_bytes: 0
+    color: "#c0392b"
+    headers:
+      - name: "nvmet_tcp_queue (target state)"
+        abbrev: "nvmet.q"
+        layer: 7
+        fields:
+          - name: "data_ready callback path"
+            abbrev: "nvmet.q.cb"
+            bits: 0
+            value: "sock->sk_data_ready → nvmet_tcp_data_ready()"
+            description: >
+              When TCP delivers bytes to the socket receive buffer,
+              sk_data_ready fires. nvmet_tcp_data_ready() calls
+              queue_work(nvmet_tcp_wq, &queue->io_work). This decouples
+              the softirq (TCP receive) from PDU processing.
+            kernel_ref:
+              file: "drivers/nvme/target/tcp.c"
+              function: "nvmet_tcp_data_ready"
+              line_hint: 1389
+              notes: "Critical boundary: softirq → workqueue. Prevents blocking NAPI."
+          - name: "nvmet_tcp_try_recv_pdu()"
+            abbrev: "nvmet.q.recv"
+            bits: 0
+            value: "NVMET_TCP_RECV_PDU_HDR → NVMET_TCP_RECV_DATA"
+            description: >
+              State machine: read 8-byte common PDU header → identify type →
+              dispatch. For nvme_tcp_cmd (0x02), calls nvmet_tcp_handle_req()
+              which allocates an nvmet_req from the queue's req pool.
+            kernel_ref:
+              file: "drivers/nvme/target/tcp.c"
+              function: "nvmet_tcp_try_recv_pdu"
+              line_hint: 1041
+          - name: "nvmet_req allocation"
+            abbrev: "nvmet.q.req"
+            bits: 0
+            value: "mempool_alloc(queue->req_pool)"
+            description: >
+              nvmet_req is preallocated per-queue to avoid allocation latency
+              in the I/O path. The pool size matches the queue depth (SQ size).
+              This is a zero-allocation fast path for the target command handler.
+            kernel_ref:
+              file: "drivers/nvme/target/tcp.c"
+              function: "nvmet_tcp_alloc_cmd"
+              line_hint: 421
+
+  - id: "nvmet_core_execute"
+    name: "nvmet Core: Namespace Lookup → blk_mq Submit"
+    description: >
+      nvmet_tcp_io_work() calls nvmet_req_execute() after receiving the
+      complete command + data. nvmet_execute_io_cmd() validates the NVMe Write
+      command, looks up the namespace (nvmet_find_namespace()), maps the LBA
+      range to a bio, and submits it to the Linux block layer via
+      submit_bio(). The bio targets the backing block device
+      (an NVMe SSD, a disk, or a ramdisk in testing).
+    from: "tgt_nvmet_tcp"
+    to: "tgt_nvmet_core"
+    timestamp_ns: 62000
+    total_bytes: 0
+    color: "#c0392b"
+    headers:
+      - name: "nvmet_req (target request)"
+        abbrev: "nvmet.req"
+        layer: 7
+        fields:
+          - name: "cmd (NVMe command)"
+            abbrev: "nvmet.req.cmd"
+            bits: 512
+            value: "[copy of initiator's NVMe Write SQE]"
+            description: >
+              The 64-byte NVMe command copied from the received PDU.
+              nvmet core validates opcode, NSID, SLBA, and NLB before
+              submitting to the block layer.
+            kernel_ref:
+              file: "drivers/nvme/target/core.c"
+              function: "nvmet_req_execute"
+              line_hint: 511
+          - name: "ns (nvmet_ns *)"
+            abbrev: "nvmet.req.ns"
+            bits: 64
+            value: "[ptr to namespace 1]"
+            description: >
+              Resolved via nvmet_find_namespace(subsys, nsid=1). The nvmet_ns
+              holds the backing block device (bdev) and size/offset for
+              the namespace.
+            kernel_ref:
+              file: "drivers/nvme/target/core.c"
+              function: "nvmet_find_namespace"
+              line_hint: 103
+          - name: "bio (struct bio)"
+            abbrev: "nvmet.req.bio"
+            bits: 0
+            value: "[4096 bytes WRITE bio at LBA 16]"
+            description: >
+              A bio is allocated (bio_alloc_bioset) representing the 4096-byte
+              write at sector 32 (LBA 16 × 2 sectors/LBA for 512B sectors).
+              bio_add_page() links the received data pages into the bio.
+            kernel_ref:
+              file: "drivers/nvme/target/io-cmd-bdev.c"
+              function: "nvmet_bdev_execute_rw"
+              line_hint: 162
+              notes: "submit_bio(bio) → block layer elevator → blk_mq → device driver"
+
+  - id: "nvme_completion"
+    name: "NVMe Completion: blk_mq → nvmet → TCP → Initiator CQE"
+    description: >
+      The backing device completes the bio. blk_mq calls the bio's bi_end_io
+      callback, which is nvmet_bio_done() → nvmet_req_complete() →
+      nvmet_tcp_queue_response(). The target constructs an nvme_tcp_rsp_pdu
+      (the NVMe CQE wrapped in a TCP PDU) and sends it back.
+
+      On the initiator, nvme_tcp_recv_rsp() processes the response PDU,
+      calls nvme_end_request() → blk_mq_end_request() → io_uring task_work
+      fires → io_uring posts the CQE to the completion ring.
+      The application's io_uring_enter() returns (or the SQPOLL thread posts
+      the CQE without a syscall).
+    from: "tgt_nvmet_core"
+    to: "init_app"
+    via: ["tgt_nvmet_tcp", "tgt_tcp_ip", "tgt_nic", "wire", "init_nic", "init_tcp_ip", "init_nvme_tcp", "init_iouring"]
+    timestamp_ns: 95000
+    total_bytes: 24
+    color: "#27ae60"
+    headers:
+      - name: "nvme_tcp_rsp_pdu (NVMe CQE)"
+        abbrev: "cqe.pdu"
+        layer: 7
+        total_bytes: 24
+        fields:
+          - name: "hdr.type"
+            abbrev: "cqe.pdu.type"
+            bits: 8
+            value: "0x04"
+            description: "nvme_tcp_rsp = 0x04."
+            kernel_ref:
+              file: "drivers/nvme/target/tcp.c"
+              function: "nvmet_tcp_queue_response"
+              line_hint: 1156
+          - name: "cqe.status"
+            abbrev: "cqe.status"
+            bits: 16
+            value: "0x0000"
+            description: >
+              NVMe completion status: SC=0 (Success), SCT=0 (Generic), DNR=0, M=0.
+              The 4 KB write committed to the backing device successfully.
+          - name: "cqe.cid"
+            abbrev: "cqe.cid"
+            bits: 16
+            value: 42
+            description: "Command ID = 42. Matches the Write SQE's cid. Allows out-of-order completion matching."
+          - name: "cqe.sq_head"
+            abbrev: "cqe.sq_head"
+            bits: 16
+            value: 1
+            description: "SQ head pointer — tells initiator it can reuse SQ slot 0."
+      - name: "io_uring CQE (Completion Queue Entry)"
+        abbrev: "iouring.cqe"
+        layer: 7
+        total_bytes: 16
+        fields:
+          - name: "user_data"
+            abbrev: "iouring.cqe.user_data"
+            bits: 64
+            value: "0x0000000000000042"
+            description: >
+              Echoed from SQE.user_data = 0x42. The application reads this
+              from the completion ring to identify which write completed.
+            kernel_ref:
+              file: "io_uring/io_uring.c"
+              function: "io_req_complete_post"
+              line_hint: 792
+          - name: "res"
+            abbrev: "iouring.cqe.res"
+            bits: 32
+            value: 4096
+            description: >
+              Result = 4096 = bytes written. Positive result = success.
+              Negative result = -errno (e.g. -EIO). The application checks
+              this to confirm all 4096 bytes were written.
+          - name: "flags"
+            abbrev: "iouring.cqe.flags"
+            bits: 32
+            value: "0x00000000"
+            description: "No CQE flags. IORING_CQE_F_MORE or IORING_CQE_F_SOCK_NONEMPTY not applicable here."
+      - name: "Completion Delivery Path"
+        abbrev: "cqe.path"
+        layer: 7
+        fields:
+          - name: "blk_mq → nvmet_bio_done"
+            abbrev: "cqe.path.blk"
+            bits: 0
+            value: "blk_mq_end_request → bio->bi_end_io → nvmet_bio_done()"
+            description: "Block layer calls the bio end_io hook when write hits storage."
+            kernel_ref:
+              file: "drivers/nvme/target/io-cmd-bdev.c"
+              function: "nvmet_bio_done"
+              line_hint: 82
+          - name: "nvmet_req_complete → nvmet_tcp_queue_response"
+            abbrev: "cqe.path.nvmet"
+            bits: 0
+            value: "nvmet_req_complete() → transport->queue_response()"
+            description: "Transport-agnostic completion — nvmet core calls back into nvmet-tcp."
+            kernel_ref:
+              file: "drivers/nvme/target/core.c"
+              function: "nvmet_req_complete"
+              line_hint: 526
+          - name: "nvme_tcp_recv_rsp → nvme_end_request"
+            abbrev: "cqe.path.host"
+            bits: 0
+            value: "nvme_tcp_recv_rsp() → blk_mq_end_request() → io_uring task_work"
+            description: >
+              Initiator receives RSP PDU, ends the blk_mq request, which chains
+              back through io_uring via task_work_add(). The CQE is posted to
+              the ring without a syscall — the application sees it on next
+              io_uring_enter() or via IORING_SETUP_CQE32 eventfd.
+            kernel_ref:
+              file: "drivers/nvme/host/tcp.c"
+              function: "nvme_tcp_recv_rsp"
+              line_hint: 631
+              notes: "Final boundary: kernel→user. CQE ring write is the last kernel action."
+
+timeline:
+  # ═══════════════════════════════════════
+  # ACT 1 — CONNECT
+  # ═══════════════════════════════════════
+
+  - id: "evt_00_act1"
+    type: "annotation"
+    t_ns: 0
+    annotation:
+      text: "ACT 1 — Connect: From io_uring_enter() to NVMe Admin Queue Established"
+      detail: >
+        We are tracing a single TCP connection establishment and NVMe Fabrics
+        Admin Queue connect — vertically through every software and hardware layer.
+        The horizontal NVMe/TCP scenario shows what travels between hosts.
+        This scenario shows what happens INSIDE each host for every step.
+        Watch the OSI panel — layers activate top-down on the left, bottom-up on the right.
+
+  - id: "evt_01_sqe_connect"
+    type: "frame_tx"
+    t_ns: 0
+    frame_id: "sqe_connect"
+    annotation:
+      text: "SQE Submission — io_uring CONNECT"
+      detail: >
+        The application writes a 64-byte io_uring Submission Queue Entry into
+        the submission ring. Opcode: IORING_OP_CONNECT, fd points to the TCP
+        socket created by nvme-tcp.c, addr holds a sockaddr_in with target
+        port 4420. No syscall is required — the kernel picks up the SQE from
+        the shared ring. This is an internal driver operation; the application
+        never calls connect() directly for NVMe devices.
+    state_after:
+      - actor_id: "init_app"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              sqe_state: "submitted (IORING_OP_CONNECT)"
+              cqe_pending: 1
+      - actor_id: "init_iouring"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              kiocb_state: "allocating"
+              sqe_opcode: "IORING_OP_CONNECT"
+
+  - id: "evt_02_kiocb"
+    type: "frame_tx"
+    t_ns: 500
+    frame_id: "kiocb_connect"
+    annotation:
+      text: "Kernel Dispatch — io_kiocb → io_connect()"
+      detail: >
+        io_uring creates an io_kiocb from the SQE and calls io_connect(),
+        which calls kernel_connect() → tcp_v4_connect(). The nvme-tcp
+        driver's queue transitions to NVME_TCP_Q_CONNECTING. The TCP stack
+        will now build and send a SYN segment. Note the kiocb flags —
+        REQ_F_ASYNC_DATA ensures this path won't block the io_uring worker.
+    state_after:
+      - actor_id: "init_iouring"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              kiocb_state: "issued → io_connect()"
+      - actor_id: "init_nvme_tcp"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              queue_state: "NVME_TCP_Q_CONNECTING"
+              pdu_type: "none — awaiting TCP"
+          - layer: 4
+            name: "Transport"
+            state_fields:
+              socket_state: "SYN_SENT (pending)"
+
+  - id: "evt_03_syn"
+    type: "frame_tx"
+    t_ns: 1000
+    frame_id: "tcp_syn"
+    annotation:
+      text: "TCP SYN — Initiator → Target"
+      detail: >
+        tcp_v4_connect() generates a cryptographically random Initial Sequence
+        Number, builds the SYN segment with MSS, window scale, and SACK
+        options, and submits it to the IP layer. The NIC's TX ring gets a DMA
+        descriptor pointing to the sk_buff data — the NIC reads the frame
+        directly from kernel memory via DMA. Socket state: SYN_SENT.
+    state_after:
+      - actor_id: "init_tcp_ip"
+        layers:
+          - layer: 4
+            name: "Transport (TCP)"
+            state_fields:
+              tcp_state: "SYN_SENT"
+              snd_nxt: 2050400256
+              sk_wmem_queued: 60
+          - layer: 3
+            name: "Network (IP)"
+            state_fields:
+              dst_ip: "192.168.1.100"
+      - actor_id: "init_nic"
+        layers:
+          - layer: 2
+            name: "Data Link"
+            state_fields:
+              tx_ring_head: 0
+              tx_ring_tail: 1
+              dma_state: "transmitting SYN"
+      - actor_id: "wire"
+        layers:
+          - layer: 1
+            name: "Physical"
+            state_fields:
+              frame_in_flight: true
+      - actor_id: "tgt_nic"
+        layers:
+          - layer: 2
+            name: "Data Link"
+            state_fields:
+              rx_ring_head: 0
+              napi_state: "idle"
+      - actor_id: "tgt_tcp_ip"
+        layers:
+          - layer: 4
+            name: "Transport (TCP)"
+            state_fields:
+              tcp_state: "LISTEN"
+              src_ip: "unknown"
+
+  - id: "evt_04_synack"
+    type: "frame_tx"
+    t_ns: 6000
+    frame_id: "tcp_synack"
+    annotation:
+      text: "TCP SYN-ACK — Target → Initiator"
+      detail: >
+        The target was in LISTEN state (nvmet-tcp bound to port 4420).
+        tcp_conn_request() generates the server ISN and sends SYN-ACK.
+        nvmet_tcp_state_change() is the socket callback that bridges TCP
+        into nvmet-tcp — without it, the NVMe target would never know the
+        TCP connection completed. Initiator-side TCP immediately transitions
+        to ESTABLISHED upon receiving the SYN-ACK.
+    state_after:
+      - actor_id: "tgt_tcp_ip"
+        layers:
+          - layer: 4
+            name: "Transport (TCP)"
+            state_fields:
+              tcp_state: "SYN_RECV"
+              rcv_nxt: 2050400257
+              src_ip: "192.168.1.10"
+      - actor_id: "tgt_nvmet_tcp"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              queue_state: "NVMET_TCP_Q_CONNECTING"
+              pdu_state: "NVMET_TCP_RECV_PDU_HDR"
+          - layer: 4
+            name: "Transport"
+            state_fields:
+              socket_state: "SYN_RECV"
+      - actor_id: "init_tcp_ip"
+        layers:
+          - layer: 4
+            name: "Transport (TCP)"
+            state_fields:
+              tcp_state: "ESTABLISHED"
+              snd_nxt: 2050400257
+
+  - id: "evt_05_ack"
+    type: "frame_tx"
+    t_ns: 11000
+    frame_id: "tcp_ack_complete"
+    annotation:
+      text: "TCP ACK — Three-Way Handshake Complete"
+      detail: >
+        The initiator sends the final ACK, completing the three-way
+        handshake. Both sides are now ESTABLISHED. The nvme-tcp driver
+        detects the connected socket and prepares to send the NVMe/TCP
+        Initialize Connection Request (ICReq). Two sequence numbers are
+        now synchronized — all subsequent data will be tracked byte-by-byte.
+    state_after:
+      - actor_id: "init_tcp_ip"
+        layers:
+          - layer: 4
+            name: "Transport (TCP)"
+            state_fields:
+              tcp_state: "ESTABLISHED"
+      - actor_id: "init_nvme_tcp"
+        layers:
+          - layer: 4
+            name: "Transport"
+            state_fields:
+              socket_state: "ESTABLISHED"
+      - actor_id: "tgt_tcp_ip"
+        layers:
+          - layer: 4
+            name: "Transport (TCP)"
+            state_fields:
+              tcp_state: "ESTABLISHED"
+              rcv_nxt: 2050400257
+      - actor_id: "wire"
+        layers:
+          - layer: 1
+            name: "Physical"
+            state_fields:
+              frame_in_flight: false
+
+  - id: "evt_06_icreq"
+    type: "frame_tx"
+    t_ns: 12000
+    frame_id: "icreq_pdu"
+    annotation:
+      text: "NVMe/TCP ICReq — Initialize Connection Request"
+      detail: >
+        With TCP established, the first NVMe/TCP protocol event fires.
+        ICReq carries: pfv=0 (PDU format version), hpda=0 (header padding
+        disabled), digest=0x00 (no header or data digests), maxr2t=0
+        (write data flows immediately without an R2T round-trip). These
+        parameters control the entire subsequent I/O path — maxr2t=0
+        is critical for write performance.
+    state_after:
+      - actor_id: "init_nvme_tcp"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              pdu_type: "nvme_tcp_icreq"
+              send_list_depth: 0
+      - actor_id: "tgt_nvmet_tcp"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              pdu_state: "NVMET_TCP_RECV_PDU_HDR → icreq received"
+
+  - id: "evt_07_icresp"
+    type: "frame_tx"
+    t_ns: 18000
+    frame_id: "icresp_pdu"
+    annotation:
+      text: "NVMe/TCP ICResp — Connection Parameters Agreed"
+      detail: >
+        ICResp confirms the connection parameters. maxdata=131072
+        (128 KB maximum data PDU size). Both nvme-tcp queues transition
+        to LIVE. The initiator can now send the NVMe Fabrics Connect
+        command to establish the Admin Queue. The NVMe/TCP PDU state
+        machine on the target enters RECV_PDU_HDR, ready for the next PDU.
+    state_after:
+      - actor_id: "tgt_nvmet_tcp"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              queue_state: "NVMET_TCP_Q_LIVE (post-ICResp)"
+              pdu_state: "NVMET_TCP_RECV_PDU_HDR"
+      - actor_id: "init_nvme_tcp"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              queue_state: "NVME_TCP_Q_LIVE (icresp received)"
+              pdu_type: "nvmf_connect_command (next)"
+
+  - id: "evt_08_fabconn"
+    type: "frame_tx"
+    t_ns: 20000
+    frame_id: "fabrics_connect"
+    annotation:
+      text: "NVMe Fabrics Connect — Admin Queue (QID=0)"
+      detail: >
+        The NVMe Fabrics Connect command: opcode=0x7F (Fabrics),
+        fctype=0x01 (Connect), qid=0 (Admin Queue), cntlid=0xFFFF
+        (requesting dynamic controller ID assignment). The subsystem NQN
+        in the data payload identifies which NVMe subsystem to attach to.
+        On the target side, nvmet_tcp dispatches to nvmet core, which calls
+        nvmet_execute_connect() to allocate a controller context.
+    state_after:
+      - actor_id: "init_nvme_tcp"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              pdu_type: "nvmf_connect_command"
+              cmd_id: 0
+      - actor_id: "tgt_nvmet_tcp"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              pdu_state: "nvme_tcp_cmd received — dispatching connect"
+              req_state: "allocating nvmet_req"
+      - actor_id: "tgt_nvmet_core"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              req_state: "nvmet_execute_connect — allocating ctrl"
+
+  - id: "evt_09_fabconn_rsp"
+    type: "frame_tx"
+    t_ns: 35000
+    frame_id: "fabrics_connect_resp"
+    annotation:
+      text: "Fabrics Connect Response — Admin Queue Established"
+      detail: >
+        nvmet core assigns CNTLID=1 and sends a successful completion.
+        The Admin Queue is now live. The completion propagates back through
+        every layer: nvmet_tcp → TCP → wire → NIC → tcp_rcv →
+        nvme_tcp_recv_rsp → nvme_end_request → io_uring CQE. Total
+        connect time: ~36 µs — dominated by two network round-trips.
+    state_after:
+      - actor_id: "tgt_nvmet_core"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              req_state: "complete — CNTLID=1 assigned"
+      - actor_id: "tgt_nvmet_tcp"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              queue_state: "NVMET_TCP_Q_LIVE"
+              req_state: "idle"
+      - actor_id: "init_nvme_tcp"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              queue_state: "NVME_TCP_Q_LIVE"
+              cmd_id: 0
+      - actor_id: "init_iouring"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              kiocb_state: "completing — CQE posted"
+      - actor_id: "init_app"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              sqe_state: "complete — Admin Queue ESTABLISHED"
+              cqe_pending: 0
+
+  - id: "evt_09b_act1_done"
+    type: "annotation"
+    t_ns: 36000
+    annotation:
+      text: "ACT 1 Complete — Admin Queue Live. Elapsed: ~36 µs (dominated by network RTT)"
+      detail: >
+        The Admin Queue is established. What just happened, layer by layer:
+        User space: 1 SQE → 1 CQE. Zero intermediate syscalls (if SQPOLL).
+        io_uring: 1 io_kiocb allocated, dispatched, completed via task_work.
+        nvme-tcp: Socket created, ICReq/ICResp negotiated, Fabrics Connect sent.
+        TCP/IP: Three-way handshake. Two seq numbers established.
+        NIC: 5 Ethernet frames, ~4 DMA operations.
+        Wire: ~36 µs total (2 RTTs: TCP handshake + NVMe Connect).
+        nvmet-tcp: State machine: CONNECTING → LIVE. Controller context allocated.
+        nvmet core: CNTLID=1 created, subsystem association established.
+        I/O queues would follow the same pattern with QID 1..N. We skip to the WRITE.
+
+  # ═══════════════════════════════════════
+  # ACT 2 — WRITE
+  # ═══════════════════════════════════════
+
+  - id: "evt_10_act2"
+    type: "annotation"
+    t_ns: 50000
+    annotation:
+      text: "ACT 2 — Write: From SQE to CQE, Every Layer"
+      detail: >
+        An I/O queue is now established (we assume QID=1 was connected
+        immediately after the Admin Queue). The application now issues a
+        4 KB WRITE to LBA 16. Watch the descent: app → io_uring → nvme-tcp
+        → tcp → ip → nic → wire. Then the ascent on the right side.
+      spec_refs:
+        - document: "NVMe Base Spec 2.0"
+          section: "7.1"
+          title: "Write command"
+
+  - id: "evt_11_sqe_write"
+    type: "frame_tx"
+    t_ns: 50000
+    frame_id: "sqe_write"
+    annotation:
+      text: "SQE Write — 4 KB to LBA 16"
+      detail: >
+        The application writes a new SQE: IORING_OP_WRITE, fd=3
+        (/dev/nvme0n1), addr points to the 4 KB buffer, len=4096,
+        off=8192 (LBA 16). user_data=0x42 will echo back in the CQE.
+        io_uring dispatches via io_write() → blkdev_write_iter() →
+        submit_bio(). The block layer routes the bio to nvme-tcp's
+        queue_rq callback.
+    state_after:
+      - actor_id: "init_app"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              sqe_state: "submitted (IORING_OP_WRITE, 4KB, LBA 16)"
+              cqe_pending: 1
+      - actor_id: "init_iouring"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              kiocb_state: "io_write() → blkdev_write_iter()"
+              sqe_opcode: "IORING_OP_WRITE"
+          - layer: 4
+            name: "Transport"
+            state_fields:
+              registered_bufs: false
+
+  - id: "evt_12_cmd_pdu"
+    type: "frame_tx"
+    t_ns: 52000
+    frame_id: "nvme_tcp_cmd_pdu_write"
+    annotation:
+      text: "NVMe/TCP Command PDU — Write (cid=42)"
+      detail: >
+        nvme_tcp_queue_rq() constructs the NVMe/TCP Command PDU. Inside
+        the PDU: NVMe Write opcode (0x01), NSID=1, cid=42 (echoed in
+        the completion), slba=16, nlb=7 (8 blocks, N-1 encoded per NVMe
+        convention). The PDU is queued into nvme-tcp's send_list for
+        immediate transmission — no round-trip needed because maxr2t=0.
+    state_after:
+      - actor_id: "init_nvme_tcp"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              pdu_type: "nvme_tcp_cmd (Write, cid=42)"
+              cmd_id: 42
+              send_list_depth: 1
+          - layer: 4
+            name: "Transport"
+            state_fields:
+              send_list_depth: 1
+      - actor_id: "init_tcp_ip"
+        layers:
+          - layer: 4
+            name: "Transport (TCP)"
+            state_fields:
+              sk_wmem_queued: 72
+      - actor_id: "tgt_nvmet_tcp"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              pdu_state: "nvme_tcp_cmd received — allocating req"
+              req_state: "nvmet_tcp_alloc_cmd"
+
+  - id: "evt_13_data_pdu"
+    type: "frame_tx"
+    t_ns: 52500
+    frame_id: "nvme_tcp_data_pdu"
+    annotation:
+      text: "NVMe/TCP H2C Data PDU — 4 KB Write Data"
+      detail: >
+        The Host-to-Controller Data PDU immediately follows the Command PDU
+        (maxr2t=0 — no R2T round-trip needed). 4096 bytes of write data
+        with NVME_TCP_F_DATA_LAST set, signaling this is the final data
+        PDU for the command. TCP segments this into ~3 × 1448-byte segments.
+        The NIC's TSO engine handles the segmentation — not the CPU.
+    state_after:
+      - actor_id: "init_nvme_tcp"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              pdu_type: "nvme_tcp_h2c_data (4096B, cid=42)"
+              send_list_depth: 0
+          - layer: 4
+            name: "Transport"
+            state_fields:
+              send_list_depth: 0
+      - actor_id: "init_tcp_ip"
+        layers:
+          - layer: 4
+            name: "Transport (TCP)"
+            state_fields:
+              sk_wmem_queued: 4168
+              snd_nxt: 2050404425
+      - actor_id: "init_nic"
+        layers:
+          - layer: 2
+            name: "Data Link"
+            state_fields:
+              tx_ring_tail: 4
+              dma_state: "transmitting 4KB (TSO: 3 segments)"
+      - actor_id: "wire"
+        layers:
+          - layer: 1
+            name: "Physical"
+            state_fields:
+              frame_in_flight: true
+      - actor_id: "tgt_nic"
+        layers:
+          - layer: 2
+            name: "Data Link"
+            state_fields:
+              napi_state: "polling — 3 RX descriptors"
+      - actor_id: "tgt_tcp_ip"
+        layers:
+          - layer: 4
+            name: "Transport (TCP)"
+            state_fields:
+              rcv_nxt: 2050404425
+              sk_rmem_alloc: 4168
+
+  - id: "evt_14_nvmet_recv"
+    type: "frame_tx"
+    t_ns: 58000
+    frame_id: "nvmet_tcp_recv"
+    annotation:
+      text: "Target Receives — nvmet_tcp_data_ready()"
+      detail: >
+        TCP delivers data to the socket. nvmet_tcp_data_ready() fires
+        (the sk_data_ready callback) and schedules nvmet_tcp_io_work on a
+        workqueue. The handler calls nvmet_tcp_try_recv_pdu() — a state
+        machine that reads the PDU header, then dispatches. The softirq →
+        workqueue boundary is critical: it prevents NVMe/TCP processing
+        from blocking the NIC's NAPI polling loop.
+    state_after:
+      - actor_id: "tgt_nvmet_tcp"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              pdu_state: "data received — nvmet_req ready"
+              req_state: "nvmet_req_execute() pending"
+          - layer: 4
+            name: "Transport"
+            state_fields:
+              socket_state: "ESTABLISHED"
+      - actor_id: "wire"
+        layers:
+          - layer: 1
+            name: "Physical"
+            state_fields:
+              frame_in_flight: false
+
+  - id: "evt_15_nvmet_execute"
+    type: "frame_tx"
+    t_ns: 62000
+    frame_id: "nvmet_core_execute"
+    annotation:
+      text: "Target Execute — nvmet_req_execute() → submit_bio()"
+      detail: >
+        nvmet_req_execute() dispatches to nvmet_bdev_execute_rw(). NSID=1,
+        LBA 16 maps to sector 32, and a bio is submitted via submit_bio().
+        The target is now a block device client — it knows nothing about
+        NVMe/TCP at this point. The bio completion callback will call
+        nvmet_bio_done() when storage confirms the write.
+    state_after:
+      - actor_id: "tgt_nvmet_tcp"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              req_state: "submitted to nvmet core"
+      - actor_id: "tgt_nvmet_core"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              req_state: "blk_mq submit_bio → storage"
+              ns_id: 1
+              blk_status: "in_flight"
+      - actor_id: "tgt_app"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              subsystem_state: "WRITE in progress (NSID=1, LBA=16, 4KB)"
+
+  - id: "evt_16_completion"
+    type: "frame_tx"
+    t_ns: 95000
+    frame_id: "nvme_completion"
+    annotation:
+      text: "Completion Chain — Storage → CQE in ~45 µs"
+      detail: >
+        Storage write complete. The full completion chain fires:
+        blk_mq → nvmet_bio_done → nvmet_req_complete →
+        nvmet_tcp_queue_response → RSP PDU → TCP → wire → NIC → tcp_rcv
+        → nvme_tcp_recv_rsp → nvme_end_request → io_uring CQE.
+        res=4096 confirms all 4 KB written. user_data=0x42 echoed.
+        Total: ~45 µs end-to-end. Software: ~5 µs. Network + SSD dominates.
+    state_after:
+      - actor_id: "tgt_nvmet_core"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              req_state: "complete"
+              blk_status: "BLK_STS_OK"
+      - actor_id: "tgt_nvmet_tcp"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              req_state: "idle"
+              pdu_state: "NVMET_TCP_RECV_PDU_HDR"
+      - actor_id: "tgt_tcp_ip"
+        layers:
+          - layer: 4
+            name: "Transport (TCP)"
+            state_fields:
+              sk_rmem_alloc: 0
+      - actor_id: "init_tcp_ip"
+        layers:
+          - layer: 4
+            name: "Transport (TCP)"
+            state_fields:
+              sk_wmem_queued: 0
+      - actor_id: "init_nvme_tcp"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              pdu_type: "none"
+              cmd_id: 42
+      - actor_id: "init_iouring"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              kiocb_state: "complete — CQE posted (res=4096)"
+      - actor_id: "init_app"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              sqe_state: "idle"
+              cqe_pending: 0
+
+  - id: "evt_17_final"
+    type: "annotation"
+    t_ns: 96000
+    annotation:
+      text: "Complete — 4 KB NVMe/TCP Write: ~45 µs end-to-end (network-dominated)"
+      detail: >
+        Full vertical accounting for one 4 KB NVMe/TCP Write:
+
+        INITIATOR DESCENT (software):
+          io_uring SQE write (user)     → ~0 ns  (ring write, no syscall)
+          io_uring dispatch              → ~200 ns (kiocb alloc, io_write)
+          nvme-tcp PDU construction      → ~300 ns (cmd_pdu + data_pdu setup)
+          kernel_sendmsg → TCP           → ~500 ns (sk_buff alloc, tcp_sendmsg)
+          IP output + routing            → ~200 ns (ip_queue_xmit)
+          NIC DMA + doorbell             → ~500 ns (descriptor write + MMIO)
+
+        WIRE:
+          25GbE propagation + queueing   → ~5–10 µs per direction
+
+        TARGET ASCENT (software):
+          NAPI RX + sk_buff delivery     → ~500 ns (hardirq → softirq → NAPI)
+          TCP reassembly + data_ready    → ~300 ns (tcp_rcv_established)
+          nvmet_tcp_io_work + PDU parse  → ~400 ns (workqueue + PDU state machine)
+          nvmet_req_execute + bio submit → ~500 ns (namespace lookup + submit_bio)
+          Storage device write           → ~20–30 µs (NVMe SSD) or ~100 µs (HDD)
+          nvmet_bio_done + RSP PDU       → ~300 ns (completion + queue_response)
+
+        RETURN WIRE + INITIATOR ASCENT:
+          RSP PDU → tcp → NIC → wire    → ~5–10 µs
+          NIC RX + tcp_rcv              → ~500 ns
+          nvme_tcp_recv_rsp             → ~200 ns
+          nvme_end_request + task_work  → ~300 ns
+          io_uring CQE post             → ~100 ns (ring write)
+
+        Total software overhead: ~5–6 µs. Network + storage: ~40 µs.
+        io_uring + nvme/tcp is within 10% of local NVMe PCIe latency for
+        remote storage — the TCP stack is NOT the bottleneck.
+
+glossary:
+  - term: "sk_buff"
+    abbrev: "skb"
+    definition: >
+      Socket Buffer — the fundamental data structure for network packets in the
+      Linux kernel. Contains metadata (length, protocol pointers, timestamps,
+      control block) and a pointer chain into the actual packet data. Headers
+      are prepended by 'pushing' (decrementing data pointer) rather than
+      copying. The cb[] field is 48 bytes of per-layer private storage,
+      reused by each layer as the packet ascends or descends.
+    spec_refs:
+      - document: "Linux kernel"
+        section: "include/linux/skbuff.h"
+        title: "struct sk_buff"
+
+  - term: "io_uring"
+    abbrev: "io_uring"
+    definition: >
+      Linux asynchronous I/O interface (added in kernel 5.1). Uses two
+      ring buffers shared between user space and kernel via mmap — a
+      Submission Queue (SQ) and Completion Queue (CQ). The application
+      writes SQEs and reads CQEs without syscalls in steady state (with
+      SQPOLL or when not blocking). Dramatically reduces per-I/O syscall
+      overhead compared to read()/write() or aio.
+    spec_refs:
+      - document: "io_uring"
+        section: "full spec"
+        title: "io_uring interface"
+        url: "https://kernel.dk/io_uring.pdf"
+
+  - term: "io_kiocb"
+    abbrev: "kiocb"
+    definition: >
+      io_uring's internal per-request structure. Wraps a traditional kiocb
+      (kernel I/O control block) with io_uring lifecycle state, file reference,
+      task reference for task_work delivery, and opcode-specific union data.
+      Allocated from a slab cache per io_uring ring.
+    spec_refs:
+      - document: "Linux kernel"
+        section: "io_uring/io_uring.h"
+        title: "struct io_kiocb"
+
+  - term: "NAPI"
+    abbrev: "NAPI"
+    definition: >
+      New API — Linux network receive mechanism. Instead of one interrupt per
+      received packet (ruinous at 25GbE speeds), the NIC fires one interrupt
+      to wake a poll loop. The poll loop (napi_poll) drains the RX descriptor
+      ring in batches (up to napi_weight=64 frames per poll). Dramatically
+      reduces interrupt overhead at high packet rates.
+
+  - term: "TSO"
+    abbrev: "TSO"
+    definition: >
+      TCP Segmentation Offload. The kernel hands the NIC a large sk_buff
+      (e.g., 4 KB + headers) with GSO metadata. The NIC hardware segments
+      it into MSS-sized TCP frames before transmission, without CPU involvement.
+      Reduces CPU cycles per byte transmitted by ~3× for large I/Os.
+
+  - term: "nvme_tcp_cmd_pdu"
+    abbrev: "cmd_pdu"
+    definition: >
+      NVMe/TCP Command PDU. Consists of an 8-byte common PDU header followed
+      by the 64-byte NVMe SQE. Total: 72 bytes. For WRITEs, followed by an
+      nvme_tcp_data_pdu carrying the actual write data. The cmd_pdu is the
+      NVMe/TCP equivalent of an iSCSI SCSI Command PDU.
+    spec_refs:
+      - document: "NVMe/TCP (TP 8000.2)"
+        section: "3.5.1"
+        title: "Command PDU"
+
+  - term: "ICReq / ICResp"
+    abbrev: "ICReq"
+    definition: >
+      Initialize Connection Request / Response. The first PDU exchange after
+      TCP connection establishment in NVMe/TCP. Negotiates PDU digest settings
+      (HDGST, DDGST), maximum data PDU size (maxdata), PDU data alignment
+      (HPDA/CPDA), and protocol version. Analogous to TLS ClientHello/ServerHello
+      but for NVMe fabric parameters.
+    spec_refs:
+      - document: "NVMe/TCP (TP 8000.2)"
+        section: "3.3.2"
+        title: "ICReq/ICResp"
+
+  - term: "nvmet_req"
+    abbrev: "nvmet_req"
+    definition: >
+      NVMe target request — the target-side equivalent of an NVMe SQE.
+      Allocated from a per-queue pool (no per-I/O allocation in steady state).
+      Holds the NVMe command, DMA sg list, namespace reference, and transport
+      back-pointer. Passed through nvmet core to the backing device and back.
+    spec_refs:
+      - document: "Linux kernel"
+        section: "drivers/nvme/target/nvmet.h"
+        title: "struct nvmet_req"
+
+  - term: "blk_mq"
+    abbrev: "blk_mq"
+    definition: >
+      Multi-Queue Block Layer — Linux's block I/O submission framework.
+      Maps I/O requests to per-CPU hardware queues on NVMe devices.
+      Eliminates the single global request queue lock of the legacy block layer.
+      NVMe SSDs expose 64+ hardware queues; blk_mq maps them to CPU cores
+      for lock-free I/O submission at millions of IOPS.
+
+  - term: "DMA (Direct Memory Access)"
+    abbrev: "DMA"
+    definition: >
+      Hardware mechanism allowing NIC and storage controllers to read/write
+      host memory directly without CPU involvement. The CPU sets up a
+      descriptor (physical address + length), rings a doorbell (MMIO write),
+      and the device DMA engine transfers data autonomously. The CPU receives
+      an interrupt or polls for completion. Critical for high throughput —
+      without DMA, the CPU would copy every byte.
+
+  - term: "task_work"
+    abbrev: "task_work"
+    definition: >
+      Linux mechanism for delivering completions to a specific task's context.
+      io_uring uses task_work_add() to queue CQE posting work to the
+      submitting task. The work runs when the task returns from syscall or
+      is explicitly flushed via task_work_run(). Avoids the overhead of
+      signals or wakeup+schedule for completion delivery.
+
+walkthroughs:
+  - id: "descent"
+    title: "The Descent — Initiator Stack (Write)"
+    description: >
+      Follow a single WRITE command downward through every initiator layer,
+      from the user-space SQE to the NIC DMA descriptor.
+    steps:
+      - step: 10
+        narration: >
+          ACT 2 begins. The application writes a 64-byte io_uring_sqe into the
+          submission ring — no syscall required. IORING_OP_WRITE, fd=3
+          (/dev/nvme0n1), addr points to the 4 KB write buffer, len=4096,
+          off=8192 (LBA 16). user_data=0x42 will echo back in the CQE.
+        highlight_fields: ["sqe.write.opcode", "sqe.write.addr", "sqe.write.len", "sqe.write.off"]
+      - step: 11
+        narration: >
+          io_uring converts the SQE to an io_kiocb. io_write() calls
+          blkdev_write_iter(), which calls submit_bio(). The block layer
+          routes the bio to nvme-tcp's queue_rq callback.
+          Note the kiocb flags — REQ_F_ASYNC_DATA ensures this won't block.
+        highlight_fields: ["kiocb.opcode", "kiocb.flags"]
+      - step: 12
+        narration: >
+          nvme_tcp_queue_rq() constructs the nvme_tcp_cmd_pdu. Look at the
+          NVMe Write opcode (0x01) inside the PDU — this is the actual NVMe
+          command, wrapped in the NVMe/TCP PDU header. cid=42 will be
+          echoed in the completion. slba=16, nlb=7 (8 blocks, N-1 encoded).
+        highlight_fields: ["nvmetcp.cmd.type", "nvmetcp.cmd.nvme_opcode", "nvmetcp.cmd.cid", "nvmetcp.cmd.slba", "nvmetcp.cmd.nlb"]
+      - step: 13
+        narration: >
+          The data PDU immediately follows (maxr2t=0 — no R2T round-trip needed).
+          4096 bytes of write data. Notice NVME_TCP_F_DATA_LAST set — target
+          knows no more data PDUs are coming for this command. TCP will segment
+          this into 3 × ~1448B segments (or 1 segment with jumbo frames).
+          The NIC's TSO engine does the segmentation — not the CPU.
+        highlight_fields: ["nvmetcp.data.type", "nvmetcp.data.flags", "nvmetcp.data.datal", "tcp.seg.tso"]
+
+  - id: "ascent"
+    title: "The Ascent — Target Stack (Write)"
+    description: >
+      Follow the same WRITE command upward through every target layer,
+      from NIC interrupt to blk_mq submission and back to completion.
+    steps:
+      - step: 14
+        narration: >
+          TCP delivers data to the socket. nvmet_tcp_data_ready() fires
+          (the sk_data_ready callback), schedules nvmet_tcp_io_work.
+          The workqueue handler calls nvmet_tcp_try_recv_pdu() — a state
+          machine that reads the PDU header first, then dispatches.
+          Critical: softirq → workqueue boundary prevents blocking NAPI.
+        highlight_fields: ["nvmet.q.cb", "nvmet.q.recv"]
+      - step: 15
+        narration: >
+          nvmet_req_execute() dispatches to nvmet_bdev_execute_rw().
+          The namespace is found (NSID=1), LBA 16 is mapped to sector 32,
+          and a bio is submitted to the block layer. The target is now
+          a block device client — it knows nothing about NVMe/TCP at this point.
+          The bio's completion will call nvmet_bio_done().
+        highlight_fields: ["nvmet.req.cmd", "nvmet.req.ns", "nvmet.req.bio"]
+      - step: 16
+        narration: >
+          Storage write complete. The entire completion chain fires:
+          blk_mq → nvmet_bio_done → nvmet_req_complete → nvmet_tcp_queue_response
+          → RSP PDU sent → initiator tcp_rcv → nvme_tcp_recv_rsp →
+          nvme_end_request → io_uring task_work → CQE posted.
+          res=4096 in the CQE confirms all 4 KB written. user_data=0x42 echoed.
+          Total: ~45 µs. Software overhead: ~5 µs. The network and storage dominate.
+        highlight_fields: ["cqe.pdu.type", "cqe.status", "cqe.cid", "iouring.cqe.user_data", "iouring.cqe.res", "cqe.path.blk", "cqe.path.host"]
+
+  - id: "connect-walkthrough"
+    title: "ACT 1 — Full Connect Walkthrough"
+    description: "Trace the complete NVMe/TCP Admin Queue connection from SQE to established controller."
+    steps:
+      - step: 0
+        narration: >
+          ACT 1 starts. The application submits IORING_OP_CONNECT to io_uring.
+          Look at the fd (the TCP socket created by nvme-tcp.c) and the addr
+          (sockaddr_in with port 4420). This is an internal driver operation —
+          the application never calls connect() directly for NVMe devices.
+        highlight_fields: ["sqe.opcode", "sqe.fd", "sqe.addr"]
+      - step: 1
+        narration: >
+          io_uring creates an io_kiocb and calls io_connect() → kernel_connect()
+          → tcp_v4_connect(). The TCP stack builds the SYN. Examine the sk_buff
+          cb field — this is where TCP stores per-packet state without polluting
+          the sk_buff struct. The DMA address in the NIC TX descriptor is the
+          physical address of sk_buff->data — the NIC reads directly from there.
+        highlight_fields: ["skb.cb", "skb.cb.seq", "nic.tx.ctrl", "nic.tx.dma_addr"]
+      - step: 2
+        narration: >
+          Target receives SYN. tcp_conn_request() generates the server ISN and
+          sends SYN-ACK. Notice the nvmet_tcp_state_change() annotation — this
+          is the socket callback that bridges TCP into nvmet-tcp. Without this
+          callback, nvmet would never know the TCP connection completed.
+        highlight_fields: ["tcp.synack.seq", "tcp.synack.ack", "nvmet.state.cb"]
+      - step: 5
+        narration: >
+          TCP ESTABLISHED on both sides. The first NVMe/TCP protocol event now:
+          ICReq is sent. Examine pfv=0, hpda=0, digest=0x00, maxr2t=0.
+          These parameters control the entire subsequent I/O path.
+          maxr2t=0 is critical — it means WRITE data can flow immediately
+          after the command PDU without a round-trip R2T.
+        highlight_fields: ["icreq.type", "icreq.pfv", "icreq.hpda", "icreq.digest", "icreq.maxr2t"]
+      - step: 7
+        narration: >
+          ICResp agrees on parameters. maxdata=131072 (128 KB max data PDU).
+          Now the Fabrics Connect command: opcode 0x7F (Fabrics), fctype 0x01
+          (Connect), qid=0 (Admin Queue), cntlid=0xFFFF (dynamic assignment).
+          The subsystem NQN in the data payload identifies which subsystem to connect to.
+        highlight_fields: ["icresp.maxdata", "fabconn.opcode", "fabconn.fctype", "fabconn.qid", "fabconn.cntlid"]
+      - step: 8
+        narration: >
+          nvmet core receives the Connect command. nvmet_alloc_ctrl() creates
+          the controller context. The response assigns CNTLID=1.
+          The Admin Queue is now live. The entire connect sequence from first
+          SQE to established controller took ~36 µs — two network RTTs.
+        highlight_fields: ["fabconn.rsp.cntlid", "fabconn.rsp.status"]

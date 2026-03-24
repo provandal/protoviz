@@ -113,7 +113,7 @@ export default function PacketList({ packets, findings, selectedIndex, onPacketS
               <span style={{ width: 110, color: '#64748b', fontFamily: "'JetBrains Mono',monospace", fontSize: 10 }}>
                 {formatTimestamp(pkt, baseTimestamp)}
               </span>
-              <span style={{
+              <span title={pkt.summary} style={{
                 flex: 1, color: hasTcpRst ? '#f87171' : hasRoce ? '#60a5fa' : '#94a3b8',
                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                 fontWeight: hasTcpRst ? 700 : 400,

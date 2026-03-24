@@ -17,7 +17,8 @@
     "beginner": "مبتدئ",
     "intermediate": "متوسط",
     "advanced": "متقدم",
-    "elementary": "أساسي"
+    "elementary": "أساسي",
+    "expert": "خبير"
   },
   "filter": {
     "searchPlaceholder": "البحث في السيناريوهات...",

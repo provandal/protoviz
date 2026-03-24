@@ -6,6 +6,7 @@ export const L_COLOR = {
   3: '#0f766e',
   2: '#15803d',
   1: '#92400e',
+  0: '#78350f',
 };
 
 export const PHASE_COLORS = {
@@ -78,6 +79,23 @@ export const PHASE_COLORS = {
   'TLS Handshake': '#1e40af',
   'TLS Data': '#0369a1',
   'TLS Close': '#64748b',
+  // FC-SP-3 security phases
+  'DH-CHAP': '#b45309',
+  'SA Establishment': '#0e7490',
+  'Re-key': '#7c3aed',
+  'Encrypted I/O': '#059669',
+  // Parallel SCSI / PCIe phases
+  'SCSI Bus': '#92400e',
+  'SCSI Command': '#b45309',
+  'SCSI Data': '#0369a1',
+  'Parallel Limits': '#dc2626',
+  'PCIe Link': '#0f766e',
+  'PCIe TLP': '#1e40af',
+  // NVMe/TCP vertical stack phases
+  'io_uring': '#7c3aed',
+  'NVMe/TCP Target': '#059669',
+  'NVMe/TCP PDU': '#0e7490',
+  'Summary': '#64748b',
   // SMB Direct phases
   'SMB Direct Setup': '#7c3aed',
   'SMB Negotiate': '#1e40af',
@@ -85,5 +103,6 @@ export const PHASE_COLORS = {
   'SMB File Open': '#0e7490',
   'SMB Write': '#991b1b',
   'SMB Read': '#6b21a8',
+  'ICMPv6': '#0f766e',
   'Other': '#475569',
 };

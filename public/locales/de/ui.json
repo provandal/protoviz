@@ -17,7 +17,8 @@
     "elementary": "Grundlegend",
     "beginner": "Anfänger",
     "intermediate": "Fortgeschritten",
-    "advanced": "Experte"
+    "advanced": "Experte",
+    "expert": "Meister"
   },
   "filter": {
     "searchPlaceholder": "Szenarien durchsuchen...",

@@ -1,0 +1,3484 @@
+meta:
+  id: "fc-sp3-secure-hba-edif"
+  title: "FC-SP-3 Secure HBA: Fabric Authentication → Session Key → Encrypted I/O"
+  protocol: "FC-SP-3 / DH-CHAP / AES-256-GCM"
+  protocol_family: "Storage Protocols"
+  version: "1.0"
+  description: >
+    A companion to the FC Fabric: FLOGI → PLOGI → PRLI → SCSI I/O scenario.
+    That scenario shows the fabric login sequence. This one picks up at PLOGI
+    and adds the FC-SP-3 security layer that the Emulex SecureHBA introduces:
+    DH-CHAP mutual authentication, Security Association (SA) establishment
+    with ML-KEM-1024 post-quantum key encapsulation, AES-256-GCM session
+    key derivation, and the resulting encrypted FC frames — all negotiated
+    automatically as part of the Process Login (PRLI) parameter exchange,
+    with zero configuration required from the IT administrator.
+
+    The scenario also covers: what the FC switch sees (routing headers only —
+    payload is opaque ciphertext), why deduplification and compression survive
+    (decryption happens at the array port, not in the data services engine),
+    and the automatic session re-key process that refreshes keys without
+    interrupting I/O.
+
+    CNSA 2.0 accuracy note: AES-256-GCM is consistent with CNSA 2.0 symmetric
+    algorithm requirements. The genuinely new CNSA 2.0 element is ML-KEM-1024
+    for key establishment — this replaces RSA/ECDH for quantum resistance.
+    CNSA 2.0 applies to National Security Systems (NSS); commercial enterprises
+    benefit from the same algorithms but are not mandated by CNSA 2.0 itself.
+    Applicable commercial frameworks include DORA (EU financial sector) and
+    NIS2 (EU critical infrastructure).
+  difficulty: "intermediate"
+  learning_objectives:
+    - "Understand where FC-SP-3 authentication fits in the FC login sequence (after FLOGI/PLOGI, before or during PRLI)"
+    - "Trace the DH-CHAP mutual authentication exchange: AUTH_Negotiate → Challenge → Reply → Success"
+    - "Understand why ML-KEM-1024 (post-quantum key encapsulation) replaces classical Diffie-Hellman for session key establishment"
+    - "Read the SA_Init and SA_Setup frames that establish the AES-256-GCM encryption session"
+    - "Understand the FC frame structure with ESP_Header: routing header (plaintext) vs. payload (ciphertext)"
+    - "Explain why fabric switches remain transparent — they route on D_ID/S_ID which are never encrypted"
+    - "Understand why array-side decryption preserves dedupe, compression, and anomaly detection"
+    - "Trace the automatic re-key sequence and understand why it does not interrupt I/O"
+    - "Identify the key architectural difference between SecureHBA EDIF and application-layer or host-CPU encryption"
+  authors:
+    - name: "Erik Smith"
+      org: "Dell Technologies"
+      github: "provandal"
+  created: "2026-03-22"
+  updated: "2026-03-22"
+  tags:
+    - "fibre-channel"
+    - "fc-sp-3"
+    - "security"
+    - "encryption"
+    - "dh-chap"
+    - "edif"
+    - "post-quantum"
+    - "ml-kem"
+    - "aes-256-gcm"
+    - "secure-hba"
+    - "emulex"
+    - "intermediate"
+    - "zero-trust"
+  primary_specs:
+    - document: "FC-SP-3 (INCITS draft)"
+      section: "5"
+      title: "Authentication Protocols"
+      url: "https://www.t11.org/ftp/t11/pub/fc/sp-3/"
+    - document: "FC-SP-2 (INCITS 496-2012)"
+      section: "5.3"
+      title: "DH-CHAP Protocol"
+      url: "https://standards.incits.org"
+    - document: "FIPS 203 (ML-KEM)"
+      section: "all"
+      title: "Module-Lattice-Based Key-Encapsulation Mechanism Standard"
+      url: "https://csrc.nist.gov/pubs/fips/203/final"
+    - document: "NIST FIPS 197"
+      section: "all"
+      title: "AES (Advanced Encryption Standard)"
+      url: "https://csrc.nist.gov/publications/detail/fips/197/final"
+    - document: "NSA CNSA 2.0"
+      section: "all"
+      title: "Commercial National Security Algorithm Suite 2.0"
+      url: "https://media.defense.gov/2022/Sep/07/2003071836/-1/-1/0/CSA_CNSA_2.0_ALGORITHMS_.PDF"
+
+topology:
+  actors:
+    - id: "host"
+      type: "initiator"
+      label: "Host Server (SecureHBA)"
+      description: >
+        Server with Emulex LPe38100-series 64GFC SecureHBA installed.
+        All FC-SP-3 authentication and AES-256-GCM encryption/decryption
+        occur in ASIC hardware on the HBA — zero CPU involvement.
+        The OS and applications see a standard FC device; encryption is transparent.
+      hardware: "Emulex LPe38102 64GFC SecureHBA (Broadcom)"
+      os: "Linux 6.8 / Windows Server 2025"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "FC Switch (64GFC)"
+      description: >
+        Standard Brocade or Cisco 64GFC director. Completely unmodified —
+        no firmware changes, no configuration, no awareness of encryption.
+        Routes FC frames on D_ID/S_ID from the FC header, which is always
+        in plaintext. The switch never sees the payload.
+      hardware: "Brocade G720 or Cisco MDS 9700 — standard 64GFC"
+      position: "center"
+
+    - id: "array"
+      type: "target"
+      label: "Storage Array (SecureHBA Port)"
+      description: >
+        Pure Storage Everpure FlashArray//XL130 R5 with Emulex SecureHBA
+        target ports. FC-SP-3 termination and AES-256-GCM decryption happen
+        at the HBA ASIC on the array port — data services (dedupe, compression,
+        ransomware detection) receive plaintext after decryption.
+      hardware: "Emulex SecureHBA target port — Pure Storage Everpure FlashArray//XL130 R5"
+      position: "right"
+
+  links:
+    - id: "host-switch"
+      from: "host"
+      to: "switch"
+      speed_gbps: 64
+      media: "fiber_sr"
+      fec: "RS(544,514)"
+      autoneg: true
+    - id: "switch-array"
+      from: "switch"
+      to: "array"
+      speed_gbps: 64
+      media: "fiber_sr"
+      fec: "RS(544,514)"
+      autoneg: true
+
+osi_layers:
+  host:
+    - layer: 0
+      name: "FC-0 Physical"
+      components: ["64GFC SerDes", "SFP-DD optics"]
+      state_schema:
+        link_state:
+          type: "string"
+          description: "Physical link state"
+          initial: "UP (64GFC)"
+        encryption_active:
+          type: "boolean"
+          description: "Whether AES-256-GCM encryption is active on this port"
+          initial: false
+    - layer: 1
+      name: "FC-1 Encoding"
+      components: ["64b/66b encoding", "RS(544,514) FEC"]
+      state_schema:
+        encoding:
+          type: "string"
+          description: "Line encoding scheme"
+          initial: "64b/66b"
+    - layer: 2
+      name: "FC-2 Framing / Transport"
+      components: ["FC frame header", "ESP_Header (when encrypted)", "CRC-32"]
+      state_schema:
+        frame_type:
+          type: "string"
+          description: "Current frame payload type"
+          initial: "plaintext"
+        sa_id:
+          type: "string"
+          description: "Active Security Association ID"
+          initial: "none"
+        sequence_number:
+          type: "integer"
+          description: "ESP anti-replay sequence number"
+          initial: 0
+    - layer: 4
+      name: "FC-4 Protocol Mapping"
+      components: ["FCP (SCSI over FC)", "NVMe/FC", "FC-SP-3 Authentication Frames"]
+      state_schema:
+        auth_state:
+          type: "string"
+          description: "FC-SP-3 authentication state machine"
+          initial: "AUTH_IDLE"
+        session_key:
+          type: "string"
+          description: "Derived AES-256-GCM session key (handle only)"
+          initial: "none"
+        rekey_deadline:
+          type: "string"
+          description: "Next scheduled re-key timestamp"
+          initial: "none"
+
+  switch:
+    - layer: 0
+      name: "FC-0 Physical"
+      components: ["64GFC SerDes", "crossbar switch fabric"]
+      state_schema:
+        port_state:
+          type: "string"
+          description: "Physical port state"
+          initial: "UP (64GFC)"
+    - layer: 1
+      name: "FC-1 Encoding"
+      components: ["64b/66b encoding", "RS(544,514) FEC"]
+      state_schema:
+        encoding:
+          type: "string"
+          description: "Line encoding scheme"
+          initial: "64b/66b"
+    - layer: 2
+      name: "FC-2 Framing"
+      components: ["FC header inspection (D_ID/S_ID only)", "Credit management"]
+      state_schema:
+        routing_mode:
+          type: "string"
+          description: "Frame routing basis"
+          initial: "D_ID (always plaintext header)"
+        payload_visibility:
+          type: "string"
+          description: "What the switch can see of the frame payload"
+          initial: "OPAQUE — switch routes on header only"
+
+  array:
+    - layer: 0
+      name: "FC-0 Physical"
+      components: ["64GFC SecureHBA target port"]
+      state_schema:
+        link_state:
+          type: "string"
+          description: "Physical link state"
+          initial: "UP (64GFC)"
+        decryption_active:
+          type: "boolean"
+          description: "Whether decryption is active on this target port"
+          initial: false
+    - layer: 1
+      name: "FC-1 Encoding"
+      components: ["64b/66b encoding", "RS(544,514) FEC", "AES-256-GCM decryption engine"]
+      state_schema:
+        encoding:
+          type: "string"
+          description: "Line encoding scheme"
+          initial: "64b/66b"
+    - layer: 2
+      name: "FC-2 Framing"
+      components: ["FC frame receive", "ESP_Header processing", "CRC validation post-decrypt"]
+      state_schema:
+        frame_type:
+          type: "string"
+          description: "Frame type being received"
+          initial: "plaintext"
+        sa_id:
+          type: "string"
+          description: "Active Security Association ID (must match initiator)"
+          initial: "none"
+    - layer: 4
+      name: "FC-4 / Data Services"
+      components: ["FCP target", "NVMe/FC target", "Dedupe engine", "Compression", "Ransomware detection"]
+      state_schema:
+        auth_state:
+          type: "string"
+          description: "FC-SP-3 target authentication state"
+          initial: "AUTH_IDLE"
+        data_services:
+          type: "string"
+          description: "Status of array data services"
+          initial: "ACTIVE (operating on plaintext after HBA decryption)"
+
+frames:
+  # ── PRE-CONTEXT: PLOGI already complete ─────────────────────────────────────
+
+  - id: "plogi_complete_context"
+    name: "Context: PLOGI Complete — N_Port Login Already Done"
+    description: >
+      This scenario assumes FLOGI and fabric registration are complete
+      (see the FC Fabric: FLOGI → PLOGI → PRLI → SCSI I/O scenario for that exchange).
+      PLOGI (N_Port Login) has been completed — the host and array have exchanged
+      N_Port IDs, WWNs, and service parameters. The connection is logically established
+      but NOT yet authenticated and NOT yet encrypted.
+
+      FC-SP-3 authentication runs AFTER PLOGI and BEFORE (or concurrent with) PRLI.
+      The host SecureHBA initiates authentication automatically upon detecting that
+      the target also advertises FC-SP-3 capability in its PLOGI ACC service parameters.
+    from: "host"
+    to: "array"
+    via: ["switch"]
+    timestamp_ns: 0
+    total_bytes: 0
+    color: "#95a5a6"
+    headers:
+      - name: "Post-PLOGI State (Context Frame)"
+        abbrev: "ctx"
+        layer: 4
+        fields:
+          - name: "FC-SP-3 Capability Advertised"
+            abbrev: "ctx.fcsp3"
+            bits: 0
+            value: "Both endpoints: FC-SP-3 capable (from PLOGI ACC Service Parameters)"
+            description: >
+              During PLOGI, both host and array included FC-SP-3 capability bits
+              in the Common Service Parameters (Class 3 Service Parameters, word 1,
+              bit 9 = Security bit). The SecureHBA detected this match and will
+              now initiate authentication automatically — no administrator action required.
+            spec_refs:
+              - document: "FC-LS-3 (FC Login)"
+                section: "4.2.7"
+                title: "Common Service Parameters — Security bit"
+      - name: "FC-2 Frame Header (Routing — always plaintext)"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x00"
+            description: "Context frame — no actual wire frame. S_ID and D_ID shown for reference."
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0x020100"
+            description: "Destination N_Port ID — array target port. ALWAYS PLAINTEXT — the switch routes on this field."
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0x010200"
+            description: "Source N_Port ID — host HBA port. Always plaintext."
+          - name: "CS_CTL"
+            abbrev: "fc2.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "TYPE"
+            abbrev: "fc2.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc2.fctl"
+            bits: 24
+            value: "0x290000"
+            description: "Frame Control — exchange originator, first+last sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc2.seqid"
+            bits: 8
+            value: "0x00"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc2.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc2.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc2.oxid"
+            bits: 16
+            value: "0x0000"
+            description: "Originator Exchange ID"
+          - name: "RX_ID"
+            abbrev: "fc2.rxid"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc2.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── AUTH_NEGOTIATE ───────────────────────────────────────────────────────────
+
+  - id: "auth_negotiate"
+    name: "AUTH_Negotiate — Propose Authentication & Encryption Parameters"
+    description: >
+      The host SecureHBA sends AUTH_Negotiate as an FC Extended Link Service (ELS).
+      This frame proposes the authentication protocol (DH-CHAP), the hash algorithm
+      (SHA-512 for CNSA 2.0 alignment), the Diffie-Hellman group or post-quantum
+      KEM algorithm (ML-KEM-1024 per FC-SP-3 / CNSA 2.0), and the encryption
+      transform (AES-256-GCM).
+
+      Note: FC-SP-2 used classical DH groups (2048-bit MODP). FC-SP-3 adds
+      ML-KEM-1024 as a key encapsulation mechanism, replacing the DH exchange
+      with a lattice-based post-quantum algorithm that is not vulnerable to
+      Shor's algorithm on a quantum computer.
+    from: "host"
+    to: "array"
+    via: ["switch"]
+    timestamp_ns: 1000
+    total_bytes: 96
+    color: "#e67e22"
+    headers:
+      - name: "FC Extended Link Service (ELS) Header"
+        abbrev: "els"
+        layer: 4
+        total_bytes: 4
+        fields:
+          - name: "ELS Command Code"
+            abbrev: "els.cmd"
+            bits: 8
+            offset_bits: 0
+            value: "0x52"
+            value_hex: "0x52"
+            description: >
+              0x52 = AUTH_ELS. The FC-SP Authentication Extended Link Service
+              command code. This is how FC-SP-3 messages are carried — as ELS
+              frames on an established N_Port connection, not as separate fabric
+              services.
+            spec_refs:
+              - document: "FC-SP-2 (INCITS 496-2012)"
+                section: "5.1"
+                title: "AUTH_ELS — Authentication ELS"
+      - name: "AUTH_Negotiate Payload"
+        abbrev: "auth_neg"
+        layer: 4
+        total_bytes: 92
+        fields:
+          - name: "Auth_Msg_Code"
+            abbrev: "auth_neg.msg_code"
+            bits: 8
+            offset_bits: 0
+            value: "0x10"
+            value_hex: "0x10"
+            description: "AUTH_Negotiate message code = 0x10."
+            spec_refs:
+              - document: "FC-SP-2"
+                section: "5.3.1"
+                title: "AUTH_Negotiate message"
+          - name: "Auth_Protocol"
+            abbrev: "auth_neg.proto"
+            bits: 8
+            offset_bits: 8
+            value: "0x01"
+            description: "0x01 = DH-CHAP. The only mandatory authentication protocol in FC-SP-3."
+          - name: "Transaction_ID"
+            abbrev: "auth_neg.txn_id"
+            bits: 32
+            offset_bits: 16
+            value: "0xA3F12C8E"
+            description: >
+              Random transaction ID generated by the initiator. All subsequent
+              AUTH_ELS frames in this authentication session use this ID.
+              Prevents replay attacks across sessions.
+          - name: "Hash_List[0] — SHA-512"
+            abbrev: "auth_neg.hash0"
+            bits: 8
+            offset_bits: 48
+            value: "0x04"
+            description: >
+              0x04 = SHA-512. Proposed as first preference. SHA-512 is in
+              CNSA 2.0; FC-SP-2 typically used MD5 or SHA-1 (both deprecated
+              for national security use). FC-SP-3 adds SHA-512 and SHA-384.
+            spec_refs:
+              - document: "NSA CNSA 2.0"
+                section: "Table 1"
+                title: "Approved hash algorithms: SHA-384, SHA-512"
+          - name: "Hash_List[1] — SHA-384"
+            abbrev: "auth_neg.hash1"
+            bits: 8
+            offset_bits: 56
+            value: "0x03"
+            description: "0x03 = SHA-384. Second preference. Also CNSA 2.0 compliant."
+          - name: "DH_Group / KEM_Algorithm — ML-KEM-1024"
+            abbrev: "auth_neg.kem"
+            bits: 16
+            offset_bits: 64
+            value: "0x0010"
+            description: >
+              0x0010 = ML-KEM-1024 (FC-SP-3 extension to FC-SP-2 DH group list).
+              ML-KEM-1024 is FIPS 203 (Module-Lattice-Based Key Encapsulation
+              Mechanism, security category 5 — highest level). Replaces classical
+              ECDH P-384 or 2048-bit MODP DH used in FC-SP-2.
+
+              Why post-quantum matters here: the session key derived from DH/KEM
+              protects data in flight TODAY. An adversary recording ciphertext
+              today and decrypting it with a quantum computer in 2035 is the
+              threat model ("harvest now, decrypt later"). ML-KEM-1024 is
+              designed to be secure even against a cryptographically relevant
+              quantum computer.
+            spec_refs:
+              - document: "FIPS 203 (ML-KEM)"
+                section: "all"
+                title: "ML-KEM-1024 — security category 5"
+                url: "https://csrc.nist.gov/pubs/fips/203/final"
+              - document: "NSA CNSA 2.0"
+                section: "Table 1"
+                title: "ML-KEM-1024 for key establishment"
+          - name: "Encryption_Transform — AES-256-GCM"
+            abbrev: "auth_neg.cipher"
+            bits: 8
+            offset_bits: 80
+            value: "0x05"
+            description: >
+              0x05 = AES-256-GCM (FC-SP-3 cipher suite). GCM (Galois/Counter Mode)
+              provides both confidentiality (encryption) and integrity (authentication tag)
+              in a single pass. The 128-bit authentication tag detects any in-flight
+              tampering. AES-256 is approved for TOP SECRET in CNSA 1.0 and 2.0.
+            spec_refs:
+              - document: "NIST FIPS 197"
+                section: "all"
+                title: "AES-256"
+              - document: "NIST SP 800-38D"
+                section: "all"
+                title: "GCM mode"
+          - name: "Initiator WWN"
+            abbrev: "auth_neg.wwn"
+            bits: 64
+            offset_bits: 128
+            value: "10:00:00:10:9B:C7:2A:01"
+            description: >
+              Host HBA World Wide Port Name. Used as the authentication identity.
+              The target will look up pre-shared secrets or certificates by WWN.
+              The SecureHBA also supports SPDM (Security Protocol and Data Model)
+              for silicon root-of-trust attestation — the WWN is cryptographically
+              bound to the HBA's hardware identity.
+      - name: "FC Frame Header (Routing — always plaintext)"
+        abbrev: "fc.hdr"
+        layer: 2
+        fields:
+          - name: "R_CTL (Routing Control)"
+            abbrev: "fc.hdr.rctl"
+            bits: 8
+            value: "0x22"
+            description: "0x22 = Extended Link Service request. The switch routes on this + D_ID."
+          - name: "D_ID (Destination ID)"
+            abbrev: "fc.hdr.did"
+            bits: 24
+            value: "0x020100"
+            description: >
+              Array target port N_Port ID. ALWAYS PLAINTEXT — even after encryption
+              is active, the FC header D_ID and S_ID are never encrypted.
+              This is why the fabric switch needs no changes: it routes on D_ID
+              exactly as before, completely unaware of the encrypted payload.
+          - name: "S_ID (Source ID)"
+            abbrev: "fc.hdr.sid"
+            bits: 24
+            value: "0x010200"
+            description: "Host N_Port ID. Always plaintext."
+          - name: "CS_CTL"
+            abbrev: "fc.hdr.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "TYPE"
+            abbrev: "fc.hdr.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc.hdr.fctl"
+            bits: 24
+            value: "0x290000"
+            description: "Frame Control — exchange originator, first+last sequence, sequence initiative transfer"
+          - name: "SEQ_ID"
+            abbrev: "fc.hdr.seqid"
+            bits: 8
+            value: "0x00"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.hdr.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.hdr.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.hdr.oxid"
+            bits: 16
+            value: "0x0010"
+            description: "Originator Exchange ID — AUTH exchange"
+          - name: "RX_ID"
+            abbrev: "fc.hdr.rxid"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — not yet assigned"
+          - name: "Parameter"
+            abbrev: "fc.hdr.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for ELS frames"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── AUTH_Negotiate ACC ───────────────────────────────────────────────────────
+
+  - id: "auth_neg_acc"
+    name: "AUTH_Negotiate ACC — Target Confirms Parameters"
+    description: >
+      The array SecureHBA responds with AUTH_Negotiate ACC, confirming the
+      agreed authentication and encryption parameters. Both sides now have
+      a common understanding of the cipher suite before exchanging any
+      key material. The switch passes this frame without inspection.
+    from: "array"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 6000
+    total_bytes: 64
+    color: "#27ae60"
+    headers:
+      - name: "AUTH_Negotiate ACC"
+        abbrev: "auth_neg_acc"
+        layer: 4
+        fields:
+          - name: "Auth_Msg_Code"
+            abbrev: "auth_neg_acc.msg"
+            bits: 8
+            value: "0x11"
+            description: "0x11 = AUTH_Negotiate ACC. Acceptance of proposed parameters."
+          - name: "Agreed Hash"
+            abbrev: "auth_neg_acc.hash"
+            bits: 8
+            value: "0x04"
+            description: "SHA-512 accepted as the hash algorithm."
+          - name: "Agreed KEM"
+            abbrev: "auth_neg_acc.kem"
+            bits: 16
+            value: "0x0010"
+            description: "ML-KEM-1024 accepted."
+          - name: "Agreed Cipher"
+            abbrev: "auth_neg_acc.cipher"
+            bits: 8
+            value: "0x05"
+            description: "AES-256-GCM accepted. Session encryption transform confirmed."
+          - name: "Responder WWN"
+            abbrev: "auth_neg_acc.wwn"
+            bits: 64
+            value: "50:00:11:0A:CB:3F:44:01"
+            description: "Array target port WWN. Used as the responder identity in DH-CHAP."
+      - name: "FC-2 Frame Header (Routing — always plaintext)"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x23"
+            description: "Routing Control — Extended Link Service, solicited control (response)"
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0x010200"
+            description: "Destination N_Port ID — host HBA port. ALWAYS PLAINTEXT."
+          - name: "CS_CTL"
+            abbrev: "fc2.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0x020100"
+            description: "Source N_Port ID — array target port. Always plaintext."
+          - name: "TYPE"
+            abbrev: "fc2.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc2.fctl"
+            bits: 24
+            value: "0x980000"
+            description: "Frame Control — exchange responder, first+last sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc2.seqid"
+            bits: 8
+            value: "0x01"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc2.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc2.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc2.oxid"
+            bits: 16
+            value: "0x0010"
+            description: "Originator Exchange ID"
+          - name: "RX_ID"
+            abbrev: "fc2.rxid"
+            bits: 16
+            value: "0x0010"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc2.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── DH-CHAP Challenge ────────────────────────────────────────────────────────
+
+  - id: "dhchap_challenge"
+    name: "DH-CHAP Challenge + ML-KEM Encapsulation Key"
+    description: >
+      The target (responder) sends the DH-CHAP Challenge. In FC-SP-3 with
+      ML-KEM, this frame carries both the CHAP challenge value AND the
+      ML-KEM-1024 encapsulation key (the target's public key material).
+
+      The initiator will use this encapsulation key to generate the shared
+      secret: it runs ML-KEM Encaps(encapsulation_key) → (ciphertext, shared_secret).
+      The shared_secret becomes the basis for the session key.
+
+      This replaces the classical DH exchange: instead of both sides computing
+      g^(ab) mod p, the initiator encapsulates a random secret that only
+      the target (holding the corresponding decapsulation key) can recover.
+    from: "array"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 7000
+    total_bytes: 1600
+    color: "#c0392b"
+    headers:
+      - name: "DH-CHAP Challenge PDU"
+        abbrev: "dhchap_c"
+        layer: 4
+        fields:
+          - name: "Auth_Msg_Code"
+            abbrev: "dhchap_c.msg"
+            bits: 8
+            value: "0x20"
+            description: "0x20 = DHCHAP_Challenge message code."
+            spec_refs:
+              - document: "FC-SP-2"
+                section: "5.3.2"
+                title: "DHCHAP_Challenge"
+          - name: "Challenge_Value (16 bytes)"
+            abbrev: "dhchap_c.chall"
+            bits: 128
+            value: "0xF4A2B8C1D3E09F715A6B2C8D4E3F1A09"
+            description: >
+              Random 128-bit challenge nonce generated by the target.
+              The initiator must respond with HMAC-SHA-512(shared_secret,
+              challenge_value || initiator_WWN || target_WWN).
+              This proves the initiator knows the shared secret without
+              transmitting it.
+          - name: "ML-KEM-1024 Encapsulation Key (1568 bytes)"
+            abbrev: "dhchap_c.ek"
+            bits: 0
+            value: "[1568-byte ML-KEM-1024 encapsulation key]"
+            description: >
+              ML-KEM-1024 encapsulation key generated by the target.
+              Size: 1568 bytes (ML-KEM-1024 public key per FIPS 203).
+              The initiator runs ML-KEM.Encaps(ek) to produce:
+                - K: 32-byte shared secret (basis for session key)
+                - c: 1568-byte ciphertext (sent back in DHCHAP_Reply)
+
+              The target, holding the corresponding decapsulation key (dk),
+              will run ML-KEM.Decaps(dk, c) → K to recover the same secret.
+              An eavesdropper or quantum computer cannot derive K from ek
+              or c — the hardness assumption is Module Learning With Errors (MLWE).
+            spec_refs:
+              - document: "FIPS 203 (ML-KEM)"
+                section: "5"
+                title: "ML-KEM.Encaps and ML-KEM.Decaps"
+                url: "https://csrc.nist.gov/pubs/fips/203/final"
+      - name: "FC-2 Frame Header (Routing — always plaintext)"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x23"
+            description: "Routing Control — Extended Link Service, solicited control (response)"
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0x010200"
+            description: "Destination N_Port ID — host HBA port. ALWAYS PLAINTEXT."
+          - name: "CS_CTL"
+            abbrev: "fc2.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0x020100"
+            description: "Source N_Port ID — array target port. Always plaintext."
+          - name: "TYPE"
+            abbrev: "fc2.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc2.fctl"
+            bits: 24
+            value: "0x980000"
+            description: "Frame Control — exchange responder, first+last sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc2.seqid"
+            bits: 8
+            value: "0x02"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc2.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc2.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc2.oxid"
+            bits: 16
+            value: "0x0010"
+            description: "Originator Exchange ID"
+          - name: "RX_ID"
+            abbrev: "fc2.rxid"
+            bits: 16
+            value: "0x0010"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc2.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── DH-CHAP Reply ────────────────────────────────────────────────────────────
+
+  - id: "dhchap_reply"
+    name: "DH-CHAP Reply — Initiator Response + ML-KEM Ciphertext"
+    description: >
+      The host SecureHBA responds with DHCHAP_Reply. This carries:
+      1. The ML-KEM ciphertext (c) — the encapsulated secret only the target can open
+      2. The CHAP response — HMAC-SHA-512 over (K || challenge) proving knowledge of K
+      3. A reverse challenge — the initiator also challenges the target
+         (mutual authentication: both sides prove identity)
+
+      All of this is computed in hardware on the SecureHBA ASIC.
+      The host CPU never sees the key material.
+    from: "host"
+    to: "array"
+    via: ["switch"]
+    timestamp_ns: 8500
+    total_bytes: 1680
+    color: "#e67e22"
+    headers:
+      - name: "DHCHAP_Reply PDU"
+        abbrev: "dhchap_r"
+        layer: 4
+        fields:
+          - name: "Auth_Msg_Code"
+            abbrev: "dhchap_r.msg"
+            bits: 8
+            value: "0x21"
+            description: "0x21 = DHCHAP_Reply."
+          - name: "ML-KEM-1024 Ciphertext c (1568 bytes)"
+            abbrev: "dhchap_r.ct"
+            bits: 0
+            value: "[1568-byte ML-KEM ciphertext]"
+            description: >
+              The ciphertext c produced by ML-KEM.Encaps(ek).
+              Target will run ML-KEM.Decaps(dk, c) → K to recover the shared secret.
+              An adversary intercepting c cannot derive K without dk.
+              Size: 1568 bytes (ML-KEM-1024 ciphertext per FIPS 203).
+            spec_refs:
+              - document: "FIPS 203 (ML-KEM)"
+                section: "5.2"
+                title: "ML-KEM.Encaps"
+          - name: "CHAP_Response (64 bytes)"
+            abbrev: "dhchap_r.resp"
+            bits: 512
+            value: "[HMAC-SHA-512(K || challenge_value || initiator_WWN || target_WWN)]"
+            description: >
+              64-byte HMAC-SHA-512 response over the target's challenge.
+              Proves the initiator derived the same K from ML-KEM.Encaps.
+              The target verifies this by computing the same HMAC using its
+              K (from ML-KEM.Decaps) — if they match, the initiator is authenticated.
+          - name: "Reverse_Challenge (16 bytes)"
+            abbrev: "dhchap_r.rev_chall"
+            bits: 128
+            value: "0x2C8D4E3F1A09B7C5D1E2F3A4B5C60718"
+            description: >
+              The initiator's challenge to the target.
+              Mutual authentication: the target must now prove IT knows K.
+              Without this, a man-in-the-middle could forge the target identity.
+      - name: "FC-2 Frame Header (Routing — always plaintext)"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x22"
+            description: "Routing Control — Extended Link Service, unsolicited control"
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0x020100"
+            description: "Destination N_Port ID — array target port. ALWAYS PLAINTEXT — the switch routes on this field."
+          - name: "CS_CTL"
+            abbrev: "fc2.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0x010200"
+            description: "Source N_Port ID — host HBA port. Always plaintext."
+          - name: "TYPE"
+            abbrev: "fc2.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc2.fctl"
+            bits: 24
+            value: "0x290000"
+            description: "Frame Control — exchange originator, first+last sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc2.seqid"
+            bits: 8
+            value: "0x00"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc2.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc2.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc2.oxid"
+            bits: 16
+            value: "0x0011"
+            description: "Originator Exchange ID"
+          - name: "RX_ID"
+            abbrev: "fc2.rxid"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc2.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── DH-CHAP Success ──────────────────────────────────────────────────────────
+
+  - id: "dhchap_success"
+    name: "DH-CHAP Success — Mutual Authentication Complete"
+    description: >
+      The target has verified the initiator's CHAP_Response, recovered K
+      via ML-KEM.Decaps, and now sends DHCHAP_Success carrying its own
+      response to the reverse challenge. Both sides have verified each other's
+      identity. K is now a shared secret known only to the two SecureHBA ASICs.
+
+      Next step: derive the AES-256-GCM session key from K using HKDF-SHA-512.
+    from: "array"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 14000
+    total_bytes: 80
+    color: "#27ae60"
+    headers:
+      - name: "DHCHAP_Success PDU"
+        abbrev: "dhchap_s"
+        layer: 4
+        fields:
+          - name: "Auth_Msg_Code"
+            abbrev: "dhchap_s.msg"
+            bits: 8
+            value: "0x22"
+            description: "0x22 = DHCHAP_Success. Authentication complete."
+          - name: "Reverse_Challenge_Response (64 bytes)"
+            abbrev: "dhchap_s.resp"
+            bits: 512
+            value: "[HMAC-SHA-512(K || reverse_challenge || target_WWN || initiator_WWN)]"
+            description: >
+              Target proves it knows K by responding correctly to the initiator's
+              reverse challenge. On receipt, the initiator verifies this HMAC.
+              If valid, mutual authentication is complete: both endpoints have
+              proven their identity and both hold the same K.
+          - name: "Authentication Result"
+            abbrev: "dhchap_s.result"
+            bits: 0
+            value: "MUTUAL AUTH COMPLETE — both endpoints verified"
+            description: >
+              At this point: both WWNs are verified, shared secret K is established,
+              and no pre-shared password was transmitted on the wire.
+              The switch saw only opaque ELS payload bytes — it played no role
+              in authentication and learned nothing from these exchanges.
+      - name: "FC-2 Frame Header (Routing — always plaintext)"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x23"
+            description: "Routing Control — Extended Link Service, solicited control (response)"
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0x010200"
+            description: "Destination N_Port ID — host HBA port. ALWAYS PLAINTEXT."
+          - name: "CS_CTL"
+            abbrev: "fc2.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0x020100"
+            description: "Source N_Port ID — array target port. Always plaintext."
+          - name: "TYPE"
+            abbrev: "fc2.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc2.fctl"
+            bits: 24
+            value: "0x980000"
+            description: "Frame Control — exchange responder, first+last sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc2.seqid"
+            bits: 8
+            value: "0x01"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc2.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc2.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc2.oxid"
+            bits: 16
+            value: "0x0011"
+            description: "Originator Exchange ID"
+          - name: "RX_ID"
+            abbrev: "fc2.rxid"
+            bits: 16
+            value: "0x0011"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc2.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── SA_Init ──────────────────────────────────────────────────────────────────
+
+  - id: "sa_init"
+    name: "SA_Init — Security Association Proposal"
+    description: >
+      Following successful DH-CHAP, the host sends SA_Init to formally establish
+      the Security Association (SA) — the FC-SP-3 equivalent of an IPsec SA.
+      The SA defines which FC frames are encrypted, the SA ID (used in
+      ESP_Header), and the key derivation parameters.
+
+      The session key is derived from K using HKDF:
+        session_key = HKDF-SHA-512(K, salt="FC-ESP-SESSION-KEY", info=SA_ID || wwn_pair)
+      This key is 256 bits (AES-256) and exists only in the two SecureHBA ASICs.
+    from: "host"
+    to: "array"
+    via: ["switch"]
+    timestamp_ns: 15000
+    total_bytes: 64
+    color: "#2980b9"
+    headers:
+      - name: "SA_Init PDU"
+        abbrev: "sa_init"
+        layer: 4
+        fields:
+          - name: "Auth_Msg_Code"
+            abbrev: "sa_init.msg"
+            bits: 8
+            value: "0x30"
+            description: "0x30 = SA_Init."
+            spec_refs:
+              - document: "FC-SP-2"
+                section: "5.4"
+                title: "Security Association Management"
+          - name: "SA_ID"
+            abbrev: "sa_init.said"
+            bits: 32
+            value: "0x000000A1"
+            description: >
+              Security Association identifier. Carried in every ESP_Header
+              to tell the receiver which SA (and therefore which key) to use
+              for decryption. Analogous to IPsec SPI (Security Parameters Index).
+          - name: "Transform: AES-256-GCM"
+            abbrev: "sa_init.xform"
+            bits: 8
+            value: "0x05"
+            description: "Cipher confirmed: AES-256-GCM. Provides confidentiality + integrity."
+          - name: "Key_Length"
+            abbrev: "sa_init.keylen"
+            bits: 16
+            value: 256
+            description: "256-bit AES key derived via HKDF-SHA-512 from K."
+          - name: "Rekey_Interval"
+            abbrev: "sa_init.rekey"
+            bits: 32
+            value: 3600
+            description: >
+              Automatic re-key interval in seconds = 3600 (1 hour). After this
+              interval, a new DH-CHAP exchange generates a fresh K and a new
+              session key is derived. Re-key happens automatically with no
+              I/O interruption — frames already in flight under the old SA
+              complete normally; new frames use the new SA.
+          - name: "Scope: All FC Frames"
+            abbrev: "sa_init.scope"
+            bits: 0
+            value: "ALL frames on this N_Port pair — FCP + NVMe/FC"
+            description: >
+              Unlike application-layer encryption, the SA covers ALL FC frames
+              on this port pair regardless of upper-layer protocol or application.
+              No per-application configuration. No per-volume configuration.
+              No certificates to install per workload. Zero setup.
+      - name: "FC-2 Frame Header (Routing — always plaintext)"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x22"
+            description: "Routing Control — Extended Link Service, unsolicited control"
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0x020100"
+            description: "Destination N_Port ID — array target port. ALWAYS PLAINTEXT — the switch routes on this field."
+          - name: "CS_CTL"
+            abbrev: "fc2.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0x010200"
+            description: "Source N_Port ID — host HBA port. Always plaintext."
+          - name: "TYPE"
+            abbrev: "fc2.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc2.fctl"
+            bits: 24
+            value: "0x290000"
+            description: "Frame Control — exchange originator, first+last sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc2.seqid"
+            bits: 8
+            value: "0x00"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc2.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc2.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc2.oxid"
+            bits: 16
+            value: "0x0012"
+            description: "Originator Exchange ID"
+          - name: "RX_ID"
+            abbrev: "fc2.rxid"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc2.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  - id: "sa_setup_acc"
+    name: "SA_Setup ACC — Security Association Active"
+    description: >
+      Target accepts the SA parameters. Both SecureHBA ASICs now load the
+      derived AES-256-GCM session key into their encryption/decryption engines.
+      From this point forward, ALL FC frames between this host port and
+      this array port are encrypted. The transition is instantaneous and seamless.
+    from: "array"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 21000
+    total_bytes: 32
+    color: "#27ae60"
+    headers:
+      - name: "SA_Setup ACC"
+        abbrev: "sa_acc"
+        layer: 4
+        fields:
+          - name: "Auth_Msg_Code"
+            abbrev: "sa_acc.msg"
+            bits: 8
+            value: "0x31"
+            description: "0x31 = SA_Setup ACC. Security Association is live."
+          - name: "SA_ID (confirmed)"
+            abbrev: "sa_acc.said"
+            bits: 32
+            value: "0x000000A1"
+            description: "SA ID 0xA1 confirmed. Both sides load session key for this SA_ID."
+          - name: "Encryption Status"
+            abbrev: "sa_acc.status"
+            bits: 0
+            value: "ACTIVE — AES-256-GCM on all frames from next FC sequence"
+            description: >
+              The SecureHBA hardware encryption engine is now armed.
+              The next FC sequence (PRLI or first I/O) will be encrypted.
+              The switch will see: identical FC headers (D_ID, S_ID, R_CTL),
+              but payload bytes that are AES-256-GCM ciphertext.
+      - name: "FC-2 Frame Header (Routing — always plaintext)"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x23"
+            description: "Routing Control — Extended Link Service, solicited control (response)"
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0x010200"
+            description: "Destination N_Port ID — host HBA port. ALWAYS PLAINTEXT."
+          - name: "CS_CTL"
+            abbrev: "fc2.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0x020100"
+            description: "Source N_Port ID — array target port. Always plaintext."
+          - name: "TYPE"
+            abbrev: "fc2.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc2.fctl"
+            bits: 24
+            value: "0x980000"
+            description: "Frame Control — exchange responder, first+last sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc2.seqid"
+            bits: 8
+            value: "0x01"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc2.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc2.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc2.oxid"
+            bits: 16
+            value: "0x0012"
+            description: "Originator Exchange ID"
+          - name: "RX_ID"
+            abbrev: "fc2.rxid"
+            bits: 16
+            value: "0x0012"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc2.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── PRLI (encrypted) ─────────────────────────────────────────────────────────
+
+  - id: "prli_encrypted"
+    name: "PRLI (Process Login) — First Encrypted Frame"
+    description: >
+      PRLI (Process Login) establishes the FC-4 upper-layer protocol parameters
+      (FCP for SCSI, or NVMe/FC). In a non-SecureHBA setup this frame is plaintext.
+      With FC-SP-3 active, it is the first frame encrypted under the new SA.
+
+      The FC frame header (R_CTL, D_ID, S_ID, OX_ID, RX_ID) is ALWAYS plaintext.
+      The FC payload (PRLI request body) is AES-256-GCM encrypted.
+      The ESP_Header is inserted between the FC frame header and the encrypted payload.
+
+      The switch routes this frame identically to any other PRLI — it reads D_ID,
+      forwards to the array port. It has no visibility into the PRLI payload.
+    from: "host"
+    to: "array"
+    via: ["switch"]
+    timestamp_ns: 22000
+    total_bytes: 120
+    color: "#8e44ad"
+    headers:
+      - name: "FC Frame Header (PLAINTEXT — always)"
+        abbrev: "fc.prli.hdr"
+        layer: 2
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.prli.rctl"
+            bits: 8
+            value: "0x22"
+            description: "ELS request. Switch reads this to identify frame type for routing."
+          - name: "D_ID"
+            abbrev: "fc.prli.did"
+            bits: 24
+            value: "0x020100"
+            description: "Array port N_Port ID. PLAINTEXT. Switch routes on this."
+          - name: "S_ID"
+            abbrev: "fc.prli.sid"
+            bits: 24
+            value: "0x010200"
+            description: "Host N_Port ID. PLAINTEXT."
+          - name: "CS_CTL"
+            abbrev: "fc.prli.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "TYPE"
+            abbrev: "fc.prli.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc.prli.fctl"
+            bits: 24
+            value: "0x290000"
+            description: "Frame Control: first sequence, last sequence, exchange initiator."
+          - name: "SEQ_ID"
+            abbrev: "fc.prli.seqid"
+            bits: 8
+            value: "0x00"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.prli.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.prli.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.prli.oxid"
+            bits: 16
+            value: "0x0001"
+            description: "Originator Exchange ID"
+          - name: "RX_ID"
+            abbrev: "fc.prli.rxid"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — not yet assigned"
+          - name: "Parameter"
+            abbrev: "fc.prli.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "ESP_Header (FC-SP-3 Security Header)"
+        abbrev: "esp"
+        layer: 2
+        fields:
+          - name: "SA_ID (SPI equivalent)"
+            abbrev: "esp.said"
+            bits: 32
+            offset_bits: 0
+            value: "0x000000A1"
+            description: >
+              Security Association ID = 0xA1. Tells the receiver which SA
+              (and session key) to use for decryption. Both SecureHBA ASICs
+              have this SA loaded from the SA_Setup exchange.
+            spec_refs:
+              - document: "FC-SP-2"
+                section: "6.2"
+                title: "ESP_Header format"
+          - name: "Sequence_Number"
+            abbrev: "esp.seq"
+            bits: 32
+            offset_bits: 32
+            value: 1
+            description: >
+              Anti-replay counter. Incremented for every encrypted frame.
+              The receiver maintains a sliding window and rejects any frame
+              with a sequence number that has already been seen — prevents
+              replay attacks where an adversary retransmits captured frames.
+          - name: "Initialization Vector (IV)"
+            abbrev: "esp.iv"
+            bits: 96
+            offset_bits: 64
+            value: "0x8F3A21C4 B7D09E15 2A6C8F3B"
+            description: >
+              96-bit IV for AES-256-GCM. Unique per frame — constructed from
+              (SA_ID || sequence_number || random_salt). Reusing an IV with
+              the same key is a catastrophic security failure in GCM; the
+              SecureHBA hardware ensures uniqueness.
+      - name: "Encrypted PRLI Payload (ciphertext)"
+        abbrev: "prli.enc"
+        layer: 4
+        fields:
+          - name: "Ciphertext (PRLI body)"
+            abbrev: "prli.enc.ct"
+            bits: 0
+            value: "[AES-256-GCM ciphertext of PRLI request body]"
+            description: >
+              The PRLI payload (FCP service parameters, NVMe/FC parameters)
+              is encrypted. The switch sees random-looking bytes here.
+              The array SecureHBA decrypts this using the SA session key
+              before passing it to the FCP/NVMe target driver.
+          - name: "GCM Authentication Tag (16 bytes)"
+            abbrev: "prli.enc.tag"
+            bits: 128
+            value: "[128-bit AES-GCM integrity tag]"
+            description: >
+              The 128-bit GCM authentication tag covers both the ESP_Header
+              (authenticated but not encrypted) and the ciphertext.
+              If any bit of the ciphertext or ESP_Header is modified in transit,
+              the tag verification fails and the frame is dropped.
+              This provides authenticated encryption — confidentiality AND integrity.
+            spec_refs:
+              - document: "NIST SP 800-38D"
+                section: "5.2"
+                title: "GHASH and GCTR — GCM authentication tag"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  - id: "prli_acc_encrypted"
+    name: "PRLI ACC (Process Login Accept) — Encrypted"
+    description: >
+      The array accepts the FCP process login and responds with PRLI ACC.
+      This frame is also encrypted under SA 0xA1. The array declares
+      itself as an FCP target, ready to accept SCSI commands.
+    from: "array"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 27000
+    total_bytes: 120
+    color: "#8e44ad"
+    headers:
+      - name: "FC Frame Header (PLAINTEXT)"
+        abbrev: "fc.prli_acc.hdr"
+        layer: 2
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.prli_acc.rctl"
+            bits: 8
+            value: "0x23"
+            description: "ELS ACC response."
+          - name: "D_ID"
+            abbrev: "fc.prli_acc.did"
+            bits: 24
+            value: "0x010200"
+            description: "Host N_Port ID. Switch routes to host port. Always plaintext."
+          - name: "S_ID"
+            abbrev: "fc.prli_acc.sid"
+            bits: 24
+            value: "0x020100"
+            description: "Array N_Port ID. Always plaintext."
+          - name: "CS_CTL"
+            abbrev: "fc.prli_acc.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "TYPE"
+            abbrev: "fc.prli_acc.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc.prli_acc.fctl"
+            bits: 24
+            value: "0x980000"
+            description: "Frame Control — exchange responder, last sequence, end sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.prli_acc.seqid"
+            bits: 8
+            value: "0x01"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.prli_acc.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.prli_acc.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.prli_acc.oxid"
+            bits: 16
+            value: "0x0001"
+            description: "Originator Exchange ID"
+          - name: "RX_ID"
+            abbrev: "fc.prli_acc.rxid"
+            bits: 16
+            value: "0x0001"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc.prli_acc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "ESP_Header (FC-SP-3)"
+        abbrev: "esp.prli_acc"
+        layer: 2
+        fields:
+          - name: "SA_ID"
+            abbrev: "esp.prli_acc.said"
+            bits: 32
+            value: "0x000000A1"
+            description: "Same Security Association — all frames between these ports are encrypted."
+          - name: "Sequence_Number"
+            abbrev: "esp.prli_acc.seq"
+            bits: 32
+            value: 2
+            description: "Anti-replay counter = 2. Second encrypted frame in this SA."
+          - name: "IV"
+            abbrev: "esp.prli_acc.iv"
+            bits: 96
+            value: "0x8F3A21C4 B7D09E15 00000002"
+            description: "Unique IV for this frame."
+      - name: "Encrypted PRLI ACC Payload"
+        abbrev: "prli_acc.enc"
+        layer: 4
+        fields:
+          - name: "Ciphertext (PRLI ACC body)"
+            abbrev: "prli_acc.enc.ct"
+            bits: 0
+            value: "[AES-256-GCM ciphertext of PRLI ACC response]"
+            description: >
+              The PRLI ACC payload declares the array as an FCP target.
+              Response code 0x01 (accepted), target function bit set.
+              Encrypted — the switch cannot determine whether PRLI was
+              accepted or rejected.
+          - name: "GCM Authentication Tag"
+            abbrev: "prli_acc.enc.tag"
+            bits: 128
+            value: "[128-bit AES-GCM integrity tag]"
+            description: "Authenticated encryption covers ESP_Header + ciphertext."
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── ENCRYPTED FCP I/O ────────────────────────────────────────────────────────
+
+  - id: "fcp_write_encrypted"
+    name: "FCP_CMND: WRITE(10) — Encrypted Command (No Data Yet)"
+    description: >
+      FCP_CMND carrying a SCSI WRITE(10) CDB — the command only, not the data.
+      The write data cannot be sent until the target responds with FCP_XFER_RDY.
+      From the switch's perspective, this is indistinguishable from any other
+      FC frame — same header format, same routing, same credit management.
+
+      The FC switch is completely oblivious to encryption. No firmware update,
+      no configuration, no performance impact on the switch. This is the core
+      architectural advantage of HBA-level encryption over switch-level or
+      fabric-level encryption approaches.
+    from: "host"
+    to: "array"
+    via: ["switch"]
+    timestamp_ns: 30000
+    total_bytes: 104
+    color: "#8e44ad"
+    headers:
+      - name: "FC Frame Header (PLAINTEXT)"
+        abbrev: "fc.fcp.hdr"
+        layer: 2
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.fcp.rctl"
+            bits: 8
+            value: "0x06"
+            description: "0x06 = FC-4 Device Data — Unsolicited Command. FCP WRITE command frame."
+          - name: "D_ID"
+            abbrev: "fc.fcp.did"
+            bits: 24
+            value: "0x020100"
+            description: "Array port. Switch routes here. Always plaintext."
+          - name: "CS_CTL"
+            abbrev: "fc.fcp.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.fcp.sid"
+            bits: 24
+            value: "0x010200"
+            description: "Host port. Always plaintext."
+          - name: "TYPE"
+            abbrev: "fc.fcp.type"
+            bits: 8
+            value: "0x08"
+            description: "0x08 = FCP (SCSI Fibre Channel Protocol). Plaintext."
+          - name: "F_CTL"
+            abbrev: "fc.fcp.fctl"
+            bits: 24
+            value: "0x290000"
+            description: "Frame Control — exchange originator, first sequence, end sequence, SI transfer"
+          - name: "SEQ_ID"
+            abbrev: "fc.fcp.seqid"
+            bits: 8
+            value: "0x00"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.fcp.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.fcp.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.fcp.oxid"
+            bits: 16
+            value: "0x0020"
+            description: "Originator Exchange ID"
+          - name: "RX_ID"
+            abbrev: "fc.fcp.rxid"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc.fcp.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "ESP_Header"
+        abbrev: "fc.fcp.esp"
+        layer: 2
+        fields:
+          - name: "SA_ID"
+            abbrev: "fc.fcp.esp.said"
+            bits: 32
+            value: "0x000000A1"
+            description: "Same SA ID as established in SA_Init. Consistent for entire session."
+          - name: "Sequence_Number"
+            abbrev: "fc.fcp.esp.seq"
+            bits: 32
+            value: 1847
+            description: "Anti-replay counter = 1847. This is the 1847th encrypted frame in this session."
+          - name: "IV"
+            abbrev: "fc.fcp.esp.iv"
+            bits: 96
+            value: "0x8F3A21C4 B7D09E15 00000737"
+            description: "IV for this frame. Lower 32 bits = sequence number."
+      - name: "Encrypted FCP Payload (ciphertext)"
+        abbrev: "fcp.enc"
+        layer: 4
+        fields:
+          - name: "Ciphertext (FCP_CMND — WRITE CDB)"
+            abbrev: "fcp.enc.ct"
+            bits: 0
+            value: "[AES-256-GCM ciphertext of FCP_CMND frame]"
+            description: >
+              The FCP_CMND contains: LUN, task attribute, FCP_CDB (SCSI WRITE(10)),
+              and FCP_DL (expected data length). All encrypted.
+              The switch sees random bytes here — it cannot determine:
+              - Which LUN is being accessed
+              - What operation is being performed
+              - What data is being written
+              This eliminates a class of side-channel attacks where network
+              monitoring reveals I/O patterns to sensitive LUNs.
+          - name: "GCM Tag (16 bytes)"
+            abbrev: "fcp.enc.tag"
+            bits: 128
+            value: "[128-bit integrity tag]"
+            description: "Covers ESP_Header + ciphertext. Any tampering detected before decryption."
+      - name: "Switch Visibility (Annotation)"
+        abbrev: "sw.vis"
+        layer: 2
+        fields:
+          - name: "What the switch sees"
+            abbrev: "sw.vis.sees"
+            bits: 0
+            value: "FC header (D_ID=0x020100, S_ID=0x010200, R_CTL=0x06) + opaque payload"
+            description: >
+              The switch reads exactly: D_ID (3 bytes), routes to the correct
+              output port. That's it. The payload is indistinguishable from
+              random bytes. The switch performs normal credit-based flow control,
+              BB_Credit management, and congestion detection — all based on
+              the plaintext header and frame size, unaffected by encryption.
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  - id: "fcp_xfer_rdy_encrypted"
+    name: "FCP_XFER_RDY — Encrypted Transfer Ready"
+    description: >
+      The array sends FCP_XFER_RDY to grant the host permission to send
+      write data. This flow control is unique to FC writes — it prevents
+      the host from sending data before the target has buffer space.
+      Even XFER_RDY is encrypted under the SA.
+    from: "array"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 32000
+    total_bytes: 80
+    color: "#8e44ad"
+    headers:
+      - name: "FC Frame Header (PLAINTEXT)"
+        abbrev: "fc.xr.hdr"
+        layer: 2
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.xr.rctl"
+            bits: 8
+            value: "0x05"
+            description: "0x05 = FC-4 Device Data — Transfer Ready (FCP_XFER_RDY)"
+            spec_refs:
+              - document: "FCP-4"
+                section: "9.3"
+                title: "FCP_XFER_RDY IU"
+          - name: "D_ID"
+            abbrev: "fc.xr.did"
+            bits: 24
+            value: "0x010200"
+            description: "Host N_Port ID. Switch routes here. Always plaintext."
+          - name: "CS_CTL"
+            abbrev: "fc.xr.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.xr.sid"
+            bits: 24
+            value: "0x020100"
+            description: "Array N_Port ID. Always plaintext."
+          - name: "TYPE"
+            abbrev: "fc.xr.type"
+            bits: 8
+            value: "0x08"
+            description: "0x08 = FCP. Plaintext."
+          - name: "F_CTL"
+            abbrev: "fc.xr.fctl"
+            bits: 24
+            value: "0x890000"
+            description: "Frame Control — exchange responder, end sequence, SI transfer"
+          - name: "SEQ_ID"
+            abbrev: "fc.xr.seqid"
+            bits: 8
+            value: "0x01"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.xr.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.xr.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.xr.oxid"
+            bits: 16
+            value: "0x0020"
+            description: "Same exchange as the WRITE command."
+          - name: "RX_ID"
+            abbrev: "fc.xr.rxid"
+            bits: 16
+            value: "0x0020"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc.xr.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "ESP_Header (FC-SP-3)"
+        abbrev: "fc.xr.esp"
+        layer: 2
+        fields:
+          - name: "SA_ID"
+            abbrev: "fc.xr.esp.said"
+            bits: 32
+            value: "0x000000A1"
+            description: "Same SA — every frame encrypted under SA 0xA1."
+          - name: "Sequence_Number"
+            abbrev: "fc.xr.esp.seq"
+            bits: 32
+            value: 1848
+            description: "Anti-replay counter = 1848. Follows the WRITE command (Seq 1847)."
+          - name: "IV"
+            abbrev: "fc.xr.esp.iv"
+            bits: 96
+            value: "0x8F3A21C4 B7D09E15 00000738"
+            description: "Unique IV for this frame."
+      - name: "Encrypted FCP_XFER_RDY Payload"
+        abbrev: "xr.enc"
+        layer: 4
+        fields:
+          - name: "Ciphertext (XFER_RDY body)"
+            abbrev: "xr.enc.ct"
+            bits: 0
+            value: "[AES-256-GCM ciphertext — DATA_RO=0, BURST_LEN=4096]"
+            description: >
+              FCP_XFER_RDY contains DATA_RO (relative offset = 0) and
+              BURST_LEN (4096 bytes the host may send). Both encrypted.
+          - name: "GCM Authentication Tag"
+            abbrev: "xr.enc.tag"
+            bits: 128
+            value: "[128-bit AES-GCM integrity tag]"
+            description: "Authenticated encryption covers ESP_Header + ciphertext."
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── FCP WRITE DATA ──────────────────────────────────────────────────────────
+
+  - id: "fcp_data_encrypted"
+    name: "FCP_DATA: WRITE(10) — Encrypted Write Data"
+    description: >
+      After receiving FCP_XFER_RDY, the host sends the actual write data in an
+      FCP_DATA IU. This is the 2048-byte SCSI data transfer plus FC overhead —
+      the payload that was NOT included in the earlier FCP_CMND. The host sends
+      exactly the burst length authorized by XFER_RDY (4096 bytes). Like every
+      frame after SA_Setup, the data payload is AES-256-GCM encrypted. The switch
+      routes on D_ID and cannot read any write data.
+    from: "host"
+    to: "array"
+    via: ["switch"]
+    timestamp_ns: 34000
+    total_bytes: 2112
+    color: "#8e44ad"
+    headers:
+      - name: "FC Frame Header (PLAINTEXT)"
+        abbrev: "fc.fcd.hdr"
+        layer: 2
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.fcd.rctl"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = FC-4 Device Data — Solicited Data. FCP write data frame."
+          - name: "D_ID"
+            abbrev: "fc.fcd.did"
+            bits: 24
+            value: "0x020100"
+            description: "Array port. Switch routes here. Always plaintext."
+          - name: "CS_CTL"
+            abbrev: "fc.fcd.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.fcd.sid"
+            bits: 24
+            value: "0x010200"
+            description: "Host port. Always plaintext."
+          - name: "TYPE"
+            abbrev: "fc.fcd.type"
+            bits: 8
+            value: "0x08"
+            description: "0x08 = FCP (SCSI Fibre Channel Protocol). Plaintext."
+          - name: "F_CTL"
+            abbrev: "fc.fcd.fctl"
+            bits: 24
+            value: "0x090000"
+            description: "Frame Control — exchange originator, end sequence, SI transfer"
+          - name: "SEQ_ID"
+            abbrev: "fc.fcd.seqid"
+            bits: 8
+            value: "0x02"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.fcd.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.fcd.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.fcd.oxid"
+            bits: 16
+            value: "0x0020"
+            description: "Same exchange as the WRITE command and XFER_RDY."
+          - name: "RX_ID"
+            abbrev: "fc.fcd.rxid"
+            bits: 16
+            value: "0x0020"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc.fcd.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "ESP_Header (FC-SP-3)"
+        abbrev: "fc.fcd.esp"
+        layer: 2
+        fields:
+          - name: "SA_ID"
+            abbrev: "fc.fcd.esp.said"
+            bits: 32
+            value: "0x000000A1"
+            description: "Same SA — every frame encrypted under SA 0xA1."
+          - name: "Sequence_Number"
+            abbrev: "fc.fcd.esp.seq"
+            bits: 32
+            value: 1849
+            description: "Anti-replay counter = 1849. Follows XFER_RDY (Seq 1848)."
+          - name: "IV"
+            abbrev: "fc.fcd.esp.iv"
+            bits: 96
+            value: "0x8F3A21C4 B7D09E15 00000739"
+            description: "Unique IV for this frame."
+      - name: "Encrypted FCP_DATA Payload (ciphertext)"
+        abbrev: "fcd.enc"
+        layer: 4
+        fields:
+          - name: "Ciphertext (SCSI WRITE data)"
+            abbrev: "fcd.enc.ct"
+            bits: 0
+            value: "[AES-256-GCM ciphertext — 2048 bytes of SCSI WRITE(10) data]"
+            description: >
+              The actual write data — 2048 bytes of SCSI block data at LBA offset 0.
+              This is what the host was waiting to send until XFER_RDY arrived.
+              The switch sees random bytes — the write payload is completely opaque.
+              An adversary recording traffic cannot read the data being written to disk.
+          - name: "GCM Authentication Tag"
+            abbrev: "fcd.enc.tag"
+            bits: 128
+            value: "[128-bit AES-GCM integrity tag]"
+            description: "Authenticated encryption covers ESP_Header + ciphertext. Any tampering detected."
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  - id: "fcp_rsp_encrypted"
+    name: "FCP_RSP: WRITE(10) Good — Encrypted Response"
+    description: >
+      The array sends FCP_RSP to close the FCP WRITE exchange. SCSI Status
+      GOOD (0x00) means the write data has been accepted. This completes the
+      four-frame FCP WRITE sequence: FCP_CMND → FCP_XFER_RDY → FCP_DATA →
+      FCP_RSP. Like every frame in this session, the FCP_RSP payload is
+      AES-256-GCM encrypted under SA 0xA1.
+    from: "array"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 36000
+    total_bytes: 80
+    color: "#8e44ad"
+    headers:
+      - name: "FC Frame Header (PLAINTEXT)"
+        abbrev: "fc.rsp.hdr"
+        layer: 2
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.rsp.rctl"
+            bits: 8
+            value: "0x07"
+            description: "0x07 = Command Status — FCP_RSP. Closes the FCP exchange."
+            spec_refs:
+              - document: "FCP-4"
+                section: "9.5"
+                title: "FCP_RSP IU"
+          - name: "D_ID"
+            abbrev: "fc.rsp.did"
+            bits: 24
+            value: "0x010200"
+            description: "Host N_Port ID. Switch routes here. Always plaintext."
+          - name: "CS_CTL"
+            abbrev: "fc.rsp.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.rsp.sid"
+            bits: 24
+            value: "0x020100"
+            description: "Array N_Port ID. Always plaintext."
+          - name: "TYPE"
+            abbrev: "fc.rsp.type"
+            bits: 8
+            value: "0x08"
+            description: "0x08 = FCP (SCSI Fibre Channel Protocol). Plaintext."
+          - name: "F_CTL"
+            abbrev: "fc.rsp.fctl"
+            bits: 24
+            value: "0x990000"
+            description: "Frame Control — exchange responder, last sequence, end sequence, SI transfer. Closes the exchange."
+          - name: "SEQ_ID"
+            abbrev: "fc.rsp.seqid"
+            bits: 8
+            value: "0x03"
+            description: "Sequence ID 3 — fourth sequence in FCP WRITE exchange (CMND=0, XFER_RDY=1, DATA=2, RSP=3)"
+          - name: "DF_CTL"
+            abbrev: "fc.rsp.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.rsp.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.rsp.oxid"
+            bits: 16
+            value: "0x0020"
+            description: "Same Originator Exchange ID as the entire FCP WRITE exchange."
+          - name: "RX_ID"
+            abbrev: "fc.rsp.rxid"
+            bits: 16
+            value: "0x0020"
+            description: "Responder Exchange ID — assigned by array for this exchange."
+          - name: "Parameter"
+            abbrev: "fc.rsp.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for FCP_RSP"
+      - name: "ESP_Header (FC-SP-3)"
+        abbrev: "fc.rsp.esp"
+        layer: 2
+        fields:
+          - name: "SA_ID"
+            abbrev: "fc.rsp.esp.said"
+            bits: 32
+            value: "0x000000A1"
+            description: "Same SA — every frame encrypted under SA 0xA1."
+          - name: "Sequence_Number"
+            abbrev: "fc.rsp.esp.seq"
+            bits: 32
+            value: 1850
+            description: "Anti-replay counter = 1850. Follows FCP_DATA (Seq 1849)."
+          - name: "IV"
+            abbrev: "fc.rsp.esp.iv"
+            bits: 96
+            value: "0x8F3A21C4 B7D09E15 0000073A"
+            description: "Unique IV for this frame."
+      - name: "Encrypted FCP_RSP Payload"
+        abbrev: "rsp.enc"
+        layer: 4
+        fields:
+          - name: "Ciphertext (FCP_RSP body)"
+            abbrev: "rsp.enc.ct"
+            bits: 0
+            value: "[AES-256-GCM ciphertext — FCP_RSP with SCSI Status GOOD (0x00)]"
+            description: >
+              FCP_RSP contains SCSI Status = GOOD (0x00), confirming the write
+              completed successfully. Encrypted — the switch cannot determine
+              whether the I/O succeeded or failed.
+          - name: "GCM Authentication Tag"
+            abbrev: "rsp.enc.tag"
+            bits: 128
+            value: "[128-bit AES-GCM integrity tag]"
+            description: "Authenticated encryption covers ESP_Header + ciphertext."
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── ARRAY DECRYPTION ─────────────────────────────────────────────────────────
+
+  - id: "array_decrypt"
+    name: "Array SecureHBA: Decryption → Data Services (Plaintext)"
+    description: >
+      The array's SecureHBA target port receives the encrypted FC frame,
+      strips the ESP_Header, verifies the GCM authentication tag, and
+      decrypts the payload — all in ASIC hardware, below the FC driver.
+      The FCP/NVMe target driver receives plaintext FCP frame exactly as
+      if no encryption was in place.
+
+      The data services engine (dedupe, compression, ransomware detection)
+      operates on plaintext. This is the key architectural point that
+      distinguishes HBA-level EDIF from:
+      - Application encryption: array never sees plaintext → no dedupe/compress
+      - Host-side volume encryption: same problem
+      - Switch-level encryption: adds switch complexity, still masks data from array
+
+      With SecureHBA EDIF, the array's data services are fully preserved.
+    from: "array"
+    to: "array"
+    timestamp_ns: 35000
+    total_bytes: 0
+    color: "#27ae60"
+    headers:
+      - name: "Array SecureHBA Decryption Pipeline"
+        abbrev: "decrypt"
+        layer: 2
+        fields:
+          - name: "ESP_Header Validation"
+            abbrev: "decrypt.esp"
+            bits: 0
+            value: "SA_ID=0xA1 → key lookup → Seq=1847 → anti-replay window check: PASS"
+            description: >
+              SecureHBA ASIC looks up SA_ID 0xA1, confirms sequence number 1847
+              is within the anti-replay window and not a duplicate. If either
+              check fails, the frame is silently dropped — no error propagated
+              to the FCP stack.
+          - name: "AES-256-GCM Decryption + Tag Verify"
+            abbrev: "decrypt.aes"
+            bits: 0
+            value: "GCM tag: VALID — plaintext FCP frame delivered to FC driver"
+            description: >
+              The GCM authentication tag is verified first (before decryption
+              output is used). If the tag is invalid — meaning the ciphertext
+              was tampered with in transit — decryption output is suppressed
+              and the frame dropped. This prevents padding oracle and other
+              chosen-ciphertext attacks.
+          - name: "Data Services Input (Plaintext)"
+            abbrev: "decrypt.ds"
+            bits: 0
+            value: "WRITE(10) CDB → FCP target → data path → DEDUPE ✓ COMPRESS ✓ RANSOMWARE DETECT ✓"
+            description: >
+              After decryption, the FCP payload is plaintext SCSI data.
+              Deduplification compares against existing data — works normally.
+              Compression operates on plaintext — full ratio achieved.
+              Ransomware detection inspects plaintext write patterns — not blind.
+              None of these services are impaired. This is only possible because
+              decryption happens at the HBA ASIC, before data reaches the array controller.
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── RE-KEY ──────────────────────────────────────────────────────────────────
+
+  - id: "rekey_event"
+    name: "Automatic Re-Key — Session Key Refresh (No I/O Interruption)"
+    description: >
+      After the rekey_interval (3600 seconds in this scenario), the SecureHBAs
+      automatically negotiate a new session key. A new DH-CHAP exchange produces
+      a new K, HKDF derives a new session key, and a new SA (SA_ID = 0xA2) is
+      established. Frames in flight under SA 0xA1 complete normally. New frames
+      use SA 0xA2. SA 0xA1 is retired after a brief overlap window.
+
+      This is entirely automatic — no administrator action, no I/O pause,
+      no application awareness. The Emulex SAN Manager displays re-key
+      deadlines per port for compliance auditing.
+    from: "host"
+    to: "array"
+    via: ["switch"]
+    timestamp_ns: 3601000000
+    total_bytes: 0
+    color: "#2980b9"
+    headers:
+      - name: "Re-Key Event"
+        abbrev: "rekey"
+        layer: 4
+        fields:
+          - name: "Trigger"
+            abbrev: "rekey.trigger"
+            bits: 0
+            value: "SA_ID=0xA1 rekey_interval expired (3600s)"
+            description: "SecureHBA hardware timer fires. Re-key initiated automatically."
+          - name: "Process"
+            abbrev: "rekey.process"
+            bits: 0
+            value: "New DHCHAP_Challenge → DHCHAP_Reply → SA_Init → SA_Setup (SA_ID=0xA2)"
+            description: >
+              A full new DH-CHAP + SA exchange runs while I/O continues under
+              SA 0xA1. New session key loaded into encryption engine as SA 0xA2.
+              Switch point from 0xA1 to 0xA2 is atomic at the hardware level.
+          - name: "I/O Impact"
+            abbrev: "rekey.impact"
+            bits: 0
+            value: "ZERO — no pause, no retransmit, no application awareness"
+            description: >
+              The re-key is transparent to the OS, HBA driver, and application.
+              Multi-path software (PowerPath, MPIO, DM-Multipath) is unaffected —
+              re-keying happens at the FC port level, below the multipath layer.
+          - name: "New SA"
+            abbrev: "rekey.new_sa"
+            bits: 0
+            value: "SA_ID=0xA2, new AES-256-GCM key, Seq counter reset to 1"
+            description: "Fresh 256-bit session key derived from new K via HKDF-SHA-512."
+      - name: "FC-2 Frame Header (Routing — always plaintext)"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x22"
+            description: "Routing Control — Extended Link Service, unsolicited control"
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0x020100"
+            description: "Destination N_Port ID — array target port. ALWAYS PLAINTEXT — the switch routes on this field."
+          - name: "CS_CTL"
+            abbrev: "fc2.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0x010200"
+            description: "Source N_Port ID — host HBA port. Always plaintext."
+          - name: "TYPE"
+            abbrev: "fc2.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc2.fctl"
+            bits: 24
+            value: "0x290000"
+            description: "Frame Control — exchange originator, first+last sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc2.seqid"
+            bits: 8
+            value: "0x00"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc2.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc2.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc2.oxid"
+            bits: 16
+            value: "0x0013"
+            description: "Originator Exchange ID"
+          - name: "RX_ID"
+            abbrev: "fc2.rxid"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc2.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+timeline:
+  - id: "context"
+    type: "annotation"
+    t_ns: 0
+    annotation:
+      text: "Starting Point: PLOGI Complete, Encryption Not Yet Active"
+      detail: >
+        FLOGI, fabric registration (FLOGI → Name Server registration), and PLOGI
+        are already done — see the FC Fabric: FLOGI → PLOGI → PRLI → SCSI I/O
+        scenario for those steps. Both endpoints have exchanged WWNs and N_Port IDs.
+        PLOGI ACC service parameters included the FC-SP-3 security capability bit
+        on both sides. The SecureHBA on the host detects this match and initiates
+        authentication automatically. No administrator action required.
+        Current state: connected but NOT authenticated, NOT encrypted.
+
+  - id: "plogi_ctx"
+    type: "frame_tx"
+    t_ns: 0
+    frame_id: "plogi_complete_context"
+    annotation:
+      text: "PLOGI Complete — N_Port Login Already Done"
+      detail: >
+        N_Port Login (PLOGI) has already completed between host and array —
+        see the FC Fabric scenario for those steps. Both SecureHBAs advertised
+        the FC-SP-3 security capability bit in their PLOGI ACC service parameters.
+        The host's SecureHBA detects this mutual capability match and automatically
+        initiates authentication. No administrator action required. Note the
+        N_Port IDs: host=0x010100, array=0x010200 — these will be S_ID and D_ID
+        in every subsequent frame.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              auth_state: "AUTH_IDLE → initiating AUTH_Negotiate"
+          - layer: 2
+            name: "FC-2 Framing / Transport"
+            state_fields:
+              frame_type: "plaintext (pre-SA)"
+              sa_id: "none"
+      - actor_id: "array"
+        layers:
+          - layer: 4
+            name: "FC-4 / Data Services"
+            state_fields:
+              auth_state: "AUTH_IDLE → awaiting AUTH_Negotiate"
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              payload_visibility: "VISIBLE (pre-encryption)"
+
+  - id: "auth_neg"
+    type: "frame_tx"
+    t_ns: 1000
+    frame_id: "auth_negotiate"
+    annotation:
+      text: "AUTH_Negotiate — Propose Authentication & Encryption Parameters"
+      detail: >
+        AUTH_Negotiate proposes the cipher suite for the entire session.
+        Three choices define the security posture: SHA-512 for hashing
+        (CNSA 2.0 compliant), ML-KEM-1024 for post-quantum key establishment
+        (replaces classical Diffie-Hellman — a quantum computer cannot derive
+        the shared secret from the public encapsulation key), and AES-256-GCM
+        for frame encryption. The ELS command code 0x52 shows how FC-SP-3
+        rides on top of FC's existing Extended Link Service infrastructure —
+        no new frame types are needed.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              auth_state: "AUTH_NEGOTIATE sent"
+      - actor_id: "array"
+        layers:
+          - layer: 4
+            name: "FC-4 / Data Services"
+            state_fields:
+              auth_state: "AUTH_NEGOTIATE received — evaluating"
+
+  - id: "auth_neg_acc"
+    type: "frame_tx"
+    t_ns: 6000
+    frame_id: "auth_neg_acc"
+    annotation:
+      text: "AUTH_Negotiate ACC — SHA-512 + ML-KEM-1024 + AES-256-GCM Agreed"
+      detail: >
+        The array accepts all proposed parameters. From this point, both sides
+        know exactly which algorithms they will use — no negotiation surprises
+        later. The array now generates an ML-KEM-1024 key pair: an encapsulation
+        key (public, to be sent in the Challenge) and a decapsulation key
+        (private, never leaves the ASIC).
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              auth_state: "AUTH_NEGOTIATE ACC — SHA-512 + ML-KEM-1024 + AES-256-GCM agreed"
+      - actor_id: "array"
+        layers:
+          - layer: 4
+            name: "FC-4 / Data Services"
+            state_fields:
+              auth_state: "AUTH_NEGOTIATE ACC sent — generating ML-KEM key pair"
+
+  - id: "dhchap_challenge"
+    type: "frame_tx"
+    t_ns: 7000
+    frame_id: "dhchap_challenge"
+    annotation:
+      text: "DH-CHAP Challenge + ML-KEM Encapsulation Key"
+      detail: >
+        The DH-CHAP Challenge carries two critical payloads: a 128-bit CHAP
+        challenge nonce (proves liveness) and a 1568-byte ML-KEM-1024
+        encapsulation key (the array's public key material). The host must
+        now run ML-KEM.Encaps() to produce both a shared secret K and a
+        ciphertext that only the array can decrypt. In a SecureHBA, this
+        computation runs entirely in the ASIC — the host CPU never touches
+        key material.
+    state_after:
+      - actor_id: "array"
+        layers:
+          - layer: 4
+            name: "FC-4 / Data Services"
+            state_fields:
+              auth_state: "DHCHAP_Challenge sent — awaiting ML-KEM ciphertext"
+      - actor_id: "host"
+        layers:
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              auth_state: "DHCHAP_Challenge received — running ML-KEM.Encaps"
+
+  - id: "dhchap_reply"
+    type: "frame_tx"
+    t_ns: 8500
+    frame_id: "dhchap_reply"
+    annotation:
+      text: "DH-CHAP Reply — Initiator Response + ML-KEM Ciphertext"
+      detail: >
+        DHCHAP_Reply carries three payloads: the 1568-byte ML-KEM ciphertext
+        (only the array can decrypt this via ML-KEM.Decaps() to recover
+        the shared secret K), the CHAP response (a SHA-512 hash proving the
+        host derived K correctly), and a reverse challenge nonce for mutual
+        authentication. The host CPU never sees K — everything runs in the
+        SecureHBA ASIC hardware.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              auth_state: "DHCHAP_Reply sent — K derived, reverse challenge issued"
+              session_key: "K derived (ASIC only — never exposed to host CPU)"
+      - actor_id: "array"
+        layers:
+          - layer: 4
+            name: "FC-4 / Data Services"
+            state_fields:
+              auth_state: "DHCHAP_Reply received — running ML-KEM.Decaps + verifying CHAP"
+
+  - id: "dhchap_success"
+    type: "frame_tx"
+    t_ns: 14000
+    frame_id: "dhchap_success"
+    annotation:
+      text: "DH-CHAP Success — Mutual Authentication Complete"
+      detail: >
+        Mutual authentication is complete. Both endpoints independently hold
+        the same shared secret K — never transmitted in plaintext on the wire.
+        The array's DHCHAP_Success carries its CHAP response to the host's
+        reverse challenge, proving the array also holds K. A quantum computer
+        intercepting every frame cannot derive K from the ML-KEM ciphertext
+        without the private decapsulation key.
+    state_after:
+      - actor_id: "array"
+        layers:
+          - layer: 4
+            name: "FC-4 / Data Services"
+            state_fields:
+              auth_state: "DHCHAP_Success — MUTUAL AUTH COMPLETE"
+              session_key: "K derived (ASIC only)"
+      - actor_id: "host"
+        layers:
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              auth_state: "DHCHAP_Success received — verifying reverse response — PASS"
+
+  - id: "sa_init"
+    type: "frame_tx"
+    t_ns: 15000
+    frame_id: "sa_init"
+    annotation:
+      text: "SA_Init — Security Association Proposal"
+      detail: >
+        SA_Init formalizes the Security Association: SA_ID=0xA1 (identifies
+        the SA in every subsequent ESP header), transform=AES-256-GCM,
+        256-bit session key derived via HKDF-SHA-512 from K, re-key
+        interval=3600 seconds. The scope covers ALL frames between these
+        two N_Ports — regardless of FC-4 protocol or application workload.
+        Zero per-application configuration needed.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              auth_state: "SA_Init sent — deriving session key via HKDF"
+          - layer: 2
+            name: "FC-2 Framing / Transport"
+            state_fields:
+              sa_id: "0xA1 (pending ACC)"
+      - actor_id: "array"
+        layers:
+          - layer: 4
+            name: "FC-4 / Data Services"
+            state_fields:
+              auth_state: "SA_Init received — deriving session key via HKDF"
+
+  - id: "sa_setup_acc"
+    type: "frame_tx"
+    t_ns: 21000
+    frame_id: "sa_setup_acc"
+    annotation:
+      text: "SA_Setup ACC — Security Association Active, Encryption ON"
+      detail: >
+        Security Association is live. Both SecureHBA ASICs load the 256-bit
+        session key. Watch the OSI panel: host and array now show
+        encryption_active=true. The switch's payload_visibility changes to
+        OPAQUE — it reads FC headers (D_ID, S_ID) for routing but sees only
+        ciphertext beyond the ESP header. Total elapsed from PLOGI to full
+        encryption: ~21 us, dominated by two network round-trips.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical"
+            state_fields:
+              encryption_active: true
+          - layer: 2
+            name: "FC-2 Framing / Transport"
+            state_fields:
+              frame_type: "AES-256-GCM encrypted"
+              sa_id: "0x000000A1"
+              sequence_number: 0
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              auth_state: "COMPLETE — encryption ACTIVE"
+              session_key: "AES-256-GCM/256bit (SA 0xA1)"
+              rekey_deadline: "T+3600s"
+      - actor_id: "array"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical"
+            state_fields:
+              decryption_active: true
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              frame_type: "receiving AES-256-GCM encrypted"
+              sa_id: "0x000000A1"
+          - layer: 4
+            name: "FC-4 / Data Services"
+            state_fields:
+              auth_state: "COMPLETE — decryption ACTIVE"
+              data_services: "ACTIVE — dedupe/compress/ransomware-detect on plaintext post-decrypt"
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              payload_visibility: "OPAQUE — switch routes on FC header only"
+
+  - id: "encryption_live"
+    type: "annotation"
+    t_ns: 21500
+    annotation:
+      text: "Encryption Active — From Here, All FC Frames Are AES-256-GCM Encrypted"
+      detail: >
+        Total time from PLOGI completion to encryption active: ~21 µs
+        (dominated by 2 network round-trips for DH-CHAP + SA exchange).
+        The IT administrator configured nothing. The application knows nothing.
+        The switch is unaware. Multipath software is unaffected.
+        From this point: every FC frame (PRLI, FCP commands, FCP data,
+        FCP responses, NVMe/FC capsules) is encrypted end-to-end between
+        the two SecureHBA ASICs.
+
+  - id: "prli_encrypted"
+    type: "frame_tx"
+    t_ns: 22000
+    frame_id: "prli_encrypted"
+    annotation:
+      text: "PRLI (Process Login) — First Encrypted Frame"
+      detail: >
+        This is the first encrypted frame on the link. PRLI establishes the
+        FCP process association, but now travels encrypted. The FC header
+        (R_CTL, D_ID, S_ID, F_CTL, OX_ID/RX_ID) remains plaintext — the
+        switch reads D_ID=0x020100 and routes normally. After the FC header,
+        the ESP_Header follows: SA_ID=0xA1, Seq=1 starts anti-replay, and
+        a unique IV ensures no two frames share the same nonce. The PRLI
+        body is AES-256-GCM ciphertext.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Transport"
+            state_fields:
+              sequence_number: 1
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              routing_mode: "D_ID routing — payload opaque to switch"
+      - actor_id: "array"
+        layers:
+          - layer: 4
+            name: "FC-4 / Data Services"
+            state_fields:
+              auth_state: "PRLI decrypted — FCP/NVMe session parameters received"
+
+  - id: "prli_acc_encrypted"
+    type: "frame_tx"
+    t_ns: 27000
+    frame_id: "prli_acc_encrypted"
+    annotation:
+      text: "PRLI ACC — FCP Process Association Established (Encrypted)"
+      detail: >
+        The array accepts PRLI and declares itself as an FCP target. The
+        PRLI ACC response is also encrypted under SA 0xA1 — the switch
+        cannot determine whether process login succeeded or failed. With
+        PRLI complete, FCP commands (SCSI I/O) can now flow. Every frame
+        in both directions is AES-256-GCM encrypted. ESP Seq=2 — only the
+        second encrypted frame, confirming the SA was just established.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              fcp_state: "PRLI ACC received — FCP READY"
+          - layer: 2
+            name: "FC-2 Framing / Transport"
+            state_fields:
+              sequence_number: 2
+      - actor_id: "array"
+        layers:
+          - layer: 4
+            name: "FC-4 / Data Services"
+            state_fields:
+              fcp_state: "PRLI ACC sent — FCP target READY"
+
+  - id: "fcp_write_encrypted"
+    type: "frame_tx"
+    t_ns: 30000
+    frame_id: "fcp_write_encrypted"
+    annotation:
+      text: "FCP_CMND: WRITE(10) — Command Only, Awaiting XFER_RDY"
+      detail: >
+        The host sends an FCP_CMND containing the SCSI WRITE(10) CDB — this
+        is the command only, not the write data. The host must wait for the
+        array to respond with FCP_XFER_RDY before it can send any data. The
+        FC header is structurally identical to any unencrypted frame: R_CTL=0x06,
+        TYPE=0x08 (FCP) — all plaintext. The switch reads D_ID for routing and
+        nothing else. ESP encryption covers the 32-byte FCP_CMND IU. Seq=1847
+        tells us nearly two thousand frames have already been encrypted under
+        this Security Association.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Transport"
+            state_fields:
+              sequence_number: 1847
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              payload_visibility: "OPAQUE — ciphertext only"
+      - actor_id: "array"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              frame_type: "receiving encrypted FCP_CMND"
+
+  - id: "fcp_xfer_rdy_encrypted"
+    type: "frame_tx"
+    t_ns: 32000
+    frame_id: "fcp_xfer_rdy_encrypted"
+    annotation:
+      text: "FCP_XFER_RDY — Transfer Ready (Encrypted)"
+      detail: >
+        The array sends FCP_XFER_RDY, granting the host permission to send
+        up to 4096 bytes of write data. This flow control mechanism is
+        unique to FC writes — the host cannot send data until the target
+        has allocated buffer space. Reads do not require XFER_RDY. Even
+        this flow control frame is encrypted under SA 0xA1 — the switch
+        sees only ciphertext. ESP Seq=1848 follows immediately after the
+        WRITE command's Seq=1847.
+    state_after:
+      - actor_id: "array"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              frame_type: "sent encrypted FCP_XFER_RDY"
+      - actor_id: "host"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Transport"
+            state_fields:
+              sequence_number: 1848
+
+  - id: "fcp_data_encrypted"
+    type: "frame_tx"
+    t_ns: 34000
+    frame_id: "fcp_data_encrypted"
+    annotation:
+      text: "FCP_DATA: WRITE(10) — Encrypted Write Data (2112 bytes)"
+      detail: >
+        After receiving XFER_RDY, the host sends the actual write data in an
+        FCP_DATA IU. This is the 2048-byte SCSI block payload plus FC overhead,
+        totaling 2112 bytes — the data transfer that was NOT included in the
+        earlier FCP_CMND. R_CTL=0x01 (Solicited Data) distinguishes this from
+        the command frame (R_CTL=0x06). Same OX_ID=0x0020 ties it to the same
+        exchange. ESP Seq=1849 follows XFER_RDY's 1848. The write data is
+        AES-256-GCM encrypted — the switch and any tap cannot read a single
+        byte of the data being written to disk.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Transport"
+            state_fields:
+              sequence_number: 1849
+              frame_type: "sent FCP_DATA — write data transferred"
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              payload_visibility: "OPAQUE — 2112 bytes of ciphertext"
+      - actor_id: "array"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              frame_type: "receiving encrypted FCP_DATA"
+
+  - id: "fcp_rsp_encrypted"
+    type: "frame_tx"
+    t_ns: 36000
+    frame_id: "fcp_rsp_encrypted"
+    annotation:
+      text: "FCP_RSP: WRITE(10) Good — Exchange Complete (Encrypted)"
+      detail: >
+        The array sends FCP_RSP with SCSI Status GOOD, completing the four-frame
+        FCP WRITE exchange: FCP_CMND → FCP_XFER_RDY → FCP_DATA → FCP_RSP.
+        R_CTL=0x07 (Command Status), F_CTL=0x990000 (responder, last seq, end seq,
+        SI transfer) — the exchange is now closed. SEQ_ID=0x03 is the fourth
+        sequence in the exchange. ESP Seq=1850 follows FCP_DATA's 1849.
+        Like every frame, encrypted under SA 0xA1.
+    state_after:
+      - actor_id: "array"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              frame_type: "sent encrypted FCP_RSP — exchange closed"
+      - actor_id: "host"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Transport"
+            state_fields:
+              sequence_number: 1850
+              frame_type: "FCP WRITE complete — GOOD status"
+
+  - id: "array_decrypt"
+    type: "annotation"
+    t_ns: 35000
+    annotation:
+      text: "Array Decryption → Plaintext to Data Services"
+      detail: >
+        Array-side decryption in the SecureHBA ASIC: SA_ID lookup →
+        anti-replay check on Seq → AES-256-GCM tag verification → decrypt →
+        plaintext FCP_RSP to FC driver. The array controller then applies
+        data services — deduplication, compression, ransomware detection — on
+        the plaintext write data. This is the key architecture: array data
+        services are fully preserved because decryption happens at the HBA
+        ASIC before data reaches the controller.
+    state_after:
+      - actor_id: "array"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              frame_type: "decrypted — plaintext to FC driver"
+          - layer: 4
+            name: "FC-4 / Data Services"
+            state_fields:
+              data_services: "ACTIVE — dedupe hash computed, compress ratio applied, ransomware scan complete"
+
+  - id: "rekey"
+    type: "annotation"
+    t_ns: 3601000000
+    annotation:
+      text: "Automatic Re-Key — Session Key Refresh (No I/O Interruption)"
+      detail: >
+        Automatic re-key fires after the 3600-second interval. A new DH-CHAP
+        + SA exchange runs while I/O continues under SA 0xA1. When the new
+        SA 0xA2 is established, both ASICs switch seamlessly — no frames are
+        dropped, no I/O stalls. Zero administrator involvement, zero
+        application awareness.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Transport"
+            state_fields:
+              sa_id: "0x000000A2 (new SA)"
+              sequence_number: 0
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              session_key: "AES-256-GCM/256bit (SA 0xA2 — fresh key)"
+              rekey_deadline: "T+7200s"
+      - actor_id: "array"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              sa_id: "0x000000A2"
+          - layer: 4
+            name: "FC-4 / Data Services"
+            state_fields:
+              auth_state: "RE-KEY COMPLETE — SA 0xA1 retired, SA 0xA2 active"
+
+glossary:
+  - term: "FC-SP-3"
+    abbrev: "FC-SP-3"
+    definition: >
+      Fibre Channel Security Protocols version 3. The INCITS T11 standard defining
+      authentication protocols, Security Association management, and frame-level
+      encryption for Fibre Channel. FC-SP-3 extends FC-SP-2 by adding ML-KEM
+      post-quantum key encapsulation and AES-256-GCM encryption, replacing
+      classical Diffie-Hellman and older cipher suites.
+    spec_refs:
+      - document: "FC-SP-3 (INCITS draft)"
+        section: "all"
+        title: "Fibre Channel Security Protocols 3"
+
+  - term: "DH-CHAP"
+    abbrev: "DH-CHAP"
+    definition: >
+      Diffie-Hellman Challenge Handshake Authentication Protocol. The mandatory
+      authentication protocol in FC-SP. Combines CHAP (challenge-response
+      authentication using a shared secret) with a key establishment mechanism
+      (classical DH in FC-SP-2; ML-KEM in FC-SP-3). Provides mutual authentication:
+      both endpoints prove their identity before any key material is used.
+    spec_refs:
+      - document: "FC-SP-2"
+        section: "5.3"
+        title: "DH-CHAP"
+
+  - term: "ML-KEM-1024"
+    abbrev: "ML-KEM"
+    definition: >
+      Module-Lattice-Based Key Encapsulation Mechanism, security parameter 1024.
+      FIPS 203 (2024) standard. A post-quantum key encapsulation mechanism based
+      on the Module Learning With Errors (MLWE) problem. Replaces classical
+      ECDH/RSA for key establishment. Resistant to Shor's algorithm on a
+      quantum computer. Key sizes: 1568-byte encapsulation key, 1568-byte
+      ciphertext, 32-byte shared secret.
+    spec_refs:
+      - document: "FIPS 203"
+        section: "all"
+        title: "ML-KEM"
+        url: "https://csrc.nist.gov/pubs/fips/203/final"
+
+  - term: "AES-256-GCM"
+    abbrev: "AES-256-GCM"
+    definition: >
+      Advanced Encryption Standard with 256-bit key in Galois/Counter Mode.
+      GCM provides authenticated encryption: confidentiality (ciphertext hides
+      plaintext) and integrity (128-bit authentication tag detects tampering).
+      Approved in CNSA 1.0 and CNSA 2.0 for protecting information up to
+      TOP SECRET. The symmetric cipher used for FC frame payload encryption
+      in the SecureHBA.
+
+  - term: "ESP_Header"
+    abbrev: "ESP"
+    definition: >
+      Encapsulating Security Payload header. Inserted between the FC frame header
+      and the encrypted payload. Contains SA_ID (identifies the Security Association
+      and session key), sequence number (anti-replay), and initialization vector (IV).
+      The FC frame header remains plaintext — the switch routes on it normally.
+      Analogous to the IPsec ESP header but adapted for the FC frame format.
+    spec_refs:
+      - document: "FC-SP-2"
+        section: "6.2"
+        title: "ESP_Header format"
+
+  - term: "Security Association (SA)"
+    abbrev: "SA"
+    definition: >
+      A unidirectional security context between two FC endpoints. Defines the
+      session key, cipher algorithm, SA_ID, anti-replay window, and re-key schedule.
+      Both the initiator and target must have a matching SA loaded to communicate.
+      SA establishment follows successful DH-CHAP authentication.
+    spec_refs:
+      - document: "FC-SP-2"
+        section: "5.4"
+        title: "Security Association Management"
+
+  - term: "EDIF"
+    abbrev: "EDIF"
+    definition: >
+      Encryption of Data In Flight. Generic term for encrypting data as it
+      traverses a storage fabric, as opposed to Data At Rest (DAR) encryption
+      on the storage media. The SecureHBA provides EDIF at the FC frame level —
+      between the HBA ASIC on the host and the HBA ASIC on the array port.
+
+  - term: "CNSA 2.0"
+    abbrev: "CNSA 2.0"
+    definition: >
+      Commercial National Security Algorithm Suite 2.0. Published by the NSA
+      in September 2022. Specifies quantum-resistant cryptographic algorithms
+      for National Security Systems (NSS — DoD, Intelligence Community, classified
+      systems). Adds ML-KEM-1024 for key establishment and ML-DSA-87 for
+      digital signatures. AES-256 and SHA-384/512 carry over from CNSA 1.0.
+      CNSA 2.0 is mandatory for NSS; commercial enterprises benefit from
+      the same algorithms but are not directly mandated by CNSA 2.0 itself.
+    spec_refs:
+      - document: "NSA CNSA 2.0"
+        section: "all"
+        url: "https://media.defense.gov/2022/Sep/07/2003071836/-1/-1/0/CSA_CNSA_2.0_ALGORITHMS_.PDF"
+
+  - term: "HKDF"
+    abbrev: "HKDF"
+    definition: >
+      HMAC-based Key Derivation Function (RFC 5869). Used to derive the AES-256-GCM
+      session key from the shared secret K produced by ML-KEM. Takes K, a salt,
+      and context-specific info (SA_ID, WWN pair) and produces a cryptographically
+      strong derived key. Ensures that even if K were somehow compromised, the
+      session key has additional entropy from the derivation context.
+
+  - term: "Re-key"
+    abbrev: "rekey"
+    definition: >
+      Periodic replacement of the session key with a freshly derived one.
+      Limits the amount of data encrypted under any single key (limiting
+      cryptanalytic exposure) and provides forward secrecy for past sessions.
+      The SecureHBA performs re-key automatically on a configurable interval
+      (default: 1 hour) with no I/O interruption.
+
+walkthroughs:
+  - id: "authentication-flow"
+    title: "The Authentication Flow — From PLOGI to Encrypted"
+    description: "Trace the complete FC-SP-3 handshake from post-PLOGI to first encrypted frame."
+    steps:
+      - step: 0
+        narration: >
+          PLOGI is complete. Both SecureHBAs advertised the FC-SP-3 security capability
+          bit in their PLOGI ACC service parameters. The host SecureHBA sees this match
+          and begins AUTH_Negotiate automatically. No administrator action.
+          Note the N_Port IDs — these will be the D_ID and S_ID in every subsequent frame.
+        highlight_fields: ["ctx.sid", "ctx.did", "ctx.fcsp3"]
+      - step: 1
+        narration: >
+          AUTH_Negotiate proposes the cipher suite. Note the three key choices:
+          SHA-512 for hashing (CNSA 2.0), ML-KEM-1024 for key establishment
+          (post-quantum, replaces DH), and AES-256-GCM for frame encryption.
+          Also note the ELS command code 0x52 — this is how FC-SP-3 rides on
+          top of FC's Extended Link Service infrastructure.
+        highlight_fields: ["els.cmd", "auth_neg.hash0", "auth_neg.kem", "auth_neg.cipher", "auth_neg.wwn"]
+      - step: 2
+        narration: >
+          Array accepts all proposed parameters. From this point, both sides know
+          exactly what algorithms they'll use. No negotiation surprises later.
+        highlight_fields: ["auth_neg_acc.hash", "auth_neg_acc.kem", "auth_neg_acc.cipher"]
+      - step: 3
+        narration: >
+          The DH-CHAP Challenge carries two things: a 128-bit CHAP challenge nonce
+          AND the 1568-byte ML-KEM-1024 encapsulation key (the array's public key material).
+          The challenge proves liveness; the encapsulation key enables the shared secret.
+          The host must now run ML-KEM.Encaps() in ASIC hardware.
+        highlight_fields: ["dhchap_c.msg", "dhchap_c.chall", "dhchap_c.ek"]
+      - step: 4
+        narration: >
+          DHCHAP_Reply carries the ML-KEM ciphertext (1568 bytes — only the array can
+          decrypt this to recover K), the CHAP response proving the initiator knows K,
+          and a reverse challenge (mutual auth — the initiator also challenges the target).
+          The host CPU never sees K. All of this runs in the SecureHBA ASIC.
+        highlight_fields: ["dhchap_r.ct", "dhchap_r.resp", "dhchap_r.rev_chall"]
+      - step: 5
+        narration: >
+          DHCHAP_Success: mutual authentication complete. Both endpoints have verified
+          each other's identity and hold the same shared secret K — derived independently,
+          never transmitted in plaintext. A quantum computer intercepting every frame
+          cannot derive K from the ML-KEM ciphertext without the decapsulation key.
+        highlight_fields: ["dhchap_s.resp", "dhchap_s.result"]
+      - step: 6
+        narration: >
+          SA_Init formalizes the Security Association: SA_ID=0xA1, AES-256-GCM,
+          256-bit key derived via HKDF-SHA-512 from K, re-key interval 3600s.
+          Note the scope — ALL frames, regardless of application or workload.
+          Zero per-application configuration.
+        highlight_fields: ["sa_init.said", "sa_init.xform", "sa_init.keylen", "sa_init.rekey", "sa_init.scope"]
+      - step: 7
+        narration: >
+          SA_Setup ACC: Security Association is live. Both ASICs load the session key.
+          Observe the OSI panel: FC-0 Physical now shows encryption_active=true on both
+          host and array. The switch's payload_visibility changes to OPAQUE.
+          Total time from PLOGI to encrypted: ~21 µs.
+        highlight_fields: ["sa_acc.said", "sa_acc.status"]
+
+  - id: "encrypted-frame-anatomy"
+    title: "Anatomy of an Encrypted FC Frame"
+    description: "Dissect a live encrypted FCP WRITE frame — what each layer sees."
+    steps:
+      - step: 10
+        narration: >
+          We're now post-SA_Setup. PRLI runs encrypted — this is the first encrypted
+          frame. The FC header (R_CTL, D_ID, S_ID, F_CTL, OX_ID/RX_ID) is ALWAYS
+          plaintext. The switch reads D_ID=0x020100 and routes normally.
+          The ESP_Header follows: SA_ID identifies the key, Seq=1 starts anti-replay,
+          IV is unique per-frame. The PRLI body is ciphertext.
+        highlight_fields: ["fc.prli.did", "fc.prli.sid", "esp.said", "esp.seq", "esp.iv", "prli.enc.tag"]
+      - step: 11
+        narration: >
+          PRLI ACC — the array accepts the FCP process login. This response is also
+          encrypted, proving that both directions of the link are protected from the
+          first frame onward. The switch cannot determine whether PRLI succeeded or
+          failed. With PRLI complete, FCP I/O can now begin.
+        highlight_fields: ["fc.prli_acc.did", "fc.prli_acc.sid", "esp.prli_acc.seq", "prli_acc.enc.ct"]
+      - step: 12
+        narration: >
+          An FCP WRITE command. The FC header is identical in structure to any other
+          FC frame — R_CTL=0x06 (FC-4 Data), D_ID, S_ID, TYPE=0x08 (FCP). Plaintext.
+          The switch reads these fields and routes. The switch.sees annotation shows
+          exactly what the switch has visibility to — D_ID for routing, nothing else.
+          Seq=1847 tells us 1846 frames have already been encrypted in this session.
+        highlight_fields: ["fc.fcp.rctl", "fc.fcp.did", "fc.fcp.type", "fc.fcp.esp.seq", "fcp.enc.ct", "sw.vis.sees"]
+      - step: 13
+        narration: >
+          FCP_XFER_RDY — the array grants the host permission to send write data.
+          This flow control step is unique to FC writes (reads skip it). Even this
+          internal flow control frame is encrypted — the switch sees only ciphertext.
+          Seq=1848 follows immediately after the WRITE command's Seq=1847.
+        highlight_fields: ["fc.xr.rctl", "fc.xr.esp.seq", "xr.enc.ct"]
+      - step: 14
+        narration: >
+          FCP_DATA — the host sends the actual write data (2112 bytes). This is the
+          payload that was NOT in the FCP_CMND. R_CTL=0x01 (Solicited Data) vs.
+          the command's R_CTL=0x06 (Unsolicited Command). Same OX_ID=0x0020 ties it
+          to the same exchange. Seq=1849 follows XFER_RDY's 1848. The write data is
+          AES-256-GCM encrypted — the switch sees 2112 bytes of ciphertext and cannot
+          read a single byte of the data being written to disk.
+        highlight_fields: ["fc.fcd.rctl", "fc.fcd.oxid", "fc.fcd.esp.seq", "fcd.enc.ct"]
+      - step: 15
+        narration: >
+          FCP_RSP — the array sends the command status to close the exchange.
+          R_CTL=0x07 (Command Status), F_CTL=0x990000 (responder, last seq, end seq,
+          SI transfer). SEQ_ID=0x03 marks this as the fourth sequence in the FCP WRITE
+          exchange (CMND=0, XFER_RDY=1, DATA=2, RSP=3). SCSI Status GOOD (0x00) —
+          the write completed successfully. The exchange is now closed.
+          ESP Seq=1850 follows FCP_DATA's 1849.
+        highlight_fields: ["fc.rsp.rctl", "fc.rsp.fctl", "fc.rsp.seqid", "fc.rsp.esp.seq", "rsp.enc.ct"]
+      - step: 16
+        narration: >
+          Array-side decryption. SA_ID lookup → anti-replay check → GCM tag verification
+          → AES-256-GCM decrypt → plaintext FCP_DATA to FC driver. Note the data
+          services field: dedupe, compress, and ransomware detection all operate
+          on plaintext write data. This is the architectural point —
+          array data services are fully preserved because decryption happens
+          at the HBA ASIC before data reaches the array controller.
+        highlight_fields: []
+      - step: 17
+        narration: >
+          Re-key fires automatically after 3600s. A new DH-CHAP + SA exchange runs
+          while I/O continues under SA 0xA1. New SA 0xA2 is loaded; I/O is seamless.
+          The Emulex SAN Manager shows re-key deadlines per port for compliance auditing.
+          Zero administrator involvement, zero I/O interruption.
+        highlight_fields: []

@@ -250,7 +250,7 @@ function findTcpPayloadOffset(pkt) {
   if (!eth || !ip) return null;
 
   const ethLen = 14; // Standard Ethernet II header
-  const ipLen = ip.fields.ihl || 20;
+  const ipLen = ip.name === 'IPv6' ? 40 : (ip.fields.ihl || 20);
   const tcpDataOffset = tcp.fields.data_offset || 20;
 
   return ethLen + ipLen + tcpDataOffset;

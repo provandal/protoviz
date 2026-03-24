@@ -222,13 +222,21 @@ function extractActors(packets) {
 function buildScrubMap(actors) {
   const ipMap = new Map();
   const macMap = new Map();
-  let ipCounter = 1;
+  let ipv4Counter = 1;
+  let ipv6Counter = 1;
   let macCounter = 1;
 
   for (const a of actors) {
     if (a.ip && !ipMap.has(a.ip)) {
-      ipMap.set(a.ip, `10.0.0.${ipCounter}`);
-      ipCounter++;
+      if (a.ip.includes(':')) {
+        // IPv6 address — use documentation prefix fd00::/8
+        ipMap.set(a.ip, `fd00::${ipv6Counter}`);
+        ipv6Counter++;
+      } else {
+        // IPv4 address
+        ipMap.set(a.ip, `10.0.0.${ipv4Counter}`);
+        ipv4Counter++;
+      }
     }
     if (a.mac && !macMap.has(a.mac)) {
       macMap.set(a.mac, `00:11:22:33:44:${macCounter.toString(16).padStart(2, '0')}`);
@@ -286,6 +294,8 @@ function detectProtocols(packets) {
       if (l.name === 'TCP') protos.set('TCP', (protos.get('TCP') || 0) + 1);
       if (l.name === 'UDP') protos.set('UDP', (protos.get('UDP') || 0) + 1);
       if (l.name === 'ARP') protos.set('ARP', (protos.get('ARP') || 0) + 1);
+      if (l.name === 'ICMPv6') protos.set('ICMPv6', (protos.get('ICMPv6') || 0) + 1);
+      if (l.name === 'IPv6') protos.set('IPv6', (protos.get('IPv6') || 0) + 1);
     }
   }
   // Sort by count descending
@@ -357,7 +367,7 @@ function buildOsiLayers(actors, protocols) {
       },
       {
         layer: 3,
-        name: 'IPv4',
+        name: actor.ip && actor.ip.includes(':') ? 'IPv6' : 'IPv4',
         components: ['ip'],
         state_schema: {
           ip_addr: { type: 'string', description: 'IP address', initial: actor.ip || 'unknown' },
@@ -589,6 +599,7 @@ function inferPacketPhase(pkt) {
   if (flags.includes('RST')) return 'TCP Reset';
 
   if (layerNames.includes('ARP')) return 'ARP';
+  if (layerNames.includes('ICMPv6')) return 'ICMPv6';
   if (layerNames.includes('TCP')) return 'TCP Data';
   if (layerNames.includes('UDP')) return 'UDP';
 
@@ -608,6 +619,9 @@ function buildPacketLabel(pkt) {
 
   const udp = pkt.layers.find(l => l.name === 'UDP');
   if (udp) return `UDP ${udp.fields.src_port}\u2192${udp.fields.dst_port}`;
+
+  const icmp6 = pkt.layers.find(l => l.name === 'ICMPv6');
+  if (icmp6) return `ICMPv6 ${icmp6.fields.type_name || `Type ${icmp6.fields.type}`}`;
 
   const arp = pkt.layers.find(l => l.name === 'ARP');
   if (arp) return `ARP ${arp.fields.opcode === '1' ? 'Request' : 'Reply'}`;

@@ -47,6 +47,7 @@ const PROTOCOL_COLORS = {
   HTTPS: { bg: '#3b1f6e', color: '#c4b5fd' },
   QUIC:  { bg: '#3b2f1a', color: '#fb923c' },
   ICMP:  { bg: '#3b1a1a', color: '#f87171' },
+  ICMPv6:{ bg: '#3b1a1a', color: '#fb923c' },
   ARP:   { bg: '#1a3a2a', color: '#86efac' },
   RoCEv2:{ bg: '#1e3a5f', color: '#93c5fd' },
 };
@@ -439,7 +440,7 @@ export default function FlowPicker({ flows, onConfirm, onCancel }) {
                     {flow.protocol || '?'}
                   </span>
                 </span>
-                <span style={{
+                <span title={`${flow.serverIp || '--'}:${flow.serverPort || '--'}`} style={{
                   width: 160,
                   flexShrink: 0,
                   color: '#94a3b8',

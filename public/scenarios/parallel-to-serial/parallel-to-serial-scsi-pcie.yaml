@@ -1,0 +1,1350 @@
+meta:
+  id: "parallel-to-serial-scsi-pcie"
+  title: "[DRAFT] Parallel vs. Serial: From SCSI Buses to PCIe Lanes"
+  protocol: "SCSI / PCIe"
+  protocol_family: "Interconnect Fundamentals"
+  version: "1.0"
+  description: >
+    Why did the industry abandon parallel buses in favor of serial links?
+    This scenario walks through a parallel SCSI command exchange, exposes
+    the physical limits that killed the parallel bus, and shows how PCIe
+    solved each problem with a serial differential-pair architecture.
+    No prior storage networking knowledge required.
+  difficulty: "beginner"
+  learning_objectives:
+    - "Understand why parallel seemed like the obvious choice — more wires, more data"
+    - "Identify the physical problems that emerge as parallel bus speeds increase: clock skew, signal integrity, bus contention, and termination"
+    - "Explain how serial differential signaling eliminates skew at the cost of raw wire count"
+    - "Describe the PCIe layered model: Physical, Data Link, and Transaction layers"
+    - "Read a PCIe Transaction Layer Packet (TLP) header and a SCSI Command Descriptor Block (CDB)"
+    - "Understand why PCIe scales to AI-era bandwidth while parallel buses hit a wall at ~320 MB/s"
+  authors:
+    - name: "Erik Smith"
+      org: "Dell Technologies"
+      github: "provandal"
+  created: "2026-03-22"
+  updated: "2026-03-22"
+  tags:
+    - "fundamentals"
+    - "scsi"
+    - "pcie"
+    - "parallel"
+    - "serial"
+    - "interconnect"
+    - "beginner"
+    - "history"
+  primary_specs:
+    - document: "SPI-5 (SCSI Parallel Interface)"
+      section: "5.1"
+      title: "Bus Phases and Arbitration"
+      url: "https://www.t10.org/members/ac_spi5.htm"
+    - document: "PCIe Base Spec 6.0"
+      section: "2.1"
+      title: "Physical Layer Overview"
+      url: "https://pcisig.com/specifications"
+    - document: "PCIe Base Spec 6.0"
+      section: "2.3"
+      title: "Transaction Layer Packets"
+      url: "https://pcisig.com/specifications"
+
+topology:
+  actors:
+    - id: "initiator"
+      type: "initiator"
+      label: "Host (SCSI Initiator)"
+      description: "Server CPU with SCSI HBA and PCIe root complex"
+      hardware: "Generic x86 server, Adaptec 2940 HBA (SCSI era) / Intel PCIe Root Complex (PCIe era)"
+      position: "left"
+    - id: "scsi_bus"
+      type: "switch"
+      label: "SCSI Parallel Bus"
+      description: "Shared 68-pin parallel bus — all devices hear every signal simultaneously"
+      position: "center"
+    - id: "target"
+      type: "target"
+      label: "Disk Drive (Target)"
+      description: "SCSI disk drive or PCIe NVMe SSD"
+      hardware: "Seagate Cheetah (SCSI era) / Samsung 990 Pro NVMe (PCIe era)"
+      position: "right"
+  links:
+    - id: "scsi-bus-link"
+      from: "initiator"
+      to: "scsi_bus"
+      speed_gbps: 0.32
+      media: "copper_dac"
+    - id: "scsi-target-link"
+      from: "scsi_bus"
+      to: "target"
+      speed_gbps: 0.32
+      media: "copper_dac"
+    - id: "pcie-link"
+      from: "initiator"
+      to: "target"
+      speed_gbps: 16.0
+      media: "copper_dac"
+
+osi_layers:
+  initiator:
+    - layer: 1
+      name: "Physical"
+      components:
+        - "68-pin SCSI bus (parallel era)"
+        - "PCIe differential pairs / lanes (serial era)"
+      state_schema:
+        bus_phase:
+          type: "string"
+          description: "Current SCSI bus phase (parallel era)"
+          initial: "BUS FREE"
+        link_width:
+          type: "string"
+          description: "PCIe negotiated link width"
+          initial: "x4"
+        link_speed:
+          type: "string"
+          description: "PCIe negotiated data rate"
+          initial: "16 GT/s (PCIe 4.0)"
+    - layer: 2
+      name: "Data Link"
+      components:
+        - "SCSI bus arbitration (parallel)"
+        - "PCIe DLLP — ACK/NAK, flow control (serial)"
+      state_schema:
+        arbitration_state:
+          type: "string"
+          description: "SCSI arbitration winner (parallel era)"
+          initial: "idle"
+        dllp_fc_credits:
+          type: "integer"
+          description: "PCIe flow control credits available"
+          initial: 128
+    - layer: 3
+      name: "Network / Transaction"
+      components:
+        - "SCSI bus phases (parallel)"
+        - "PCIe TLP routing (serial)"
+      state_schema:
+        tlp_tag:
+          type: "integer"
+          description: "PCIe TLP transaction tag"
+          initial: 0
+    - layer: 4
+      name: "Transport"
+      components:
+        - "SCSI tagged command queuing (TCQ)"
+        - "PCIe reliable delivery (ACK/NAK + replay buffer)"
+      state_schema:
+        queue_depth:
+          type: "integer"
+          description: "Commands in flight"
+          initial: 0
+    - layer: 7
+      name: "Application"
+      components:
+        - "SCSI Command Descriptor Block (CDB)"
+        - "PCIe Memory Read/Write TLP payload"
+      state_schema:
+        pending_command:
+          type: "string"
+          description: "Current I/O operation"
+          initial: "none"
+  scsi_bus:
+    - layer: 1
+      name: "Physical"
+      components:
+        - "68-wire parallel bus with active termination"
+        - "All signals clocked simultaneously — skew accumulates at speed"
+      state_schema:
+        bus_phase:
+          type: "string"
+          description: "Current SCSI bus phase"
+          initial: "BUS FREE"
+        skew_budget_ns:
+          type: "number"
+          description: "Remaining signal skew budget in nanoseconds"
+          initial: 0.4
+  target:
+    - layer: 1
+      name: "Physical"
+      components:
+        - "SCSI target port (parallel era)"
+        - "PCIe endpoint (serial era)"
+      state_schema:
+        selected:
+          type: "boolean"
+          description: "Whether this target is currently selected"
+          initial: false
+        link_up:
+          type: "boolean"
+          description: "PCIe link training complete"
+          initial: false
+    - layer: 7
+      name: "Application"
+      components:
+        - "SCSI target command handler"
+        - "NVMe controller (PCIe era)"
+      state_schema:
+        command_state:
+          type: "string"
+          description: "Current command processing state"
+          initial: "idle"
+
+frames:
+  # ── SCSI ERA FRAMES ──────────────────────────────────────────────────────────
+
+  - id: "scsi_arbitration"
+    name: "SCSI Bus Arbitration"
+    description: >
+      The initiator drives its SCSI ID onto the data bus and asserts BSY.
+      Every device on the bus sees this simultaneously — bus contention
+      is resolved by highest ID winning. This shared-medium model limits
+      the bus to one transaction at a time.
+    from: "initiator"
+    to: "scsi_bus"
+    timestamp_ns: 0
+    total_bytes: 0
+    color: "#e67e22"
+    headers:
+      - name: "SCSI Bus Signals"
+        abbrev: "scsi.bus"
+        layer: 1
+        fields:
+          - name: "Data Bus (DB7–DB0)"
+            abbrev: "scsi.db"
+            bits: 8
+            offset_bits: 0
+            value: "0x04"
+            value_hex: "0x04"
+            description: >
+              Each bit corresponds to a SCSI ID (0–7). The initiator asserts
+              its own ID bit (ID 2 = bit 2 = 0x04) to claim the bus.
+              Multiple devices can assert simultaneously — higher ID wins.
+            spec_refs:
+              - document: "SPI-5"
+                section: "5.1.1"
+                title: "ARBITRATION phase"
+                url: "https://www.t10.org/members/ac_spi5.htm"
+          - name: "BSY (Busy)"
+            abbrev: "scsi.bsy"
+            bits: 1
+            offset_bits: 8
+            value: 1
+            description: >
+              Asserted by any device that is using or contending for the bus.
+              Open-collector wire-OR: if ANY device drives BSY low, the signal
+              is low. This is how shared-bus arbitration works — and why
+              only one transaction can proceed at a time.
+            spec_refs:
+              - document: "SPI-5"
+                section: "4.3"
+                title: "Signal definitions"
+          - name: "SEL (Select)"
+            abbrev: "scsi.sel"
+            bits: 1
+            offset_bits: 9
+            value: 0
+            description: "Not yet asserted — SEL goes active in the SELECTION phase after arbitration completes."
+          - name: "Clock Skew Warning"
+            abbrev: "scsi.skew"
+            bits: 0
+            value: "⚠ 0.35 ns skew at 320 MB/s"
+            description: >
+              At Ultra320 speeds (320 MB/s), all 16 data lines plus 9 control
+              signals must arrive within 0.4 ns of each other. Cable length,
+              stub impedance, and connector capacitance all contribute skew.
+              Beyond 320 MB/s, meeting this budget became physically impossible
+              with real-world cables and connectors — this is the wall that
+              killed the parallel SCSI bus.
+
+  - id: "scsi_selection"
+    name: "SCSI SELECTION Phase"
+    description: >
+      Arbitration winner drives both its own ID and the target ID onto the
+      bus while asserting SEL. The target recognizes its own ID and responds
+      by asserting BSY, completing the point-to-point logical connection
+      across the shared bus.
+    from: "initiator"
+    to: "target"
+    via: ["scsi_bus"]
+    timestamp_ns: 2400
+    total_bytes: 0
+    color: "#e67e22"
+    headers:
+      - name: "SCSI Bus Signals"
+        abbrev: "scsi.bus"
+        layer: 1
+        fields:
+          - name: "Data Bus"
+            abbrev: "scsi.db"
+            bits: 8
+            value: "0x84"
+            value_hex: "0x84"
+            description: >
+              Initiator (ID 2, bit 2) + Target (ID 7, bit 7) = 0x04 | 0x80 = 0x84.
+              Both IDs on the bus simultaneously tells the target it is being selected.
+          - name: "SEL"
+            abbrev: "scsi.sel"
+            bits: 1
+            value: 1
+            description: "SEL asserted: this is a SELECTION phase, not ARBITRATION."
+          - name: "BSY"
+            abbrev: "scsi.bsy"
+            bits: 1
+            value: 1
+            description: "Initiator holds BSY through selection; target will assert it to confirm."
+
+  - id: "scsi_command"
+    name: "SCSI COMMAND Phase — READ(10) CDB"
+    description: >
+      The target drives C/D high (Command, not Data) and REQ low to request
+      a byte. The initiator responds with ACK for each byte of the CDB.
+      A READ(10) CDB is 10 bytes. Every byte is individually REQ/ACK
+      handshaked — the bus is occupied for the entire transfer.
+    from: "initiator"
+    to: "target"
+    via: ["scsi_bus"]
+    timestamp_ns: 5000
+    total_bytes: 10
+    color: "#e67e22"
+    headers:
+      - name: "SCSI Command Descriptor Block (CDB) — READ(10)"
+        abbrev: "scsi.cdb"
+        layer: 7
+        total_bytes: 10
+        fields:
+          - name: "Operation Code"
+            abbrev: "scsi.cdb.opcode"
+            bits: 8
+            offset_bits: 0
+            value: "0x28"
+            value_hex: "0x28"
+            description: >
+              0x28 = READ(10). SCSI operation codes are one byte. The upper
+              3 bits encode the command group (group 1 = 0x20–0x3F, 10-byte CDBs).
+            spec_refs:
+              - document: "SBC-4 (SCSI Block Commands)"
+                section: "5.8"
+                title: "READ(10) command"
+                url: "https://www.t10.org/members/ac_sbc4.htm"
+          - name: "RDPROTECT / Flags"
+            abbrev: "scsi.cdb.flags"
+            bits: 8
+            offset_bits: 8
+            value: "0x00"
+            description: "Read protection information and DPO/FUA flags. 0x00 = simple read, no protection."
+          - name: "Logical Block Address (LBA)"
+            abbrev: "scsi.cdb.lba"
+            bits: 32
+            offset_bits: 16
+            value: 0x00001000
+            value_hex: "0x00001000"
+            description: >
+              The 512-byte block number to start reading from. Block 0x1000 = block 4096.
+              SCSI uses logical block addressing — the drive maps this to physical media.
+          - name: "Group Number"
+            abbrev: "scsi.cdb.group"
+            bits: 8
+            offset_bits: 48
+            value: "0x00"
+            description: "Command priority group. 0 = default."
+          - name: "Transfer Length"
+            abbrev: "scsi.cdb.xfer_len"
+            bits: 16
+            offset_bits: 56
+            value: 8
+            description: "Number of logical blocks to transfer. 8 blocks × 512 bytes = 4 KB read."
+          - name: "Control"
+            abbrev: "scsi.cdb.control"
+            bits: 8
+            offset_bits: 72
+            value: "0x00"
+            description: "Vendor-specific and NACA flag. 0x00 = normal."
+      - name: "SCSI Bus Control Signals"
+        abbrev: "scsi.ctrl"
+        layer: 1
+        fields:
+          - name: "C/D (Command/Data)"
+            abbrev: "scsi.cd"
+            bits: 1
+            value: 1
+            description: "1 = Command phase. Target drives this to tell initiator to send a CDB, not data."
+          - name: "MSG"
+            abbrev: "scsi.msg"
+            bits: 1
+            value: 0
+            description: "0 = not MESSAGE phase."
+          - name: "I/O"
+            abbrev: "scsi.io"
+            bits: 1
+            value: 0
+            description: "0 = initiator-to-target direction (initiator is sending the CDB)."
+
+  - id: "scsi_data_in"
+    name: "SCSI DATA IN Phase — 4 KB Read Data"
+    description: >
+      The target drives I/O low (target→initiator) and REQ/ACK handshakes
+      each byte of the 4 KB payload across all 8 (or 16 for Wide SCSI)
+      data lines in parallel. The bus is fully occupied until transfer complete —
+      no other device can use it.
+    from: "target"
+    to: "initiator"
+    via: ["scsi_bus"]
+    timestamp_ns: 20000
+    total_bytes: 4096
+    color: "#27ae60"
+    headers:
+      - name: "SCSI Data Phase Signals"
+        abbrev: "scsi.data"
+        layer: 1
+        fields:
+          - name: "Data Bus (DB15–DB0)"
+            abbrev: "scsi.db16"
+            bits: 16
+            value: "[4096 bytes payload]"
+            description: >
+              Wide SCSI uses 16 data lines. All 16 lines switch simultaneously
+              for every transfer cycle. At 320 MB/s (Ultra320), there are
+              320,000,000 / 2 = 160 million 16-bit transfers per second.
+              Every ns of skew between lines is a potential bit error.
+          - name: "I/O"
+            abbrev: "scsi.io"
+            bits: 1
+            value: 1
+            description: "1 = target→initiator direction. Data is flowing from disk to host."
+          - name: "REQ/ACK Handshake"
+            abbrev: "scsi.req_ack"
+            bits: 0
+            value: "4096 cycles"
+            description: >
+              Each byte (or 2-byte word for Wide SCSI) requires one REQ pulse
+              from target and one ACK pulse from initiator. 4096 bytes ÷ 2 bytes
+              per cycle = 2048 handshake cycles. This synchronous handshake
+              works fine at low speeds but the round-trip propagation delay
+              limits how fast you can go — another wall parallel hit.
+
+  - id: "scsi_status"
+    name: "SCSI STATUS Phase — GOOD"
+    description: >
+      Target returns a 1-byte status code. GOOD (0x00) means the command
+      completed without error. The bus is then released through a MESSAGE IN
+      phase, returning to BUS FREE so another initiator can arbitrate.
+    from: "target"
+    to: "initiator"
+    via: ["scsi_bus"]
+    timestamp_ns: 100000
+    total_bytes: 1
+    color: "#27ae60"
+    headers:
+      - name: "SCSI Status Byte"
+        abbrev: "scsi.status"
+        layer: 7
+        total_bytes: 1
+        fields:
+          - name: "Status Code"
+            abbrev: "scsi.status.code"
+            bits: 8
+            offset_bits: 0
+            value: "0x00"
+            value_hex: "0x00"
+            description: >
+              0x00 = GOOD. Other common codes: 0x02 = CHECK CONDITION (error,
+              check sense data), 0x08 = BUSY (try again), 0x28 = TASK SET FULL
+              (queue full). SCSI status is always 1 byte.
+            spec_refs:
+              - document: "SAM-5 (SCSI Architecture Model)"
+                section: "5.3"
+                title: "Status codes"
+                url: "https://www.t10.org/members/ac_sam5.htm"
+
+  # ── THE WALL ─────────────────────────────────────────────────────────────────
+
+  - id: "parallel_wall"
+    name: "The Parallel Wall — Why SCSI Stopped Here"
+    description: >
+      An explanatory annotation frame — no packet is sent. This represents
+      the engineering reality that stopped parallel buses from going faster.
+    from: "initiator"
+    to: "initiator"
+    timestamp_ns: 110000
+    total_bytes: 0
+    color: "#c0392b"
+    headers:
+      - name: "Physics Constraints at Ultra320 (320 MB/s)"
+        abbrev: "wall"
+        layer: 1
+        fields:
+          - name: "Clock Skew Budget"
+            abbrev: "wall.skew"
+            bits: 0
+            value: "0.4 ns"
+            description: >
+              At 320 MB/s, all signal lines must arrive within 0.4 ns of each
+              other. A 6-inch cable stub introduces ~0.5 ns. At this speed,
+              the bus *physically cannot be longer than about 1 meter* without
+              active skew compensation — and even then you're out of budget.
+          - name: "Termination Complexity"
+            abbrev: "wall.term"
+            bits: 0
+            value: "Active termination required at both ends"
+            description: >
+              Signal reflections on an unterminated bus cause data corruption.
+              Parallel SCSI required matched impedance termination at both
+              physical ends of the cable daisy-chain. Adding/removing devices
+              changed the electrical characteristics and could break the bus.
+          - name: "Wire Count Explosion"
+            abbrev: "wall.wires"
+            bits: 0
+            value: "68 pins (Wide SCSI)"
+            description: >
+              16 data lines + 9 control lines + ground/power = 68 pins.
+              The connector alone is a significant failure point. Doubling
+              data lines to go faster doubles the skew problem — not viable.
+          - name: "Shared Medium Contention"
+            abbrev: "wall.contention"
+            bits: 0
+            value: "1 transaction at a time"
+            description: >
+              The entire bus is occupied per transaction. 15 devices could
+              theoretically attach, but aggregate bandwidth was still capped
+              by single-transaction serialization. The bus couldn't pipeline.
+          - name: "Maximum Practical Speed"
+            abbrev: "wall.max"
+            bits: 0
+            value: "320 MB/s (Ultra320, 2003)"
+            description: >
+              Ultra320 was the last standard parallel SCSI speed. The industry
+              tried to push further and gave up. Serial ATA (launched 2003)
+              and SAS (Serial Attached SCSI, launched 2004) were the answer.
+
+  # ── PCIE ERA FRAMES ──────────────────────────────────────────────────────────
+
+  - id: "pcie_link_training"
+    name: "PCIe Link Training — LTSSM Detect → L0"
+    description: >
+      Before any data moves, PCIe physical layers negotiate lane count and
+      data rate through the Link Training and Status State Machine (LTSSM).
+      Each lane is a differential pair: two wires carrying opposite-polarity
+      signals. The receiver detects the difference, not the absolute voltage —
+      this eliminates common-mode noise and allows much higher speeds.
+    from: "initiator"
+    to: "target"
+    timestamp_ns: 200000
+    total_bytes: 0
+    color: "#2980b9"
+    headers:
+      - name: "PCIe Physical Layer — Link Training"
+        abbrev: "pcie.phy"
+        layer: 1
+        fields:
+          - name: "Training Sequence (TS1/TS2)"
+            abbrev: "pcie.ts"
+            bits: 0
+            value: "TS1 × N, TS2 × N"
+            description: >
+              PCIe endpoints exchange Training Sequences to establish bit lock,
+              symbol lock, lane polarity, and lane reversal. TS1 proposes
+              parameters; TS2 confirms agreement. Both sides must agree before
+              entering L0 (active) state.
+            spec_refs:
+              - document: "PCIe Base Spec 6.0"
+                section: "4.2.4"
+                title: "Link Training and Status State Machine"
+                url: "https://pcisig.com/specifications"
+          - name: "Negotiated Lane Width"
+            abbrev: "pcie.width"
+            bits: 0
+            value: "x4 (4 lanes)"
+            description: >
+              Each PCIe lane = 2 wires (differential pair TX) + 2 wires (RX)
+              = 4 wires total per lane. An x4 link uses 4 lanes = 16 wires.
+              Compare to SCSI's 68 wires for 16-bit parallel — PCIe uses
+              fewer wires *and* goes orders of magnitude faster.
+          - name: "Negotiated Speed"
+            abbrev: "pcie.speed"
+            bits: 0
+            value: "16 GT/s (PCIe 4.0)"
+            description: >
+              GT/s = Giga-Transfers per second. 16 GT/s per lane with 128b/130b
+              encoding = ~15.75 Gbps effective data rate per lane.
+              x4 @ 16 GT/s = ~63 Gbps = ~7.9 GB/s — 24× faster than Ultra320 SCSI.
+          - name: "Why Differential?"
+            abbrev: "pcie.diff"
+            bits: 0
+            value: "D+ and D− carry inverted signals"
+            description: >
+              Differential signaling sends the same bit as +V on one wire and
+              −V on the other. The receiver measures D+ minus D−. Any noise
+              that hits the cable hits *both* wires equally, so it cancels out
+              in the subtraction. This is why differential serial links can run
+              at 16–64 GT/s on ordinary copper while parallel buses topped out
+              at 320 MB/s.
+            spec_refs:
+              - document: "PCIe Base Spec 6.0"
+                section: "2.3.1"
+                title: "Differential signaling"
+
+  - id: "pcie_tlp_memread_req"
+    name: "PCIe TLP — Memory Read Request"
+    description: >
+      The PCIe Transaction Layer Packet (TLP) for a Memory Read Request.
+      This is the PCIe equivalent of the SCSI CDB — it tells the endpoint
+      what to do. Unlike SCSI's shared bus, this packet travels point-to-point
+      from root complex to endpoint without any other device seeing it.
+    from: "initiator"
+    to: "target"
+    timestamp_ns: 210000
+    total_bytes: 16
+    color: "#2980b9"
+    headers:
+      - name: "PCIe Transaction Layer Packet (TLP) Header — MRd"
+        abbrev: "pcie.tlp"
+        layer: 3
+        total_bytes: 16
+        fields:
+          - name: "Fmt[2:0] / Type[4:0]"
+            abbrev: "pcie.tlp.fmt_type"
+            bits: 8
+            offset_bits: 0
+            value: "0x20"
+            value_hex: "0x20"
+            description: >
+              Byte 0 encodes both format and type. 0x20 = 0b00_100000:
+              Fmt=00 (3-DW header, no data), Type=00000 = Memory Read Request.
+              The Fmt field tells the receiver whether a data payload follows.
+              MRd has no payload — the endpoint will generate a Completion TLP
+              with the actual data.
+            spec_refs:
+              - document: "PCIe Base Spec 6.0"
+                section: "2.2.1"
+                title: "TLP Format and Type"
+                url: "https://pcisig.com/specifications"
+          - name: "Traffic Class (TC)"
+            abbrev: "pcie.tlp.tc"
+            bits: 3
+            offset_bits: 12
+            value: 0
+            description: "TC0 = best-effort. PCIe supports 8 traffic classes for QoS — NVMe typically uses TC0."
+          - name: "Attributes (AT/Attr)"
+            abbrev: "pcie.tlp.attr"
+            bits: 4
+            offset_bits: 16
+            value: "0b0000"
+            description: "No relaxed ordering, no no-snoop. Default coherent access."
+          - name: "Length [9:0]"
+            abbrev: "pcie.tlp.length"
+            bits: 10
+            offset_bits: 22
+            value: 2
+            description: >
+              Length in DWORDs (4-byte units). 2 DWORDs = 8 bytes requested.
+              Wait — if this is a read *request*, why does it have a length?
+              Because PCIe is split-transaction: the request reserves buffer
+              space at the requester; the Completion arrives later with data.
+          - name: "Requester ID"
+            abbrev: "pcie.tlp.req_id"
+            bits: 16
+            offset_bits: 32
+            value: "0x0100"
+            value_hex: "0x0100"
+            description: >
+              Bus:Device:Function of the requester (root complex in this case).
+              0x01:00:0 = Bus 1, Device 0, Function 0. The endpoint uses this
+              to route the Completion TLP back to the right requester.
+          - name: "Tag [9:0]"
+            abbrev: "pcie.tlp.tag"
+            bits: 10
+            offset_bits: 48
+            value: 0
+            description: >
+              Matches this request to its Completion. PCIe Gen 4 supports up to
+              256 outstanding tags — 256 reads in flight simultaneously.
+              SCSI could have 64 queued commands (TCQ). NVMe via PCIe can have
+              65,535. The pipeline depth difference is enormous.
+          - name: "Last DW BE / First DW BE"
+            abbrev: "pcie.tlp.be"
+            bits: 16
+            offset_bits: 58
+            value: "0xFF / 0xFF"
+            description: "Byte enable masks for the first and last DWORDs. 0xFF = all bytes valid."
+          - name: "Address [63:2]"
+            abbrev: "pcie.tlp.addr"
+            bits: 62
+            offset_bits: 66
+            value: "0x000000001000_0000"
+            value_hex: "0x0000000010000000"
+            description: >
+              64-bit physical memory address of the data to read. In PCIe,
+              the address space is memory-mapped I/O (MMIO). The NVMe
+              controller registers live in this address space — the host reads
+              and writes them just like RAM.
+      - name: "PCIe Data Link Layer — DLLP Framing"
+        abbrev: "pcie.dllp"
+        layer: 2
+        fields:
+          - name: "Sequence Number"
+            abbrev: "pcie.seq"
+            bits: 12
+            value: 0
+            description: >
+              Every TLP gets a sequence number. The receiver ACKs sequence
+              numbers; the sender retransmits anything not ACKed. This is
+              PCIe's reliability layer — unlike SCSI which relied on the
+              physical layer REQ/ACK per byte.
+          - name: "LCRC (Link CRC)"
+            abbrev: "pcie.lcrc"
+            bits: 32
+            value: "0xA3F12C8E"
+            description: "32-bit CRC over the TLP. Errors detected here trigger NAK and retransmission."
+      - name: "PCIe Physical Layer"
+        abbrev: "pcie.phy.frame"
+        layer: 1
+        fields:
+          - name: "128b/130b Encoding"
+            abbrev: "pcie.enc"
+            bits: 0
+            value: "2-bit sync header + 128-bit data block"
+            description: >
+              PCIe Gen 3+ uses 128b/130b encoding: 128 bits of data with a
+              2-bit sync header = 130 bits on the wire. Efficiency = 128/130 =
+              98.5%. Compare to older 8b/10b encoding (80% efficient).
+              Higher encoding efficiency means more useful data per GT/s.
+            spec_refs:
+              - document: "PCIe Base Spec 6.0"
+                section: "4.2.2"
+                title: "128b/130b Encoding"
+
+  - id: "pcie_tlp_completion"
+    name: "PCIe TLP — Completion with Data (CplD)"
+    description: >
+      The endpoint returns the requested data as a Completion TLP. The Tag
+      field matches the original request, allowing the root complex to
+      reassemble out-of-order completions. Multiple reads can be in flight
+      simultaneously — the pipeline never stalls waiting for a single response.
+    from: "target"
+    to: "initiator"
+    timestamp_ns: 215000
+    total_bytes: 24
+    color: "#27ae60"
+    headers:
+      - name: "PCIe TLP Header — Completion with Data (CplD)"
+        abbrev: "pcie.cpld"
+        layer: 3
+        total_bytes: 12
+        fields:
+          - name: "Fmt/Type"
+            abbrev: "pcie.cpld.fmt_type"
+            bits: 8
+            offset_bits: 0
+            value: "0x4A"
+            value_hex: "0x4A"
+            description: "0x4A = 0b01_001010: Fmt=01 (3-DW header, with data payload), Type=01010 = Completion with Data."
+            spec_refs:
+              - document: "PCIe Base Spec 6.0"
+                section: "2.2.9"
+                title: "Completion TLP"
+          - name: "Completer ID"
+            abbrev: "pcie.cpld.cpl_id"
+            bits: 16
+            offset_bits: 32
+            value: "0x0200"
+            value_hex: "0x0200"
+            description: "Bus:Device:Function of the endpoint returning data. 0x02:00:0."
+          - name: "Completion Status"
+            abbrev: "pcie.cpld.status"
+            bits: 3
+            offset_bits: 48
+            value: "000"
+            description: "000b = Successful Completion. Other codes: 001=Unsupported Request, 100=Completer Abort."
+          - name: "Byte Count"
+            abbrev: "pcie.cpld.byte_count"
+            bits: 12
+            offset_bits: 52
+            value: 8
+            description: "8 bytes of data remaining to complete this read. Matches the original request length."
+          - name: "Requester ID"
+            abbrev: "pcie.cpld.req_id"
+            bits: 16
+            offset_bits: 64
+            value: "0x0100"
+            value_hex: "0x0100"
+            description: "Copied from the original MRd — routes this completion back to the correct requester."
+          - name: "Tag"
+            abbrev: "pcie.cpld.tag"
+            bits: 10
+            offset_bits: 80
+            value: 0
+            description: "Matches Tag=0 from the MRd request. Root complex uses this to post data to the correct buffer."
+          - name: "Lower Address"
+            abbrev: "pcie.cpld.lower_addr"
+            bits: 7
+            offset_bits: 90
+            value: "0x00"
+            description: "Byte offset within the first DW of the completion. 0x00 = aligned."
+      - name: "TLP Data Payload"
+        abbrev: "pcie.cpld.data"
+        layer: 3
+        total_bytes: 8
+        fields:
+          - name: "Data [63:0]"
+            abbrev: "pcie.cpld.payload"
+            bits: 64
+            value: "[8 bytes read data]"
+            description: "The actual data read from NVMe controller registers or storage media."
+
+timeline:
+  # ── PHASE 1: SCSI PARALLEL ERA ───────────────────────────────────────────────
+
+  - id: "evt_00_intro"
+    type: "annotation"
+    t_ns: 0
+    annotation:
+      text: "Phase 1 — Parallel SCSI: The Bus Everyone Shared"
+      detail: >
+        We're starting in the SCSI parallel bus era (roughly 1986–2004).
+        The SCSI bus is a shared medium: a single cable daisy-chaining up
+        to 15 devices. Every device sees every signal, every clock cycle.
+        Watch what happens when the initiator needs to read data from a disk.
+
+  - id: "evt_01_arb"
+    type: "frame_tx"
+    t_ns: 0
+    frame_id: "scsi_arbitration"
+    annotation:
+      text: "SCSI Bus Arbitration — Initiator Claims the Bus"
+      detail: >
+        The initiator (SCSI ID 2) asserts its ID bit on the shared data bus
+        along with BSY. Every device on the bus sees this and compares its
+        own ID — the highest ID wins. This is the fundamental limitation
+        of a shared bus: only one device can use it at a time. The clock
+        skew budget is already tight at 0.4 ns — every nanosecond counts
+        when 16 data lines must arrive simultaneously.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 1
+            name: "Physical"
+            state_fields:
+              bus_phase: "ARBITRATION"
+          - layer: 2
+            name: "Data Link"
+            state_fields:
+              arbitration_state: "contending (ID 2)"
+          - layer: 7
+            name: "Application"
+            state_fields:
+              pending_command: "READ(10) LBA=0x1000"
+      - actor_id: "scsi_bus"
+        layers:
+          - layer: 1
+            name: "Physical"
+            state_fields:
+              bus_phase: "ARBITRATION"
+              skew_budget_ns: 0.4
+
+  - id: "evt_02_sel"
+    type: "frame_tx"
+    t_ns: 2400
+    frame_id: "scsi_selection"
+    annotation:
+      text: "SCSI Selection — Initiator Selects Target"
+      detail: >
+        The initiator wins arbitration and asserts both its own ID bit and
+        the target's ID bit (ID 7) on the data bus, along with the SEL
+        signal. The target recognizes its own ID and responds with BSY.
+        A point-to-point logical connection is now established — but the
+        bus remains shared. All other devices must wait. In Wide SCSI,
+        the selection uses all 16 data lines simultaneously.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 1
+            name: "Physical"
+            state_fields:
+              bus_phase: "SELECTION"
+          - layer: 2
+            name: "Data Link"
+            state_fields:
+              arbitration_state: "won — selecting target ID 7"
+      - actor_id: "target"
+        layers:
+          - layer: 1
+            name: "Physical"
+            state_fields:
+              selected: true
+          - layer: 7
+            name: "Application"
+            state_fields:
+              command_state: "selected — awaiting CDB"
+      - actor_id: "scsi_bus"
+        layers:
+          - layer: 1
+            name: "Physical"
+            state_fields:
+              bus_phase: "SELECTION"
+
+  - id: "evt_03_cmd"
+    type: "frame_tx"
+    t_ns: 5000
+    frame_id: "scsi_command"
+    annotation:
+      text: "SCSI Command Phase — READ(10) CDB"
+      detail: >
+        The initiator sends a 10-byte Command Descriptor Block across
+        the shared bus. Opcode 0x28 (READ(10)), LBA 0x00001000, transfer
+        length 8 blocks (4 KB). Each byte requires a REQ/ACK handshake
+        cycle — the target asserts REQ, the initiator places a byte and
+        asserts ACK, the target latches the byte. 10 bytes = 10 handshake
+        cycles. The bus phase control signals (C/D=1, MSG=0, I/O=0)
+        identify the COMMAND phase.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 1
+            name: "Physical"
+            state_fields:
+              bus_phase: "COMMAND"
+          - layer: 4
+            name: "Transport"
+            state_fields:
+              queue_depth: 1
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              command_state: "parsing CDB — READ(10) LBA=0x1000 len=8"
+      - actor_id: "scsi_bus"
+        layers:
+          - layer: 1
+            name: "Physical"
+            state_fields:
+              bus_phase: "COMMAND"
+
+  - id: "evt_04_data"
+    type: "frame_tx"
+    t_ns: 20000
+    frame_id: "scsi_data_in"
+    annotation:
+      text: "SCSI Data In — 4 KB Read Data Transfer"
+      detail: >
+        The target sends 4096 bytes across Wide SCSI's 16 data lines.
+        Each REQ/ACK handshake transfers 2 bytes (16 bits), requiring
+        2048 cycles for the full 4 KB. All 16 data lines must switch
+        simultaneously — and the receiver must sample them at exactly
+        the right moment. Any skew between lines causes bit errors. At
+        Ultra320 speeds, the skew budget is down to 0.38 ns. This is
+        the physics that kills parallel buses.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 1
+            name: "Physical"
+            state_fields:
+              bus_phase: "DATA IN"
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              command_state: "transferring 4096 bytes"
+      - actor_id: "scsi_bus"
+        layers:
+          - layer: 1
+            name: "Physical"
+            state_fields:
+              bus_phase: "DATA IN"
+              skew_budget_ns: 0.38
+
+  - id: "evt_05_status"
+    type: "frame_tx"
+    t_ns: 100000
+    frame_id: "scsi_status"
+    annotation:
+      text: "SCSI Status Phase — GOOD (0x00)"
+      detail: >
+        The target sends a 1-byte status code: 0x00 = GOOD. The I/O is
+        complete. The bus transitions through MESSAGE IN phase (Command
+        Complete message) and then to BUS FREE — releasing the shared bus.
+        Total time with the bus locked: from ARBITRATION through BUS FREE.
+        During this entire period, no other device on the shared bus could
+        do anything — not even arbitrate.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 1
+            name: "Physical"
+            state_fields:
+              bus_phase: "STATUS"
+          - layer: 4
+            name: "Transport"
+            state_fields:
+              queue_depth: 0
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              command_state: "complete — GOOD"
+      - actor_id: "scsi_bus"
+        layers:
+          - layer: 1
+            name: "Physical"
+            state_fields:
+              bus_phase: "BUS FREE"
+
+  # ── PHASE 2: THE WALL ────────────────────────────────────────────────────────
+
+  - id: "evt_06_wall"
+    type: "annotation"
+    t_ns: 110000
+    annotation:
+      text: "The Physics Wall — Why Parallel Can't Go Faster"
+      detail: >
+        Ultra320 SCSI (2003) was the last stop. The engineering team tried
+        to reach Ultra640 and couldn't — clock skew, termination complexity,
+        and shared-bus contention made it physically impossible at realistic
+        cable lengths. Serial links were the only way forward.
+        The key insight: adding more wires doesn't make parallel faster.
+        It makes the skew problem worse.
+
+  - id: "evt_06b_wall_frame"
+    type: "frame_tx"
+    t_ns: 110000
+    frame_id: "parallel_wall"
+    annotation:
+      text: "The Parallel Wall — Physics Constraints"
+      detail: >
+        Ultra320 SCSI (2003) reached the absolute limit. At 320 MB/s,
+        the clock skew budget between 16+ wires is effectively zero.
+        Engineers tried Ultra640 and failed — the physics of simultaneously
+        switching dozens of signals across cables of varying length and
+        temperature made it impossible. Adding more wires does not increase
+        bandwidth; it makes the skew problem worse. The solution had to be
+        fundamentally different: fewer wires, not more.
+    state_after:
+      - actor_id: "scsi_bus"
+        layers:
+          - layer: 1
+            name: "Physical"
+            state_fields:
+              bus_phase: "WALL — max speed reached"
+              skew_budget_ns: 0.0
+
+  # ── PHASE 3: PCIE SERIAL ERA ─────────────────────────────────────────────────
+
+  - id: "evt_07_pcie_intro"
+    type: "annotation"
+    t_ns: 190000
+    annotation:
+      text: "Phase 2 — Serial PCIe: The Counterintuitive Solution"
+      detail: >
+        PCIe (first released 2004) replaced the parallel AGP/PCI buses with
+        serial differential pairs. The initial reaction from many engineers
+        was skepticism: "fewer wires must mean less bandwidth." But the math
+        works out the other way. Serial differential links eliminate skew
+        entirely (there's only one signal to align per lane), tolerate noise
+        better (differential cancellation), and can run at clock rates
+        impossible for parallel buses.
+      spec_refs:
+        - document: "PCIe Base Spec 6.0"
+          section: "1.1"
+          title: "Introduction and Overview"
+          url: "https://pcisig.com/specifications"
+
+  - id: "evt_08_link_train"
+    type: "frame_tx"
+    t_ns: 200000
+    frame_id: "pcie_link_training"
+    annotation:
+      text: "PCIe Link Training — LTSSM to L0 Active"
+      detail: >
+        PCIe link training runs the LTSSM: Detect → Polling → Configuration
+        → L0. Training Sequences (TS1/TS2) establish bit lock, symbol lock,
+        and lane polarity on each lane. Result: x4 link at 16 GT/s
+        (PCIe 4.0). Each lane is a differential pair (D+ and D−) — two wires,
+        no shared clock, no skew between lanes. Total wires for x4: 16
+        (4 TX pairs + 4 RX pairs). Bandwidth: ~7,900 MB/s — 24x faster
+        than Ultra320 with fewer wires.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 1
+            name: "Physical"
+            state_fields:
+              bus_phase: "L0 (PCIe active)"
+              link_width: "x4"
+              link_speed: "16 GT/s (PCIe 4.0)"
+          - layer: 2
+            name: "Data Link"
+            state_fields:
+              dllp_fc_credits: 128
+      - actor_id: "target"
+        layers:
+          - layer: 1
+            name: "Physical"
+            state_fields:
+              selected: false
+              link_up: true
+
+  - id: "evt_09_mrd"
+    type: "frame_tx"
+    t_ns: 210000
+    frame_id: "pcie_tlp_memread_req"
+    annotation:
+      text: "PCIe TLP — Memory Read Request"
+      detail: >
+        The root complex sends a Memory Read Request TLP: Fmt/Type=0x20,
+        requester ID=0x0100 (Bus 1, Dev 0, Fn 0), Tag=0, address=0x10000000,
+        length=2 DWORDs (8 bytes). Unlike SCSI's shared bus, PCIe is
+        point-to-point with split transactions — the requester fires the read
+        and immediately frees the link for other TLPs. No bus locking, no
+        arbitration, up to 256 transactions in flight simultaneously.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 3
+            name: "Network / Transaction"
+            state_fields:
+              tlp_tag: 0
+          - layer: 4
+            name: "Transport"
+            state_fields:
+              queue_depth: 1
+          - layer: 7
+            name: "Application"
+            state_fields:
+              pending_command: "MRd addr=0x10000000 len=8B tag=0"
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              command_state: "processing MRd — fetching 8B from MMIO"
+
+  - id: "evt_10_cpld"
+    type: "frame_tx"
+    t_ns: 215000
+    frame_id: "pcie_tlp_completion"
+    annotation:
+      text: "PCIe TLP — Completion with Data (CplD)"
+      detail: >
+        The endpoint returns a Completion with Data TLP: completer
+        ID=0x0200, status=Successful, byte count=8, Tag=0 (matches the
+        original MRd). The 8 bytes of read data ride in the TLP payload.
+        Link CRC and 128b/130b encoding protect against bit errors. The
+        same 8-byte read that locked the entire SCSI bus for the full
+        duration completes here in ~5 ns of link time, with the link free
+        for other traffic between request and completion.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 3
+            name: "Network / Transaction"
+            state_fields:
+              tlp_tag: 0
+          - layer: 4
+            name: "Transport"
+            state_fields:
+              queue_depth: 0
+          - layer: 7
+            name: "Application"
+            state_fields:
+              pending_command: "none — 8B received"
+      - actor_id: "target"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              command_state: "idle"
+
+  - id: "evt_11_summary"
+    type: "annotation"
+    t_ns: 220000
+    annotation:
+      text: "Summary — Parallel vs. Serial: The Numbers"
+      detail: >
+        Ultra320 SCSI:   320 MB/s, 68 wires, 1 transaction at a time, 15 devices max.
+        PCIe 4.0 x4:    ~7,900 MB/s, 16 wires, 256 transactions in flight, point-to-point.
+        PCIe 6.0 x16:  ~128,000 MB/s — 400× faster than the fastest parallel SCSI.
+
+        The lesson: serial won not despite having fewer wires, but because of it.
+        Fewer simultaneous signals = no skew. Differential pairs = noise immunity.
+        Point-to-point = no arbitration, no contention, full pipeline.
+
+        This is why every modern storage interface — NVMe, SAS-4, USB4 — is serial.
+
+glossary:
+  - term: "Parallel Bus"
+    abbrev: "parallel"
+    definition: >
+      A communication architecture where multiple bits are transmitted simultaneously
+      across multiple wires, all clocked by a shared clock signal. Seemed faster in theory
+      but ran into fundamental physics limits as clock speeds increased.
+
+  - term: "Clock Skew"
+    abbrev: "skew"
+    definition: >
+      The variation in arrival time of signals that were sent simultaneously.
+      Even tiny differences in wire length, impedance, or temperature cause
+      different bits to arrive at slightly different times. At high speeds,
+      even picoseconds of skew cause bit errors. The fatal weakness of parallel buses.
+
+  - term: "Differential Signaling"
+    abbrev: "diff"
+    definition: >
+      A method of transmitting data using two complementary signals (D+ and D−).
+      The receiver measures the difference between them, canceling any noise that
+      affects both wires equally. Enables PCIe to run at 16–64 GT/s on ordinary copper.
+    spec_refs:
+      - document: "PCIe Base Spec 6.0"
+        section: "2.3.1"
+        title: "Differential Signaling"
+
+  - term: "Transaction Layer Packet (TLP)"
+    abbrev: "TLP"
+    definition: >
+      The fundamental unit of data transfer in PCIe. A TLP carries a header
+      (describing the transaction type, address, and requester) plus optional
+      data payload. Analogous to a SCSI CDB, but with a full address space
+      and support for hundreds of in-flight transactions.
+    spec_refs:
+      - document: "PCIe Base Spec 6.0"
+        section: "2.2"
+        title: "Transaction Layer"
+
+  - term: "Command Descriptor Block (CDB)"
+    abbrev: "CDB"
+    definition: >
+      The fixed-format command structure used by SCSI protocols (SCSI, SAS, iSCSI, FC).
+      A CDB encodes the operation (READ, WRITE, INQUIRY, etc.), the logical block address,
+      and transfer length. Still in use today inside NVMe-MI and anywhere SCSI commands
+      are transported over modern fabrics.
+    spec_refs:
+      - document: "SBC-4"
+        section: "5"
+        title: "Command descriptions"
+
+  - term: "LTSSM"
+    abbrev: "LTSSM"
+    definition: >
+      Link Training and Status State Machine. The PCIe state machine that manages
+      physical link establishment, speed negotiation, power state transitions,
+      and error recovery. Analogous to SCSI's bus phases, but automated and
+      invisible to software.
+    spec_refs:
+      - document: "PCIe Base Spec 6.0"
+        section: "4.2.4"
+        title: "LTSSM"
+
+  - term: "Termination (SCSI)"
+    abbrev: "term"
+    definition: >
+      Electrical impedance matching at the physical ends of a parallel SCSI bus
+      to prevent signal reflections. Required at both ends of the cable chain.
+      Active termination provided better signal quality than passive but added
+      cost and complexity. Incorrect termination caused intermittent data corruption.
+
+  - term: "Split Transaction"
+    abbrev: "split-tx"
+    definition: >
+      A protocol design where a request and its response are separate transactions
+      that can be interleaved with other traffic. PCIe uses split transactions:
+      a Memory Read Request and its Completion TLP are independent. This allows
+      many requests to be in-flight simultaneously, maximizing link utilization.
+
+  - term: "GT/s (Giga-Transfers per second)"
+    abbrev: "GT/s"
+    definition: >
+      The raw signaling rate of a serial link, before encoding overhead is removed.
+      PCIe 4.0 = 16 GT/s per lane. With 128b/130b encoding (98.5% efficient),
+      effective data rate ≈ 15.75 Gbps per lane. Compare to MB/s (megabytes per second)
+      used for parallel SCSI, which was already post-encoding.
+
+walkthroughs:
+  - id: "parallel-problem"
+    title: "Why Parallel Hit a Wall"
+    description: "Trace the SCSI exchange and understand each physical constraint."
+    steps:
+      - step: 0
+        narration: >
+          We're starting with a parallel SCSI bus in the early 2000s — peak of
+          the SCSI parallel era. The host (initiator) wants to read 4 KB of data
+          from the disk drive (target). Before any data moves, the initiator has
+          to win the right to use the shared bus.
+      - step: 1
+        narration: >
+          ARBITRATION: The initiator drives its ID onto the 8-bit data bus and
+          asserts BSY. Every device on the bus sees this. Higher IDs win.
+          Notice the skew budget: 0.4 ns. Every wire must arrive within that window.
+        highlight_fields: ["scsi.db", "scsi.bsy", "scsi.skew"]
+      - step: 2
+        narration: >
+          SELECTION: The winner puts both its own ID and the target's ID on the bus
+          and asserts SEL. The target recognizes its own ID and responds. The bus is
+          now logically connected between initiator and target — but EVERY other
+          device is still watching this happen on their wires.
+        highlight_fields: ["scsi.db", "scsi.sel"]
+      - step: 3
+        narration: >
+          COMMAND: The initiator sends a 10-byte READ(10) CDB across the bus.
+          Look at the opcode (0x28) and the LBA — these are the same logical fields
+          you'll see in iSCSI and Fibre Channel, because they all carry SCSI commands.
+          The bus is occupied for every byte of the CDB.
+        highlight_fields: ["scsi.cdb.opcode", "scsi.cdb.lba", "scsi.cdb.xfer_len"]
+      - step: 4
+        narration: >
+          DATA IN: 4096 bytes flow back from disk to host, 2 bytes at a time (Wide SCSI).
+          That's 2048 REQ/ACK handshake cycles. The bus is fully occupied — no other
+          device can do anything. This is the contention problem.
+        highlight_fields: ["scsi.db16", "scsi.req_ack"]
+      - step: 5
+        narration: >
+          STATUS: The disk returns a 1-byte GOOD status. Then a MESSAGE IN phase
+          disconnects the devices and the bus returns to BUS FREE. Only now can
+          another device use it.
+        highlight_fields: ["scsi.status.code"]
+      - step: 6
+        narration: >
+          THE WALL: Ultra320 was the last parallel SCSI standard. Engineers tried
+          to go faster and hit four physical walls simultaneously: skew budget
+          exhausted, termination too complex, wire count too high, and shared-bus
+          contention preventing pipelining.
+        highlight_fields: ["wall.skew", "wall.contention", "wall.max"]
+
+  - id: "serial-solution"
+    title: "How PCIe Solved Every Problem"
+    description: "See how each SCSI limitation is addressed by PCIe's serial architecture."
+    steps:
+      - step: 7
+        narration: >
+          PCIe begins with link training — completely automated, no software involvement.
+          The two endpoints negotiate lane width and speed through Training Sequences.
+          There's no arbitration because PCIe is point-to-point: this link belongs
+          entirely to these two devices.
+      - step: 8
+        narration: >
+          Notice the lane width: x4, using 4 differential pairs = 16 wires total.
+          SCSI used 68 wires and topped out at 320 MB/s. PCIe uses 16 wires and
+          achieves ~7,900 MB/s. Fewer wires, far faster — the counterintuitive result
+          of eliminating skew.
+        highlight_fields: ["pcie.width", "pcie.speed", "pcie.diff"]
+      - step: 9
+        narration: >
+          The Memory Read Request TLP is the PCIe equivalent of the SCSI CDB.
+          But notice what's different: it has a Tag field (0–255), meaning 256
+          reads can be outstanding simultaneously. SCSI had one at a time.
+          The request is 16 bytes; the 8 bytes of data come back in a separate
+          Completion TLP.
+        highlight_fields: ["pcie.tlp.fmt_type", "pcie.tlp.tag", "pcie.tlp.addr", "pcie.seq"]
+      - step: 10
+        narration: >
+          The Completion TLP carries the data back. The Tag matches the original
+          request so the root complex can route it correctly — even if other
+          completions arrived out of order in between. This split-transaction model
+          is what allows hundreds of I/Os in flight at once.
+        highlight_fields: ["pcie.cpld.fmt_type", "pcie.cpld.tag", "pcie.cpld.status"]
+      - step: 11
+        narration: >
+          Final scoreboard: Ultra320 SCSI = 320 MB/s, 1 transaction at a time,
+          68 wires. PCIe 6.0 x16 = 128,000 MB/s, 65,535 transactions in flight,
+          64 wires. Every modern storage interface — NVMe, SAS-4, USB4 — is built
+          on this same serial differential principle. The parallel bus is gone.
