@@ -11,7 +11,18 @@
     "aiContributors": "AI Contributors",
     "byAnthropic": "by Anthropic",
     "mitLicense": "MIT License",
-    "disclaimer": "Protocol descriptions are based on open-source implementations (Linux kernel, rdma-core) and public RFCs. Specification references are citations for further reading — no proprietary text has been reproduced."
+    "disclaimer": "Protocol descriptions are based on open-source implementations (Linux kernel, rdma-core) and public RFCs. Specification references are citations for further reading — no proprietary text has been reproduced.",
+    "gettingStarted": "Getting Started",
+    "gsShow": "Show Getting Started",
+    "gsDismiss": "Dismiss",
+    "gsLearnTitle": "Browse & Learn",
+    "gsLearnDesc": "Pick a scenario below, step through frame-by-frame, and follow the guided walkthrough to understand each protocol exchange.",
+    "gsAnalyzeTitle": "Analyze Captures",
+    "gsAnalyzeDesc": "Upload a PCAP file to inspect packets, get compliance findings, and generate shareable scenarios from your own traffic.",
+    "gsLiveTitle": "Try It Live",
+    "gsLiveDesc": "Send a real message and watch every protocol layer animate as your data travels the network stack.",
+    "gsCreateTitle": "Create Your Own",
+    "gsCreateDesc": "Build custom protocol scenarios using the YAML editor, preview them, and share with your team."
   },
   "difficulty": {
     "elementary": "Elementary",

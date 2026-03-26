@@ -11,7 +11,18 @@
     "aiContributors": "KI-Mitwirkende",
     "byAnthropic": "von Anthropic",
     "mitLicense": "MIT-Lizenz",
-    "disclaimer": "Protokollbeschreibungen basieren auf Open-Source-Implementierungen (Linux kernel, rdma-core) und öffentlichen RFCs. Spezifikationsreferenzen sind Zitate zur weiterführenden Lektüre — kein proprietärer Text wurde reproduziert."
+    "disclaimer": "Protokollbeschreibungen basieren auf Open-Source-Implementierungen (Linux kernel, rdma-core) und öffentlichen RFCs. Spezifikationsreferenzen sind Zitate zur weiterführenden Lektüre — kein proprietärer Text wurde reproduziert.",
+    "gettingStarted": "Erste Schritte",
+    "gsShow": "Erste Schritte anzeigen",
+    "gsDismiss": "Ausblenden",
+    "gsLearnTitle": "Erkunden & Lernen",
+    "gsLearnDesc": "Wählen Sie unten ein Szenario aus, gehen Sie es Bild für Bild durch und folgen Sie der geführten Tour, um jeden Protokollaustausch zu verstehen.",
+    "gsAnalyzeTitle": "Mitschnitte analysieren",
+    "gsAnalyzeDesc": "Laden Sie eine PCAP-Datei hoch, um Pakete zu inspizieren, Konformitätsbefunde zu erhalten und teilbare Szenarien aus Ihrem eigenen Datenverkehr zu erstellen.",
+    "gsLiveTitle": "Live ausprobieren",
+    "gsLiveDesc": "Senden Sie eine echte Nachricht und beobachten Sie, wie jede Protokollschicht animiert wird, während Ihre Daten den Netzwerkstack durchlaufen.",
+    "gsCreateTitle": "Eigene erstellen",
+    "gsCreateDesc": "Erstellen Sie benutzerdefinierte Protokollszenarien mit dem YAML-Editor, sehen Sie eine Vorschau und teilen Sie sie mit Ihrem Team."
   },
   "difficulty": {
     "elementary": "Grundlegend",

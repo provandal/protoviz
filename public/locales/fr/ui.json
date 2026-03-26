@@ -11,7 +11,18 @@
     "aiContributors": "Contributeurs IA",
     "byAnthropic": "par Anthropic",
     "mitLicense": "Licence MIT",
-    "disclaimer": "Les descriptions de protocoles sont basées sur des implémentations open source (Linux kernel, rdma-core) et des RFC publics. Les références aux spécifications sont des citations pour approfondir — aucun texte propriétaire n'a été reproduit."
+    "disclaimer": "Les descriptions de protocoles sont basées sur des implémentations open source (Linux kernel, rdma-core) et des RFC publics. Les références aux spécifications sont des citations pour approfondir — aucun texte propriétaire n'a été reproduit.",
+    "gettingStarted": "Pour commencer",
+    "gsShow": "Afficher Pour commencer",
+    "gsDismiss": "Fermer",
+    "gsLearnTitle": "Parcourir et apprendre",
+    "gsLearnDesc": "Choisissez un scénario ci-dessous, avancez image par image et suivez la visite guidée pour comprendre chaque échange de protocole.",
+    "gsAnalyzeTitle": "Analyser des captures",
+    "gsAnalyzeDesc": "Téléversez un fichier PCAP pour inspecter les paquets, obtenir des constatations de conformité et générer des scénarios partageables à partir de votre propre trafic.",
+    "gsLiveTitle": "Essayez en direct",
+    "gsLiveDesc": "Envoyez un vrai message et regardez chaque couche protocolaire s'animer pendant que vos données traversent la pile réseau.",
+    "gsCreateTitle": "Créez le vôtre",
+    "gsCreateDesc": "Construisez des scénarios de protocole personnalisés avec l'éditeur YAML, prévisualisez-les et partagez-les avec votre équipe."
   },
   "difficulty": {
     "beginner": "Débutant",

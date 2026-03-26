@@ -11,7 +11,18 @@
     "aiContributors": "AI 贡献者",
     "byAnthropic": "由 Anthropic 提供",
     "mitLicense": "MIT 许可证",
-    "disclaimer": "协议描述基于开源实现（Linux kernel、rdma-core）和公开的 RFC 标准。规范引用是供进一步阅读的参考——未复制任何专有文本。"
+    "disclaimer": "协议描述基于开源实现（Linux kernel、rdma-core）和公开的 RFC 标准。规范引用是供进一步阅读的参考——未复制任何专有文本。",
+    "gettingStarted": "快速入门",
+    "gsShow": "显示入门指南",
+    "gsDismiss": "关闭",
+    "gsLearnTitle": "浏览与学习",
+    "gsLearnDesc": "选择下方的场景，逐帧浏览，并跟随引导浏览来理解每次协议交换。",
+    "gsAnalyzeTitle": "分析抓包",
+    "gsAnalyzeDesc": "上传 PCAP 文件来检查数据包、获取合规性发现，并从您自己的流量中生成可分享的场景。",
+    "gsLiveTitle": "实时体验",
+    "gsLiveDesc": "发送一条真实消息，观看数据穿越网络栈时每一层协议的实时动画。",
+    "gsCreateTitle": "自己创建",
+    "gsCreateDesc": "使用 YAML 编辑器构建自定义协议场景，预览后与团队分享。"
   },
   "difficulty": {
     "beginner": "初级",

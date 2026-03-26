@@ -7,12 +7,230 @@ import FilterBar from './FilterBar';
 import LanguageSelector from '../common/LanguageSelector';
 import { loadGalleryTranslations, translateScenario } from '../../utils/galleryTranslation';
 
+function GettingStarted({ navigate, t }) {
+  const [open, setOpen] = useState(() => {
+    try { return localStorage.getItem('protoviz_gs_dismissed') !== '1'; } catch { return true; }
+  });
+
+  const dismiss = () => {
+    setOpen(false);
+    try { localStorage.setItem('protoviz_gs_dismissed', '1'); } catch {}
+  };
+
+  if (!open) {
+    return (
+      <div style={{ textAlign: 'center', marginBottom: 16 }}>
+        <button
+          onClick={() => setOpen(true)}
+          style={{
+            background: 'none', border: 'none', color: '#475569',
+            fontSize: 11, cursor: 'pointer', padding: '4px 12px',
+          }}
+          onMouseEnter={e => e.currentTarget.style.color = '#94a3b8'}
+          onMouseLeave={e => e.currentTarget.style.color = '#475569'}
+        >
+          {t('gallery.gsShow')}
+        </button>
+      </div>
+    );
+  }
+
+  const cards = [
+    {
+      key: 'learn',
+      icon: '\u25B6',
+      color: '#3b82f6',
+      title: t('gallery.gsLearnTitle'),
+      desc: t('gallery.gsLearnDesc'),
+    },
+    {
+      key: 'analyze',
+      icon: '\u{1F50D}',
+      color: '#8b5cf6',
+      title: t('gallery.gsAnalyzeTitle'),
+      desc: t('gallery.gsAnalyzeDesc'),
+      action: () => navigate('/troubleshooter'),
+    },
+    {
+      key: 'live',
+      icon: '\u{1F4AC}',
+      color: '#0ea5e9',
+      title: t('gallery.gsLiveTitle'),
+      desc: t('gallery.gsLiveDesc'),
+      action: () => navigate('/live/hello-world-chat'),
+    },
+    {
+      key: 'create',
+      icon: '\u{1F4DD}',
+      color: '#10b981',
+      title: t('gallery.gsCreateTitle'),
+      desc: t('gallery.gsCreateDesc'),
+      action: () => navigate('/create'),
+    },
+  ];
+
+  return (
+    <div style={{
+      marginBottom: 24, padding: 16,
+      background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8,
+    }}>
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        marginBottom: 12,
+      }}>
+        <div style={{
+          color: '#475569', fontSize: 9, fontWeight: 700,
+          textTransform: 'uppercase', letterSpacing: '0.1em',
+        }}>
+          {t('gallery.gettingStarted')}
+        </div>
+        <button
+          onClick={dismiss}
+          style={{
+            background: 'none', border: 'none', color: '#475569',
+            fontSize: 11, cursor: 'pointer', padding: '2px 8px',
+          }}
+          onMouseEnter={e => e.currentTarget.style.color = '#94a3b8'}
+          onMouseLeave={e => e.currentTarget.style.color = '#475569'}
+        >
+          {t('gallery.gsDismiss')}
+        </button>
+      </div>
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+        gap: 12,
+      }}>
+        {cards.map(c => (
+          <div
+            key={c.key}
+            onClick={c.action}
+            style={{
+              padding: '12px 14px', background: '#0a0f1a',
+              border: '1px solid #1e293b', borderRadius: 6,
+              cursor: c.action ? 'pointer' : 'default',
+              transition: 'border-color 0.2s',
+            }}
+            onMouseEnter={e => { if (c.action) e.currentTarget.style.borderColor = c.color; }}
+            onMouseLeave={e => e.currentTarget.style.borderColor = '#1e293b'}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <span style={{ fontSize: 14 }}>{c.icon}</span>
+              <span style={{ color: c.color, fontSize: 12, fontWeight: 700 }}>{c.title}</span>
+            </div>
+            <div style={{ color: '#94a3b8', fontSize: 11, lineHeight: 1.5 }}>{c.desc}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AboutOverlay({ onClose, t }) {
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 2000,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: '#0f172a', border: '1px solid #1e293b', borderRadius: 12,
+          padding: '32px 28px', maxWidth: 520, width: '90%',
+          boxShadow: '0 16px 48px rgba(0,0,0,0.5)',
+        }}
+      >
+        <div style={{ textAlign: 'center' }}>
+          <div style={{
+            background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)',
+            borderRadius: 8, padding: '4px 14px', display: 'inline-block', marginBottom: 16,
+          }}>
+            <span style={{ color: '#fff', fontSize: 20, fontWeight: 800, letterSpacing: '0.05em' }}>
+              PROTO<span style={{ color: '#a5f3fc' }}>VIZ</span>
+            </span>
+          </div>
+
+          <div style={{ color: '#94a3b8', fontSize: 12, lineHeight: 1.7, marginBottom: 24 }}>
+            {t('gallery.aboutDescription')}
+          </div>
+
+          <div style={{
+            display: 'flex', justifyContent: 'center', gap: 32,
+            flexWrap: 'wrap', marginBottom: 24,
+          }}>
+            <div>
+              <a
+                href="https://www.linkedin.com/in/erik-smith-a899ba3/"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: '#60a5fa', fontSize: 13, fontWeight: 700, textDecoration: 'none' }}
+              >
+                Erik Smith
+              </a>
+              <div style={{ color: '#64748b', fontSize: 10 }}>
+                {t('gallery.authorTitle')}
+              </div>
+            </div>
+            <div>
+              <div style={{ color: '#a78bfa', fontSize: 13, fontWeight: 700 }}>
+                Claude.AI &amp; Claude Code
+              </div>
+              <div style={{ color: '#64748b', fontSize: 10 }}>
+                {t('gallery.aiContributors')} &middot; {t('gallery.byAnthropic')}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 16, marginBottom: 16 }}>
+            <a
+              href="https://github.com/provandal/protoviz"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                color: '#64748b', fontSize: 11, textDecoration: 'none',
+                border: '1px solid #1e293b', padding: '4px 12px', borderRadius: 4,
+              }}
+            >
+              GitHub
+            </a>
+            <span style={{ color: '#64748b', fontSize: 11, padding: '4px 0' }}>
+              {t('gallery.mitLicense')}
+            </span>
+            <span style={{ color: '#64748b', fontSize: 11, padding: '4px 0' }}>
+              v{__APP_VERSION__}
+            </span>
+          </div>
+
+          <div style={{ color: '#64748b', fontSize: 9, lineHeight: 1.6, maxWidth: 440, margin: '0 auto 20px' }}>
+            {t('gallery.disclaimer')}
+          </div>
+
+          <button
+            onClick={onClose}
+            style={{
+              background: '#1e293b', border: '1px solid #334155', color: '#94a3b8',
+              padding: '6px 20px', borderRadius: 6, cursor: 'pointer', fontSize: 11, fontWeight: 600,
+            }}
+          >
+            {t('common.close')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Gallery() {
   const { t, i18n } = useTranslation();
   const [scenarios, setScenarios] = useState([]);
   const [galleryTrans, setGalleryTrans] = useState({});
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState({ protocol: '', difficulty: '', search: '' });
+  const [showAbout, setShowAbout] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -56,50 +274,39 @@ export default function Gallery() {
       fontFamily: "'IBM Plex Sans',system-ui,sans-serif",
       overflow: 'hidden',
     }}>
-      {/* Header */}
+      {/* Header — compact */}
       <div style={{
-        padding: '40px 24px 24px', textAlign: 'center',
+        padding: '12px 24px', textAlign: 'center',
         borderBottom: '1px solid #1e293b', background: '#0a0f1a',
         position: 'relative',
       }}>
-        <div style={{ position: 'absolute', top: 12, insetInlineEnd: 16 }}>
+        <div style={{ position: 'absolute', top: 10, insetInlineEnd: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
           <LanguageSelector />
-        </div>
-        <div style={{
-          background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)',
-          borderRadius: 12, padding: '8px 20px', display: 'inline-block', marginBottom: 16,
-        }}>
-          <span style={{ color: '#fff', fontSize: 28, fontWeight: 800, letterSpacing: '0.05em' }}>
-            PROTO<span style={{ color: '#a5f3fc' }}>VIZ</span>
-          </span>
-        </div>
-        <div style={{ color: '#94a3b8', fontSize: 14, maxWidth: 500, margin: '0 auto', marginBottom: 16 }}>
-          {t('gallery.tagline')}
-        </div>
-        <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
           <button
-            onClick={() => navigate('/create')}
+            onClick={() => setShowAbout(true)}
             style={{
-              background: 'linear-gradient(135deg, #1e40af, #7c3aed)', border: 'none', color: '#fff',
-              padding: '8px 20px', borderRadius: 6, cursor: 'pointer',
-              fontSize: 12, fontWeight: 600,
+              background: '#1e293b', border: '1px solid #334155', color: '#64748b',
+              padding: '5px 10px', borderRadius: 6, cursor: 'pointer',
+              fontSize: 11, fontWeight: 600, transition: 'color 0.2s, border-color 0.2s',
             }}
+            onMouseEnter={e => { e.currentTarget.style.color = '#e2e8f0'; e.currentTarget.style.borderColor = '#3b82f6'; }}
+            onMouseLeave={e => { e.currentTarget.style.color = '#64748b'; e.currentTarget.style.borderColor = '#334155'; }}
           >
-            {t('gallery.createScenario')}
+            {t('gallery.aboutTitle')}
           </button>
-          <button
-            onClick={() => navigate('/troubleshooter')}
-            style={{
-              background: '#1e293b', border: '1px solid #334155', color: '#94a3b8',
-              padding: '8px 20px', borderRadius: 6, cursor: 'pointer',
-              fontSize: 12, fontWeight: 600,
-              transition: 'border-color 0.2s, color 0.2s',
-            }}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = '#3b82f6'; e.currentTarget.style.color = '#e2e8f0'; }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = '#334155'; e.currentTarget.style.color = '#94a3b8'; }}
-          >
-            {t('gallery.pcapTroubleshooter')}
-          </button>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 16, flexWrap: 'wrap' }}>
+          <div style={{
+            background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)',
+            borderRadius: 10, padding: '5px 16px', display: 'inline-block',
+          }}>
+            <span style={{ color: '#fff', fontSize: 22, fontWeight: 800, letterSpacing: '0.05em' }}>
+              PROTO<span style={{ color: '#a5f3fc' }}>VIZ</span>
+            </span>
+          </div>
+          <div style={{ color: '#94a3b8', fontSize: 12, maxWidth: 400 }}>
+            {t('gallery.tagline')}
+          </div>
         </div>
       </div>
 
@@ -111,9 +318,11 @@ export default function Gallery() {
         difficulties={difficulties}
       />
 
-      {/* Scenario grid — scrollable, takes remaining space */}
+      {/* Scrollable content — Getting Started + Scenario grid */}
       <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
         <div style={{ padding: '24px', maxWidth: 1000, margin: '0 auto' }}>
+          <GettingStarted navigate={navigate} t={t} />
+
           {loading ? (
             <div style={{ textAlign: 'center', color: '#475569', padding: 40 }}>
               {t('gallery.loading')}
@@ -142,71 +351,8 @@ export default function Gallery() {
         </div>
       </div>
 
-      {/* About section — always visible at bottom */}
-      <div style={{
-        padding: '24px 24px', borderTop: '1px solid #1e293b',
-        background: '#0a0f1a', flexShrink: 0,
-      }}>
-        <div style={{ maxWidth: 600, margin: '0 auto', textAlign: 'center' }}>
-          <div style={{ color: '#475569', fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 16 }}>
-            {t('gallery.aboutTitle')}
-          </div>
-          <div style={{ color: '#94a3b8', fontSize: 12, lineHeight: 1.7, marginBottom: 24 }}>
-            {t('gallery.aboutDescription')}
-          </div>
-
-          <div style={{
-            display: 'flex', justifyContent: 'center', gap: 32,
-            flexWrap: 'wrap', marginBottom: 24,
-          }}>
-            <div>
-              <a
-                href="https://www.linkedin.com/in/erik-smith-a899ba3/"
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ color: '#60a5fa', fontSize: 13, fontWeight: 700, textDecoration: 'none' }}
-              >
-                Erik Smith
-              </a>
-              <div style={{ color: '#64748b', fontSize: 10 }}>
-                {t('gallery.authorTitle')}
-              </div>
-            </div>
-            <div>
-              <div style={{ color: '#a78bfa', fontSize: 13, fontWeight: 700 }}>
-                Claude.AI &amp; Claude Code
-              </div>
-              <div style={{ color: '#64748b', fontSize: 10 }}>
-                {t('gallery.aiContributors')} &middot; {t('gallery.byAnthropic')}
-              </div>
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', justifyContent: 'center', gap: 16 }}>
-            <a
-              href="https://github.com/provandal/protoviz"
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{
-                color: '#64748b', fontSize: 11, textDecoration: 'none',
-                border: '1px solid #1e293b', padding: '4px 12px', borderRadius: 4,
-              }}
-            >
-              GitHub
-            </a>
-            <span style={{ color: '#64748b', fontSize: 11, padding: '4px 0' }}>
-              {t('gallery.mitLicense')}
-            </span>
-            <span style={{ color: '#64748b', fontSize: 11, padding: '4px 0' }}>
-              v{__APP_VERSION__}
-            </span>
-          </div>
-
-          <div style={{ color: '#64748b', fontSize: 9, textAlign: 'center', lineHeight: 1.6, maxWidth: 500, marginTop: 16 }}>
-            {t('gallery.disclaimer')}
-          </div>
-        </div>
-      </div>
+      {/* About overlay */}
+      {showAbout && <AboutOverlay onClose={() => setShowAbout(false)} t={t} />}
     </div>
   );
 }

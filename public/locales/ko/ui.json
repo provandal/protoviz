@@ -11,7 +11,18 @@
     "aiContributors": "AI 기여자",
     "byAnthropic": "by Anthropic",
     "mitLicense": "MIT 라이선스",
-    "disclaimer": "프로토콜 설명은 오픈소스 구현(Linux kernel, rdma-core)과 공개 RFC를 기반으로 합니다. 사양 참조는 추가 참고를 위한 인용이며, 독점 텍스트는 복제되지 않았습니다."
+    "disclaimer": "프로토콜 설명은 오픈소스 구현(Linux kernel, rdma-core)과 공개 RFC를 기반으로 합니다. 사양 참조는 추가 참고를 위한 인용이며, 독점 텍스트는 복제되지 않았습니다.",
+    "gettingStarted": "시작하기",
+    "gsShow": "시작 가이드 표시",
+    "gsDismiss": "닫기",
+    "gsLearnTitle": "탐색하고 배우기",
+    "gsLearnDesc": "아래에서 시나리오를 선택하고, 프레임별로 진행하며, 가이드 워크스루를 따라 각 프로토콜 교환을 이해하세요.",
+    "gsAnalyzeTitle": "캡처 분석",
+    "gsAnalyzeDesc": "PCAP 파일을 업로드하여 패킷을 검사하고, 준수 사항을 확인하며, 자신의 트래픽으로 공유 가능한 시나리오를 생성하세요.",
+    "gsLiveTitle": "라이브로 체험",
+    "gsLiveDesc": "실제 메시지를 보내고 데이터가 네트워크 스택을 통과하면서 각 프로토콜 계층이 애니메이션되는 것을 확인하세요.",
+    "gsCreateTitle": "직접 만들기",
+    "gsCreateDesc": "YAML 편집기를 사용하여 맞춤 프로토콜 시나리오를 작성하고, 미리보기한 후 팀과 공유하세요."
   },
   "difficulty": {
     "elementary": "입문",

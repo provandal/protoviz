@@ -11,7 +11,18 @@
     "aiContributors": "Contribuidores de IA",
     "byAnthropic": "por Anthropic",
     "mitLicense": "Licença MIT",
-    "disclaimer": "As descrições de protocolos são baseadas em implementações de código aberto (Linux kernel, rdma-core) e RFCs públicas. As referências de especificações são citações para leitura adicional — nenhum texto proprietário foi reproduzido."
+    "disclaimer": "As descrições de protocolos são baseadas em implementações de código aberto (Linux kernel, rdma-core) e RFCs públicas. As referências de especificações são citações para leitura adicional — nenhum texto proprietário foi reproduzido.",
+    "gettingStarted": "Primeiros Passos",
+    "gsShow": "Mostrar Primeiros Passos",
+    "gsDismiss": "Fechar",
+    "gsLearnTitle": "Explore e Aprenda",
+    "gsLearnDesc": "Escolha um cenário abaixo, avance quadro a quadro e siga o tour guiado para entender cada troca de protocolo.",
+    "gsAnalyzeTitle": "Analise Capturas",
+    "gsAnalyzeDesc": "Faça upload de um arquivo PCAP para inspecionar pacotes, obter achados de conformidade e gerar cenários compartilháveis a partir do seu próprio tráfego.",
+    "gsLiveTitle": "Experimente ao Vivo",
+    "gsLiveDesc": "Envie uma mensagem real e veja cada camada de protocolo ser animada enquanto seus dados percorrem a pilha de rede.",
+    "gsCreateTitle": "Crie o Seu",
+    "gsCreateDesc": "Construa cenários de protocolo personalizados usando o editor YAML, visualize-os e compartilhe com sua equipe."
   },
   "difficulty": {
     "elementary": "Elementar",

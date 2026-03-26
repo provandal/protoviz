@@ -11,7 +11,18 @@
     "aiContributors": "Kontribitè IA",
     "byAnthropic": "pa Anthropic",
     "mitLicense": "Lisans MIT",
-    "disclaimer": "Deskripsyon pwotokòl yo baze sou implantasyon kòd ouvè (Linux kernel, rdma-core) ak RFC piblik. Referans espesifikasyon yo se sitasyon pou lekti apwofondi — okenn tèks pwopriyetè pa repwodui."
+    "disclaimer": "Deskripsyon pwotokòl yo baze sou implantasyon kòd ouvè (Linux kernel, rdma-core) ak RFC piblik. Referans espesifikasyon yo se sitasyon pou lekti apwofondi — okenn tèks pwopriyetè pa repwodui.",
+    "gettingStarted": "Kòmanse Isit",
+    "gsShow": "Montre Gid Kòmansman",
+    "gsDismiss": "Fèmen",
+    "gsLearnTitle": "Navige epi Aprann",
+    "gsLearnDesc": "Chwazi yon senaryo pi ba a, avanse kadri pa kadri, epi swiv vizit gide a pou konprann chak echanj pwotokòl.",
+    "gsAnalyzeTitle": "Analize Kaptir",
+    "gsAnalyzeDesc": "Telechaje yon fichye PCAP pou enspekte pakè, jwenn rezilta konfòmite, epi kreye senaryo ou ka pataje ak trafik pa ou.",
+    "gsLiveTitle": "Eseye An Dirèk",
+    "gsLiveDesc": "Voye yon vrè mesaj epi gade chak kouch pwotokòl anime pandan done ou yo vwayaje nan pile rezo a.",
+    "gsCreateTitle": "Kreye Pa Ou",
+    "gsCreateDesc": "Bati senaryo pwotokòl pèsonalize ak editè YAML la, gade apèsi yo, epi pataje ak ekip ou."
   },
   "difficulty": {
     "beginner": "Debitan",

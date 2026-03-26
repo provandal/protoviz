@@ -11,7 +11,18 @@
     "aiContributors": "AI コントリビューター",
     "byAnthropic": "by Anthropic",
     "mitLicense": "MITライセンス",
-    "disclaimer": "プロトコルの説明はオープンソース実装（Linux kernel、rdma-core）と公開RFCに基づいています。仕様参照はさらなる参考のための引用であり、独自のテキストは複製されていません。"
+    "disclaimer": "プロトコルの説明はオープンソース実装（Linux kernel、rdma-core）と公開RFCに基づいています。仕様参照はさらなる参考のための引用であり、独自のテキストは複製されていません。",
+    "gettingStarted": "はじめに",
+    "gsShow": "はじめにガイドを表示",
+    "gsDismiss": "閉じる",
+    "gsLearnTitle": "閲覧して学ぶ",
+    "gsLearnDesc": "下のシナリオを選び、フレームごとにステップを進め、ガイドウォークスルーに沿って各プロトコル交換を理解しましょう。",
+    "gsAnalyzeTitle": "キャプチャを分析",
+    "gsAnalyzeDesc": "PCAPファイルをアップロードしてパケットを検査し、準拠性の発見事項を取得し、自分のトラフィックから共有可能なシナリオを生成できます。",
+    "gsLiveTitle": "ライブで試す",
+    "gsLiveDesc": "実際のメッセージを送信し、データがネットワークスタックを通過する際に各プロトコル層がアニメーションする様子を観察できます。",
+    "gsCreateTitle": "自分で作成",
+    "gsCreateDesc": "YAMLエディターを使ってカスタムプロトコルシナリオを作成し、プレビューして、チームと共有できます。"
   },
   "difficulty": {
     "elementary": "入門",
