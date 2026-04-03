@@ -169,7 +169,12 @@
     "scenarioStats": "{{frames}} מסגרות, {{timeline}} אירועי ציר זמן, {{actors}} שחקנים",
     "back": "חזרה",
     "downloadYaml": "הורדת YAML",
-    "preview": "תצוגה מקדימה"
+    "preview": "תצוגה מקדימה",
+    "tcpdumpDetected": "נראה שזו פלט טקסט של tcpdump",
+    "tcpdumpExplanation": "פלט טקסט של tcpdump אינו כולל את בתי המנה הגולמיים הנדרשים לניתוח פרוטוקול מלא. לתוצאות מיטביות, שמור את הלכידה בפורמט בינארי.",
+    "tcpdumpRecapture": "לכוד ישירות בפורמט בינארי",
+    "tcpdumpConvert": "או המר לכידה קיימת",
+    "tcpdumpTryAnother": "העלה קובץ אחר"
   },
   "flowPicker": {
     "title": "בחירת זרימות רשת",
@@ -234,6 +239,41 @@
   },
   "helloChat": {
     "relayTemporarilyUnavailable": "שרת הממסר אינו זמין זמנית. אפשר להשתמש במצב \"אותו מחשב\" או לארח את הממסר בעצמך."
+  },
+  "protocolFamily": {
+    "tcpIp": "יסודות TCP/IP",
+    "tcpIpDesc": "פרוטוקולי אינטרנט ליבה: לחיצות יד TCP, הצפנת TLS, רזולוציית ARP/NDP, ומה באמת קורה כשלוחצים על קישור.",
+    "ipv6": "IPv6 ומעבר",
+    "ipv6Desc": "פרוטוקול אינטרנט דור הבא: הגדרה אוטומטית, חזרה למצב מחסנית כפולה, DHCPv6, ומנגנוני מעבר כמו NAT64.",
+    "interconnect": "יסודות חיבוריות",
+    "interconnectDesc": "מושגי שכבה פיזית: איתות טורי מול מקבילי, סדר בתים ותיקון שגיאות מקדים.",
+    "rdma": "RDMA ו-RoCEv2",
+    "rdmaDesc": "גישה ישירה לזיכרון מרחוק: העברות נתונים ללא העתקה, Ethernet ללא אובדן, תקשורת GPU ל-GPU ופעולות קולקטיביות לאימון בינה מלאכותית.",
+    "nvmeOf": "NVMe over Fabrics",
+    "nvmeOfDesc": "NVMe על גבי RDMA ו-TCP: גילוי, חיבור וקלט/פלט אחסון בביצועים גבוהים.",
+    "san": "רשתות אחסון",
+    "sanDesc": "כניסה ל-fabric של Fibre Channel, הפעלות iSCSI ועיבוד פקודות SCSI על גבי רשתות אחסון ייעודיות.",
+    "storage": "GPU ואחסון מואץ",
+    "storageDesc": "GPUDirect Storage: נתיבי נתונים של NVMe ו-NVMe-oF ישירות לזיכרון GPU, תוך עקיפת המעבד."
+  },
+  "contributing": {
+    "title": "תרומה לפרויקט",
+    "intro": "ProtoViz הוא קוד פתוח ומקבל בברכה תרומות — תרחישים חדשים, כללי תאימות, מפרקי פרוטוקולים ושיפורי קוד.",
+    "devSetup": "הגדרת סביבת פיתוח",
+    "addScenarios": "הוספת תרחישים",
+    "scenarioCreator": "יוצר תרחישים (מומלץ)",
+    "scenarioCreatorDesc": "לחץ על \"יצירת תרחיש\" בדף הראשי, ספק מפתח API של Anthropic, תאר את חילופי הפרוטוקול בשפה פשוטה, וצור תרחיש YAML מלא.",
+    "fromPcap": "מקובץ PCAP",
+    "fromPcapDesc": "השתמש בממיר Python: python tools/converter.py capture.pcap --out public/scenarios/my-protocol/scenario.yaml",
+    "yamlStructure": "מבנה YAML של תרחיש",
+    "yamlStructureDesc": "כל תרחיש מגדיר: meta (כותרת, פרוטוקול, מחברים, מפרטים), topology (שחקנים וקישורים), osi_layers (מצב שכבה לכל שחקן), frames (הגדרות מנות עם כותרות ושדות), timeline (אירועי פרוטוקול מסודרים) ו-glossary (הגדרות מונחים).",
+    "prRequirements": "דרישות Pull Request",
+    "prRequirementsDesc": "YAML תקין בהתאם ל-scenario.schema.json. כל שדה צריך תיאור. כותרות צריכות להפנות לסעיפי מפרט (RFC, IEEE, IBTA). תוכן שנוצר בבינה מלאכותית חייב להיבדק לדיוק. כלול את שמך ב-meta.authors.",
+    "rulesAndDissectors": "כללי תאימות ומפרקים",
+    "rulesAndDissectorsDesc": "כללי תאימות נמצאים ב-public/rules/ כ-JSON. מפרקי פרוטוקולים הם מודולי JavaScript ב-src/pcap/dissectors/. שניהם עוקבים אחר דפוסים קיימים — בדוק את מימושי RoCEv2 כדוגמאות.",
+    "codeStyle": "סגנון קוד",
+    "codeStyleDesc": "רכיבים פונקציונליים של React 18, Zustand לניהול מצב, סגנונות inline. הרץ npm run test לפני הגשה.",
+    "viewOnGithub": "צפה ב-CONTRIBUTING.md המלא ב-GitHub"
   },
   "common": {
     "save": "שמירה",

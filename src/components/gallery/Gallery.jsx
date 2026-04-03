@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import ScenarioCard from './ScenarioCard';
 import FilterBar from './FilterBar';
+import ProtocolFamilySection, { PROTOCOL_FAMILY_ORDER } from './ProtocolFamilySection';
 import LanguageSelector from '../common/LanguageSelector';
 import { loadGalleryTranslations, translateScenario } from '../../utils/galleryTranslation';
 
@@ -126,7 +127,119 @@ function GettingStarted({ navigate, t }) {
   );
 }
 
-function AboutOverlay({ onClose, t }) {
+function ContributingOverlay({ onClose, t }) {
+  const sectionStyle = { marginBottom: 20 };
+  const headingStyle = {
+    color: '#475569', fontSize: 9, fontWeight: 700,
+    textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 8,
+  };
+  const textStyle = { color: '#94a3b8', fontSize: 12, lineHeight: 1.7 };
+  const codeStyle = {
+    background: '#020817', color: '#a5f3fc', fontSize: 11,
+    padding: '8px 12px', borderRadius: 4, display: 'block',
+    fontFamily: "'IBM Plex Mono', monospace", marginTop: 6, lineHeight: 1.6,
+    overflowX: 'auto', whiteSpace: 'pre',
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 2000,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: '#0f172a', border: '1px solid #1e293b', borderRadius: 12,
+          padding: '28px 24px', maxWidth: 600, width: '90%',
+          maxHeight: '80vh', overflowY: 'auto',
+          boxShadow: '0 16px 48px rgba(0,0,0,0.5)',
+        }}
+      >
+        <div style={{ textAlign: 'center', marginBottom: 20 }}>
+          <span style={{ color: '#e2e8f0', fontSize: 18, fontWeight: 800 }}>
+            {t('contributing.title')}
+          </span>
+          <div style={{ color: '#94a3b8', fontSize: 12, marginTop: 6, lineHeight: 1.6 }}>
+            {t('contributing.intro')}
+          </div>
+        </div>
+
+        <div style={sectionStyle}>
+          <div style={headingStyle}>{t('contributing.devSetup')}</div>
+          <code style={codeStyle}>
+{`git clone https://github.com/provandal/protoviz.git
+cd protoviz && npm install
+npm run dev`}
+          </code>
+        </div>
+
+        <div style={sectionStyle}>
+          <div style={headingStyle}>{t('contributing.addScenarios')}</div>
+          <div style={textStyle}>
+            <strong style={{ color: '#60a5fa' }}>{t('contributing.scenarioCreator')}</strong>
+            {' \u2014 '}{t('contributing.scenarioCreatorDesc')}
+          </div>
+          <div style={{ ...textStyle, marginTop: 8 }}>
+            <strong style={{ color: '#60a5fa' }}>{t('contributing.fromPcap')}</strong>
+            {' \u2014 '}{t('contributing.fromPcapDesc')}
+          </div>
+        </div>
+
+        <div style={sectionStyle}>
+          <div style={headingStyle}>{t('contributing.yamlStructure')}</div>
+          <div style={textStyle}>{t('contributing.yamlStructureDesc')}</div>
+        </div>
+
+        <div style={sectionStyle}>
+          <div style={headingStyle}>{t('contributing.prRequirements')}</div>
+          <div style={textStyle}>
+            {t('contributing.prRequirementsDesc')}
+          </div>
+        </div>
+
+        <div style={sectionStyle}>
+          <div style={headingStyle}>{t('contributing.rulesAndDissectors')}</div>
+          <div style={textStyle}>{t('contributing.rulesAndDissectorsDesc')}</div>
+        </div>
+
+        <div style={sectionStyle}>
+          <div style={headingStyle}>{t('contributing.codeStyle')}</div>
+          <div style={textStyle}>{t('contributing.codeStyleDesc')}</div>
+        </div>
+
+        <div style={{ textAlign: 'center', marginTop: 24 }}>
+          <a
+            href="https://github.com/provandal/protoviz/blob/main/CONTRIBUTING.md"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              color: '#60a5fa', fontSize: 12, fontWeight: 600,
+              textDecoration: 'none', display: 'inline-block', marginBottom: 16,
+            }}
+          >
+            {t('contributing.viewOnGithub')} &#8599;
+          </a>
+          <br />
+          <button
+            onClick={onClose}
+            style={{
+              background: '#1e293b', border: '1px solid #334155', color: '#94a3b8',
+              padding: '6px 20px', borderRadius: 6, cursor: 'pointer', fontSize: 11, fontWeight: 600,
+            }}
+          >
+            {t('common.close')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AboutOverlay({ onClose, onOpenContributing, t }) {
   return (
     <div
       onClick={onClose}
@@ -185,7 +298,7 @@ function AboutOverlay({ onClose, t }) {
             </div>
           </div>
 
-          <div style={{ display: 'flex', justifyContent: 'center', gap: 16, marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
             <a
               href="https://github.com/provandal/protoviz"
               target="_blank"
@@ -197,6 +310,16 @@ function AboutOverlay({ onClose, t }) {
             >
               GitHub
             </a>
+            <button
+              onClick={onOpenContributing}
+              style={{
+                background: 'none', color: '#64748b', fontSize: 11,
+                border: '1px solid #1e293b', padding: '4px 12px', borderRadius: 4,
+                cursor: 'pointer',
+              }}
+            >
+              {t('contributing.title')}
+            </button>
             <span style={{ color: '#64748b', fontSize: 11, padding: '4px 0' }}>
               {t('gallery.mitLicense')}
             </span>
@@ -231,6 +354,8 @@ export default function Gallery() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState({ protocol: '', difficulty: '', search: '' });
   const [showAbout, setShowAbout] = useState(false);
+  const [showContributing, setShowContributing] = useState(false);
+  const [expandedSections, setExpandedSections] = useState({});
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -264,6 +389,37 @@ export default function Gallery() {
     return true;
   });
 
+  const hasFilter = !!(filter.search || filter.difficulty);
+  const singleFamily = !!(filter.protocol && !filter.search && !filter.difficulty);
+
+  const groupedFiltered = useMemo(() => {
+    const groups = {};
+    for (const s of filtered) {
+      const fam = s.protocol_family || 'Other';
+      (groups[fam] ||= []).push(s);
+    }
+    const ordered = [];
+    for (const fam of PROTOCOL_FAMILY_ORDER) {
+      if (groups[fam]) ordered.push({ family: fam, scenarios: groups[fam] });
+    }
+    for (const fam of Object.keys(groups)) {
+      if (!PROTOCOL_FAMILY_ORDER.includes(fam)) {
+        ordered.push({ family: fam, scenarios: groups[fam] });
+      }
+    }
+    return ordered;
+  }, [filtered]);
+
+  const toggleSection = (family) => {
+    setExpandedSections(prev => ({ ...prev, [family]: !prev[family] }));
+  };
+
+  const isSectionExpanded = (family) => {
+    if (hasFilter) return true; // auto-expand when search/difficulty filter active
+    if (expandedSections[family] !== undefined) return expandedSections[family];
+    return false; // collapsed by default
+  };
+
   const protocols = [...new Set(scenarios.map(s => s.protocol_family))];
   const difficulties = [...new Set(scenarios.map(s => s.difficulty))];
 
@@ -282,6 +438,18 @@ export default function Gallery() {
       }}>
         <div style={{ position: 'absolute', top: 10, insetInlineEnd: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
           <LanguageSelector />
+          <button
+            onClick={() => setShowContributing(true)}
+            style={{
+              background: '#1e293b', border: '1px solid #334155', color: '#64748b',
+              padding: '5px 10px', borderRadius: 6, cursor: 'pointer',
+              fontSize: 11, fontWeight: 600, transition: 'color 0.2s, border-color 0.2s',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.color = '#e2e8f0'; e.currentTarget.style.borderColor = '#10b981'; }}
+            onMouseLeave={e => { e.currentTarget.style.color = '#64748b'; e.currentTarget.style.borderColor = '#334155'; }}
+          >
+            {t('contributing.title')}
+          </button>
           <button
             onClick={() => setShowAbout(true)}
             style={{
@@ -331,7 +499,8 @@ export default function Gallery() {
             <div style={{ textAlign: 'center', color: '#475569', padding: 40 }}>
               {t('gallery.noMatch')}
             </div>
-          ) : (
+          ) : singleFamily ? (
+            /* Single family selected — flat grid, no section chrome */
             <div style={{
               display: 'grid',
               gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
@@ -347,12 +516,32 @@ export default function Gallery() {
                 />
               ))}
             </div>
+          ) : (
+            groupedFiltered.map(group => (
+              <ProtocolFamilySection
+                key={group.family}
+                family={group.family}
+                scenarios={group.scenarios}
+                expanded={isSectionExpanded(group.family)}
+                onToggle={() => toggleSection(group.family)}
+                onScenarioClick={(s) => navigate(
+                  s.type === 'interactive' ? `/live/${s.slug}` : `/${s.slug}`
+                )}
+              />
+            ))
           )}
         </div>
       </div>
 
-      {/* About overlay */}
-      {showAbout && <AboutOverlay onClose={() => setShowAbout(false)} t={t} />}
+      {/* Overlays */}
+      {showAbout && (
+        <AboutOverlay
+          onClose={() => setShowAbout(false)}
+          onOpenContributing={() => { setShowAbout(false); setShowContributing(true); }}
+          t={t}
+        />
+      )}
+      {showContributing && <ContributingOverlay onClose={() => setShowContributing(false)} t={t} />}
     </div>
   );
 }

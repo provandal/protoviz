@@ -169,7 +169,12 @@
     "scenarioStats": "{{frames}} Frames, {{timeline}} Zeitleisten-Ereignisse, {{actors}} Akteure",
     "back": "Zurück",
     "downloadYaml": "YAML herunterladen",
-    "preview": "Vorschau"
+    "preview": "Vorschau",
+    "tcpdumpDetected": "Dies scheint eine tcpdump-Textausgabe zu sein",
+    "tcpdumpExplanation": "Die tcpdump-Textausgabe enthält nicht die rohen Paketbytes, die für eine vollständige Protokollanalyse benötigt werden. Für die besten Ergebnisse speichern Sie Ihren Mitschnitt im Binärformat.",
+    "tcpdumpRecapture": "Direkt im Binärformat mitschneiden",
+    "tcpdumpConvert": "Oder einen vorhandenen Mitschnitt konvertieren",
+    "tcpdumpTryAnother": "Eine andere Datei hochladen"
   },
   "flowPicker": {
     "title": "Netzwerkflüsse auswählen",
@@ -234,6 +239,41 @@
   },
   "helloChat": {
     "relayTemporarilyUnavailable": "Der Relay-Server ist vorübergehend nicht verfügbar. Sie können den Modus \"Selber Rechner\" verwenden oder den Relay selbst hosten."
+  },
+  "protocolFamily": {
+    "tcpIp": "TCP/IP-Grundlagen",
+    "tcpIpDesc": "Kernprotokolle des Internets: TCP-Handshakes, TLS-Verschlüsselung, ARP/NDP-Auflösung und was wirklich passiert, wenn Sie auf einen Link klicken.",
+    "ipv6": "IPv6 & Umstellung",
+    "ipv6Desc": "Internetprotokoll der nächsten Generation: Autokonfiguration, Dual-Stack-Fallback, DHCPv6 und Übergangsmechanismen wie NAT64.",
+    "interconnect": "Interconnect-Grundlagen",
+    "interconnectDesc": "Konzepte der physischen Schicht: serielle vs. parallele Signalübertragung, Bytereihenfolge und Vorwärtsfehlerkorrektur.",
+    "rdma": "RDMA & RoCEv2",
+    "rdmaDesc": "Remote Direct Memory Access: Zero-Copy-Datenübertragungen, verlustfreies Ethernet, GPU-zu-GPU-Kommunikation und kollektive Operationen für KI-Training.",
+    "nvmeOf": "NVMe over Fabrics",
+    "nvmeOfDesc": "NVMe über RDMA und TCP: Erkennung, Verbindung und Hochleistungs-Speicher-I/O.",
+    "san": "Storage Area Networks",
+    "sanDesc": "Fibre-Channel-Fabric-Login, iSCSI-Sitzungen und SCSI-Befehlsverarbeitung über dedizierte Speichernetzwerke.",
+    "storage": "GPU & Beschleunigter Speicher",
+    "storageDesc": "GPUDirect Storage: NVMe- und NVMe-oF-Datenpfade direkt zum GPU-Speicher unter Umgehung der CPU."
+  },
+  "contributing": {
+    "title": "Mitwirken",
+    "intro": "ProtoViz ist Open Source und begrüßt Beiträge — neue Szenarien, Konformitätsregeln, Protokoll-Dissektoren und Codeverbesserungen.",
+    "devSetup": "Entwicklungsumgebung einrichten",
+    "addScenarios": "Szenarien hinzufügen",
+    "scenarioCreator": "Szenario-Ersteller (empfohlen)",
+    "scenarioCreatorDesc": "Klicken Sie auf der Startseite auf \u201ESzenario erstellen\u201C, geben Sie einen Anthropic API-Schl\u00FCssel ein, beschreiben Sie den Protokollaustausch in einfachem Englisch und generieren Sie ein vollst\u00E4ndiges YAML-Szenario.",
+    "fromPcap": "Aus einer PCAP-Datei",
+    "fromPcapDesc": "Verwenden Sie den Python-Konverter: python tools/converter.py capture.pcap --out public/scenarios/my-protocol/scenario.yaml",
+    "yamlStructure": "YAML-Struktur des Szenarios",
+    "yamlStructureDesc": "Jedes Szenario definiert: meta (Titel, Protokoll, Autoren, Spezifikationen), topology (Akteure und Verbindungen), osi_layers (Schichtzustand pro Akteur), frames (Paketdefinitionen mit Headern und Feldern), timeline (geordnete Protokollereignisse) und glossary (Begriffsdefinitionen).",
+    "prRequirements": "Pull-Request-Anforderungen",
+    "prRequirementsDesc": "Gültiges YAML gemäß scenario.schema.json. Jedes Feld benötigt eine Beschreibung. Header sollten auf Spezifikationsabschnitte verweisen (RFC, IEEE, IBTA). KI-generierte Inhalte müssen auf Richtigkeit überprüft werden. Fügen Sie Ihren Namen in meta.authors ein.",
+    "rulesAndDissectors": "Konformitätsregeln & Dissektoren",
+    "rulesAndDissectorsDesc": "Konformitätsregeln befinden sich als JSON in public/rules/. Protokoll-Dissektoren sind JavaScript-Module in src/pcap/dissectors/. Beide folgen bestehenden Mustern — sehen Sie sich die RoCEv2-Implementierungen als Beispiele an.",
+    "codeStyle": "Code-Stil",
+    "codeStyleDesc": "React 18 funktionale Komponenten, Zustand für State-Management, Inline-Styles. Führen Sie npm run test vor dem Einreichen aus.",
+    "viewOnGithub": "Vollständige CONTRIBUTING.md auf GitHub ansehen"
   },
   "common": {
     "save": "Speichern",

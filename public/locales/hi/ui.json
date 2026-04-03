@@ -169,7 +169,12 @@
     "scenarioStats": "{{frames}} फ़्रेम, {{timeline}} टाइमलाइन इवेंट, {{actors}} एक्टर",
     "back": "वापस",
     "downloadYaml": "YAML डाउनलोड करें",
-    "preview": "पूर्वावलोकन"
+    "preview": "पूर्वावलोकन",
+    "tcpdumpDetected": "यह tcpdump का टेक्स्ट आउटपुट लगता है",
+    "tcpdumpExplanation": "tcpdump के टेक्स्ट आउटपुट में पूर्ण प्रोटोकॉल विश्लेषण के लिए आवश्यक कच्चे पैकेट बाइट्स शामिल नहीं होते। सर्वोत्तम परिणामों के लिए, अपना कैप्चर बाइनरी फ़ॉर्मैट में सहेजें।",
+    "tcpdumpRecapture": "सीधे बाइनरी में कैप्चर करें",
+    "tcpdumpConvert": "या मौजूदा कैप्चर को कनवर्ट करें",
+    "tcpdumpTryAnother": "एक अलग फ़ाइल अपलोड करें"
   },
   "flowPicker": {
     "title": "नेटवर्क फ़्लो चुनें",
@@ -234,6 +239,41 @@
   },
   "helloChat": {
     "relayTemporarilyUnavailable": "रिले सर्वर अस्थायी रूप से अनुपलब्ध है। आप \"एक ही मशीन\" मोड का उपयोग कर सकते हैं, या रिले को स्वयं होस्ट कर सकते हैं।"
+  },
+  "protocolFamily": {
+    "tcpIp": "TCP/IP की बुनियादी बातें",
+    "tcpIpDesc": "मुख्य इंटरनेट प्रोटोकॉल: TCP हैंडशेक, TLS एन्क्रिप्शन, ARP/NDP रिज़ॉल्यूशन, और जब आप किसी लिंक पर क्लिक करते हैं तो वास्तव में क्या होता है।",
+    "ipv6": "IPv6 और संक्रमण",
+    "ipv6Desc": "अगली पीढ़ी का इंटरनेट प्रोटोकॉल: ऑटो-कॉन्फ़िगरेशन, ड्यूअल-स्टैक फ़ॉलबैक, DHCPv6, और NAT64 जैसी संक्रमण तंत्र।",
+    "interconnect": "इंटरकनेक्ट की बुनियादी बातें",
+    "interconnectDesc": "भौतिक परत की अवधारणाएँ: सीरियल बनाम पैरेलल सिग्नलिंग, बाइट क्रम, और फ़ॉरवर्ड एरर करेक्शन।",
+    "rdma": "RDMA और RoCEv2",
+    "rdmaDesc": "रिमोट डायरेक्ट मेमोरी एक्सेस: ज़ीरो-कॉपी डेटा ट्रांसफ़र, लॉसलेस Ethernet, GPU-से-GPU संचार, और AI प्रशिक्षण के लिए सामूहिक संचालन।",
+    "nvmeOf": "NVMe over Fabrics",
+    "nvmeOfDesc": "RDMA और TCP पर NVMe: खोज, कनेक्शन, और उच्च-प्रदर्शन स्टोरेज I/O।",
+    "san": "स्टोरेज एरिया नेटवर्क",
+    "sanDesc": "Fibre Channel फ़ैब्रिक लॉगिन, iSCSI सत्र, और समर्पित स्टोरेज नेटवर्क पर SCSI कमांड प्रोसेसिंग।",
+    "storage": "GPU और त्वरित स्टोरेज",
+    "storageDesc": "GPUDirect Storage: CPU को बायपास करते हुए सीधे GPU मेमोरी तक NVMe और NVMe-oF डेटा पथ।"
+  },
+  "contributing": {
+    "title": "योगदान",
+    "intro": "ProtoViz ओपन सोर्स है और योगदान का स्वागत करता है — नए परिदृश्य, अनुपालन नियम, प्रोटोकॉल डिसेक्टर, और कोड सुधार।",
+    "devSetup": "विकास परिवेश सेटअप",
+    "addScenarios": "परिदृश्य जोड़ना",
+    "scenarioCreator": "परिदृश्य निर्माता (अनुशंसित)",
+    "scenarioCreatorDesc": "लैंडिंग पेज पर \"परिदृश्य बनाएँ\" पर क्लिक करें, Anthropic API कुंजी दें, प्रोटोकॉल एक्सचेंज को सरल भाषा में वर्णित करें, और एक पूर्ण YAML परिदृश्य जनरेट करें।",
+    "fromPcap": "PCAP फ़ाइल से",
+    "fromPcapDesc": "Python कनवर्टर का उपयोग करें: python tools/converter.py capture.pcap --out public/scenarios/my-protocol/scenario.yaml",
+    "yamlStructure": "परिदृश्य YAML संरचना",
+    "yamlStructureDesc": "प्रत्येक परिदृश्य परिभाषित करता है: meta (शीर्षक, प्रोटोकॉल, लेखक, विनिर्देश), topology (एक्टर और लिंक), osi_layers (प्रति-एक्टर परत स्थिति), frames (हेडर और फ़ील्ड के साथ पैकेट परिभाषाएँ), timeline (क्रमबद्ध प्रोटोकॉल इवेंट), और glossary (शब्द परिभाषाएँ)।",
+    "prRequirements": "Pull Request आवश्यकताएँ",
+    "prRequirementsDesc": "scenario.schema.json के अनुरूप मान्य YAML। प्रत्येक फ़ील्ड को विवरण की आवश्यकता है। हेडर को विनिर्देश अनुभागों (RFC, IEEE, IBTA) का संदर्भ देना चाहिए। AI-जनित सामग्री की सटीकता के लिए समीक्षा आवश्यक है। अपना नाम meta.authors में शामिल करें।",
+    "rulesAndDissectors": "अनुपालन नियम और डिसेक्टर",
+    "rulesAndDissectorsDesc": "अनुपालन नियम public/rules/ में JSON के रूप में हैं। प्रोटोकॉल डिसेक्टर src/pcap/dissectors/ में JavaScript मॉड्यूल हैं। दोनों मौजूदा पैटर्न का पालन करते हैं — उदाहरण के लिए RoCEv2 कार्यान्वयन देखें।",
+    "codeStyle": "कोड शैली",
+    "codeStyleDesc": "React 18 फ़ंक्शनल कंपोनेंट, स्टेट मैनेजमेंट के लिए Zustand, इनलाइन स्टाइल। सबमिट करने से पहले npm run test चलाएँ।",
+    "viewOnGithub": "GitHub पर पूरा CONTRIBUTING.md देखें"
   },
   "common": {
     "save": "सहेजें",

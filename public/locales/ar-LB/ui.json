@@ -169,7 +169,12 @@
     "scenarioStats": "{{frames}} إطار، {{timeline}} حدث زمني، {{actors}} أطراف",
     "back": "رجوع",
     "downloadYaml": "تحميل YAML",
-    "preview": "معاينة"
+    "preview": "معاينة",
+    "tcpdumpDetected": "يبدو أن هذا ناتج نصي من tcpdump",
+    "tcpdumpExplanation": "الناتج النصي من tcpdump لا يتضمن البايتات الخام للحزم اللازمة للتحليل الكامل للبروتوكول. للحصول على أفضل النتائج، احفظ الالتقاط بصيغة ثنائية.",
+    "tcpdumpRecapture": "التقط مباشرة بصيغة ثنائية",
+    "tcpdumpConvert": "أو حوّل التقاطاً موجوداً",
+    "tcpdumpTryAnother": "ارفع ملفاً مختلفاً"
   },
   "flowPicker": {
     "title": "اختر تدفقات الشبكة",
@@ -276,6 +281,41 @@
     "replayAnimation": "انقر لإعادة تشغيل الرسوم المتحركة",
     "clickToReplay": "(انقر لإعادة التشغيل)",
     "relayTemporarilyUnavailable": "خادم التتابع غير متاح مؤقتاً. يمكنك استخدام وضع \"نفس الجهاز\" أو استضافة خادم التتابع بنفسك."
+  },
+  "protocolFamily": {
+    "tcpIp": "أساسيات TCP/IP",
+    "tcpIpDesc": "بروتوكولات الإنترنت الأساسية: مصافحة TCP، تشفير TLS، تحليل ARP/NDP، وما يحدث فعلاً عندما تنقر على رابط.",
+    "ipv6": "IPv6 والانتقال",
+    "ipv6Desc": "بروتوكول الإنترنت من الجيل التالي: الإعداد التلقائي، الاحتياطي ثنائي المكدس، DHCPv6، وآليات الانتقال مثل NAT64.",
+    "interconnect": "أساسيات التوصيل",
+    "interconnectDesc": "مفاهيم الطبقة الفيزيائية: الإشارات التسلسلية مقابل المتوازية، ترتيب البايتات، وتصحيح الأخطاء الأمامي.",
+    "rdma": "RDMA و RoCEv2",
+    "rdmaDesc": "الوصول المباشر للذاكرة عن بُعد: نقل البيانات بدون نسخ، Ethernet بدون فقدان، الاتصال من GPU إلى GPU، والعمليات الجماعية لتدريب الذكاء الاصطناعي.",
+    "nvmeOf": "NVMe over Fabrics",
+    "nvmeOfDesc": "NVMe عبر RDMA و TCP: الاكتشاف، الاتصال، وعمليات التخزين عالية الأداء.",
+    "san": "شبكات التخزين",
+    "sanDesc": "تسجيل الدخول في بنية Fibre Channel، جلسات iSCSI، ومعالجة أوامر SCSI عبر شبكات تخزين مخصصة.",
+    "storage": "GPU والتخزين المسرّع",
+    "storageDesc": "GPUDirect Storage: مسارات بيانات NVMe و NVMe-oF مباشرة إلى ذاكرة GPU، متجاوزة المعالج."
+  },
+  "contributing": {
+    "title": "المساهمة",
+    "intro": "ProtoViz مشروع مفتوح المصدر ويرحب بالمساهمات — سيناريوهات جديدة، قواعد امتثال، محللات بروتوكولات، وتحسينات على الكود.",
+    "devSetup": "إعداد بيئة التطوير",
+    "addScenarios": "إضافة سيناريوهات",
+    "scenarioCreator": "منشئ السيناريوهات (موصى به)",
+    "scenarioCreatorDesc": "انقر على \"إنشاء سيناريو\" في الصفحة الرئيسية، أدخل مفتاح API من Anthropic، صِف تبادل البروتوكول بالعربية أو الإنجليزية، وأنشئ سيناريو YAML كامل.",
+    "fromPcap": "من ملف PCAP",
+    "fromPcapDesc": "استخدم المحوّل بلغة Python: python tools/converter.py capture.pcap --out public/scenarios/my-protocol/scenario.yaml",
+    "yamlStructure": "بنية ملف YAML للسيناريو",
+    "yamlStructureDesc": "كل سيناريو يحدد: meta (العنوان، البروتوكول، المؤلفون، المواصفات)، topology (الأطراف والروابط)، osi_layers (حالة الطبقة لكل طرف)، frames (تعريفات الحزم مع الحقول والرؤوس)، timeline (أحداث البروتوكول بالترتيب)، و glossary (تعريفات المصطلحات).",
+    "prRequirements": "متطلبات طلب الدمج",
+    "prRequirementsDesc": "YAML صالح يتوافق مع scenario.schema.json. كل حقل يحتاج وصفاً. الرؤوس يجب أن تشير إلى أقسام المواصفات (RFC، IEEE، IBTA). المحتوى المُنشأ بالذكاء الاصطناعي يجب مراجعته للتأكد من دقته. أضف اسمك في meta.authors.",
+    "rulesAndDissectors": "قواعد الامتثال والمحللات",
+    "rulesAndDissectorsDesc": "قواعد الامتثال موجودة في public/rules/ كملفات JSON. محللات البروتوكولات هي وحدات JavaScript في src/pcap/dissectors/. كلاهما يتبع الأنماط الموجودة — راجع تطبيقات RoCEv2 كأمثلة.",
+    "codeStyle": "أسلوب الكود",
+    "codeStyleDesc": "مكونات React 18 الوظيفية، Zustand لإدارة الحالة، أنماط مضمنة. شغّل npm run test قبل الإرسال.",
+    "viewOnGithub": "عرض ملف CONTRIBUTING.md الكامل على GitHub"
   },
   "common": {
     "save": "حفظ",

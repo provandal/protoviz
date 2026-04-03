@@ -169,7 +169,12 @@
     "scenarioStats": "{{frames}} kadri, {{timeline}} evènman kronolojik, {{actors}} aktè",
     "back": "Retounen",
     "downloadYaml": "Telechaje YAML",
-    "preview": "Apèsi"
+    "preview": "Apèsi",
+    "tcpdumpDetected": "Sa sanble se yon rezilta tèks tcpdump",
+    "tcpdumpExplanation": "Rezilta tèks tcpdump pa gen okè pakè bri ki nesesè pou yon analiz pwotokòl konplè. Pou pi bon rezilta, anrejistre kaptir ou a nan fòma binè.",
+    "tcpdumpRecapture": "Kapte dirèkteman nan fòma binè",
+    "tcpdumpConvert": "Oswa konvèti yon kaptir ki deja egziste",
+    "tcpdumpTryAnother": "Telechaje yon lòt fichye"
   },
   "flowPicker": {
     "title": "Chwazi Flo Rezo",
@@ -276,6 +281,41 @@
     "replayAnimation": "Klike pou rejwe animasyon an",
     "clickToReplay": "(klike pou rejwe)",
     "relayTemporarilyUnavailable": "Sèvè relè a pa disponib pou kounye a. Ou ka toujou itilize mòd \"Menm Machin\" oswa héberger relè a ou menm."
+  },
+  "protocolFamily": {
+    "tcpIp": "Fondamantal TCP/IP",
+    "tcpIpDesc": "Pwotokòl entènèt prensipal: TCP handshakes, chifreman TLS, rezolisyon ARP/NDP, ak sa ki vrèman pase lè ou klike sou yon lyen.",
+    "ipv6": "IPv6 ak Tranzisyon",
+    "ipv6Desc": "Pwotokòl entènèt pwochen jenerasyon: otokonfigirasyon, repli doub pile, DHCPv6, ak mekanis tranzisyon tankou NAT64.",
+    "interconnect": "Fondamantal Entèkoneksyon",
+    "interconnectDesc": "Konsèp kouch fizik: siyalizasyon seri kont paralèl, lòd bayt, ak koreksyon erè anvans.",
+    "rdma": "RDMA ak RoCEv2",
+    "rdmaDesc": "Aksè Dirèk Memwa a Distans: transfè done san kopi, Ethernet san pèt, kominikasyon GPU-a-GPU, ak operasyon kolektif pou antrènman IA.",
+    "nvmeOf": "NVMe over Fabrics",
+    "nvmeOfDesc": "NVMe sou RDMA ak TCP: dekouvèt, koneksyon, ak operasyon estokaj gwo pèfòmans.",
+    "san": "Rezo Zòn Estokaj",
+    "sanDesc": "Koneksyon fabric Fibre Channel, sesyon iSCSI, ak tretman kòmand SCSI sou rezo estokaj dedye.",
+    "storage": "GPU ak Estokaj Akselere",
+    "storageDesc": "GPUDirect Storage: chemen done NVMe ak NVMe-oF dirèkteman nan memwa GPU, san pase nan CPU."
+  },
+  "contributing": {
+    "title": "Kontribisyon",
+    "intro": "ProtoViz se kòd ouvè epi li akeyi kontribisyon — nouvo senaryo, règ konfòmite, disektè pwotokòl, ak amelyorasyon kòd.",
+    "devSetup": "Konfigirasyon Anviwonman Devlopman",
+    "addScenarios": "Ajoute Senaryo",
+    "scenarioCreator": "Kreyatè Senaryo (rekòmande)",
+    "scenarioCreatorDesc": "Klike sou \"Kreye Senaryo\" sou paj akèy la, bay yon kle API Anthropic, dekri echanj pwotokòl la an langaj senp, epi jenere yon senaryo YAML konplè.",
+    "fromPcap": "Depi yon fichye PCAP",
+    "fromPcapDesc": "Itilize konvètisè Python nan: python tools/converter.py capture.pcap --out public/scenarios/my-protocol/scenario.yaml",
+    "yamlStructure": "Estrikti YAML Senaryo",
+    "yamlStructureDesc": "Chak senaryo defini: meta (tit, pwotokòl, otè, espesifikasyon), topology (aktè ak lyen), osi_layers (eta kouch pa aktè), frames (definisyon pakè ak antèt ak chan), timeline (evènman pwotokòl klase), ak glossary (definisyon tèm).",
+    "prRequirements": "Egzijans Pull Request",
+    "prRequirementsDesc": "YAML valid ki konfòm ak scenario.schema.json. Chak chan bezwen yon deskripsyon. Antèt yo dwe refere a seksyon espesifikasyon (RFC, IEEE, IBTA). Kontni IA jenere dwe verifye pou presizyon. Mete non ou nan meta.authors.",
+    "rulesAndDissectors": "Règ Konfòmite ak Disektè",
+    "rulesAndDissectorsDesc": "Règ konfòmite yo nan public/rules/ kòm JSON. Disektè pwotokòl yo se modil JavaScript nan src/pcap/dissectors/. Toude swiv modèl ki deja egziste — gade implantasyon RoCEv2 kòm egzanp.",
+    "codeStyle": "Estil Kòd",
+    "codeStyleDesc": "Konpozan fonksyonèl React 18, Zustand pou jesyon eta, estil inline. Egzekite npm run test anvan soumèt.",
+    "viewOnGithub": "Wè CONTRIBUTING.md konplè a sou GitHub"
   },
   "common": {
     "save": "Anrejistre",

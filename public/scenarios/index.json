@@ -246,7 +246,7 @@
       "slug": "byte-order-endianness",
       "title": "Endianness: Why Networks and CPUs Disagree on Byte Order",
       "protocol": "TCP/IP",
-      "protocol_family": "TCP/IP",
+      "protocol_family": "Interconnect Fundamentals",
       "difficulty": "beginner",
       "description": "Little-endian vs big-endian: how your CPU stores 0x0050 one way but the network expects it another. See the real bug that happens when you forget htons(), and learn the four functions that fix it.",
       "tags": ["endianness", "byte order", "htons", "ntohs", "network byte order", "TCP/IP", "beginner", "education"],

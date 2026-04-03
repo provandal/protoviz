@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { parsePcap } from '../../pcap/pcapReader';
 import { parseTsharkJson } from '../../pcap/tsharkReader';
+import { detectTcpdumpText } from '../../pcap/tcpdumpDetect';
 import { dissectPacket } from '../../pcap/dissect';
 import { evaluateRules } from '../../pcap/ruleEngine';
 import { filterConversation, packetsToScenario } from '../../pcap/pcapToScenario';
@@ -72,6 +73,7 @@ export default function TroubleshooterPage() {
   const [flowResult, setFlowResult] = useState(null);     // from groupFlows()
   const [showFlowPicker, setShowFlowPicker] = useState(false);
   const [selectedFlowIds, setSelectedFlowIds] = useState(null); // string[] | null
+  const [tcpdumpDetected, setTcpdumpDetected] = useState(false);
   const fileRef = useRef(null);
 
   const loadAndEvaluateRules = useCallback(async (dissected) => {
@@ -111,6 +113,7 @@ export default function TroubleshooterPage() {
     setError(null);
     setFileName(file.name);
     setFindings(null);
+    setTcpdumpDetected(false);
 
     try {
       let dissected;
@@ -127,6 +130,11 @@ export default function TroubleshooterPage() {
       } else {
         // Text/JSON — decode handling UTF-16 BOM
         const text = decodeText(buffer);
+        if (detectTcpdumpText(text)) {
+          setTcpdumpDetected(true);
+          setLoading(false);
+          return;
+        }
         const { packets: parsed } = parseTsharkJson(text);
         dissected = parsed;
         setInputFormat('tshark JSON');
@@ -179,6 +187,7 @@ export default function TroubleshooterPage() {
     setFlowResult(null);
     setShowFlowPicker(false);
     setSelectedFlowIds(null);
+    setTcpdumpDetected(false);
     if (fileRef.current) fileRef.current.value = '';
   }, []);
 
@@ -303,7 +312,53 @@ export default function TroubleshooterPage() {
       </div>
 
       {/* Upload area or results */}
-      {!packets ? (
+      {tcpdumpDetected ? (
+        /* tcpdump text guidance panel */
+        <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', overflow: 'auto' }}>
+          <div style={{
+            maxWidth: 540, width: '90%', textAlign: 'center',
+            background: '#0f172a', border: '1px solid #1e293b', borderRadius: 12,
+            padding: '32px 28px',
+          }}>
+            <div style={{ fontSize: 32, marginBottom: 12 }}>{'\u{1F4CB}'}</div>
+            <div style={{ color: '#f59e0b', fontSize: 15, fontWeight: 700, marginBottom: 8 }}>
+              {t('troubleshooter.tcpdumpDetected')}
+            </div>
+            <div style={{ color: '#94a3b8', fontSize: 12, lineHeight: 1.7, marginBottom: 20 }}>
+              {t('troubleshooter.tcpdumpExplanation')}
+            </div>
+
+            <div style={{
+              background: '#020817', borderRadius: 6, padding: '12px 16px',
+              textAlign: 'left', marginBottom: 16,
+            }}>
+              <div style={{ color: '#475569', fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 8 }}>
+                {t('troubleshooter.tcpdumpRecapture')}
+              </div>
+              <code style={{ color: '#a5f3fc', fontSize: 11, fontFamily: "'IBM Plex Mono', monospace", lineHeight: 1.8, display: 'block' }}>
+                {'tcpdump -w capture.pcap [your filters]'}
+              </code>
+              <div style={{ color: '#475569', fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', margin: '12px 0 8px' }}>
+                {t('troubleshooter.tcpdumpConvert')}
+              </div>
+              <code style={{ color: '#a5f3fc', fontSize: 11, fontFamily: "'IBM Plex Mono', monospace", lineHeight: 1.8, display: 'block' }}>
+                {'tcpdump -r existing.pcap -w binary.pcap'}
+              </code>
+            </div>
+
+            <button
+              onClick={reset}
+              style={{
+                background: 'linear-gradient(135deg, #1e40af, #7c3aed)',
+                color: '#fff', padding: '8px 20px', borderRadius: 6,
+                cursor: 'pointer', fontSize: 12, fontWeight: 600, border: 'none',
+              }}
+            >
+              {t('troubleshooter.tcpdumpTryAnother')}
+            </button>
+          </div>
+        </div>
+      ) : !packets ? (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40 }}>
           <div style={{ textAlign: 'center', maxWidth: 560 }}>
             <div style={{ fontSize: 48, marginBottom: 16, opacity: 0.3 }}>📡</div>

@@ -169,7 +169,12 @@
     "scenarioStats": "{{frames}} tramas, {{timeline}} eventos de línea de tiempo, {{actors}} actores",
     "back": "Volver",
     "downloadYaml": "Descargar YAML",
-    "preview": "Vista previa"
+    "preview": "Vista previa",
+    "tcpdumpDetected": "Esto parece ser una salida de texto de tcpdump",
+    "tcpdumpExplanation": "La salida de texto de tcpdump no incluye los bytes crudos de los paquetes necesarios para un análisis completo del protocolo. Para obtener los mejores resultados, guarda tu captura en formato binario.",
+    "tcpdumpRecapture": "Capturar directamente en binario",
+    "tcpdumpConvert": "O convertir una captura existente",
+    "tcpdumpTryAnother": "Subir un archivo diferente"
   },
   "flowPicker": {
     "title": "Seleccionar Flujos de Red",
@@ -276,6 +281,41 @@
     "replayAnimation": "Haz clic para repetir la animación",
     "clickToReplay": "(clic para repetir)",
     "relayTemporarilyUnavailable": "El servidor relay no está disponible temporalmente. Puedes usar el modo \"Misma Máquina\" o alojar el relay tú mismo."
+  },
+  "protocolFamily": {
+    "tcpIp": "Fundamentos de TCP/IP",
+    "tcpIpDesc": "Protocolos centrales de internet: handshakes TCP, cifrado TLS, resolución ARP/NDP, y qué sucede realmente cuando haces clic en un enlace.",
+    "ipv6": "IPv6 y Transición",
+    "ipv6Desc": "Protocolo de internet de próxima generación: autoconfiguración, fallback de doble pila, DHCPv6, y mecanismos de transición como NAT64.",
+    "interconnect": "Fundamentos de Interconexión",
+    "interconnectDesc": "Conceptos de la capa física: señalización serial vs. paralela, orden de bytes y corrección de errores hacia adelante.",
+    "rdma": "RDMA & RoCEv2",
+    "rdmaDesc": "Acceso Directo Remoto a Memoria: transferencias de datos sin copia, Ethernet sin pérdidas, comunicación GPU a GPU y operaciones colectivas para entrenamiento de IA.",
+    "nvmeOf": "NVMe over Fabrics",
+    "nvmeOfDesc": "NVMe sobre RDMA y TCP: descubrimiento, conexión y E/S de almacenamiento de alto rendimiento.",
+    "san": "Redes de Área de Almacenamiento",
+    "sanDesc": "Inicio de sesión en fabric Fibre Channel, sesiones iSCSI y procesamiento de comandos SCSI sobre redes de almacenamiento dedicadas.",
+    "storage": "GPU y Almacenamiento Acelerado",
+    "storageDesc": "GPUDirect Storage: rutas de datos NVMe y NVMe-oF directamente a la memoria GPU, sin pasar por la CPU."
+  },
+  "contributing": {
+    "title": "Contribuir",
+    "intro": "ProtoViz es código abierto y acepta contribuciones — nuevos escenarios, reglas de cumplimiento, disectores de protocolos y mejoras de código.",
+    "devSetup": "Configuración del Entorno de Desarrollo",
+    "addScenarios": "Agregar Escenarios",
+    "scenarioCreator": "Creador de Escenarios (recomendado)",
+    "scenarioCreatorDesc": "Haz clic en \"Crear Escenario\" en la página principal, proporciona una clave API de Anthropic, describe el intercambio de protocolo en lenguaje natural y genera un escenario YAML completo.",
+    "fromPcap": "Desde un archivo PCAP",
+    "fromPcapDesc": "Usa el convertidor Python: python tools/converter.py capture.pcap --out public/scenarios/my-protocol/scenario.yaml",
+    "yamlStructure": "Estructura YAML del Escenario",
+    "yamlStructureDesc": "Cada escenario define: meta (título, protocolo, autores, especificaciones), topology (actores y enlaces), osi_layers (estado de capa por actor), frames (definiciones de paquetes con encabezados y campos), timeline (eventos de protocolo ordenados) y glossary (definiciones de términos).",
+    "prRequirements": "Requisitos del Pull Request",
+    "prRequirementsDesc": "YAML válido conforme a scenario.schema.json. Cada campo necesita una descripción. Los encabezados deben hacer referencia a secciones de especificación (RFC, IEEE, IBTA). El contenido generado por IA debe ser revisado para verificar su precisión. Incluye tu nombre en meta.authors.",
+    "rulesAndDissectors": "Reglas de Cumplimiento y Disectores",
+    "rulesAndDissectorsDesc": "Las reglas de cumplimiento están en public/rules/ como JSON. Los disectores de protocolos son módulos JavaScript en src/pcap/dissectors/. Ambos siguen los patrones existentes — consulta las implementaciones de RoCEv2 como ejemplo.",
+    "codeStyle": "Estilo de Código",
+    "codeStyleDesc": "Componentes funcionales de React 18, Zustand para gestión de estado, estilos inline. Ejecuta npm run test antes de enviar.",
+    "viewOnGithub": "Ver CONTRIBUTING.md completo en GitHub"
   },
   "common": {
     "save": "Guardar",

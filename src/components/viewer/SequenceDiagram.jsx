@@ -104,7 +104,8 @@ export default function SequenceDiagram({ timeline, currentStep, onStepSelect, l
             const isPast = idx < currentStep;
             const hasNote = !!annotations[idx];
             const hasCommunityNote = communitySteps.has(idx);
-            const color = ev.color || '#475569';
+            const isError = ev.type === 'error';
+            const color = isError ? '#ef4444' : (ev.color || '#475569');
             const isFrame = ev.type === 'frame_tx';
             const span = isFrame ? getFrameSpan(ev, leftActorId, rightActorId) : getStateChangeSpan(ev, leftActorId, rightActorId);
             // Direction: who is sending?
@@ -153,6 +154,8 @@ export default function SequenceDiagram({ timeline, currentStep, onStepSelect, l
                   <div style={{ flex: 1, textAlign: 'center', position: 'relative' }}>
                     {isFrame ? (
                       <FrameRow ev={ev} dir={dir} span={span} color={color} isCurrent={isCurrent} isPast={isPast} receiverLabel={receiverLabel} />
+                    ) : isError ? (
+                      <ErrorRow ev={ev} span={span} isCurrent={isCurrent} isPast={isPast} />
                     ) : (
                       <StateChangeRow ev={ev} span={span} isCurrent={isCurrent} isPast={isPast} />
                     )}
@@ -216,6 +219,35 @@ function FrameRow({ ev, dir, span, color, isCurrent, isPast, receiverLabel }) {
 /**
  * Renders a state_change event with visual span indicating which actors are involved.
  */
+function ErrorRow({ ev, span, isCurrent, isPast }) {
+  const textColor = isPast ? '#7f1d1d' : isCurrent ? '#fca5a5' : '#ef4444';
+  const lineColor = isPast ? '#7f1d1d' : isCurrent ? '#dc2626' : '#991b1b';
+
+  const alignment = span === 'left' ? 'flex-start' : span === 'right' ? 'flex-end' : 'center';
+  const widthPct = (span === 'left' || span === 'right') ? '55%' : span === 'center' ? '30%' : '100%';
+
+  return (
+    <div style={{ display: 'flex', justifyContent: alignment, width: '100%' }}>
+      <div style={{ width: widthPct, position: 'relative' }}>
+        <div style={{
+          height: 1, borderTop: `2px dashed ${lineColor}`,
+          margin: '8px 0',
+          transition: 'all 0.3s',
+        }} />
+        <div className="pvz-seq-label" style={{
+          color: textColor, fontSize: 10,
+          fontWeight: isCurrent ? 700 : 500,
+          padding: '0 4px',
+          transition: 'color 0.2s',
+          textAlign: 'center',
+        }}>
+          {'\u26A0'} {ev.label}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StateChangeRow({ ev, span, isCurrent, isPast }) {
   const textColor = isPast ? '#334155' : isCurrent ? '#f1f5f9' : '#64748b';
   const lineColor = isPast ? '#334155' : isCurrent ? '#475569' : '#1e293b';

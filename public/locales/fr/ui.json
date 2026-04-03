@@ -169,7 +169,12 @@
     "scenarioStats": "{{frames}} trames, {{timeline}} événements chronologiques, {{actors}} acteurs",
     "back": "Retour",
     "downloadYaml": "Télécharger le YAML",
-    "preview": "Aperçu"
+    "preview": "Aperçu",
+    "tcpdumpDetected": "Ceci semble être une sortie texte de tcpdump",
+    "tcpdumpExplanation": "La sortie texte de tcpdump ne contient pas les octets bruts des paquets nécessaires à une analyse protocolaire complète. Pour de meilleurs résultats, enregistrez votre capture au format binaire.",
+    "tcpdumpRecapture": "Capturer directement en binaire",
+    "tcpdumpConvert": "Ou convertir une capture existante",
+    "tcpdumpTryAnother": "Téléverser un autre fichier"
   },
   "flowPicker": {
     "title": "Sélectionner les Flux Réseau",
@@ -276,6 +281,41 @@
     "replayAnimation": "Cliquez pour rejouer l'animation",
     "clickToReplay": "(cliquez pour rejouer)",
     "relayTemporarilyUnavailable": "Le serveur relais est temporairement indisponible. Vous pouvez utiliser le mode \"Même Machine\" ou héberger le relais vous-même."
+  },
+  "protocolFamily": {
+    "tcpIp": "Fondamentaux TCP/IP",
+    "tcpIpDesc": "Protocoles fondamentaux d'internet : handshakes TCP, chiffrement TLS, résolution ARP/NDP, et ce qui se passe vraiment quand vous cliquez sur un lien.",
+    "ipv6": "IPv6 & Transition",
+    "ipv6Desc": "Protocole internet de nouvelle génération : autoconfiguration, repli double pile, DHCPv6, et mécanismes de transition comme NAT64.",
+    "interconnect": "Fondamentaux d'Interconnexion",
+    "interconnectDesc": "Concepts de la couche physique : signalisation série vs. parallèle, ordre des octets et correction d'erreurs en aval.",
+    "rdma": "RDMA & RoCEv2",
+    "rdmaDesc": "Accès direct à la mémoire à distance : transferts de données sans copie, Ethernet sans perte, communication GPU à GPU et opérations collectives pour l'entraînement IA.",
+    "nvmeOf": "NVMe over Fabrics",
+    "nvmeOfDesc": "NVMe sur RDMA et TCP : découverte, connexion et E/S de stockage haute performance.",
+    "san": "Réseaux de Stockage",
+    "sanDesc": "Connexion au fabric Fibre Channel, sessions iSCSI et traitement des commandes SCSI sur des réseaux de stockage dédiés.",
+    "storage": "GPU & Stockage Accéléré",
+    "storageDesc": "GPUDirect Storage : chemins de données NVMe et NVMe-oF directement vers la mémoire GPU, en contournant le CPU."
+  },
+  "contributing": {
+    "title": "Contribuer",
+    "intro": "ProtoViz est open source et accueille les contributions — nouveaux scénarios, règles de conformité, dissecteurs de protocoles et améliorations du code.",
+    "devSetup": "Configuration de l'Environnement de Développement",
+    "addScenarios": "Ajouter des Scénarios",
+    "scenarioCreator": "Créateur de Scénarios (recommandé)",
+    "scenarioCreatorDesc": "Cliquez sur « Créer un Scénario » sur la page d'accueil, fournissez une clé API Anthropic, décrivez l'échange de protocole en langage courant et générez un scénario YAML complet.",
+    "fromPcap": "À partir d'un fichier PCAP",
+    "fromPcapDesc": "Utilisez le convertisseur Python : python tools/converter.py capture.pcap --out public/scenarios/my-protocol/scenario.yaml",
+    "yamlStructure": "Structure YAML du Scénario",
+    "yamlStructureDesc": "Chaque scénario définit : meta (titre, protocole, auteurs, spécifications), topology (acteurs et liens), osi_layers (état de couche par acteur), frames (définitions de paquets avec en-têtes et champs), timeline (événements de protocole ordonnés) et glossary (définitions des termes).",
+    "prRequirements": "Exigences du Pull Request",
+    "prRequirementsDesc": "YAML valide conforme à scenario.schema.json. Chaque champ nécessite une description. Les en-têtes doivent faire référence aux sections de spécification (RFC, IEEE, IBTA). Le contenu généré par IA doit être vérifié pour son exactitude. Incluez votre nom dans meta.authors.",
+    "rulesAndDissectors": "Règles de Conformité & Dissecteurs",
+    "rulesAndDissectorsDesc": "Les règles de conformité se trouvent dans public/rules/ au format JSON. Les dissecteurs de protocoles sont des modules JavaScript dans src/pcap/dissectors/. Les deux suivent les modèles existants — consultez les implémentations RoCEv2 comme exemples.",
+    "codeStyle": "Style de Code",
+    "codeStyleDesc": "Composants fonctionnels React 18, Zustand pour la gestion d'état, styles inline. Exécutez npm run test avant de soumettre.",
+    "viewOnGithub": "Voir le CONTRIBUTING.md complet sur GitHub"
   },
   "common": {
     "save": "Enregistrer",
