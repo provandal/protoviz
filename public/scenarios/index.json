@@ -61,6 +61,36 @@
       "path": "fc/fc-fabric-login-scsi-io.yaml"
     },
     {
+      "slug": "fc-flogi-reject",
+      "title": "FC FLOGI Reject: When Fabric Login Fails",
+      "protocol": "Fibre Channel",
+      "protocol_family": "SAN",
+      "difficulty": "advanced",
+      "description": "Error scenario: HBA sends FLOGI and the switch responds with LS_RJT instead of ACC. Demonstrates three common failure causes — zone configuration error, port type mismatch (F-port vs E-port), and duplicate WWPN — with reason codes, diagnostic guidance, and CLI fix examples.",
+      "tags": ["Fibre Channel", "FC", "SAN", "FLOGI", "LS_RJT", "error", "troubleshooting", "zoning", "education"],
+      "path": "fc/fc-flogi-reject.yaml"
+    },
+    {
+      "slug": "fc-bb-credit-flow-control",
+      "title": "FC Buffer Credits: Lossless Flow Control Without Pause Frames",
+      "protocol": "Fibre Channel",
+      "protocol_family": "SAN",
+      "difficulty": "intermediate",
+      "description": "FC's unique credit-based flow control: BB_Credit negotiation during FLOGI, R_RDY credit replenishment in steady state, credit starvation under congestion, and recovery. Contrasts FC buffer-to-buffer flow control with Ethernet PFC and TCP window-based approaches.",
+      "tags": ["Fibre Channel", "FC", "SAN", "BB_Credit", "R_RDY", "flow control", "credit starvation", "slow drain", "32GFC", "education"],
+      "path": "fc/fc-bb-credit-flow-control.yaml"
+    },
+    {
+      "slug": "fc-nvme-discovery-io",
+      "title": "FC-NVMe: NVMe over Fibre Channel — Discovery → Connect → I/O",
+      "protocol": "FC-NVMe",
+      "protocol_family": "SAN",
+      "difficulty": "advanced",
+      "description": "Complete FC-NVMe flow on 32GFC: FLOGI, PLOGI, PRLI with NVMe type 0x28 (the key difference from FCP/SCSI), Discovery Controller via FC-NVMe LS, Discovery Log Page, I/O Controller connect, Identify Controller/Namespace, NVMe Write (CMD IU → XFER_RDY → DATA IU → RSP IU) and Read (CMD IU → DATA IU → RSP IU). Compares with both traditional FCP and NVMe-oF/RDMA throughout.",
+      "tags": ["Fibre Channel", "FC", "FC-NVMe", "NVMe", "NVMe-oF", "SAN", "32GFC", "PRLI", "storage", "education"],
+      "path": "fc/fc-nvme-discovery-io.yaml"
+    },
+    {
       "slug": "nvme-tcp-cdc-discovery-io",
       "title": "NVMe/TCP: mDNS → CDC Discovery → DIM → Subsystem Connect → I/O",
       "protocol": "NVMe-oF/TCP",
@@ -263,6 +293,16 @@
       "path": "fc-sp/fc-sp3-secure-hba-edif.yaml"
     },
     {
+      "slug": "fc-sp3-dhchap-auth-failure",
+      "title": "FC-SP-3 DH-CHAP: When Authentication Fails",
+      "protocol": "FC-SP-3 / DH-CHAP",
+      "protocol_family": "SAN",
+      "difficulty": "advanced",
+      "description": "Error scenario: DH-CHAP authentication fails due to mismatched shared secrets between HBA and switch. Traces AUTH_Negotiate through DH-CHAP Challenge/Reply, shows the hash comparison failure, AUTH_Reject with reason codes, and LOGO connection teardown. Includes diagnosis steps and security implications.",
+      "tags": ["FC-SP-3", "DH-CHAP", "Fibre Channel", "SAN", "authentication", "error", "troubleshooting", "AUTH_Reject", "LOGO", "shared-secret", "education"],
+      "path": "fc-sp/fc-sp3-dhchap-auth-failure.yaml"
+    },
+    {
       "slug": "parallel-to-serial-scsi-pcie",
       "title": "[DRAFT] Parallel vs. Serial: From SCSI Buses to PCIe Lanes",
       "protocol": "SCSI / PCIe",
@@ -271,6 +311,16 @@
       "description": "Why did the industry abandon parallel buses in favor of serial links? This scenario walks through a parallel SCSI command exchange, exposes the physical limits that killed the parallel bus, and shows how PCIe solved each problem with a serial differential-pair architecture.",
       "tags": ["fundamentals", "SCSI", "PCIe", "parallel", "serial", "interconnect", "beginner", "history", "education"],
       "path": "parallel-to-serial/parallel-to-serial-scsi-pcie.yaml"
+    },
+    {
+      "slug": "fc-rscn-state-change",
+      "title": "FC RSCN: How Fabric Topology Changes Propagate to End Devices",
+      "protocol": "Fibre Channel",
+      "protocol_family": "SAN",
+      "difficulty": "intermediate",
+      "description": "What happens when a host disappears from the fabric? Traces the complete RSCN flow: Host A goes offline, switch detects failure, removes Name Server entries, sends RSCN to registered ports, Host B acknowledges, re-queries the Name Server, discovers Host A is gone, and triggers multipath failover.",
+      "tags": ["Fibre Channel", "FC", "SAN", "RSCN", "SCR", "Name Server", "multipath", "failover", "32GFC", "education"],
+      "path": "fc/fc-rscn-state-change.yaml"
     },
     {
       "slug": "nvme-tcp-vertical-stack-connect-write",

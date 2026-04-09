@@ -1,0 +1,1657 @@
+meta:
+  id: "fc-rscn-state-change"
+  title: "FC RSCN: How Fabric Topology Changes Propagate to End Devices"
+  protocol: "Fibre Channel"
+  protocol_family: "SAN"
+  version: "1.0.0"
+  description: >
+    What happens when a host disappears from the fabric? This scenario traces the
+    complete Registered State Change Notification (RSCN) flow: Host A goes offline
+    (cable pull), the FC switch detects the link failure, removes Host A from the
+    Name Server database, and sends an RSCN ELS to every port that registered for
+    notifications via SCR. Host B receives the RSCN, acknowledges it, queries the
+    Name Server to learn what changed, discovers Host A is gone, and cleans up local
+    session state. This is the mechanism that drives multipath failover in production
+    SAN environments.
+
+  learning_objectives:
+    - "Understand how FC switches detect port failures and propagate topology changes"
+    - "Trace the RSCN ELS frame structure: command code, page length, affected port pages"
+    - "See how State Change Registration (SCR) determines which ports receive RSCNs"
+    - "Follow the RSCN → ACC → Name Server re-query pattern used by all FC HBA drivers"
+    - "Learn how address format codes (port, area, domain) control RSCN granularity"
+    - "Connect RSCN to real-world multipath failover — this is how dm-multipath knows to reroute I/O"
+    - "Understand event qualifiers and how they distinguish port removal from port change"
+
+  difficulty: "intermediate"
+
+  authors:
+    - name: "Erik Smith"
+      org: "Dell Technologies"
+    - name: "Claude"
+      org: "Anthropic"
+
+  created: "2026-03-30"
+  updated: "2026-03-30"
+
+  tags:
+    - "Fibre Channel"
+    - "FC"
+    - "SAN"
+    - "RSCN"
+    - "SCR"
+    - "Name Server"
+    - "fabric notification"
+    - "multipath"
+    - "failover"
+    - "32GFC"
+    - "education"
+
+  primary_specs:
+    - document: "FC-LS-4"
+      section: "5.9"
+      title: "RSCN — Registered State Change Notification"
+      url: "https://www.t11.org/fcSite/fcretr.html"
+    - document: "FC-LS-4"
+      section: "5.10"
+      title: "SCR — State Change Registration"
+      url: "https://www.t11.org/fcSite/fcretr.html"
+    - document: "FC-LS-4"
+      section: "4.2"
+      title: "ACC — Accept"
+      url: "https://www.t11.org/fcSite/fcretr.html"
+    - document: "FC-GS-8"
+      section: "5"
+      title: "Name Server queries (GNN_ID, GPN_ID, GID_FT)"
+      url: "https://www.t11.org/fcSite/fcretr.html"
+    - document: "FC-FS-5"
+      section: "7"
+      title: "Port State Machine and link failure detection"
+      url: "https://www.t11.org/fcSite/fcretr.html"
+
+  source_references:
+    - repo: "torvalds/linux"
+      path: "drivers/scsi/lpfc/lpfc_els.c"
+      description: "Emulex/Broadcom lpfc — RSCN receive handling, SCR registration"
+    - repo: "torvalds/linux"
+      path: "drivers/scsi/lpfc/lpfc_hbadisc.c"
+      description: "lpfc — RSCN-triggered re-discovery and device removal"
+    - repo: "torvalds/linux"
+      path: "drivers/scsi/qla2xxx/qla_gs.c"
+      description: "QLogic/Marvell qla2xxx — Name Server re-query after RSCN"
+    - repo: "torvalds/linux"
+      path: "drivers/scsi/lpfc/lpfc_ct.c"
+      description: "lpfc — Name Server CT request handling (GID_FT, GPN_ID, GNN_ID)"
+    - repo: "torvalds/linux"
+      path: "drivers/md/dm-mpath.c"
+      description: "Device-mapper multipath — path failure handling triggered by RSCN"
+
+  content_disclaimer: >
+    Protocol descriptions in this scenario are based on open-source implementations
+    (Linux kernel, open-fc) and publicly available T11/INCITS standards summaries.
+    No proprietary specification text has been reproduced. Spec references are
+    provided as citations for further reading.
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "host_a"
+      type: "initiator"
+      label: "Host A (Goes Offline)"
+      description: "FC initiator that will go offline — cable pull or HBA failure. FCID 0x010100, registered with fabric, active sessions with Host B."
+      hardware: "32GFC dual-port HBA"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "FC Switch (Name Server)"
+      description: "32GFC FC switch with embedded Name Server, SCR registration table, RSCN generation, and FCID routing"
+      hardware: "32GFC FC switch"
+      position: "center"
+
+    - id: "host_b"
+      type: "initiator"
+      label: "Host B (Receives RSCN)"
+      description: "FC initiator registered for state change notifications via SCR. FCID 0x010200. Will receive RSCN when topology changes."
+      hardware: "32GFC dual-port HBA"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      position: "right"
+
+  links:
+    - id: "link-a-sw"
+      from: "host_a"
+      to: "switch"
+      speed_gbps: 32
+      media: "fiber_sr"
+      fec: "RS-FEC"
+    - id: "link-sw-b"
+      from: "switch"
+      to: "host_b"
+      speed_gbps: 32
+      media: "fiber_sr"
+      fec: "RS-FEC"
+
+# ─────────────────────────────────────────────────────────────────
+# LAYER DEFINITIONS (per actor)
+# FC uses FC-0 through FC-4 rather than the OSI model.
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  host_a:
+    - layer: 4
+      name: "FC-4 Upper Layer Protocol"
+      components: ["FCP-4", "lpfc_scsi.c", "SCSI sd_mod", "dm-multipath"]
+      state_schema:
+        scsi_state:
+          type: "string"
+          description: "SCSI host adapter state"
+          initial: "online"
+        fcp_state:
+          type: "string"
+          description: "FCP session state with remote ports"
+          initial: "active"
+
+    - layer: 2
+      name: "FC-2 Framing / Signaling"
+      components: ["lpfc_sli.c", "lpfc_els.c", "lpfc_ct.c", "FC-LS", "FC-GS"]
+      state_schema:
+        my_fcid:
+          type: "string"
+          description: "Assigned N_Port ID (FCID)"
+          initial: "0x010100"
+        bb_credit:
+          type: "integer"
+          description: "Buffer-to-buffer credit"
+          initial: 16
+        fabric_login:
+          type: "string"
+          description: "Fabric login state"
+          initial: "complete"
+        active_exchanges:
+          type: "integer"
+          description: "Number of active exchanges"
+          initial: 0
+
+    - layer: 1
+      name: "FC-1 Encoding"
+      components: ["64b/66b encoding", "word sync"]
+      state_schema:
+        encoding:
+          type: "string"
+          initial: "64b/66b"
+        word_sync:
+          type: "boolean"
+          initial: true
+
+    - layer: 0
+      name: "FC-0 Physical"
+      components: ["32GFC SFP28", "850nm VCSEL"]
+      state_schema:
+        phy_state:
+          type: "string"
+          description: "Physical port state"
+          initial: "UP"
+        speed:
+          type: "string"
+          initial: "32GFC"
+        signal_detect:
+          type: "boolean"
+          initial: true
+
+  host_b:
+    - layer: 4
+      name: "FC-4 Upper Layer Protocol"
+      components: ["FCP-4", "lpfc_scsi.c", "SCSI sd_mod", "dm-multipath"]
+      state_schema:
+        scsi_state:
+          type: "string"
+          description: "SCSI host adapter state"
+          initial: "online"
+        fcp_state:
+          type: "string"
+          description: "FCP session state with remote ports"
+          initial: "active"
+        rscn_pending:
+          type: "boolean"
+          description: "Whether an RSCN event is being processed"
+          initial: false
+        path_to_host_a:
+          type: "string"
+          description: "Multipath status of path to Host A"
+          initial: "active"
+
+    - layer: 2
+      name: "FC-2 Framing / Signaling"
+      components: ["lpfc_sli.c", "lpfc_els.c", "lpfc_ct.c", "lpfc_hbadisc.c", "FC-LS", "FC-GS"]
+      state_schema:
+        my_fcid:
+          type: "string"
+          description: "Assigned N_Port ID (FCID)"
+          initial: "0x010200"
+        bb_credit:
+          type: "integer"
+          description: "Buffer-to-buffer credit"
+          initial: 16
+        fabric_login:
+          type: "string"
+          description: "Fabric login state"
+          initial: "complete"
+        scr_registered:
+          type: "boolean"
+          description: "Whether this port has registered for State Change Notifications via SCR"
+          initial: true
+        ox_id_next:
+          type: "string"
+          description: "Next originator exchange ID"
+          initial: "0x0010"
+        active_exchanges:
+          type: "integer"
+          description: "Number of active exchanges"
+          initial: 0
+        host_a_plogi:
+          type: "string"
+          description: "Port login state with Host A"
+          initial: "complete"
+        host_a_fcid:
+          type: "string"
+          description: "Known FCID for Host A"
+          initial: "0x010100"
+
+    - layer: 1
+      name: "FC-1 Encoding"
+      components: ["64b/66b encoding", "word sync"]
+      state_schema:
+        encoding:
+          type: "string"
+          initial: "64b/66b"
+        word_sync:
+          type: "boolean"
+          initial: true
+
+    - layer: 0
+      name: "FC-0 Physical"
+      components: ["32GFC SFP28", "850nm VCSEL"]
+      state_schema:
+        phy_state:
+          type: "string"
+          description: "Physical port state"
+          initial: "UP"
+        speed:
+          type: "string"
+          initial: "32GFC"
+        signal_detect:
+          type: "boolean"
+          initial: true
+
+  switch:
+    - layer: 2
+      name: "FC-2 Frame Forwarding / Fabric Services"
+      components: ["D_ID routing", "BB_Credit management", "Name Server", "FCID assignment", "SCR table", "RSCN generation"]
+      state_schema:
+        ns_entries:
+          type: "integer"
+          description: "Number of entries in Name Server database"
+          initial: 2
+        scr_registered_ports:
+          type: "string"
+          description: "Comma-separated list of FCIDs registered for RSCN"
+          initial: "0x010200"
+        zone_active:
+          type: "string"
+          description: "Active zone set name"
+          initial: "prod_zone_cfg"
+        fwd_table_entries:
+          type: "integer"
+          description: "FCIDs in routing table"
+          initial: 2
+        port_a_bb_credit:
+          type: "integer"
+          description: "BB_Credit available toward Host A"
+          initial: 16
+        port_b_bb_credit:
+          type: "integer"
+          description: "BB_Credit available toward Host B"
+          initial: 16
+    - layer: 0
+      name: "FC-0 Physical (per-port)"
+      components: ["32GFC SFP28"]
+      state_schema:
+        port_a_phy:
+          type: "string"
+          description: "Physical state of port facing Host A"
+          initial: "UP"
+        port_b_phy:
+          type: "string"
+          description: "Physical state of port facing Host B"
+          initial: "UP"
+
+# ─────────────────────────────────────────────────────────────────
+# FRAME LIBRARY
+# ─────────────────────────────────────────────────────────────────
+frames:
+
+  # ── SCR (State Change Registration) — background context ──────
+  - id: "scr_host_b"
+    name: "SCR (State Change Registration)"
+    description: >
+      Host B registers with the fabric for State Change Notifications. This was
+      done during initial fabric login (shown here for context). The SCR tells the
+      switch: "notify me when any port in my zone changes state." Without SCR
+      registration, the host would never receive RSCN frames.
+      Linux: lpfc_els.c lpfc_issue_els_scr()
+    from: "host_b"
+    to: "switch"
+    timestamp_ns: 0
+    total_bytes: 60
+    color: "#7c3aed"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x22"
+            description: "Unsolicited Control — ELS request frame"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.3"
+                title: "R_CTL field encoding"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0xFFFFFD"
+            description: "Well-known address for Fabric Controller (State Change Registration Service)"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "15.2"
+                title: "Well-known address identifiers"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010200"
+            description: "Host B's FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x290000"
+            description: "Exchange originator, first+last sequence, sequence initiative"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x000F"
+            description: "Exchange ID for SCR registration"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — unassigned"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for ELS frames"
+      - name: "SCR Payload (ELS)"
+        abbrev: "fc.els.scr"
+        layer: 2
+        total_bytes: 8
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x62000000"
+            description: "0x62 = SCR (State Change Registration) command code"
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "5.10"
+                title: "SCR — State Change Registration"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+            kernel_ref:
+              file: "drivers/scsi/lpfc/lpfc_els.c"
+              function: "lpfc_issue_els_scr"
+              notes: "Issues SCR to 0xFFFFFD during fabric login to receive RSCNs"
+          - name: "Registration Function"
+            abbrev: "fc.els.scr.func"
+            bits: 32
+            value: "0x00000003"
+            description: "0x03 = Fabric Detected Registration — notify for all changes visible to this port via zoning. Most common registration type."
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "5.10.2"
+                title: "SCR Registration Function"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding — 64b/66b for 32GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "32GFC (28.05 Gbps)"
+            description: "Physical signaling rate — 32GFC Gen 6 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP28)"
+            description: "Short-reach fiber optics — OM4 multimode"
+
+  # ── SCR ACC ───────────────────────────────────────────────────
+  - id: "scr_acc"
+    name: "SCR ACC (Accept)"
+    description: >
+      Fabric accepts the SCR registration. Host B is now in the switch's SCR table
+      and will receive RSCN frames whenever a zoned port changes state.
+    from: "switch"
+    to: "host_b"
+    timestamp_ns: 100000
+    total_bytes: 36
+    color: "#7c3aed"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x23"
+            description: "Solicited Control — ELS response (ACC)"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+            description: "Host B's FCID"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0xFFFFFD"
+            description: "Fabric Controller (SCR service)"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+            description: "ELS"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x980000"
+            description: "Exchange responder, last sequence, end sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "No optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x000F"
+            description: "Same OX_ID as the SCR request"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0001"
+            description: "Responder Exchange ID assigned by fabric"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0"
+      - name: "ACC Payload"
+        abbrev: "fc.els.acc"
+        layer: 2
+        total_bytes: 4
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x02000000"
+            description: "0x02 = LS_ACC (Link Service Accept)"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding — 64b/66b for 32GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "32GFC (28.05 Gbps)"
+            description: "Physical signaling rate — 32GFC"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP28)"
+            description: "Short-reach fiber optics"
+
+  # ── RSCN (Switch → Host B) ───────────────────────────────────
+  - id: "rscn_host_a_removed"
+    name: "RSCN (Host A Removed)"
+    description: >
+      Switch sends Registered State Change Notification to Host B. The RSCN
+      payload contains one affected port page identifying Host A's FCID (0x010100)
+      with event_qualifier = "removed" and address_format = "port address."
+      This frame is unsolicited — the switch originates it, not in response to a request.
+      Linux: lpfc_els.c lpfc_els_rcv_rscn() receives and processes this.
+    from: "switch"
+    to: "host_b"
+    timestamp_ns: 10500000
+    total_bytes: 40
+    color: "#dc2626"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x22"
+            description: "Unsolicited Control — ELS request (the switch is originating this)"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.3"
+                title: "R_CTL field encoding"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+            description: "Host B's FCID — destination of the RSCN notification"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0xFFFFFD"
+            description: "Fabric Controller — RSCNs come from the well-known address 0xFFFFFD"
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "5.9.2"
+                title: "RSCN source identifier"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x290000"
+            description: "Exchange originator, first+last sequence, sequence initiative"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "No optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x8001"
+            description: "Originator Exchange ID — allocated by the switch for this RSCN"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — unassigned (Host B will assign on ACC)"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for ELS frames"
+      - name: "RSCN Payload (ELS)"
+        abbrev: "fc.els.rscn"
+        layer: 2
+        total_bytes: 8
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x61040008"
+            description: >
+              Byte 0: 0x61 = RSCN command code.
+              Byte 1: 0x04 = page length (4 bytes per affected port page).
+              Bytes 2-3: 0x0008 = payload length (8 bytes total: 4 header + 1 page * 4 bytes).
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "5.9"
+                title: "RSCN — Registered State Change Notification"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+            kernel_ref:
+              file: "drivers/scsi/lpfc/lpfc_els.c"
+              function: "lpfc_els_rcv_rscn"
+              notes: "Parses RSCN payload, extracts affected port pages, triggers re-discovery"
+          - name: "Affected Port Page 1"
+            abbrev: "fc.els.rscn.page"
+            bits: 32
+            value: "0x02010100"
+            description: >
+              Bits 31-30: Address Format = 0b00 (port address) — the notification is for a specific N_Port ID.
+              Bits 29-26: Event Qualifier = 0b0010 (removed) — the port has been removed from the fabric.
+              Bits 25-24: Reserved.
+              Bits 23-0: Affected Port ID = 0x010100 — this is Host A's FCID.
+              Full value: address_format=port | event=removed | FCID=0x010100
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "5.9.3"
+                title: "RSCN Affected Port ID Page"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding — 64b/66b for 32GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "32GFC (28.05 Gbps)"
+            description: "Physical signaling rate — 32GFC"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP28)"
+            description: "Short-reach fiber optics"
+
+  # ── RSCN ACC (Host B → Switch) ───────────────────────────────
+  - id: "rscn_acc"
+    name: "RSCN ACC (Acknowledge)"
+    description: >
+      Host B acknowledges the RSCN. This is mandatory — the fabric will
+      retransmit the RSCN if no ACC is received within E_D_TOV.
+      After sending ACC, the HBA driver begins re-discovery to determine
+      exactly what changed.
+      Linux: lpfc_els.c lpfc_els_rsp_acc() sends the ACC, then
+      lpfc_els_rcv_rscn() queues a discovery event.
+    from: "host_b"
+    to: "switch"
+    timestamp_ns: 10600000
+    total_bytes: 36
+    color: "#dc2626"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x23"
+            description: "Solicited Control — ELS response (ACC)"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0xFFFFFD"
+            description: "Fabric Controller — responding to RSCN originator"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010200"
+            description: "Host B's FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+            description: "ELS"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x980000"
+            description: "Exchange responder, last sequence, end sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "No optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x8001"
+            description: "Same OX_ID as the RSCN — correlates request and response"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0010"
+            description: "Responder Exchange ID assigned by Host B"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0"
+      - name: "ACC Payload"
+        abbrev: "fc.els.acc"
+        layer: 2
+        total_bytes: 4
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x02000000"
+            description: "0x02 = LS_ACC (Link Service Accept) — acknowledging the RSCN"
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "4.2"
+                title: "ACC — Accept"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+            kernel_ref:
+              file: "drivers/scsi/lpfc/lpfc_els.c"
+              function: "lpfc_els_rsp_acc"
+              notes: "Sends LS_ACC in response to RSCN before starting re-discovery"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding — 64b/66b for 32GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "32GFC (28.05 Gbps)"
+            description: "Physical signaling rate — 32GFC"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP28)"
+            description: "Short-reach fiber optics"
+
+  # ── GID_FT Re-query (Host B → Name Server) ──────────────────
+  - id: "gid_ft_requery"
+    name: "GID_FT Re-query"
+    description: >
+      Host B queries the Name Server to get the current list of all FCP targets.
+      This is the standard re-discovery pattern after RSCN: the RSCN tells the
+      host *something changed*, and the GID_FT tells the host *what the new state is*.
+      Linux: lpfc_hbadisc.c lpfc_els_rcv_rscn() → lpfc_ns_cmd(SLI_CTNS_GID_FT)
+    from: "host_b"
+    to: "switch"
+    timestamp_ns: 11000000
+    total_bytes: 64
+    color: "#0d9488"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x02"
+            description: "Unsolicited Data — CT request (not ELS)"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.3"
+                title: "R_CTL encoding — Data frames"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0xFFFFFC"
+            description: "Well-known address for Name Server"
+            spec_refs:
+              - document: "FC-GS-8"
+                section: "4.2"
+                title: "Well-known addresses — Name Server"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010200"
+            description: "Host B's FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x20"
+            description: "0x20 = CT (Common Transport / FC-GS)"
+            spec_refs:
+              - document: "FC-GS-8"
+                section: "4.3"
+                title: "CT frame TYPE identifier"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x290000"
+            description: "Exchange originator, first+last sequence, sequence initiative"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "No optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0011"
+            description: "New exchange for the Name Server re-query"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — unassigned"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0"
+      - name: "CT Header + GID_FT"
+        abbrev: "fc.ct"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "CT Revision"
+            abbrev: "fc.ct.revision"
+            bits: 8
+            value: "0x01"
+            description: "CT IU revision"
+          - name: "GS_Type"
+            abbrev: "fc.ct.gs_type"
+            bits: 8
+            value: "0xFC"
+            description: "0xFC = Directory Service (Name Server)"
+            spec_refs:
+              - document: "FC-GS-8"
+                section: "4.3.1"
+                title: "GS_Type — service type identifier"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "GS_Subtype"
+            abbrev: "fc.ct.gs_subtype"
+            bits: 8
+            value: "0x02"
+            description: "0x02 = Name Server"
+          - name: "Command"
+            abbrev: "fc.ct.cmd"
+            bits: 16
+            value: "0x0171"
+            description: "0x0171 = GID_FT (Get Port IDs by FC-4 Type)"
+            spec_refs:
+              - document: "FC-GS-8"
+                section: "5.2.3.3"
+                title: "GID_FT — Get Port Identifiers by FC-4 Type"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+            kernel_ref:
+              file: "drivers/scsi/lpfc/lpfc_ct.c"
+              function: "lpfc_ns_cmd"
+              notes: "SLI_CTNS_GID_FT=0x0171; re-queries all FCP ports after RSCN"
+          - name: "FC-4 Type"
+            abbrev: "fc.ct.fc4_type"
+            bits: 8
+            value: "0x08"
+            description: "0x08 = FCP (SCSI over FC) — looking for all SCSI ports"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding — 64b/66b for 32GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "32GFC (28.05 Gbps)"
+            description: "Physical signaling rate — 32GFC"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP28)"
+            description: "Short-reach fiber optics"
+
+  # ── GID_FT Response (Name Server → Host B) ──────────────────
+  - id: "gid_ft_response"
+    name: "GID_FT Response (Host A Missing)"
+    description: >
+      Name Server returns the current list of FCP ports. Host A (0x010100) is
+      NOT in the list — it was removed when the switch detected the link failure.
+      Only Host B (0x010200) remains. The host driver compares this list to its
+      local rport table and detects that Host A has disappeared.
+      Linux: lpfc_ct.c lpfc_cmpl_ct_cmd_gid_ft() compares response to known rports.
+    from: "switch"
+    to: "host_b"
+    timestamp_ns: 11100000
+    total_bytes: 48
+    color: "#0d9488"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x03"
+            description: "Solicited Data — CT response"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+            description: "Host B's FCID"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0xFFFFFC"
+            description: "Name Server"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x20"
+            description: "CT (Common Transport)"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x980000"
+            description: "Exchange responder, last sequence, end sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "No optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0011"
+            description: "Same OX_ID as the GID_FT request"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0002"
+            description: "Responder Exchange ID assigned by Name Server"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0"
+      - name: "CT Response Header + GID_FT Accept"
+        abbrev: "fc.ct.resp"
+        layer: 2
+        total_bytes: 20
+        fields:
+          - name: "CT Revision"
+            abbrev: "fc.ct.revision"
+            bits: 8
+            value: "0x01"
+            description: "CT IU revision"
+          - name: "GS_Type"
+            abbrev: "fc.ct.gs_type"
+            bits: 8
+            value: "0xFC"
+            description: "Directory Service"
+          - name: "GS_Subtype"
+            abbrev: "fc.ct.gs_subtype"
+            bits: 8
+            value: "0x02"
+            description: "Name Server"
+          - name: "CT Response Code"
+            abbrev: "fc.ct.resp_code"
+            bits: 16
+            value: "0x8002"
+            description: "0x8002 = Accept — query succeeded"
+          - name: "Port ID Entry 1 (Host B only)"
+            abbrev: "fc.ct.port_id"
+            bits: 32
+            value: "0x80010200"
+            description: >
+              Bit 31 = 1 (last entry flag). Port ID = 0x010200 (Host B itself).
+              Host A (0x010100) is ABSENT — it has been removed from the Name Server.
+              This is how the host driver learns that Host A is gone.
+            kernel_ref:
+              file: "drivers/scsi/lpfc/lpfc_ct.c"
+              function: "lpfc_cmpl_ct_cmd_gid_ft"
+              notes: "Iterates response list, marks missing rports as DEVICE_REMOVE_PENDING"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding — 64b/66b for 32GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "32GFC (28.05 Gbps)"
+            description: "Physical signaling rate — 32GFC"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP28)"
+            description: "Short-reach fiber optics"
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+
+  # ── Phase 0: Steady State — both hosts online, SCR registered ──
+  - id: "evt_steady_state"
+    type: "annotation"
+    t_ns: 0
+    annotation:
+      text: "Steady State — Both hosts online, Host B registered for RSCN via SCR"
+      detail: >
+        Starting condition: Host A (FCID 0x010100) and Host B (FCID 0x010200) are
+        both logged into the fabric. Both have completed FLOGI, PLOGI, and PRLI.
+        Host B has previously sent a State Change Registration (SCR) to the fabric,
+        meaning it will receive RSCN notifications when any zoned port changes state.
+        The Name Server database has entries for both hosts.
+    state_after:
+      - actor_id: "host_a"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical"
+            state_fields:
+              phy_state: "UP"
+              speed: "32GFC"
+              signal_detect: true
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              my_fcid: "0x010100"
+              bb_credit: 16
+              fabric_login: "complete"
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
+            state_fields:
+              scsi_state: "online"
+              fcp_state: "active"
+      - actor_id: "host_b"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical"
+            state_fields:
+              phy_state: "UP"
+              speed: "32GFC"
+              signal_detect: true
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              my_fcid: "0x010200"
+              bb_credit: 16
+              fabric_login: "complete"
+              scr_registered: true
+              host_a_plogi: "complete"
+              host_a_fcid: "0x010100"
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
+            state_fields:
+              scsi_state: "online"
+              fcp_state: "active"
+              path_to_host_a: "active"
+      - actor_id: "switch"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical (per-port)"
+            state_fields:
+              port_a_phy: "UP"
+              port_b_phy: "UP"
+          - layer: 2
+            name: "FC-2 Frame Forwarding / Fabric Services"
+            state_fields:
+              ns_entries: 2
+              scr_registered_ports: "0x010200"
+              fwd_table_entries: 2
+
+  # ── Phase 0b: SCR context (shown for reference) ───────────────
+  - id: "evt_scr"
+    type: "frame_tx"
+    t_ns: 1000000
+    frame_id: "scr_host_b"
+    annotation:
+      text: "SCR — Host B registers for State Change Notifications"
+      detail: >
+        Host B sends SCR (command code 0x62) to the well-known address 0xFFFFFD,
+        requesting fabric-detected registration (function code 3). This tells the
+        switch: "notify me whenever a port visible to me through zoning changes state."
+        Without this registration, Host B would not receive RSCN frames.
+        This SCR was sent during Host B's initial fabric login. It is shown here
+        for context — in production, this happens once during HBA initialization.
+        Linux: lpfc_els.c lpfc_issue_els_scr() — called during vport startup.
+      spec_refs:
+        - document: "FC-LS-4"
+          section: "5.10"
+          title: "SCR — State Change Registration"
+          url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - id: "evt_scr_acc"
+    type: "frame_tx"
+    t_ns: 1100000
+    frame_id: "scr_acc"
+    annotation:
+      text: "SCR ACC — Fabric confirms RSCN registration for Host B"
+      detail: >
+        The fabric accepts the SCR. Host B (FCID 0x010200) is added to the switch's
+        SCR registration table. From this point on, any topology change visible to
+        Host B will trigger an RSCN to it.
+
+  # ── Phase 1: Link Failure — Host A goes offline ───────────────
+  - id: "evt_link_down"
+    type: "error"
+    t_ns: 5000000
+    annotation:
+      text: "LINK FAILURE — Host A cable pull / HBA failure"
+      detail: >
+        The fiber optic cable to Host A is disconnected (cable pull), or the HBA
+        fails. The switch detects Loss of Signal (LOS) on the port facing Host A.
+        This triggers the FC port state machine to transition through NOS (Not
+        Operational Primitive Sequence) and then to the Offline state.
+        Detection time is typically < 1 ms for loss of light.
+      spec_refs:
+        - document: "FC-FS-5"
+          section: "7.5"
+          title: "Link Failure — LOS detection and NOS"
+          url: "https://www.t11.org/fcSite/fcretr.html"
+    state_after:
+      - actor_id: "host_a"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical"
+            state_fields:
+              phy_state: "DOWN"
+              signal_detect: false
+          - layer: 1
+            name: "FC-1 Encoding"
+            state_fields:
+              word_sync: false
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              fabric_login: "lost"
+              active_exchanges: 0
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
+            state_fields:
+              scsi_state: "offline"
+              fcp_state: "lost"
+      - actor_id: "switch"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical (per-port)"
+            state_fields:
+              port_a_phy: "DOWN"
+
+  # ── Phase 2: Switch processes the failure ─────────────────────
+  - id: "evt_ns_update"
+    type: "state_change"
+    t_ns: 7000000
+    annotation:
+      text: "Switch Name Server removes Host A (0x010100) from database"
+      detail: >
+        The switch detects port offline and triggers internal cleanup:
+        1. Removes Host A's Name Server entries (WWPN, WWNN, FC-4 types, symbolic name).
+        2. Removes FCID 0x010100 from the routing table.
+        3. Checks the SCR registration table for ports that need to be notified.
+        4. Prepares to send RSCN to all registered ports in the same zone.
+        The Name Server entry count drops from 2 to 1.
+    state_after:
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Frame Forwarding / Fabric Services"
+            state_fields:
+              ns_entries: 1
+              fwd_table_entries: 1
+
+  # ── Phase 3: RSCN delivery ───────────────────────────────────
+  - id: "evt_rscn"
+    type: "frame_tx"
+    t_ns: 10500000
+    frame_id: "rscn_host_a_removed"
+    annotation:
+      text: "RSCN → Host B — 'Port 0x010100 has been removed from the fabric'"
+      detail: >
+        The switch sends an RSCN ELS (command code 0x61) to Host B. The RSCN
+        payload contains one affected port page:
+          - Address Format: port address (specific N_Port ID)
+          - Event Qualifier: removed (the port no longer exists in the fabric)
+          - Affected Port ID: 0x010100 (Host A)
+        The RSCN comes from 0xFFFFFD (Fabric Controller). It is an unsolicited
+        ELS — the switch originates it without any request from Host B.
+        In a fabric with multiple registered hosts, the switch sends one RSCN
+        to each SCR-registered port in the affected zone.
+      spec_refs:
+        - document: "FC-LS-4"
+          section: "5.9"
+          title: "RSCN — Registered State Change Notification"
+          url: "https://www.t11.org/fcSite/fcretr.html"
+    state_after:
+      - actor_id: "host_b"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              active_exchanges: 1
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
+            state_fields:
+              rscn_pending: true
+
+  - id: "evt_rscn_acc"
+    type: "frame_tx"
+    t_ns: 10600000
+    frame_id: "rscn_acc"
+    annotation:
+      text: "Host B sends ACC — acknowledges RSCN, begins re-discovery"
+      detail: >
+        Host B must acknowledge the RSCN with LS_ACC. If the ACC is not received
+        within E_D_TOV (Error Detect Timeout Value, typically 2 seconds), the switch
+        will retransmit the RSCN. After sending ACC, the HBA driver queues a
+        discovery event to re-query the Name Server and determine exactly what changed.
+        Linux: lpfc_els.c lpfc_els_rcv_rscn() →
+          lpfc_els_rsp_acc() (send ACC)
+          lpfc_disc_state_machine() (trigger re-discovery)
+    state_after:
+      - actor_id: "host_b"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              active_exchanges: 0
+
+  # ── Phase 4: Re-discovery ────────────────────────────────────
+  - id: "evt_gid_ft_requery"
+    type: "frame_tx"
+    t_ns: 11000000
+    frame_id: "gid_ft_requery"
+    annotation:
+      text: "GID_FT re-query — Host B asks Name Server for current port list"
+      detail: >
+        The RSCN told Host B that something changed, but not the complete new state.
+        The standard HBA driver pattern is to re-issue GID_FT (Get Port IDs by FC-4
+        Type) to the Name Server. The driver compares the response to its local
+        rport (remote port) table to determine which devices appeared, disappeared,
+        or changed. Some drivers use GPN_ID or GNN_ID for more targeted queries.
+        Linux: lpfc_ct.c lpfc_ns_cmd() with SLI_CTNS_GID_FT re-query.
+      spec_refs:
+        - document: "FC-GS-8"
+          section: "5.2.3.3"
+          title: "GID_FT — Get Port Identifiers by FC-4 Type"
+          url: "https://www.t11.org/fcSite/fcretr.html"
+    state_after:
+      - actor_id: "host_b"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              active_exchanges: 1
+              ox_id_next: "0x0012"
+
+  - id: "evt_gid_ft_response"
+    type: "frame_tx"
+    t_ns: 11100000
+    frame_id: "gid_ft_response"
+    annotation:
+      text: "Name Server response — Host A is GONE, only Host B remains"
+      detail: >
+        The Name Server returns the current port list. Host A (0x010100) is missing
+        from the response — confirming that it has been removed from the fabric.
+        The HBA driver iterates through the response and compares it to the local
+        rport table. Host A is found in the local table but not in the Name Server
+        response, so the driver marks it as DEVICE_REMOVE_PENDING.
+        Linux: lpfc_ct.c lpfc_cmpl_ct_cmd_gid_ft() processes the response;
+        lpfc_hbadisc.c lpfc_device_rm_adisc_issue() handles removal.
+    state_after:
+      - actor_id: "host_b"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              active_exchanges: 0
+              host_a_plogi: "removed"
+              host_a_fcid: "null"
+
+  # ── Phase 5: Local cleanup and multipath failover ─────────────
+  - id: "evt_rport_removal"
+    type: "state_change"
+    t_ns: 12000000
+    annotation:
+      text: "Host B removes Host A rport — SCSI midlayer notified"
+      detail: >
+        The HBA driver removes the remote port (rport) for Host A. This triggers
+        the SCSI midlayer to invoke fc_rport_final_delete(), which calls
+        scsi_remove_target() for the SCSI target associated with Host A.
+        All outstanding SCSI commands to Host A are failed with DID_NO_CONNECT.
+        Linux: lpfc_hbadisc.c lpfc_unregister_remote_port() →
+        scsi/scsi_transport_fc.c fc_rport_final_delete()
+    state_after:
+      - actor_id: "host_b"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
+            state_fields:
+              rscn_pending: false
+              path_to_host_a: "failed"
+
+  - id: "evt_multipath_failover"
+    type: "annotation"
+    t_ns: 13000000
+    annotation:
+      text: "Multipath failover — dm-multipath reroutes I/O away from Host A's path"
+      detail: >
+        This is the real-world impact of RSCN: the multipath driver (dm-multipath or
+        vendor-specific like PowerPath, HDLM) receives notification that the path
+        through Host A has failed. If redundant paths exist (e.g., through a second
+        switch), I/O is rerouted to the surviving path with no application-visible error.
+
+        The entire chain — cable pull → switch detection → RSCN → ACK → Name Server
+        re-query → rport removal → multipath failover — typically completes in under
+        30 seconds in production. Fast RSCN processing (RSCN suppression, deferred
+        RSCN coalescing) is a key tuning knob for SAN administrators.
+
+        Kernel path:
+          dm-multipath.c multipath_end_io() sees path failure →
+          dm-mpath.c fail_path() marks path offline →
+          dm-mpath.c choose_path_in_pg() selects alternate path →
+          I/O retried on surviving path — transparent to application
+      spec_refs:
+        - document: "FC-LS-4"
+          section: "5.9.5"
+          title: "RSCN processing guidelines"
+          url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - id: "evt_summary"
+    type: "annotation"
+    t_ns: 15000000
+    annotation:
+      text: "Summary — RSCN is the fabric's event notification system"
+      detail: >
+        The RSCN mechanism is the foundation of FC fabric state management:
+
+        1. SCR registration: Hosts opt in to notifications during fabric login.
+        2. Event detection: Switch detects link failures, new logins, or state changes.
+        3. RSCN delivery: Switch sends unsolicited ELS with affected port pages.
+        4. Host re-discovery: Host ACKs the RSCN, then queries the Name Server.
+        5. Local cleanup/update: Host adds, removes, or updates remote port state.
+
+        Key design decisions:
+        - RSCN is a *notification*, not a complete state update. Hosts must re-query
+          the Name Server for full details. This keeps RSCN frames small and simple.
+        - Address format controls notification granularity: port-level (specific FCID),
+          area-level (all ports in a switch area), or domain-level (all ports in a domain).
+        - Multiple changes can be coalesced into a single RSCN with multiple affected
+          port pages, reducing notification storms during large fabric events.
+        - Some switches support "RSCN suppression" to prevent cascading RSCNs during
+          fabric reconfiguration (e.g., switch reboot).
+
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
+glossary:
+  - term: "RSCN"
+    abbrev: "Registered State Change Notification"
+    definition: "An unsolicited ELS (command code 0x61) sent by the fabric to all SCR-registered ports when a topology change occurs. Each RSCN carries one or more affected port pages identifying which FCIDs changed and what type of change occurred (added, removed, changed). The receiving host must send ACC and then re-query the Name Server to learn the new state."
+    spec_refs:
+      - document: "FC-LS-4"
+        section: "5.9"
+        title: "RSCN — Registered State Change Notification"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "SCR"
+    abbrev: "State Change Registration"
+    definition: "An ELS (command code 0x62) sent by an N_Port to the fabric controller (0xFFFFFD) to register for RSCN notifications. The registration function field determines what types of changes trigger notifications: fabric-detected (most common), N_Port-detected, or full. Without SCR registration, a port will not receive RSCNs."
+    spec_refs:
+      - document: "FC-LS-4"
+        section: "5.10"
+        title: "SCR — State Change Registration"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "Name Server"
+    definition: "A fabric service at well-known address 0xFFFFFC that maintains a database of all logged-in ports and their attributes (WWPN, WWNN, FC-4 types, symbolic names, etc.). Hosts query the Name Server to discover available targets. After an RSCN, hosts re-query the Name Server to determine the current fabric state."
+    spec_refs:
+      - document: "FC-GS-8"
+        section: "5"
+        title: "Name Server"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "GID_FT"
+    definition: "Get Port Identifiers by FC-4 Type. A Name Server CT query (command 0x0171) that returns all FCIDs registered for a given FC-4 type. FC-4 type 0x08 = FCP (SCSI). This is the most common re-discovery query after RSCN — the host gets the complete list of FCP ports and compares it to the local rport table."
+    spec_refs:
+      - document: "FC-GS-8"
+        section: "5.2.3.3"
+        title: "GID_FT"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "GPN_ID"
+    definition: "Get Port Name by Port Identifier. A Name Server CT query (command 0x0112) that returns the WWPN for a specific FCID. Used for targeted re-discovery when the RSCN identifies a specific port address — faster than a full GID_FT when only one port changed."
+    spec_refs:
+      - document: "FC-GS-8"
+        section: "5.2.3.2"
+        title: "GPN_ID"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "GNN_ID"
+    definition: "Get Node Name by Port Identifier. A Name Server CT query (command 0x0113) that returns the WWNN for a specific FCID. Used alongside GPN_ID for targeted re-discovery to determine which physical node a port belongs to."
+    spec_refs:
+      - document: "FC-GS-8"
+        section: "5.2.3.4"
+        title: "GNN_ID"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "Event Qualifier"
+    definition: "A 4-bit field in each RSCN affected port page that describes what type of change occurred. Values: 0x00=reserved, 0x01=changed (port attributes modified), 0x02=removed (port logged out or failed), 0x03=added (new port logged in), 0x04-0x0F=vendor specific. The event qualifier helps the host decide how to respond without querying the Name Server."
+    spec_refs:
+      - document: "FC-LS-4"
+        section: "5.9.3"
+        title: "RSCN Affected Port ID Page — Event Qualifier"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "Address Format"
+    definition: "A 2-bit field in each RSCN affected port page that controls notification granularity. Values: 0b00=port address (specific N_Port ID), 0b01=area address (all ports in a 16-bit area), 0b10=domain address (all ports in an 8-bit domain). Port-address format is the most precise; domain-address triggers the broadest re-discovery."
+    spec_refs:
+      - document: "FC-LS-4"
+        section: "5.9.3"
+        title: "RSCN Affected Port ID Page — Address Format"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "Port State"
+    definition: "The operational state of an FC port as defined by the port state machine. Key states: Offline (no link), Link Initialization (negotiating), Online (fully operational). Transitions between these states are what trigger RSCN generation by the switch."
+    spec_refs:
+      - document: "FC-FS-5"
+        section: "7"
+        title: "Port State Machine"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "E_D_TOV"
+    abbrev: "Error Detect Timeout Value"
+    definition: "The maximum time the fabric waits for a response before declaring an error. Typically 2 seconds. If a host does not send ACC for an RSCN within E_D_TOV, the switch retransmits the RSCN. Configured fabric-wide and exchanged during FLOGI."
+    spec_refs:
+      - document: "FC-FS-5"
+        section: "17.4"
+        title: "E_D_TOV — Error Detect Timeout Value"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "FCID"
+    abbrev: "N_Port ID"
+    definition: "A 24-bit address assigned by the fabric to an N_Port during FLOGI. Used as S_ID and D_ID in FC frame headers. Format: domain(8):area(8):port(8) — e.g., 0x010100 = domain 1, area 1, port 0. When a port goes offline, its FCID is removed from the Name Server and routing tables."
+    spec_refs:
+      - document: "FC-FS-5"
+        section: "15.1"
+        title: "Address Identifier"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "BB_Credit"
+    abbrev: "Buffer-to-Buffer Credit"
+    definition: "Flow control mechanism in FC. Each port advertises how many frames it can buffer. The sender decrements credit for each frame sent and replenishes when R_RDY primitives are received. Prevents buffer overrun at the receiver."
+    spec_refs:
+      - document: "FC-FS-5"
+        section: "17.2"
+        title: "Buffer-to-buffer flow control"
+        url: "https://www.t11.org/fcSite/fcretr.html"

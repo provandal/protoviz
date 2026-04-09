@@ -1,0 +1,1887 @@
+meta:
+  id: "fc-sp3-dhchap-auth-failure"
+  title: "FC-SP-3 DH-CHAP: When Authentication Fails"
+  protocol: "FC-SP-3 / DH-CHAP"
+  protocol_family: "SAN"
+  version: "1.0"
+  description: >
+    An error scenario showing what happens when DH-CHAP authentication fails
+    due to mismatched shared secrets between an HBA and a fabric switch.
+    The scenario begins with a successful PLOGI (N_Port Login), then walks
+    through the AUTH_Negotiate handshake and DH-CHAP challenge-response
+    exchange. The HBA computes its CHAP response using a shared secret that
+    does not match the secret configured on the switch. The switch detects
+    the hash mismatch, sends AUTH_Reject, and tears down the connection
+    with LOGO (Fabric Logout).
+
+    This is the single most common FC-SP-3 deployment failure: the shared
+    secret was configured on the HBA but not updated on the switch (or vice
+    versa) after a firmware upgrade, zone change, or switch replacement.
+    The scenario shows exactly where the failure occurs, what the switch
+    and HBA log, and how to diagnose the mismatch.
+  difficulty: "advanced"
+  learning_objectives:
+    - "Understand the DH-CHAP challenge-response flow and where shared secret validation occurs"
+    - "Identify the AUTH_Reject reason codes that indicate a shared secret mismatch"
+    - "Read the FC-2 frame headers on AUTH_Reject and LOGO frames"
+    - "Diagnose the most common FC-SP-3 deployment failure: mismatched shared secrets between HBA and switch"
+    - "Understand the security implications of failed authentication — the switch refuses all I/O until the HBA re-authenticates"
+    - "Trace the connection teardown sequence: AUTH_Reject → LOGO → port isolation"
+    - "Know where to look in fabric manager logs and HBA driver logs to pinpoint the mismatch"
+  authors:
+    - name: "Erik Smith"
+      org: "Dell Technologies"
+      github: "provandal"
+    - name: "Claude"
+      org: "Anthropic"
+  created: "2026-03-30"
+  updated: "2026-03-30"
+  tags:
+    - "fibre-channel"
+    - "fc-sp-3"
+    - "security"
+    - "dh-chap"
+    - "authentication"
+    - "error"
+    - "troubleshooting"
+    - "shared-secret"
+    - "auth-reject"
+    - "logo"
+    - "advanced"
+  primary_specs:
+    - document: "FC-SP-3 (INCITS draft)"
+      section: "5"
+      title: "Authentication Protocols"
+      url: "https://www.t11.org/ftp/t11/pub/fc/sp-3/"
+    - document: "FC-SP-2 (INCITS 496-2012)"
+      section: "5.3"
+      title: "DH-CHAP Protocol"
+      url: "https://standards.incits.org"
+    - document: "FC-FS-5 (INCITS 545-2019)"
+      section: "9.3"
+      title: "Logout (LOGO) Procedure"
+      url: "https://standards.incits.org"
+
+topology:
+  actors:
+    - id: "host"
+      type: "initiator"
+      label: "Host Server (HBA)"
+      description: >
+        Server with an FC HBA configured for FC-SP-3 DH-CHAP authentication.
+        The HBA has a shared secret configured by the administrator, but the
+        secret does NOT match what the switch expects. This mismatch will cause
+        authentication failure. The HBA may be newly installed, recently
+        re-imaged, or its secret was changed without updating the switch.
+      hardware: "Emulex LPe38102 64GFC HBA (Broadcom)"
+      os: "Linux 6.8 / Windows Server 2025"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "FC Switch (64GFC)"
+      description: >
+        FC director switch enforcing FC-SP-3 DH-CHAP authentication on all
+        F_Ports. The switch has a shared secret database (per-WWN or zone-based)
+        that is used to validate incoming HBA authentication. In this scenario
+        the switch's copy of the shared secret for this HBA's WWN does not
+        match the secret stored on the HBA — triggering authentication failure.
+      hardware: "Brocade G720 or Cisco MDS 9700 — 64GFC"
+      position: "center"
+
+    - id: "array"
+      type: "target"
+      label: "Storage Array"
+      description: >
+        Storage array target port behind the fabric switch. In this error
+        scenario the host never reaches the array — authentication fails at
+        the switch, and LOGO tears down the connection before any I/O path
+        to the array can be established.
+      hardware: "Storage Array FC Target Port — 64GFC"
+      position: "right"
+
+  links:
+    - id: "host-switch"
+      from: "host"
+      to: "switch"
+      speed_gbps: 64
+      media: "fiber_sr"
+      fec: "RS(544,514)"
+      autoneg: true
+    - id: "switch-array"
+      from: "switch"
+      to: "array"
+      speed_gbps: 64
+      media: "fiber_sr"
+      fec: "RS(544,514)"
+      autoneg: true
+
+osi_layers:
+  host:
+    - layer: 0
+      name: "FC-0 Physical"
+      components: ["64GFC SerDes", "SFP-DD optics"]
+      state_schema:
+        link_state:
+          type: "string"
+          description: "Physical link state"
+          initial: "UP (64GFC)"
+    - layer: 1
+      name: "FC-1 Encoding"
+      components: ["64b/66b encoding", "RS(544,514) FEC"]
+      state_schema:
+        encoding:
+          type: "string"
+          description: "Line encoding scheme"
+          initial: "64b/66b"
+    - layer: 2
+      name: "FC-2 Framing / Transport"
+      components: ["FC frame header", "CRC-32"]
+      state_schema:
+        frame_type:
+          type: "string"
+          description: "Current frame payload type"
+          initial: "plaintext"
+        login_state:
+          type: "string"
+          description: "N_Port login state"
+          initial: "PLOGI_PENDING"
+    - layer: 4
+      name: "FC-4 Protocol Mapping"
+      components: ["FCP (SCSI over FC)", "FC-SP-3 Authentication Frames"]
+      state_schema:
+        auth_state:
+          type: "string"
+          description: "FC-SP-3 authentication state machine"
+          initial: "AUTH_IDLE"
+        shared_secret:
+          type: "string"
+          description: "Shared secret status (does NOT match switch)"
+          initial: "configured (STALE — does not match switch)"
+
+  switch:
+    - layer: 0
+      name: "FC-0 Physical"
+      components: ["64GFC SerDes", "crossbar switch fabric"]
+      state_schema:
+        port_state:
+          type: "string"
+          description: "Physical port state"
+          initial: "UP (64GFC)"
+    - layer: 1
+      name: "FC-1 Encoding"
+      components: ["64b/66b encoding", "RS(544,514) FEC"]
+      state_schema:
+        encoding:
+          type: "string"
+          description: "Line encoding scheme"
+          initial: "64b/66b"
+    - layer: 2
+      name: "FC-2 Framing"
+      components: ["FC header inspection (D_ID/S_ID)", "Credit management", "Authentication enforcement"]
+      state_schema:
+        routing_mode:
+          type: "string"
+          description: "Frame routing basis"
+          initial: "D_ID"
+        auth_policy:
+          type: "string"
+          description: "Authentication policy for this port"
+          initial: "DH-CHAP REQUIRED — reject unauthenticated logins"
+
+  array:
+    - layer: 0
+      name: "FC-0 Physical"
+      components: ["64GFC target port"]
+      state_schema:
+        link_state:
+          type: "string"
+          description: "Physical link state"
+          initial: "UP (64GFC)"
+    - layer: 2
+      name: "FC-2 Framing"
+      components: ["FC frame receive"]
+      state_schema:
+        visibility:
+          type: "string"
+          description: "Array port visibility to this host"
+          initial: "NOT REACHABLE — host has not authenticated"
+
+frames:
+  # ── PLOGI (context — already complete) ────────────────────────────────────────
+
+  - id: "plogi_complete_context"
+    name: "PLOGI ACC — N_Port Login Complete"
+    description: >
+      FLOGI and PLOGI have already completed. The host and switch have exchanged
+      N_Port IDs and WWNs. The switch's authentication policy requires DH-CHAP
+      before allowing any further fabric services or I/O. The host will now
+      initiate FC-SP-3 authentication.
+    from: "host"
+    to: "switch"
+    timestamp_ns: 0
+    total_bytes: 116
+    color: "#27ae60"
+    headers:
+      - name: "PLOGI Context (Summary)"
+        abbrev: "plogi_ctx"
+        layer: 4
+        fields:
+          - name: "PLOGI Status"
+            abbrev: "plogi_ctx.status"
+            bits: 0
+            value: "PLOGI ACC received — N_Port Login complete"
+            description: >
+              PLOGI has completed successfully. The host has N_Port ID 0x010200
+              assigned by the fabric. The switch now requires DH-CHAP
+              authentication before the host can access any target ports.
+          - name: "FC-SP-3 Capability"
+            abbrev: "plogi_ctx.fcsp3"
+            bits: 0
+            value: "Both endpoints: FC-SP-3 DH-CHAP required (from PLOGI Service Parameters)"
+            description: >
+              During PLOGI, the switch indicated FC-SP-3 authentication is
+              mandatory on this port (Common Service Parameters, Security bit
+              set). The host also advertised FC-SP-3 capability. Authentication
+              must complete before any PRLI or I/O is allowed.
+            spec_refs:
+              - document: "FC-LS-3 (FC Login)"
+                section: "4.2.7"
+                title: "Common Service Parameters — Security bit"
+          - name: "Host WWN"
+            abbrev: "plogi_ctx.host_wwn"
+            bits: 64
+            value: "10:00:00:10:9B:C7:2A:01"
+            description: "Host HBA World Wide Port Name — used as the authentication identity."
+          - name: "Switch WWN"
+            abbrev: "plogi_ctx.sw_wwn"
+            bits: 64
+            value: "20:01:00:05:1E:A1:BB:01"
+            description: "Switch F_Port World Wide Name — the authenticator identity."
+      - name: "FC-2 Frame Header (Routing — always plaintext)"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x23"
+            description: "0x23 = Extended Link Service ACC (PLOGI response)"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.1"
+                title: "R_CTL field encoding"
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0x010200"
+            description: "Destination N_Port ID — host HBA port."
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0xFFFFFD"
+            description: "Source — Fabric Controller (switch F_Port). 0xFFFFFD = Fabric F_Port."
+          - name: "CS_CTL"
+            abbrev: "fc2.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "TYPE"
+            abbrev: "fc2.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.1"
+                title: "TYPE field — FC-4 type codes"
+          - name: "F_CTL"
+            abbrev: "fc2.fctl"
+            bits: 24
+            value: "0x980000"
+            description: "Frame Control — exchange responder, first+last sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc2.seqid"
+            bits: 8
+            value: "0x00"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc2.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc2.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc2.oxid"
+            bits: 16
+            value: "0x0001"
+            description: "Originator Exchange ID — PLOGI exchange"
+          - name: "RX_ID"
+            abbrev: "fc2.rxid"
+            bits: 16
+            value: "0x0001"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc2.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for ELS frames"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── AUTH_NEGOTIATE ────────────────────────────────────────────────────────────
+
+  - id: "auth_negotiate"
+    name: "AUTH_Negotiate — Propose DH-CHAP Authentication"
+    description: >
+      The host HBA sends AUTH_Negotiate to the switch as an FC Extended Link
+      Service (ELS). This proposes DH-CHAP as the authentication protocol,
+      SHA-256 as the hash algorithm, and DH group 4 (2048-bit MODP) for the
+      Diffie-Hellman key exchange. The switch will accept or reject these
+      parameters.
+
+      Note: this scenario uses classical DH-CHAP (FC-SP-2 style) rather than
+      the ML-KEM post-quantum extension shown in the happy-path scenario. Most
+      existing deployments use classical DH groups. The authentication failure
+      mechanism is identical regardless of the DH/KEM algorithm.
+    from: "host"
+    to: "switch"
+    timestamp_ns: 1000
+    total_bytes: 64
+    color: "#e67e22"
+    headers:
+      - name: "FC Extended Link Service (ELS) Header"
+        abbrev: "els"
+        layer: 4
+        total_bytes: 4
+        fields:
+          - name: "ELS Command Code"
+            abbrev: "els.cmd"
+            bits: 8
+            offset_bits: 0
+            value: "0x52"
+            value_hex: "0x52"
+            description: >
+              0x52 = AUTH_ELS. The FC-SP Authentication Extended Link Service
+              command code. All FC-SP-3 authentication messages are carried as
+              ELS frames on the established N_Port connection.
+            spec_refs:
+              - document: "FC-SP-2 (INCITS 496-2012)"
+                section: "5.1"
+                title: "AUTH_ELS — Authentication ELS"
+      - name: "AUTH_Negotiate Payload"
+        abbrev: "auth_neg"
+        layer: 4
+        total_bytes: 60
+        fields:
+          - name: "Auth_Msg_Code"
+            abbrev: "auth_neg.msg_code"
+            bits: 8
+            offset_bits: 0
+            value: "0x10"
+            value_hex: "0x10"
+            description: "AUTH_Negotiate message code = 0x10."
+            spec_refs:
+              - document: "FC-SP-2"
+                section: "5.3.1"
+                title: "AUTH_Negotiate message"
+          - name: "Auth_Protocol"
+            abbrev: "auth_neg.proto"
+            bits: 8
+            offset_bits: 8
+            value: "0x01"
+            description: "0x01 = DH-CHAP. The mandatory authentication protocol in FC-SP."
+          - name: "Transaction_ID"
+            abbrev: "auth_neg.txn_id"
+            bits: 32
+            offset_bits: 16
+            value: "0xB7E42D1F"
+            description: >
+              Random transaction ID generated by the initiator. All subsequent
+              AUTH_ELS frames in this authentication exchange use this ID.
+              Prevents replay attacks across sessions.
+          - name: "Hash_List[0] — SHA-256"
+            abbrev: "auth_neg.hash0"
+            bits: 8
+            offset_bits: 48
+            value: "0x02"
+            description: >
+              0x02 = SHA-256. Proposed as the hash algorithm for the CHAP
+              challenge-response computation. SHA-256 is widely deployed in
+              existing FC-SP installations.
+            spec_refs:
+              - document: "FC-SP-2"
+                section: "5.3.1.1"
+                title: "Hash algorithm identifiers"
+          - name: "DH_Group — 2048-bit MODP (Group 4)"
+            abbrev: "auth_neg.dhgroup"
+            bits: 8
+            offset_bits: 56
+            value: "0x04"
+            description: >
+              0x04 = DH Group 4 (2048-bit MODP). Classical Diffie-Hellman group
+              for key exchange. This is the most common DH group in existing
+              FC-SP deployments. The authentication failure in this scenario is
+              NOT related to the DH group — it is caused by mismatched shared
+              secrets in the CHAP layer.
+            spec_refs:
+              - document: "FC-SP-2"
+                section: "5.3.1.2"
+                title: "DH Group identifiers"
+          - name: "Initiator WWN"
+            abbrev: "auth_neg.wwn"
+            bits: 64
+            offset_bits: 128
+            value: "10:00:00:10:9B:C7:2A:01"
+            description: >
+              Host HBA World Wide Port Name. The switch looks up the shared
+              secret for this WWN in its authentication database. If the stored
+              secret differs from what the HBA uses, authentication will fail.
+      - name: "FC-2 Frame Header (Routing — always plaintext)"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x22"
+            description: "0x22 = Extended Link Service request."
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.1"
+                title: "R_CTL field encoding"
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0xFFFFFD"
+            description: "Destination — Fabric Controller (switch F_Port). Authentication is fabric-level."
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0x010200"
+            description: "Source N_Port ID — host HBA port."
+          - name: "CS_CTL"
+            abbrev: "fc2.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "TYPE"
+            abbrev: "fc2.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc2.fctl"
+            bits: 24
+            value: "0x290000"
+            description: "Frame Control — exchange originator, first+last sequence, sequence initiative transfer"
+          - name: "SEQ_ID"
+            abbrev: "fc2.seqid"
+            bits: 8
+            value: "0x00"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc2.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc2.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc2.oxid"
+            bits: 16
+            value: "0x0010"
+            description: "Originator Exchange ID — AUTH exchange"
+          - name: "RX_ID"
+            abbrev: "fc2.rxid"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — not yet assigned"
+          - name: "Parameter"
+            abbrev: "fc2.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for ELS frames"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── AUTH_Negotiate ACC ────────────────────────────────────────────────────────
+
+  - id: "auth_neg_acc"
+    name: "AUTH_Negotiate ACC — Switch Confirms Parameters"
+    description: >
+      The switch responds with AUTH_Negotiate ACC, confirming agreement on
+      DH-CHAP with SHA-256 and DH Group 4. Both sides now know the cipher
+      suite. The switch generates a DH key pair and a challenge nonce.
+      Note: the parameter negotiation succeeds — the failure comes later
+      when the shared secrets do not match during the CHAP response verification.
+    from: "switch"
+    to: "host"
+    timestamp_ns: 5000
+    total_bytes: 48
+    color: "#27ae60"
+    headers:
+      - name: "AUTH_Negotiate ACC"
+        abbrev: "auth_neg_acc"
+        layer: 4
+        fields:
+          - name: "Auth_Msg_Code"
+            abbrev: "auth_neg_acc.msg"
+            bits: 8
+            value: "0x11"
+            description: "0x11 = AUTH_Negotiate ACC. Acceptance of proposed parameters."
+            spec_refs:
+              - document: "FC-SP-2"
+                section: "5.3.1"
+                title: "AUTH_Negotiate ACC"
+          - name: "Agreed Hash"
+            abbrev: "auth_neg_acc.hash"
+            bits: 8
+            value: "0x02"
+            description: "SHA-256 accepted as the hash algorithm for CHAP."
+          - name: "Agreed DH Group"
+            abbrev: "auth_neg_acc.dhgroup"
+            bits: 8
+            value: "0x04"
+            description: "DH Group 4 (2048-bit MODP) accepted for key exchange."
+          - name: "Responder WWN"
+            abbrev: "auth_neg_acc.wwn"
+            bits: 64
+            value: "20:01:00:05:1E:A1:BB:01"
+            description: "Switch F_Port WWN. The authenticator identity for this DH-CHAP exchange."
+      - name: "FC-2 Frame Header (Routing — always plaintext)"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x23"
+            description: "0x23 = Extended Link Service ACC (response)"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.1"
+                title: "R_CTL field encoding"
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0x010200"
+            description: "Destination N_Port ID — host HBA port."
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0xFFFFFD"
+            description: "Source — Fabric Controller (switch F_Port)."
+          - name: "CS_CTL"
+            abbrev: "fc2.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "TYPE"
+            abbrev: "fc2.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc2.fctl"
+            bits: 24
+            value: "0x980000"
+            description: "Frame Control — exchange responder, first+last sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc2.seqid"
+            bits: 8
+            value: "0x01"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc2.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc2.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc2.oxid"
+            bits: 16
+            value: "0x0010"
+            description: "Originator Exchange ID"
+          - name: "RX_ID"
+            abbrev: "fc2.rxid"
+            bits: 16
+            value: "0x0010"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc2.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── DH-CHAP Challenge ────────────────────────────────────────────────────────
+
+  - id: "dhchap_challenge"
+    name: "DH-CHAP Challenge — Switch Challenges HBA"
+    description: >
+      The switch (authenticator) sends the DH-CHAP Challenge to the host.
+      This frame carries a random 128-bit challenge nonce and the switch's
+      DH public value (g^b mod p for Group 4). The host must compute
+      HMAC-SHA-256(shared_secret, challenge_value || DH_shared_key || host_WWN)
+      and return it in DHCHAP_Reply. If the host's shared secret does not
+      match the switch's copy, the computed hash will be wrong.
+    from: "switch"
+    to: "host"
+    timestamp_ns: 6000
+    total_bytes: 312
+    color: "#c0392b"
+    headers:
+      - name: "DH-CHAP Challenge PDU"
+        abbrev: "dhchap_c"
+        layer: 4
+        fields:
+          - name: "Auth_Msg_Code"
+            abbrev: "dhchap_c.msg"
+            bits: 8
+            value: "0x20"
+            description: "0x20 = DHCHAP_Challenge message code."
+            spec_refs:
+              - document: "FC-SP-2"
+                section: "5.3.2"
+                title: "DHCHAP_Challenge"
+          - name: "Transaction_ID"
+            abbrev: "dhchap_c.txn_id"
+            bits: 32
+            value: "0xB7E42D1F"
+            description: >
+              Same Transaction_ID from the AUTH_Negotiate. All frames in this
+              authentication exchange use the same ID.
+          - name: "Challenge_Value (16 bytes)"
+            abbrev: "dhchap_c.chall"
+            bits: 128
+            value: "0xD8A3F1C24B7E09563C1D2E4F5A6B7C8D"
+            description: >
+              Random 128-bit challenge nonce generated by the switch.
+              The host must compute: HMAC-SHA-256(shared_secret, challenge_value
+              || DH_shared_key || initiator_WWN || responder_WWN).
+              The switch will compute the same HMAC using ITS copy of the
+              shared secret. If the secrets differ, the hashes will not match
+              and authentication will fail.
+            spec_refs:
+              - document: "FC-SP-2"
+                section: "5.3.2"
+                title: "DHCHAP_Challenge — Challenge_Value"
+          - name: "DH Public Value g^b mod p (256 bytes)"
+            abbrev: "dhchap_c.dhval"
+            bits: 0
+            value: "[256-byte DH Group 4 public value]"
+            description: >
+              Switch's Diffie-Hellman public value for Group 4 (2048-bit MODP).
+              The host will compute g^a mod p (its own DH public value) and
+              derive the DH shared key K = g^(ab) mod p. This K is then mixed
+              into the CHAP response hash. The DH exchange itself succeeds —
+              the failure is in the CHAP layer where the shared secret is used.
+            spec_refs:
+              - document: "FC-SP-2"
+                section: "5.3.2"
+                title: "DHCHAP_Challenge — DH value"
+      - name: "FC-2 Frame Header (Routing — always plaintext)"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x23"
+            description: "0x23 = Extended Link Service, solicited control (response in AUTH exchange)"
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0x010200"
+            description: "Destination N_Port ID — host HBA port."
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0xFFFFFD"
+            description: "Source — Fabric Controller (switch F_Port)."
+          - name: "CS_CTL"
+            abbrev: "fc2.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "TYPE"
+            abbrev: "fc2.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc2.fctl"
+            bits: 24
+            value: "0x980000"
+            description: "Frame Control — exchange responder, first+last sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc2.seqid"
+            bits: 8
+            value: "0x02"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc2.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc2.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc2.oxid"
+            bits: 16
+            value: "0x0010"
+            description: "Originator Exchange ID"
+          - name: "RX_ID"
+            abbrev: "fc2.rxid"
+            bits: 16
+            value: "0x0010"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc2.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── DH-CHAP Reply (with WRONG shared secret) ─────────────────────────────────
+
+  - id: "dhchap_reply_bad"
+    name: "DH-CHAP Reply — HBA Response (WRONG Shared Secret)"
+    description: >
+      The host HBA computes its DHCHAP_Reply using its locally configured
+      shared secret. CRITICALLY, this shared secret does NOT match the secret
+      stored on the switch for this WWN. The HBA does not know the secret is
+      wrong — from the HBA's perspective, the computation is correct. The
+      HMAC-SHA-256 response value will be valid for the HBA's secret but will
+      NOT match what the switch expects.
+
+      Common root causes for secret mismatch:
+      - HBA was replaced and the new HBA was configured with the old secret
+      - Switch's secret database was updated but the HBA was not re-provisioned
+      - A zone change moved the HBA to a new switch that has a different secret
+      - Typo during manual secret entry on either the HBA or switch
+    from: "host"
+    to: "switch"
+    timestamp_ns: 7500
+    total_bytes: 340
+    color: "#e67e22"
+    headers:
+      - name: "DHCHAP_Reply PDU (computed with WRONG secret)"
+        abbrev: "dhchap_r"
+        layer: 4
+        fields:
+          - name: "Auth_Msg_Code"
+            abbrev: "dhchap_r.msg"
+            bits: 8
+            value: "0x21"
+            description: "0x21 = DHCHAP_Reply."
+            spec_refs:
+              - document: "FC-SP-2"
+                section: "5.3.3"
+                title: "DHCHAP_Reply"
+          - name: "Transaction_ID"
+            abbrev: "dhchap_r.txn_id"
+            bits: 32
+            value: "0xB7E42D1F"
+            description: "Same Transaction_ID — ties this to the authentication exchange."
+          - name: "DH Public Value g^a mod p (256 bytes)"
+            abbrev: "dhchap_r.dhval"
+            bits: 0
+            value: "[256-byte DH Group 4 public value — host's DH contribution]"
+            description: >
+              Host's DH public value. The DH key exchange succeeds — both sides
+              derive the same DH shared key K = g^(ab) mod p. The failure is NOT
+              in the DH layer. The failure is in the CHAP response hash, which
+              incorporates the shared secret.
+          - name: "CHAP_Response (32 bytes) — INVALID"
+            abbrev: "dhchap_r.resp"
+            bits: 256
+            value: "0x4F8A2C1D6E3B7A09D5C4F2E18B0A3972E6D5C4B3A2910F8E7D6C5B4A392817"
+            description: >
+              HMAC-SHA-256 response computed as:
+              HMAC-SHA-256(HBA_shared_secret, challenge || K || host_WWN || switch_WWN).
+
+              THIS VALUE IS WRONG. The HBA used its locally stored shared secret,
+              which differs from the switch's stored secret. The switch will
+              compute the same HMAC using ITS secret and get a DIFFERENT hash.
+              Hash comparison will FAIL. The switch cannot determine WHY the hash
+              is wrong (could be wrong secret, corrupted challenge, or replay
+              attack) — it only knows the hashes do not match.
+          - name: "Reverse_Challenge (16 bytes)"
+            abbrev: "dhchap_r.rev_chall"
+            bits: 128
+            value: "0x1A2B3C4D5E6F70819A0B1C2D3E4F5061"
+            description: >
+              The host's reverse challenge for mutual authentication. The switch
+              will never process this because the forward authentication fails
+              first. Mutual authentication requires both directions to succeed.
+      - name: "FC-2 Frame Header (Routing — always plaintext)"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x22"
+            description: "0x22 = Extended Link Service request."
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0xFFFFFD"
+            description: "Destination — Fabric Controller (switch F_Port)."
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0x010200"
+            description: "Source N_Port ID — host HBA port."
+          - name: "CS_CTL"
+            abbrev: "fc2.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "TYPE"
+            abbrev: "fc2.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc2.fctl"
+            bits: 24
+            value: "0x290000"
+            description: "Frame Control — exchange originator, first+last sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc2.seqid"
+            bits: 8
+            value: "0x03"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc2.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc2.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc2.oxid"
+            bits: 16
+            value: "0x0010"
+            description: "Originator Exchange ID"
+          - name: "RX_ID"
+            abbrev: "fc2.rxid"
+            bits: 16
+            value: "0x0010"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc2.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for ELS frames"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── AUTH_Reject (authentication failure) ──────────────────────────────────────
+
+  - id: "auth_reject"
+    name: "AUTH_Reject — Authentication Failed (Hash Mismatch)"
+    description: >
+      The switch receives the DHCHAP_Reply, computes its own HMAC-SHA-256
+      using its stored shared secret, and compares the result with the
+      response in the DHCHAP_Reply. THE HASHES DO NOT MATCH.
+
+      The switch sends AUTH_Reject with reason code 0x05 (Authentication
+      Failed) and explanation code 0x01 (CHAP response mismatch). The switch
+      logs a security event: "DH-CHAP authentication failure for WWN
+      10:00:00:10:9B:C7:2A:01 on port 0/12 — CHAP response verification
+      failed."
+
+      The switch does NOT reveal WHY the hash failed (this would be a
+      security information leak). It simply reports: authentication failed.
+      The administrator must check both the switch secret database and the
+      HBA configuration to find the mismatch.
+    from: "switch"
+    to: "host"
+    timestamp_ns: 9000
+    total_bytes: 32
+    color: "#e74c3c"
+    headers:
+      - name: "AUTH_Reject PDU"
+        abbrev: "auth_rej"
+        layer: 4
+        fields:
+          - name: "Auth_Msg_Code"
+            abbrev: "auth_rej.msg_code"
+            bits: 8
+            offset_bits: 0
+            value: "0x0A"
+            value_hex: "0x0A"
+            description: >
+              0x0A = AUTH_Reject message code. Indicates that the authentication
+              exchange has failed. The switch terminates the AUTH transaction
+              and will not allow this HBA to proceed with PRLI or I/O.
+            spec_refs:
+              - document: "FC-SP-2"
+                section: "5.3.6"
+                title: "AUTH_Reject message"
+          - name: "Reason_Code"
+            abbrev: "auth_rej.reason"
+            bits: 8
+            offset_bits: 8
+            value: "0x05"
+            description: >
+              0x05 = Authentication Failed. The CHAP response hash did not match
+              the switch's computed hash. This is the most common AUTH_Reject
+              reason code in production environments — almost always caused by
+              mismatched shared secrets.
+            spec_refs:
+              - document: "FC-SP-2"
+                section: "5.3.6.1"
+                title: "AUTH_Reject Reason Codes"
+          - name: "Reason_Code_Explanation"
+            abbrev: "auth_rej.explanation"
+            bits: 8
+            offset_bits: 16
+            value: "0x01"
+            description: >
+              0x01 = Authentication mechanism failure. The DH-CHAP protocol
+              completed its exchange but the response verification failed.
+              This explanation distinguishes a hash mismatch from other failure
+              modes (timeout, unsupported protocol, etc.).
+            spec_refs:
+              - document: "FC-SP-2"
+                section: "5.3.6.2"
+                title: "AUTH_Reject Reason Code Explanations"
+          - name: "Transaction_ID"
+            abbrev: "auth_rej.txn_id"
+            bits: 32
+            offset_bits: 24
+            value: "0xB7E42D1F"
+            description: >
+              Same Transaction_ID from AUTH_Negotiate. Ties this rejection to
+              the specific authentication exchange that failed.
+      - name: "FC-2 Frame Header (Routing — always plaintext)"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x23"
+            description: "0x23 = Extended Link Service, solicited control (response)"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.1"
+                title: "R_CTL field encoding"
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0x010200"
+            description: "Destination N_Port ID — host HBA port."
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0xFFFFFD"
+            description: "Source — Fabric Controller (switch F_Port)."
+          - name: "CS_CTL"
+            abbrev: "fc2.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "TYPE"
+            abbrev: "fc2.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc2.fctl"
+            bits: 24
+            value: "0x980000"
+            description: "Frame Control — exchange responder, first+last sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc2.seqid"
+            bits: 8
+            value: "0x04"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc2.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc2.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc2.oxid"
+            bits: 16
+            value: "0x0010"
+            description: "Originator Exchange ID"
+          - name: "RX_ID"
+            abbrev: "fc2.rxid"
+            bits: 16
+            value: "0x0010"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc2.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── LOGO (Logout — connection teardown) ───────────────────────────────────────
+
+  - id: "logo"
+    name: "LOGO — Fabric Logout (Connection Teardown)"
+    description: >
+      Following AUTH_Reject, the switch sends LOGO (Logout) to the host to
+      tear down the N_Port session. The host's N_Port ID (0x010200) is
+      de-registered from the Name Server. The host loses all fabric
+      connectivity — no I/O, no PRLI, no access to any target port.
+
+      The host HBA driver will typically retry FLOGI after a configurable
+      delay (default: 10-30 seconds). The retry will fail again with the
+      same AUTH_Reject unless the shared secret mismatch is corrected.
+
+      On Brocade switches, this event appears in raslog as:
+      "AUTH-3004: DH-CHAP authentication failed for port 0/12 (WWN 10:00:00:10:9B:C7:2A:01)"
+      On Cisco MDS, it appears in syslog as:
+      "FC-SP DH-CHAP: Authentication failure for PWWN 10:00:00:10:9b:c7:2a:01 on fc1/12"
+    from: "switch"
+    to: "host"
+    timestamp_ns: 10000
+    total_bytes: 32
+    color: "#e74c3c"
+    headers:
+      - name: "LOGO (Logout) ELS"
+        abbrev: "logo"
+        layer: 4
+        fields:
+          - name: "ELS Command Code"
+            abbrev: "logo.cmd"
+            bits: 8
+            offset_bits: 0
+            value: "0x05"
+            value_hex: "0x05"
+            description: >
+              0x05 = LOGO (Logout). Extended Link Service command that terminates
+              the N_Port session. After receiving LOGO, the host must re-do
+              FLOGI and PLOGI from scratch to re-establish fabric connectivity.
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.3"
+                title: "Logout (LOGO)"
+              - document: "FC-LS-3"
+                section: "4.3"
+                title: "LOGO ELS"
+          - name: "N_Port_ID Being Logged Out"
+            abbrev: "logo.nport_id"
+            bits: 24
+            offset_bits: 40
+            value: "0x010200"
+            description: >
+              The N_Port ID being removed from the fabric. This is the host's
+              assigned address. After LOGO, this address is returned to the
+              address pool and the host no longer has a valid fabric identity.
+          - name: "Port WWN"
+            abbrev: "logo.wwn"
+            bits: 64
+            offset_bits: 64
+            value: "20:01:00:05:1E:A1:BB:01"
+            description: >
+              Switch F_Port WWN initiating the logout. The host can identify
+              which switch port rejected it by this WWN.
+      - name: "FC-2 Frame Header (Routing — always plaintext)"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x22"
+            description: "0x22 = Extended Link Service request (LOGO is an unsolicited ELS)"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.1"
+                title: "R_CTL field encoding"
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0x010200"
+            description: "Destination N_Port ID — host HBA port (about to be de-registered)."
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0xFFFFFD"
+            description: "Source — Fabric Controller (switch F_Port)."
+          - name: "CS_CTL"
+            abbrev: "fc2.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "TYPE"
+            abbrev: "fc2.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc2.fctl"
+            bits: 24
+            value: "0x290000"
+            description: "Frame Control — exchange originator (switch initiates LOGO), first+last sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc2.seqid"
+            bits: 8
+            value: "0x00"
+            description: "Sequence ID — new exchange for LOGO"
+          - name: "DF_CTL"
+            abbrev: "fc2.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc2.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc2.oxid"
+            bits: 16
+            value: "0x0020"
+            description: "Originator Exchange ID — new exchange for LOGO (separate from AUTH exchange)"
+          - name: "RX_ID"
+            abbrev: "fc2.rxid"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — not yet assigned"
+          - name: "Parameter"
+            abbrev: "fc2.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for ELS frames"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+timeline:
+  # ── Step 0: PLOGI context ─────────────────────────────────────────────────────
+
+  - id: "context"
+    type: "annotation"
+    t_ns: 0
+    annotation:
+      text: "Starting Point: PLOGI Complete, Authentication Required"
+      detail: >
+        FLOGI and PLOGI have completed. The host has an N_Port ID (0x010200)
+        and the switch requires DH-CHAP authentication before allowing PRLI
+        or any I/O to target ports. The host's HBA has a shared secret
+        configured, but it does NOT match the switch's stored secret for this
+        HBA's WWN. The administrator is not yet aware of the mismatch.
+
+  - id: "plogi_ctx"
+    type: "frame_tx"
+    t_ns: 0
+    frame_id: "plogi_complete_context"
+    annotation:
+      text: "PLOGI Complete — N_Port Login Done, Authentication Next"
+      detail: >
+        PLOGI ACC received. The host has N_Port ID 0x010200, and both
+        endpoints advertised FC-SP-3 capability in their service parameters.
+        The switch's authentication policy is set to MANDATORY — no HBA
+        can proceed to PRLI without successful DH-CHAP authentication.
+        The host HBA initiates AUTH_Negotiate automatically.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              auth_state: "AUTH_IDLE — initiating AUTH_Negotiate"
+              shared_secret: "configured (STALE — does not match switch)"
+          - layer: 2
+            name: "FC-2 Framing / Transport"
+            state_fields:
+              login_state: "PLOGI complete — N_Port ID 0x010200 assigned"
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              auth_policy: "DH-CHAP MANDATORY — awaiting AUTH_Negotiate from host"
+      - actor_id: "array"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              visibility: "NOT REACHABLE — host has not authenticated"
+
+  # ── Step 1: AUTH_Negotiate ────────────────────────────────────────────────────
+
+  - id: "auth_neg"
+    type: "frame_tx"
+    t_ns: 1000
+    frame_id: "auth_negotiate"
+    annotation:
+      text: "AUTH_Negotiate — Host Proposes DH-CHAP with SHA-256"
+      detail: >
+        The host sends AUTH_Negotiate proposing DH-CHAP with SHA-256 and
+        DH Group 4 (2048-bit MODP). The ELS command code 0x52 identifies
+        this as an FC-SP authentication frame. The Transaction_ID 0xB7E42D1F
+        ties all subsequent AUTH frames to this exchange. At this point,
+        everything is proceeding normally — parameter negotiation is
+        independent of the shared secret.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              auth_state: "AUTH_NEGOTIATE sent — awaiting ACC"
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              auth_policy: "AUTH_NEGOTIATE received — evaluating parameters"
+
+  # ── Step 2: AUTH_Negotiate ACC ────────────────────────────────────────────────
+
+  - id: "auth_neg_acc"
+    type: "frame_tx"
+    t_ns: 5000
+    frame_id: "auth_neg_acc"
+    annotation:
+      text: "AUTH_Negotiate ACC — SHA-256 + DH Group 4 Agreed"
+      detail: >
+        The switch accepts SHA-256 and DH Group 4. Parameter negotiation
+        succeeds — the switch and HBA agree on the authentication mechanism.
+        The switch now generates a DH key pair and a random challenge nonce.
+        Note: this step succeeds even though the shared secrets are mismatched.
+        The mismatch only manifests when the CHAP response is verified.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              auth_state: "AUTH_NEGOTIATE ACC — DH-CHAP SHA-256 + Group 4 agreed"
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              auth_policy: "AUTH_NEGOTIATE ACC sent — generating DH key pair + challenge"
+
+  # ── Step 3: DH-CHAP Challenge ────────────────────────────────────────────────
+
+  - id: "dhchap_challenge"
+    type: "frame_tx"
+    t_ns: 6000
+    frame_id: "dhchap_challenge"
+    annotation:
+      text: "DH-CHAP Challenge — Switch Sends Challenge Nonce + DH Public Value"
+      detail: >
+        The switch sends a 128-bit random challenge nonce and its DH public
+        value (g^b mod p). The host must now compute a CHAP response:
+        HMAC-SHA-256(shared_secret, challenge || DH_shared_key || WWNs).
+        The host uses its locally stored shared secret for this computation.
+        If that secret differs from the switch's copy, the resulting hash
+        will be DIFFERENT from what the switch expects — and authentication
+        will fail.
+    state_after:
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              auth_policy: "DHCHAP_Challenge sent — awaiting CHAP response from host"
+      - actor_id: "host"
+        layers:
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              auth_state: "DHCHAP_Challenge received — computing response with LOCAL secret"
+
+  # ── Step 4: DH-CHAP Reply (wrong secret) ─────────────────────────────────────
+
+  - id: "dhchap_reply_bad"
+    type: "error"
+    t_ns: 7500
+    frame_id: "dhchap_reply_bad"
+    annotation:
+      text: "DH-CHAP Reply — HBA Sends Response Computed with WRONG Shared Secret"
+      detail: >
+        THE ROOT CAUSE: The host computes HMAC-SHA-256 using a shared secret
+        that does NOT match the switch's stored secret for WWN 10:00:00:10:9B:C7:2A:01.
+        From the HBA's perspective, the computation is correct — it has no way
+        to know its secret is stale. The DH key exchange succeeded (both sides
+        derived K = g^(ab) mod p), but the CHAP response hash incorporates
+        the shared secret, and the secrets differ.
+
+        The switch will now compute the expected HMAC using its own secret,
+        compare the two hashes, and detect the mismatch.
+      spec_refs:
+        - document: "FC-SP-2"
+          section: "5.3.3"
+          title: "DHCHAP_Reply — CHAP response computation"
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              auth_state: "DHCHAP_Reply sent — awaiting DHCHAP_Success (expecting success)"
+              shared_secret: "configured (STALE — HBA does not know it is wrong)"
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              auth_policy: "DHCHAP_Reply received — VERIFYING CHAP RESPONSE..."
+
+  # ── Step 5: AUTH_Reject ───────────────────────────────────────────────────────
+
+  - id: "auth_reject"
+    type: "error"
+    t_ns: 9000
+    frame_id: "auth_reject"
+    annotation:
+      text: "AUTH_Reject — AUTHENTICATION FAILED (Hash Mismatch)"
+      detail: >
+        AUTHENTICATION FAILURE. The switch computed HMAC-SHA-256 using its
+        stored shared secret and compared it to the HBA's response. The hashes
+        DO NOT MATCH.
+
+        Switch log entry (Brocade raslog):
+          AUTH-3004: DH-CHAP authentication failed for port 0/12
+          (WWN 10:00:00:10:9B:C7:2A:01) — reason: CHAP response mismatch
+
+        Switch log entry (Cisco MDS syslog):
+          %AUTH-3-FC_SP_DHCHAP_FAILURE: DH-CHAP authentication failure for
+          PWWN 10:00:00:10:9b:c7:2a:01 on interface fc1/12
+
+        The AUTH_Reject reason code 0x05 (Authentication Failed) with
+        explanation 0x01 (mechanism failure) tells the HBA that its CHAP
+        response was rejected — but does NOT reveal the specific cause
+        (intentional security measure to prevent oracle attacks).
+      spec_refs:
+        - document: "FC-SP-2"
+          section: "5.3.6"
+          title: "AUTH_Reject"
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              auth_state: "AUTH_REJECT received — AUTHENTICATION FAILED"
+              shared_secret: "MISMATCH DETECTED (HBA secret != switch secret)"
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              auth_policy: "AUTH_REJECT sent — initiating LOGO to tear down session"
+      - actor_id: "array"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              visibility: "NOT REACHABLE — host authentication FAILED"
+
+  # ── Step 6: LOGO (connection teardown) ────────────────────────────────────────
+
+  - id: "logo"
+    type: "error"
+    t_ns: 10000
+    frame_id: "logo"
+    annotation:
+      text: "LOGO — Fabric Logout (Connection Torn Down)"
+      detail: >
+        The switch sends LOGO to de-register the host's N_Port ID (0x010200)
+        from the fabric. The host loses ALL fabric connectivity:
+          - N_Port ID returned to address pool
+          - Name Server registration removed
+          - No path to any target port
+          - No I/O possible
+
+        The HBA driver will log:
+          lpfc 0000:3b:00.0: LOGO received from switch — authentication failed
+          lpfc 0000:3b:00.0: Port state: LINK_DOWN (auth failure)
+
+        The host will retry FLOGI after a delay (typically 10-30 seconds).
+        Each retry will fail with the same AUTH_Reject until the shared
+        secret mismatch is corrected.
+      spec_refs:
+        - document: "FC-FS-5"
+          section: "9.3"
+          title: "Logout (LOGO) procedure"
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              auth_state: "LOGGED OUT — authentication failed, no fabric access"
+              shared_secret: "MISMATCH — must be corrected before retry"
+          - layer: 2
+            name: "FC-2 Framing / Transport"
+            state_fields:
+              login_state: "LOGGED OUT — N_Port ID 0x010200 de-registered"
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              auth_policy: "LOGO sent — port isolated, awaiting re-FLOGI"
+      - actor_id: "array"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              visibility: "NOT REACHABLE — host logged out of fabric"
+
+  # ── Step 7: Diagnosis annotation ──────────────────────────────────────────────
+
+  - id: "diagnosis"
+    type: "annotation"
+    t_ns: 11000
+    annotation:
+      text: "Diagnosis: How to Find and Fix the Shared Secret Mismatch"
+      detail: >
+        ROOT CAUSE: The shared secret configured on the HBA does not match
+        the shared secret stored in the switch's authentication database for
+        WWN 10:00:00:10:9B:C7:2A:01.
+
+        DIAGNOSIS STEPS:
+        1. Check switch logs for AUTH_Reject events:
+           - Brocade: "authutil --show" and "raslog" for AUTH-3004 events
+           - Cisco MDS: "show fcsp interface" and "show logging" for DHCHAP events
+        2. Verify the shared secret on the switch:
+           - Brocade: "authutil --show -a" (shows configured secrets per WWN)
+           - Cisco MDS: "show fcsp dhchap database"
+        3. Verify the shared secret on the HBA:
+           - Emulex: OneCommand Manager or "hbacmd GetDHCHAPSecret"
+           - QLogic: QConvergeConsole or "qlremote" CLI
+        4. Compare the secrets — they must be IDENTICAL (case-sensitive,
+           no trailing whitespace, same character encoding)
+
+        COMMON ROOT CAUSES:
+        - HBA replaced without re-provisioning the secret on the new HBA
+        - Switch firmware upgrade reset the secret database to defaults
+        - Zone migration moved the HBA to a different switch with a different secret
+        - Manual entry typo (check for leading/trailing spaces, similar characters like 0/O, 1/l)
+        - Secret rotation policy updated the switch but not the HBA (or vice versa)
+
+        RESOLUTION:
+        Set the SAME shared secret on both the HBA and the switch for this WWN.
+        After updating, re-initialize the HBA port (disable/enable or reboot).
+        The next FLOGI/PLOGI/AUTH_Negotiate cycle will succeed.
+
+        SECURITY IMPLICATIONS:
+        - While authentication is failing, NO I/O reaches the array — this is
+          the correct security behavior (deny by default)
+        - The switch does NOT reveal the expected secret value in AUTH_Reject
+        - Failed auth attempts should be monitored as potential intrusion indicators
+        - Repeated failures from the same WWN may trigger port lockout policies
+
+  # ── Step 8: Security implications annotation ──────────────────────────────────
+
+  - id: "security_implications"
+    type: "annotation"
+    t_ns: 12000
+    annotation:
+      text: "Security Implications: Why AUTH_Reject Is the Correct Behavior"
+      detail: >
+        FC-SP-3 DH-CHAP is a ZERO-TRUST boundary. The switch enforces:
+
+        1. DENY BY DEFAULT: No HBA gets fabric access without successful
+           authentication. Even if FLOGI and PLOGI succeed, the HBA cannot
+           reach any target port or perform any I/O.
+
+        2. NO INFORMATION LEAKAGE: AUTH_Reject does not tell the HBA what
+           the correct secret is, or even confirm that the secret was the
+           problem. This prevents oracle attacks where an adversary could
+           probe different secrets and learn from the error messages.
+
+        3. DEFENSE IN DEPTH: Even if an attacker spoofs a WWN, they cannot
+           authenticate without the correct shared secret. DH-CHAP with a
+           strong DH group also provides forward secrecy — past sessions
+           cannot be decrypted even if the shared secret is later compromised.
+
+        4. AUDIT TRAIL: Every AUTH_Reject is logged with timestamp, WWN, and
+           port number. Security teams can correlate these events with
+           physical access logs and change management records.
+
+        5. RETRY LIMITING: Most switch implementations support configurable
+           authentication retry limits and port lockout after N consecutive
+           failures — preventing brute-force attacks on the shared secret.
+
+glossary:
+  - term: "DH-CHAP"
+    abbrev: "DH-CHAP"
+    definition: >
+      Diffie-Hellman Challenge Handshake Authentication Protocol. The mandatory
+      authentication protocol in FC-SP. Combines CHAP (challenge-response
+      authentication using a shared secret) with a Diffie-Hellman key exchange
+      (classical DH groups in FC-SP-2; ML-KEM post-quantum KEM in FC-SP-3).
+      Provides mutual authentication: both endpoints prove their identity
+      before any key material or I/O is exchanged.
+    spec_refs:
+      - document: "FC-SP-2"
+        section: "5.3"
+        title: "DH-CHAP"
+
+  - term: "AUTH_Negotiate"
+    abbrev: "AUTH_Negotiate"
+    definition: >
+      The first message in an FC-SP authentication exchange. Proposes the
+      authentication protocol (DH-CHAP), hash algorithm (SHA-256 or SHA-512),
+      and DH group or KEM algorithm. Carried as an ELS frame with command
+      code 0x52 (AUTH_ELS). The responder replies with AUTH_Negotiate ACC
+      to confirm the agreed parameters, or AUTH_Negotiate RJT to reject.
+    spec_refs:
+      - document: "FC-SP-2"
+        section: "5.3.1"
+        title: "AUTH_Negotiate"
+
+  - term: "AUTH_Reject"
+    abbrev: "AUTH_Reject"
+    definition: >
+      An FC-SP message indicating authentication failure. Carries a reason
+      code (e.g., 0x05 = Authentication Failed) and an explanation code
+      (e.g., 0x01 = mechanism failure). Intentionally provides minimal
+      information about the failure cause to prevent oracle attacks. Upon
+      receiving AUTH_Reject, the initiator should expect LOGO (logout)
+      and loss of fabric connectivity.
+    spec_refs:
+      - document: "FC-SP-2"
+        section: "5.3.6"
+        title: "AUTH_Reject"
+
+  - term: "Shared Secret"
+    definition: >
+      A pre-configured password or key string known to both the HBA and the
+      switch (or target). Used as input to the HMAC hash computation during
+      DH-CHAP challenge-response. The shared secret must be IDENTICAL on both
+      endpoints — any difference (including trailing whitespace or encoding
+      differences) causes authentication failure. Typically configured via
+      the switch's fabric manager and the HBA's management utility.
+      FC-SP-2 specifies a minimum secret length of 12 characters and a
+      maximum of 64 characters.
+    spec_refs:
+      - document: "FC-SP-2"
+        section: "5.3"
+        title: "DH-CHAP shared secret requirements"
+
+  - term: "LOGO"
+    abbrev: "LOGO"
+    definition: >
+      Logout. An FC Extended Link Service (ELS) that terminates an N_Port
+      session. After LOGO, the N_Port ID is de-registered from the fabric's
+      Name Server and the port loses all fabric connectivity. In the context
+      of authentication failure, the switch sends LOGO to forcibly remove
+      an unauthenticated HBA from the fabric. The HBA must re-do FLOGI
+      and PLOGI from scratch to reconnect.
+    spec_refs:
+      - document: "FC-FS-5"
+        section: "9.3"
+        title: "Logout (LOGO)"
+
+  - term: "Mutual Authentication"
+    definition: >
+      An authentication model where BOTH endpoints prove their identity to
+      each other. In DH-CHAP, the responder challenges the initiator first
+      (forward authentication), then the initiator challenges the responder
+      (reverse authentication via DHCHAP_Reply reverse challenge). Mutual
+      authentication prevents man-in-the-middle attacks where a rogue switch
+      could impersonate a legitimate fabric switch. In this error scenario,
+      mutual authentication never completes because forward authentication
+      fails first.
+    spec_refs:
+      - document: "FC-SP-2"
+        section: "5.3"
+        title: "DH-CHAP mutual authentication"
+
+walkthroughs:
+  - id: "auth-failure-flow"
+    title: "DH-CHAP Authentication Failure — Step by Step"
+    description: "Trace the authentication failure from PLOGI through AUTH_Reject to LOGO, understanding where and why it fails."
+    steps:
+      - step: 0
+        narration: >
+          PLOGI is complete. The host has N_Port ID 0x010200 and both sides
+          advertised FC-SP-3 capability. The switch requires DH-CHAP
+          authentication before any I/O. The host's shared secret does NOT
+          match the switch's stored secret — but neither side knows this yet.
+        highlight_fields: ["plogi_ctx.status", "plogi_ctx.fcsp3", "plogi_ctx.host_wwn"]
+      - step: 1
+        narration: >
+          AUTH_Negotiate proposes DH-CHAP with SHA-256 and DH Group 4.
+          This is the parameter negotiation phase — it is independent of the
+          shared secret. Note the ELS command code 0x52 (AUTH_ELS) and
+          Transaction_ID 0xB7E42D1F. Everything looks normal.
+        highlight_fields: ["els.cmd", "auth_neg.msg_code", "auth_neg.proto", "auth_neg.hash0", "auth_neg.dhgroup", "auth_neg.wwn"]
+      - step: 2
+        narration: >
+          Switch accepts the proposed parameters. SHA-256 and DH Group 4 are
+          agreed. The switch generates a DH key pair and challenge nonce.
+          Parameter negotiation succeeds — the failure comes later.
+        highlight_fields: ["auth_neg_acc.msg", "auth_neg_acc.hash", "auth_neg_acc.dhgroup"]
+      - step: 3
+        narration: >
+          The switch sends the DH-CHAP Challenge: a 128-bit random nonce and
+          its DH public value. The host must compute HMAC-SHA-256 using its
+          shared secret. This is the last step before the failure — the host
+          is about to use its WRONG shared secret.
+        highlight_fields: ["dhchap_c.msg", "dhchap_c.chall", "dhchap_c.dhval"]
+      - step: 4
+        narration: >
+          THE FAILURE POINT. The host computes its CHAP response using the
+          wrong shared secret. The DH key exchange succeeded — both sides
+          derived the same K. But the HMAC incorporates the shared secret,
+          and the host's secret differs from the switch's. The resulting
+          hash is INVALID from the switch's perspective. The HBA has no way
+          to know its response is wrong.
+        highlight_fields: ["dhchap_r.msg", "dhchap_r.resp", "dhchap_r.dhval", "dhchap_r.rev_chall"]
+      - step: 5
+        narration: >
+          AUTH_Reject. The switch detected the hash mismatch. Reason code 0x05
+          (Authentication Failed), explanation 0x01 (mechanism failure).
+          Check the switch logs: AUTH-3004 on Brocade, %AUTH-3-FC_SP_DHCHAP_FAILURE
+          on Cisco MDS. The switch does NOT reveal the expected hash or confirm
+          what specifically failed — this is an intentional security measure.
+        highlight_fields: ["auth_rej.msg_code", "auth_rej.reason", "auth_rej.explanation", "auth_rej.txn_id"]
+      - step: 6
+        narration: >
+          LOGO tears down the connection. N_Port ID 0x010200 is de-registered.
+          The host has NO fabric access — no I/O, no PRLI, no target visibility.
+          The HBA driver will retry after a delay, but every retry fails with the
+          same AUTH_Reject until the shared secret mismatch is corrected on
+          either the HBA or the switch.
+        highlight_fields: ["logo.cmd", "logo.nport_id", "logo.wwn"]
+      - step: 7
+        narration: >
+          DIAGNOSIS: Check switch logs for AUTH_Reject events, verify the shared
+          secret on both the switch (authutil --show or show fcsp dhchap) and the
+          HBA (OneCommand Manager or QConvergeConsole). The secrets must be
+          IDENTICAL — case-sensitive, no trailing whitespace. Common causes:
+          HBA replacement, firmware upgrade, zone migration, typo during entry.
+        highlight_fields: []
+      - step: 8
+        narration: >
+          SECURITY CONTEXT: AUTH_Reject is the correct behavior — FC-SP-3
+          enforces zero-trust at the fabric edge. No HBA gets access without
+          valid authentication. Repeated failures should be investigated as
+          potential intrusion attempts. The switch's refusal to reveal the
+          expected secret prevents oracle attacks. After fixing the secret,
+          disable/enable the HBA port to trigger a fresh FLOGI cycle.
+        highlight_fields: []

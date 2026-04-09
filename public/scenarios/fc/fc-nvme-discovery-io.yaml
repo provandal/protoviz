@@ -1,0 +1,3761 @@
+meta:
+  id: "fc-nvme-discovery-io"
+  title: "FC-NVMe: NVMe over Fibre Channel — Discovery → Connect → I/O"
+  protocol: "FC-NVMe"
+  protocol_family: "SAN"
+  version: "1.0.0"
+  description: >
+    A complete FC-NVMe (NVMe over Fibre Channel) flow on a 32GFC fabric, from
+    physical link establishment through Fabric Login (FLOGI), Port Login (PLOGI),
+    and the critical NVMe-specific Process Login (PRLI with type code 0x28 instead
+    of the traditional FCP type 0x08). After PRLI establishes the NVMe upper-layer
+    association, the host connects to a Discovery Controller via FC-LS, retrieves
+    the Discovery Log Page to locate NVMe subsystems, then connects to an I/O
+    Controller via a second PRLI exchange. NVMe Identify Controller and Identify
+    Namespace commands enumerate the target, followed by a 4KB NVMe Write and Read
+    using FC-NVMe Information Units (CMD IU, XFER_RDY IU, DATA IU, RSP IU).
+
+    FC-NVMe reuses the FC framing and login infrastructure but replaces the FCP/SCSI
+    upper layer with NVMe. Compared to NVMe-oF/RDMA, FC-NVMe requires no IP stack,
+    no RDMA CM, and no lossless Ethernet configuration — the FC fabric provides
+    guaranteed delivery natively via BB_Credit flow control.
+
+  learning_objectives:
+    - "Understand how FC-NVMe reuses the FC login sequence (FLOGI, PLOGI) but changes PRLI to negotiate NVMe (type 0x28) instead of FCP/SCSI (type 0x08)"
+    - "See the NVMe Discovery Controller flow over FC-LS — how the initiator finds NVMe subsystems in the fabric"
+    - "Trace NVMe commands encapsulated in FC-NVMe Information Units: CMD IU (SQE), RSP IU (CQE), XFER_RDY IU, DATA IU"
+    - "Compare FC-NVMe write flow (CMD IU → XFER_RDY IU → DATA IU → RSP IU) with traditional FCP write flow (FCP_CMND → FCP_XFER_RDY → FCP_DATA → FCP_RSP)"
+    - "Understand that FC-NVMe read flow does NOT require XFER_RDY — data flows immediately after command"
+    - "Compare FC-NVMe transport binding with NVMe-oF/RDMA — FC frames vs RDMA operations, BB_Credit vs PFC, FC switch vs Ethernet switch"
+    - "Recognize that the FC frame header TYPE field (0x28 for NVMe vs 0x08 for FCP) is the fundamental differentiator on the wire"
+
+  difficulty: "advanced"
+
+  authors:
+    - name: "Erik Smith"
+      org: "Dell Technologies"
+    - name: "Claude"
+      org: "proto-viz"
+      github: "proto-viz"
+
+  created: "2026-03-30"
+  updated: "2026-03-30"
+
+  tags:
+    - "Fibre Channel"
+    - "FC"
+    - "FC-NVMe"
+    - "NVMe"
+    - "NVMe-oF"
+    - "SAN"
+    - "32GFC"
+    - "FLOGI"
+    - "PLOGI"
+    - "PRLI"
+    - "Discovery"
+    - "education"
+
+  primary_specs:
+    - document: "FC-NVMe-2"
+      section: "1"
+      title: "Fibre Channel — NVMe-2 (INCITS 560)"
+      url: "https://www.t11.org/fcSite/fcretr.html"
+    - document: "FC-FS-5"
+      section: "1"
+      title: "Fibre Channel — Framing and Signaling"
+      url: "https://www.t11.org/fcSite/fcretr.html"
+    - document: "FC-LS-4"
+      section: "1"
+      title: "Fibre Channel — Link Services"
+      url: "https://www.t11.org/fcSite/fcretr.html"
+    - document: "NVMe Base Spec 2.0"
+      section: "1"
+      title: "NVM Express Base Specification"
+      url: "https://nvmexpress.org/specifications/"
+
+  source_references:
+    - repo: "torvalds/linux"
+      path: "drivers/scsi/lpfc/lpfc_nvme.c"
+      description: "Emulex/Broadcom lpfc — FC-NVMe initiator I/O path, CMD IU / RSP IU handling"
+    - repo: "torvalds/linux"
+      path: "drivers/scsi/lpfc/lpfc_els.c"
+      description: "lpfc — FLOGI, PLOGI, PRLI ELS handling (shared with FCP)"
+    - repo: "torvalds/linux"
+      path: "drivers/scsi/lpfc/lpfc_nvmet.c"
+      description: "lpfc — FC-NVMe target mode, XFER_RDY generation, DATA IU handling"
+    - repo: "torvalds/linux"
+      path: "drivers/nvme/host/fc.c"
+      description: "NVMe-FC host transport — NVMe command submission over FC, queue management"
+    - repo: "torvalds/linux"
+      path: "drivers/nvme/target/fc.c"
+      description: "NVMe-FC target transport — command reception, data transfer, completion"
+
+  content_disclaimer: >
+    Protocol descriptions in this scenario are based on open-source implementations
+    (Linux kernel nvme-fc, lpfc drivers) and publicly available T11/INCITS and NVMe
+    specifications summaries. No proprietary specification text has been reproduced.
+    Spec references are provided as citations for further reading.
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "initiator"
+      type: "initiator"
+      label: "Host (Initiator HBA)"
+      description: "FC-NVMe initiator — Linux host with dual-port 32GFC HBA running lpfc or qla2xxx driver with nvme-fc transport"
+      hardware: "32GFC dual-port HBA (e.g., Emulex LPe36000)"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "FC Switch"
+      description: "32GFC FC switch with embedded Name Server, NVMe-aware zoning, and FCID assignment"
+      hardware: "32GFC FC switch"
+      position: "center"
+
+    - id: "target"
+      type: "target"
+      label: "NVMe Storage Target"
+      description: "FC-NVMe storage array presenting NVMe namespaces over Fibre Channel"
+      hardware: "32GFC storage array with NVMe SSDs"
+      position: "right"
+
+  links:
+    - id: "link-host-sw"
+      from: "initiator"
+      to: "switch"
+      speed_gbps: 32
+      media: "fiber_sr"
+      fec: "RS-FEC"
+    - id: "link-sw-stor"
+      from: "switch"
+      to: "target"
+      speed_gbps: 32
+      media: "fiber_sr"
+      fec: "RS-FEC"
+
+# ─────────────────────────────────────────────────────────────────
+# LAYER DEFINITIONS (per actor)
+# FC uses FC-0 through FC-4 rather than the OSI model.
+# FC-NVMe replaces the FCP-4 upper layer with NVMe.
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  initiator:
+    - layer: 4
+      name: "FC-4 Upper Layer Protocol (NVMe)"
+      components: ["nvme-fc transport", "drivers/nvme/host/fc.c", "lpfc_nvme.c", "NVMe host core"]
+      state_schema:
+        nvme_state:
+          type: "string"
+          description: "NVMe host state"
+          initial: "offline"
+        discovery_state:
+          type: "string"
+          description: "Discovery Controller state"
+          initial: "none"
+        io_ctrl_state:
+          type: "string"
+          description: "I/O Controller state"
+          initial: "none"
+        cntlid:
+          type: "string"
+          description: "Controller ID assigned by target"
+          initial: "null"
+        nsid:
+          type: "integer"
+          description: "Active Namespace ID"
+          initial: 0
+        last_cmd:
+          type: "string"
+          description: "Last NVMe command issued"
+          initial: "none"
+        io_tag:
+          type: "string"
+          description: "Current NVMe I/O tag (OX_ID)"
+          initial: "null"
+
+    - layer: 2
+      name: "FC-2 Framing / Signaling"
+      components: ["lpfc_sli.c", "lpfc_els.c", "lpfc_hw.h", "FC-LS", "exchange management"]
+      state_schema:
+        my_fcid:
+          type: "string"
+          description: "Assigned N_Port ID (FCID) — set by fabric during FLOGI"
+          initial: "0x000000"
+        bb_credit:
+          type: "integer"
+          description: "Buffer-to-buffer credit (frames we can send before ACK)"
+          initial: 0
+        ox_id_next:
+          type: "string"
+          description: "Next originator exchange ID to allocate"
+          initial: "0x0001"
+        active_exchanges:
+          type: "integer"
+          description: "Number of active exchanges"
+          initial: 0
+        fabric_login:
+          type: "string"
+          description: "Fabric login state (FLOGI)"
+          initial: "none"
+        target_fcid:
+          type: "string"
+          description: "Discovered target FCID from Name Server"
+          initial: "null"
+        target_plogi:
+          type: "string"
+          description: "Port login state with target"
+          initial: "none"
+        nvme_prli:
+          type: "string"
+          description: "NVMe Process Login state (PRLI type 0x28)"
+          initial: "none"
+
+    - layer: 1
+      name: "FC-1 Encoding"
+      components: ["64b/66b encoding", "word sync"]
+      state_schema:
+        encoding:
+          type: "string"
+          initial: "64b/66b"
+        word_sync:
+          type: "boolean"
+          initial: false
+
+    - layer: 0
+      name: "FC-0 Physical"
+      components: ["32GFC SFP28", "850nm VCSEL"]
+      state_schema:
+        phy_state:
+          type: "string"
+          description: "Physical port state (point-to-point link to switch)"
+          initial: "down"
+        speed:
+          type: "string"
+          initial: "unknown"
+        signal_detect:
+          type: "boolean"
+          initial: false
+
+  target:
+    - layer: 4
+      name: "FC-4 Upper Layer Protocol (NVMe)"
+      components: ["NVMe target subsystem", "drivers/nvme/target/fc.c", "lpfc_nvmet.c", "NVMe target core"]
+      state_schema:
+        target_state:
+          type: "string"
+          initial: "online"
+        subsys_nqn:
+          type: "string"
+          description: "NVMe subsystem NQN"
+          initial: "nqn.2024-01.com.example:nvme-array01"
+        namespaces_exported:
+          type: "integer"
+          description: "Number of NVMe namespaces presented"
+          initial: 1
+        last_cmd_received:
+          type: "string"
+          initial: "none"
+        nvme_prli:
+          type: "string"
+          initial: "none"
+        cntlid_assigned:
+          type: "string"
+          description: "Controller ID assigned to initiator"
+          initial: "null"
+
+    - layer: 2
+      name: "FC-2 Framing / Signaling"
+      components: ["frame header", "CRC", "FC-LS", "ELS handling", "exchange management"]
+      state_schema:
+        my_fcid:
+          type: "string"
+          description: "Storage array FCID (pre-assigned by fabric)"
+          initial: "0x010200"
+        bb_credit:
+          type: "integer"
+          initial: 16
+        active_exchanges:
+          type: "integer"
+          initial: 0
+        fabric_login:
+          type: "string"
+          initial: "complete"
+        host_plogi:
+          type: "string"
+          description: "Port login state with initiator host"
+          initial: "none"
+
+    - layer: 1
+      name: "FC-1 Encoding"
+      components: ["64b/66b encoding"]
+      state_schema:
+        encoding:
+          type: "string"
+          initial: "64b/66b"
+
+    - layer: 0
+      name: "FC-0 Physical"
+      components: ["32GFC SFP28"]
+      state_schema:
+        phy_state:
+          type: "string"
+          description: "Physical port state (point-to-point link to switch)"
+          initial: "down"
+        speed:
+          type: "string"
+          initial: "unknown"
+        signal_detect:
+          type: "boolean"
+          initial: false
+
+  switch:
+    - layer: 2
+      name: "FC-2 Frame Forwarding / Fabric Services"
+      components: ["D_ID routing", "BB_Credit management", "Name Server", "FCID assignment", "NVMe-aware zone enforcement"]
+      state_schema:
+        ns_entries:
+          type: "integer"
+          description: "Number of entries in Name Server database"
+          initial: 1
+        zone_active:
+          type: "string"
+          description: "Active zone set name"
+          initial: "nvme_zone_cfg"
+        fcid_pool_next:
+          type: "string"
+          description: "Next FCID to assign"
+          initial: "0x010100"
+        fwd_table_entries:
+          type: "integer"
+          description: "FCIDs in routing table"
+          initial: 1
+        port_a_bb_credit:
+          type: "integer"
+          description: "BB_Credit available toward host"
+          initial: 16
+        port_b_bb_credit:
+          type: "integer"
+          description: "BB_Credit available toward storage"
+          initial: 16
+    - layer: 0
+      name: "FC-0 Physical (per-port)"
+      components: ["32GFC SFP28"]
+      state_schema:
+        port_a_phy:
+          type: "string"
+          description: "Physical state of port facing host"
+          initial: "down"
+        port_b_phy:
+          type: "string"
+          description: "Physical state of port facing storage"
+          initial: "down"
+
+# ─────────────────────────────────────────────────────────────────
+# FRAME LIBRARY
+# ─────────────────────────────────────────────────────────────────
+frames:
+
+  # ── FLOGI ─────────────────────────────────────────────────────
+  - id: "flogi"
+    name: "FLOGI (Fabric Login)"
+    description: >
+      Host sends Fabric Login to well-known address 0xFFFFFE (Fabric Controller).
+      S_ID is 0x000000 because the host has no FCID yet. This is identical to
+      traditional FC — FLOGI is protocol-agnostic, occurring before the upper
+      layer (NVMe or FCP) is negotiated.
+      Linux: lpfc_els.c lpfc_issue_els_flogi()
+    from: "initiator"
+    to: "switch"
+    timestamp_ns: 5000000
+    total_bytes: 148
+    color: "#d97706"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x22"
+            description: "Unsolicited Control — ELS request frame"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.3"
+                title: "R_CTL field encoding"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0xFFFFFE"
+            description: "Well-known address for Fabric Controller. FLOGI always goes here."
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "15.2"
+                title: "Well-known address identifiers"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x000000"
+            description: "Source ID is 0x000000 — host has no FCID assigned yet"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.7"
+                title: "TYPE field — protocol type identifier"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x290000"
+            description: "Exchange originator, first+last sequence, sequence initiative"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.5"
+                title: "F_CTL — Frame Control"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0001"
+            description: "Originator Exchange ID — tracks this FLOGI exchange"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.10"
+                title: "OX_ID and RX_ID — Exchange identification"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — 0xFFFF means unassigned (fabric will assign)"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for ELS frames"
+      - name: "FLOGI Payload (ELS)"
+        abbrev: "fc.els.flogi"
+        layer: 2
+        total_bytes: 116
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x04000000"
+            description: "0x04 = FLOGI command code"
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "5.3"
+                title: "FLOGI — Fabric Login"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "Common Service Parameters"
+            abbrev: "fc.els.csp"
+            bits: 128
+            value: "BB_Credit=16, Recv_Size=2112"
+            description: "Includes BB_Credit offered (16), max receive data field size (2112 bytes), E_D_TOV"
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "5.3.3"
+                title: "Common Service Parameters"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+            kernel_ref:
+              file: "drivers/scsi/lpfc/lpfc_els.c"
+              function: "lpfc_issue_els_flogi"
+              notes: "Sets BB_Credit, data field size, and feature bits in FLOGI payload"
+          - name: "Port Name (WWPN)"
+            abbrev: "fc.els.wwpn"
+            bits: 64
+            value: "21:00:00:0e:1e:aa:bb:cc"
+            description: "World Wide Port Name — globally unique 64-bit identifier for this HBA port"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "15.3"
+                title: "Name_Identifier format"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "Node Name (WWNN)"
+            abbrev: "fc.els.wwnn"
+            bits: 64
+            value: "20:00:00:0e:1e:aa:bb:cc"
+            description: "World Wide Node Name — identifies the physical node (may have multiple ports)"
+          - name: "Class 3 Service Parameters"
+            abbrev: "fc.els.class3"
+            bits: 128
+            value: "Class 3 supported"
+            description: "Class 3 (connectionless, no confirmation) — the standard FC class for modern SANs"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 32GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS-FEC"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 32GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "32GFC (14.025 Gbps per lane)"
+            description: "Physical signaling rate — 32GFC Gen 6 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP28)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
+
+  # ── FLOGI ACC ─────────────────────────────────────────────────
+  - id: "flogi_acc"
+    name: "FLOGI ACC (Fabric Login Accept)"
+    description: >
+      Fabric accepts login and assigns FCID 0x010100 to the host.
+      The assigned FCID becomes the host's S_ID for all subsequent frames.
+    from: "switch"
+    to: "initiator"
+    timestamp_ns: 5200000
+    total_bytes: 148
+    color: "#d97706"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x23"
+            description: "Solicited Control — ELS response (ACC)"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+            description: "Newly assigned FCID for the host — this is the fabric's answer"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0xFFFFFE"
+            description: "Fabric Controller"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+            description: "ELS"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x980000"
+            description: "Exchange responder, last sequence, end sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0001"
+            description: "Same OX_ID as the FLOGI request — correlates request and response"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0001"
+            description: "Responder Exchange ID assigned by fabric"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "FLOGI ACC Payload"
+        abbrev: "fc.els.flogi_acc"
+        layer: 2
+        total_bytes: 116
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x02000000"
+            description: "0x02 = LS_ACC (Link Service Accept)"
+          - name: "Common Service Parameters"
+            abbrev: "fc.els.csp"
+            bits: 128
+            value: "BB_Credit=16, Recv_Size=2112"
+            description: "Fabric's service parameters including BB_Credit grant"
+          - name: "Switch WWPN"
+            abbrev: "fc.els.wwpn"
+            bits: 64
+            value: "20:01:00:05:73:01:02:03"
+            description: "Switch port's World Wide Port Name"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 32GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS-FEC"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 32GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "32GFC (14.025 Gbps per lane)"
+            description: "Physical signaling rate — 32GFC Gen 6 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP28)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
+
+  # ── PLOGI to Target ───────────────────────────────────────────
+  - id: "plogi_target"
+    name: "PLOGI to Target"
+    description: >
+      Host initiates Port Login with the NVMe storage target.
+      PLOGI negotiates port-level parameters (BB_Credit, max frame size).
+      In FC-NVMe, the host discovers the target's FCID via Name Server GID_FT
+      with FC-4 type 0x28 (NVMe) — not 0x08 (FCP). For brevity, NS queries
+      (PLOGI to NS, GID_FT) are elided; the host has discovered target at 0x010200.
+      Linux: lpfc_els.c lpfc_issue_els_plogi()
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 7000000
+    total_bytes: 148
+    color: "#2563eb"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x22"
+            description: "Unsolicited Control — ELS request"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage array FCID discovered from Name Server (GID_FT with type 0x28)"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+            description: "Host's assigned FCID (from FLOGI)"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+            description: "ELS"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x290000"
+            description: "Exchange originator, first+last sequence, sequence initiative"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0002"
+            description: "New exchange for this PLOGI"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — 0xFFFF means unassigned"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "PLOGI Payload"
+        abbrev: "fc.els.plogi"
+        layer: 2
+        total_bytes: 116
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x03000000"
+            description: "0x03 = PLOGI command code"
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "5.2"
+                title: "PLOGI — Port Login"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "WWPN"
+            abbrev: "fc.els.wwpn"
+            bits: 64
+            value: "21:00:00:0e:1e:aa:bb:cc"
+            description: "Host port WWPN"
+          - name: "WWNN"
+            abbrev: "fc.els.wwnn"
+            bits: 64
+            value: "20:00:00:0e:1e:aa:bb:cc"
+            description: "Host node WWNN"
+          - name: "Class 3 Service Parameters"
+            abbrev: "fc.els.class3"
+            bits: 128
+            value: "Max concurrent sequences, open sequences"
+            description: "Negotiates class 3 parameters for subsequent communication"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 32GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS-FEC"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 32GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "32GFC (14.025 Gbps per lane)"
+            description: "Physical signaling rate — 32GFC Gen 6 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP28)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
+
+  # ── PLOGI ACC from Target ─────────────────────────────────────
+  - id: "plogi_target_acc"
+    name: "PLOGI ACC from Target"
+    description: "NVMe storage accepts port login. Port-level communication is established."
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 7200000
+    total_bytes: 148
+    color: "#2563eb"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x23"
+            description: "ELS ACC"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+            description: "Host FCID"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+            description: "ELS"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x980000"
+            description: "Exchange responder, last sequence, end sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0002"
+            description: "Same OX_ID as PLOGI request"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0002"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "PLOGI ACC"
+        abbrev: "fc.els.plogi_acc"
+        layer: 2
+        total_bytes: 116
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x02000000"
+            description: "LS_ACC"
+          - name: "WWPN"
+            abbrev: "fc.els.wwpn"
+            bits: 64
+            value: "50:00:00:0e:1e:dd:ee:ff"
+            description: "Storage port WWPN"
+          - name: "WWNN"
+            abbrev: "fc.els.wwnn"
+            bits: 64
+            value: "50:00:00:0e:1e:dd:ee:00"
+            description: "Storage node WWNN"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 32GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS-FEC"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 32GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "32GFC (14.025 Gbps per lane)"
+            description: "Physical signaling rate — 32GFC Gen 6 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP28)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
+
+  # ── PRLI for NVMe (TYPE 0x28) — THE KEY DIFFERENCE ──────────
+  - id: "prli_nvme"
+    name: "PRLI (Process Login for NVMe — Type 0x28)"
+    description: >
+      THIS IS THE KEY FRAME that differentiates FC-NVMe from traditional FCP/SCSI.
+      The PRLI Service Parameter Page Type is 0x28 (NVMe) instead of 0x08 (FCP).
+      This tells the target that the host wants to establish an NVMe upper-layer
+      association, not a SCSI/FCP one. The PRLI payload carries NVMe-specific
+      service parameters including the initiator's first burst size capability.
+      Linux: lpfc_els.c lpfc_issue_els_prli() checks if nvme is enabled on vport,
+      then sets page type to FC_TYPE_NVME (0x28) instead of FC_TYPE_FCP (0x08).
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 8000000
+    total_bytes: 52
+    color: "#dc2626"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x22"
+            description: "Unsolicited Control — ELS request"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage array FCID"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+            description: "Host FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = ELS — PRLI is an ELS command, not an NVMe frame. The NVMe type (0x28) appears in the PRLI service parameter page, not here."
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x290000"
+            description: "Exchange originator, first+last sequence, sequence initiative"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0003"
+            description: "Exchange ID for this PRLI"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — 0xFFFF means unassigned"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "PRLI Payload (NVMe Service Parameters)"
+        abbrev: "fc.els.prli"
+        layer: 4
+        total_bytes: 20
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x20000014"
+            description: "0x20 = PRLI command code, page length 0x14 (20 bytes)"
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "5.6"
+                title: "PRLI — Process Login"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "Service Parameter Page Type"
+            abbrev: "fc.els.prli.type"
+            bits: 8
+            value: "0x28"
+            description: "0x28 = NVMe. THIS IS THE KEY FIELD. Traditional FCP/SCSI uses 0x08. When the target sees type 0x28, it knows to activate its NVMe subsystem for this initiator, not its SCSI target mode. On a dual-mode target, both 0x08 (FCP) and 0x28 (NVMe) PRLIs may coexist."
+            spec_refs:
+              - document: "FC-NVMe-2"
+                section: "5.1"
+                title: "PRLI Service Parameter Page for NVMe"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+              - document: "FC-LS-4"
+                section: "5.6.2"
+                title: "Service Parameter Page Type codes"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+            kernel_ref:
+              file: "drivers/scsi/lpfc/lpfc_els.c"
+              function: "lpfc_issue_els_prli"
+              notes: "Sets type = FC_TYPE_NVME (0x28) when vport->cfg_enable_fc4_type includes LPFC_ENABLE_NVME"
+          - name: "Initiator Function"
+            abbrev: "fc.els.prli.initiator"
+            bits: 1
+            value: 1
+            description: "This port is an NVMe host (initiator) — can send NVMe commands"
+          - name: "Target Function"
+            abbrev: "fc.els.prli.target"
+            bits: 1
+            value: 0
+            description: "This port is NOT an NVMe target"
+          - name: "Discovery Controller"
+            abbrev: "fc.els.prli.discovery"
+            bits: 1
+            value: 1
+            description: "Host supports Discovery Controller access — can query for available NVMe subsystems"
+            spec_refs:
+              - document: "FC-NVMe-2"
+                section: "5.1.3"
+                title: "NVMe PRLI service parameters — Discovery"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "First Burst Size"
+            abbrev: "fc.els.prli.first_burst"
+            bits: 16
+            value: 65536
+            description: "Max bytes host can send in the first burst of a write (before XFER_RDY). 0 = first burst disabled, host must wait for XFER_RDY. 65536 (64KB) = host can send up to 64KB immediately."
+            spec_refs:
+              - document: "FC-NVMe-2"
+                section: "5.1.4"
+                title: "First Burst Size"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 32GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS-FEC"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 32GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "32GFC (14.025 Gbps per lane)"
+            description: "Physical signaling rate — 32GFC Gen 6 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP28)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
+
+  # ── PRLI ACC (NVMe) ──────────────────────────────────────────
+  - id: "prli_nvme_acc"
+    name: "PRLI ACC (NVMe Process Login Accept)"
+    description: >
+      Storage accepts NVMe process login. The storage identifies itself as an
+      NVMe target (discovery and I/O capable). NVMe operations can now proceed
+      over this FC-4 NVMe association.
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 8200000
+    total_bytes: 52
+    color: "#dc2626"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x23"
+            description: "ELS ACC"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+            description: "Host FCID"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = ELS"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x980000"
+            description: "Exchange responder, last sequence, end sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0003"
+            description: "Same OX_ID as the PRLI request"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0003"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "PRLI ACC Payload (NVMe)"
+        abbrev: "fc.els.prli_acc"
+        layer: 4
+        total_bytes: 20
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x02000014"
+            description: "LS_ACC with PRLI page"
+          - name: "Service Parameter Page Type"
+            abbrev: "fc.els.prli.type"
+            bits: 8
+            value: "0x28"
+            description: "0x28 = NVMe — target confirms NVMe association"
+          - name: "Initiator Function"
+            abbrev: "fc.els.prli.initiator"
+            bits: 1
+            value: 0
+            description: "Storage is NOT an NVMe initiator"
+          - name: "Target Function"
+            abbrev: "fc.els.prli.target"
+            bits: 1
+            value: 1
+            description: "Storage IS an NVMe target — presents NVMe namespaces"
+          - name: "Discovery Controller"
+            abbrev: "fc.els.prli.discovery"
+            bits: 1
+            value: 1
+            description: "Target supports Discovery Controller — host can query NVMe subsystems"
+          - name: "Response Code"
+            abbrev: "fc.els.prli.resp"
+            bits: 4
+            value: "0x01"
+            description: "0x01 = Request executed (accepted)"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 32GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS-FEC"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 32GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "32GFC (14.025 Gbps per lane)"
+            description: "Physical signaling rate — 32GFC Gen 6 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP28)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
+
+  # ── NVMe Discovery: Create Association (LS_REQ) ───────────────
+  - id: "nvme_disc_create_assoc"
+    name: "FC-NVMe LS_REQ: Create Association (Discovery Controller)"
+    description: >
+      Host sends an FC-NVMe LS (Link Service) request to create an NVMe association
+      with the Discovery Controller. This is the FC-NVMe equivalent of the NVMe-oF
+      Fabrics Connect command. The LS_REQ is sent as an FC-4 NVMe frame (TYPE=0x28)
+      using the FC-NVMe LS request IU format.
+      Linux: drivers/nvme/host/fc.c nvme_fc_create_association()
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 9000000
+    total_bytes: 256
+    color: "#0369a1"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x22"
+            description: "Unsolicited Control — FC-NVMe LS request"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage target FCID"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+            description: "Host FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x28"
+            description: "0x28 = NVMe over FC. This is the first frame with TYPE=0x28 — all prior login frames used TYPE=0x01 (ELS). From here on, FC-NVMe data frames use 0x28."
+            spec_refs:
+              - document: "FC-NVMe-2"
+                section: "4.2"
+                title: "FC TYPE code for NVMe"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x290000"
+            description: "Exchange originator, first+last sequence, sequence initiative"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0004"
+            description: "Exchange ID for this LS request"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — 0xFFFF means unassigned"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0"
+      - name: "FC-NVMe LS_REQ: Create Association"
+        abbrev: "fc_nvme.ls"
+        layer: 4
+        total_bytes: 224
+        fields:
+          - name: "LS Operation"
+            abbrev: "fc_nvme.ls.op"
+            bits: 32
+            value: "0x00000001"
+            description: "Create Association (0x01) — establishes an NVMe controller association over FC"
+            spec_refs:
+              - document: "FC-NVMe-2"
+                section: "6.1"
+                title: "FC-NVMe LS operations"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "Host NQN"
+            abbrev: "fc_nvme.ls.hostnqn"
+            bits: 0
+            value: "nqn.2014-08.org.nvmexpress:uuid:host-fc-001"
+            description: "Host's NVMe Qualified Name — identifies this FC-NVMe initiator"
+          - name: "SubNQN"
+            abbrev: "fc_nvme.ls.subnqn"
+            bits: 0
+            value: "nqn.2014-08.org.nvmexpress.discovery"
+            description: "Discovery Controller well-known NQN — same as NVMe-oF/RDMA and NVMe/TCP"
+            spec_refs:
+              - document: "NVMe Base Spec 2.0"
+                section: "4.1"
+                title: "Discovery Controller"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "Admin Queue SQ Size"
+            abbrev: "fc_nvme.ls.sqsize"
+            bits: 16
+            value: 32
+            description: "Admin Submission Queue size (32 entries)"
+          - name: "Controller ID"
+            abbrev: "fc_nvme.ls.cntlid"
+            bits: 16
+            value: "0xFFFF"
+            description: "0xFFFF = dynamic controller ID assignment requested"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 32GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS-FEC"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 32GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "32GFC (14.025 Gbps per lane)"
+            description: "Physical signaling rate — 32GFC Gen 6 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP28)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
+
+  # ── NVMe Discovery: Create Association ACC ─────────────────────
+  - id: "nvme_disc_create_assoc_acc"
+    name: "FC-NVMe LS_ACC: Create Association Accept (Discovery)"
+    description: "Discovery Controller accepts association, assigns controller ID."
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 9100000
+    total_bytes: 64
+    color: "#0369a1"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x23"
+            description: "Solicited Control — LS ACC response"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+            description: "Host FCID"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x28"
+            description: "NVMe over FC"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x980000"
+            description: "Exchange responder, last sequence, end sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0004"
+            description: "Same exchange as Create Association request"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0004"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0"
+      - name: "FC-NVMe LS_ACC: Create Association"
+        abbrev: "fc_nvme.ls_acc"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Status Code"
+            abbrev: "fc_nvme.ls_acc.status"
+            bits: 32
+            value: "0x00000000"
+            description: "Success"
+          - name: "Association ID"
+            abbrev: "fc_nvme.ls_acc.assoc_id"
+            bits: 64
+            value: "0x0000000100000001"
+            description: "Unique association identifier for this NVMe controller connection"
+          - name: "Controller ID"
+            abbrev: "fc_nvme.ls_acc.cntlid"
+            bits: 16
+            value: "0xFFFF"
+            description: "Dynamic controller ID (0xFFFF) — Discovery Controller"
+
+  # ── Get Log Page (Discovery) — NVMe CMD IU ────────────────────
+  - id: "nvme_disc_get_log"
+    name: "NVMe FC CMD IU: Get Log Page (Discovery Log)"
+    description: >
+      Host sends NVMe Get Log Page command inside an FC-NVMe CMD IU to retrieve
+      the Discovery Log Page. The CMD IU contains a 64-byte NVMe SQE (Submission
+      Queue Entry). Unlike NVMe-oF/RDMA where this uses RDMA SEND + SGL, here
+      the data will be returned as FC-NVMe DATA IU frames.
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 10000000
+    total_bytes: 96
+    color: "#0369a1"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x06"
+            description: "0x06 = Command — NVMe FC CMD IU (same R_CTL as FCP_CMND)"
+            spec_refs:
+              - document: "FC-NVMe-2"
+                section: "7.1"
+                title: "FC-NVMe CMD IU"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage target FCID"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+            description: "Host FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x28"
+            description: "0x28 = NVMe over FC — all NVMe I/O frames use this type code"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x210000"
+            description: "Exchange originator, first sequence, sequence initiative transfer"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0005"
+            description: "Exchange ID for this NVMe command"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — 0xFFFF means unassigned"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0"
+      - name: "NVMe FC CMD IU"
+        abbrev: "fc_nvme.cmd"
+        layer: 4
+        total_bytes: 64
+        fields:
+          - name: "IU Type"
+            abbrev: "fc_nvme.cmd.iu_type"
+            bits: 8
+            value: "0x00"
+            description: "CMD IU (0x00) — contains an NVMe SQE. Compare: RSP IU = 0x02, DATA IU = 0x40, XFER_RDY IU = 0x50."
+            spec_refs:
+              - document: "FC-NVMe-2"
+                section: "7.1.1"
+                title: "IU Type codes"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "NVMe SQE: Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x02"
+            description: "Get Log Page (0x02) — NVMe Admin command to retrieve log data"
+            spec_refs:
+              - document: "NVMe Base Spec 2.0"
+                section: "5.16"
+                title: "Get Log Page command"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "NVMe SQE: Log Page Identifier"
+            abbrev: "nvme.cmd.get_log.lid"
+            bits: 8
+            value: "0x70"
+            description: "Discovery Log Page (0x70) — lists available NVMe subsystems, same LID as NVMe-oF/RDMA"
+            spec_refs:
+              - document: "NVMe Base Spec 2.0"
+                section: "5.16.1.13"
+                title: "Discovery Log Page"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "NVMe SQE: Number of Dwords"
+            abbrev: "nvme.cmd.get_log.numd"
+            bits: 32
+            value: 1023
+            description: "Request up to 4096 bytes (1024 dwords - 1, 0-based)"
+
+  # ── Discovery Log Page Data (FC-NVMe DATA IU) ──────────────────
+  - id: "nvme_disc_log_data"
+    name: "NVMe FC DATA IU: Discovery Log Page"
+    description: >
+      Target returns Discovery Log Page data as an FC-NVMe DATA IU. Unlike
+      NVMe-oF/RDMA (which uses RDMA WRITE for zero-copy), FC-NVMe delivers
+      data within FC sequences — the target CPU prepares the data payload.
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 10100000
+    total_bytes: 1080
+    color: "#0369a1"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x01"
+            description: "Solicited Data — NVMe FC DATA IU (same R_CTL as FCP_DATA)"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+            description: "Host FCID"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x28"
+            description: "NVMe over FC"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x880000"
+            description: "Exchange responder, end sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x01"
+            description: "Data sequence"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in data sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0005"
+            description: "Same exchange as Get Log Page command"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0005"
+            description: "Responder Exchange ID"
+          - name: "Parameter (Relative Offset)"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Data starts at byte offset 0"
+      - name: "Discovery Log Page Data"
+        abbrev: "nvme_disc"
+        layer: 4
+        total_bytes: 1056
+        fields:
+          - name: "Number of Records"
+            abbrev: "nvme_disc.numrec"
+            bits: 64
+            value: 1
+            description: "One NVMe I/O Controller entry available"
+          - name: "Entry[0]: Transport Type"
+            abbrev: "nvme_disc.entry.trtype"
+            bits: 8
+            value: "0x02"
+            description: "FC transport (0x02). Compare: RDMA = 0x01, TCP = 0x03."
+            spec_refs:
+              - document: "NVMe Base Spec 2.0"
+                section: "5.16.1.13.1"
+                title: "Discovery Log Entry — Transport Type"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "Entry[0]: SubNQN"
+            abbrev: "nvme_disc.entry.subnqn"
+            bits: 0
+            value: "nqn.2024-01.com.example:nvme-array01"
+            description: "NVMe subsystem NQN — use this for I/O Controller association"
+          - name: "Entry[0]: Transport Address (WWNN)"
+            abbrev: "nvme_disc.entry.traddr"
+            bits: 0
+            value: "50:00:00:0e:1e:dd:ee:00"
+            description: "Target WWNN — for FC transport, the address is the World Wide Node Name (not IP)"
+          - name: "Entry[0]: Transport Service ID (WWPN)"
+            abbrev: "nvme_disc.entry.trsvcid"
+            bits: 0
+            value: "50:00:00:0e:1e:dd:ee:ff"
+            description: "Target WWPN — the specific port to connect to"
+
+  # ── Discovery Log Page Completion (RSP IU) ──────────────────────
+  - id: "nvme_disc_log_rsp"
+    name: "NVMe FC RSP IU: Get Log Page Complete"
+    description: "Target sends NVMe completion (CQE) as FC-NVMe RSP IU."
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 10200000
+    total_bytes: 48
+    color: "#0369a1"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x07"
+            description: "Command Status — NVMe FC RSP IU (same R_CTL as FCP_RSP)"
+            spec_refs:
+              - document: "FC-NVMe-2"
+                section: "7.4"
+                title: "FC-NVMe RSP IU"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+            description: "Host FCID"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x28"
+            description: "NVMe over FC"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x990000"
+            description: "Exchange responder, last sequence, end sequence, SI transfer — closes exchange"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x02"
+            description: "Completion sequence"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in this sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0005"
+            description: "Same exchange as Get Log Page"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0005"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0"
+      - name: "NVMe FC RSP IU"
+        abbrev: "fc_nvme.rsp"
+        layer: 4
+        total_bytes: 16
+        fields:
+          - name: "IU Type"
+            abbrev: "fc_nvme.rsp.iu_type"
+            bits: 8
+            value: "0x02"
+            description: "RSP IU (0x02) — contains NVMe CQE (Completion Queue Entry)"
+          - name: "NVMe CQE: Status"
+            abbrev: "nvme.cqe.status"
+            bits: 16
+            value: "0x0000"
+            description: "Success — Discovery Log Page data delivered"
+
+  # ── NVMe I/O Controller: Create Association ─────────────────────
+  - id: "nvme_io_create_assoc"
+    name: "FC-NVMe LS_REQ: Create Association (I/O Controller)"
+    description: >
+      Host creates an NVMe association with the I/O Controller subsystem discovered
+      from the Discovery Log Page. This establishes Admin + I/O queue access.
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 12000000
+    total_bytes: 256
+    color: "#1e40af"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x22"
+            description: "Unsolicited Control — FC-NVMe LS request"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage target FCID"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+            description: "Host FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x28"
+            description: "NVMe over FC"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x290000"
+            description: "Exchange originator, first+last sequence, sequence initiative"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0006"
+            description: "Exchange ID for I/O Controller association"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — 0xFFFF means unassigned"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0"
+      - name: "FC-NVMe LS_REQ: Create Association (I/O)"
+        abbrev: "fc_nvme.ls"
+        layer: 4
+        total_bytes: 224
+        fields:
+          - name: "LS Operation"
+            abbrev: "fc_nvme.ls.op"
+            bits: 32
+            value: "0x00000001"
+            description: "Create Association"
+          - name: "Host NQN"
+            abbrev: "fc_nvme.ls.hostnqn"
+            bits: 0
+            value: "nqn.2014-08.org.nvmexpress:uuid:host-fc-001"
+            description: "Host NQN"
+          - name: "SubNQN"
+            abbrev: "fc_nvme.ls.subnqn"
+            bits: 0
+            value: "nqn.2024-01.com.example:nvme-array01"
+            description: "I/O subsystem NQN from Discovery Log Page"
+          - name: "Admin Queue SQ Size"
+            abbrev: "fc_nvme.ls.sqsize"
+            bits: 16
+            value: 32
+            description: "Admin Submission Queue size"
+          - name: "Controller ID"
+            abbrev: "fc_nvme.ls.cntlid"
+            bits: 16
+            value: "0xFFFF"
+            description: "Dynamic controller ID assignment requested"
+
+  # ── NVMe I/O Controller: Create Association ACC ─────────────────
+  - id: "nvme_io_create_assoc_acc"
+    name: "FC-NVMe LS_ACC: Create Association Accept (I/O Controller)"
+    description: "I/O Controller accepts association, assigns controller ID 0x0041."
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 12100000
+    total_bytes: 64
+    color: "#1e40af"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x23"
+            description: "Solicited Control — LS ACC response"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+            description: "Host FCID"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x28"
+            description: "NVMe over FC"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x980000"
+            description: "Exchange responder, last sequence, end sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0006"
+            description: "Same exchange"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0006"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0"
+      - name: "FC-NVMe LS_ACC: Create Association (I/O)"
+        abbrev: "fc_nvme.ls_acc"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Status Code"
+            abbrev: "fc_nvme.ls_acc.status"
+            bits: 32
+            value: "0x00000000"
+            description: "Success"
+          - name: "Association ID"
+            abbrev: "fc_nvme.ls_acc.assoc_id"
+            bits: 64
+            value: "0x0000000200000001"
+            description: "I/O Controller association identifier"
+          - name: "Controller ID"
+            abbrev: "fc_nvme.ls_acc.cntlid"
+            bits: 16
+            value: "0x0041"
+            description: "Controller ID 65 — assigned by target for this host"
+
+  # ── Identify Controller (CMD IU + DATA IU + RSP IU) ─────────────
+  - id: "nvme_identify_ctrl_cmd"
+    name: "NVMe FC CMD IU: Identify Controller"
+    description: "Host sends NVMe Identify Controller command to learn target capabilities."
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 13000000
+    total_bytes: 96
+    color: "#1e40af"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x06"
+            description: "Command — NVMe FC CMD IU"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x28"
+            description: "NVMe over FC"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x210000"
+            description: "Exchange originator, first sequence, SI transfer"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0007"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+      - name: "NVMe FC CMD IU"
+        abbrev: "fc_nvme.cmd"
+        layer: 4
+        total_bytes: 64
+        fields:
+          - name: "IU Type"
+            abbrev: "fc_nvme.cmd.iu_type"
+            bits: 8
+            value: "0x00"
+            description: "CMD IU"
+          - name: "NVMe SQE: Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x06"
+            description: "Identify (0x06)"
+            spec_refs:
+              - document: "NVMe Base Spec 2.0"
+                section: "5.17"
+                title: "Identify command"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "NVMe SQE: CNS (Controller or Namespace Structure)"
+            abbrev: "nvme.cmd.identify.cns"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Identify Controller — return 4KB controller data structure"
+
+  # ── Identify Controller RSP IU (data + completion combined summary)
+  - id: "nvme_identify_ctrl_rsp"
+    name: "NVMe FC RSP IU: Identify Controller Complete"
+    description: >
+      Target returns Identify Controller data (4KB, delivered as DATA IU, omitted
+      for brevity) followed by RSP IU with completion status. Key data: model
+      number, firmware revision, max queue entries, namespace count.
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 13200000
+    total_bytes: 48
+    color: "#1e40af"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x07"
+            description: "Command Status — NVMe FC RSP IU"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010200"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x28"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x990000"
+            description: "Exchange responder, last sequence, end sequence, SI transfer"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x02"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0007"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0007"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+      - name: "NVMe FC RSP IU"
+        abbrev: "fc_nvme.rsp"
+        layer: 4
+        total_bytes: 16
+        fields:
+          - name: "IU Type"
+            abbrev: "fc_nvme.rsp.iu_type"
+            bits: 8
+            value: "0x02"
+            description: "RSP IU — NVMe CQE"
+          - name: "NVMe CQE: Status"
+            abbrev: "nvme.cqe.status"
+            bits: 16
+            value: "0x0000"
+            description: "Success — Identify Controller data is in host buffer"
+
+  # ── NVMe Write Command (CMD IU) ────────────────────────────────
+  - id: "nvme_write_cmd"
+    name: "NVMe FC CMD IU: Write (4KB at LBA 0)"
+    description: >
+      Host sends NVMe Write command as FC-NVMe CMD IU. The CMD IU contains
+      the 64-byte NVMe SQE with opcode, namespace ID, starting LBA, and
+      block count. The target must send an XFER_RDY IU before data transfer
+      (unless First Burst is negotiated in PRLI). This write flow is:
+      CMD IU → XFER_RDY IU → DATA IU → RSP IU.
+      Compare with FCP write: FCP_CMND → FCP_XFER_RDY → FCP_DATA → FCP_RSP.
+      The frame structure is nearly identical — only the TYPE field (0x28 vs 0x08)
+      and the payload contents (NVMe SQE vs SCSI CDB) differ.
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 15000000
+    total_bytes: 96
+    color: "#991b1b"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x06"
+            description: "0x06 = Command — NVMe FC CMD IU"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage target FCID"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+            description: "Host FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x28"
+            description: "0x28 = NVMe over FC (not 0x08 FCP)"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x210000"
+            description: "Exchange originator, first sequence, SI transfer"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Command sequence"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0010"
+            description: "Exchange ID for this NVMe Write I/O"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — 0xFFFF means unassigned"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0"
+      - name: "NVMe FC CMD IU"
+        abbrev: "fc_nvme.cmd"
+        layer: 4
+        total_bytes: 64
+        fields:
+          - name: "IU Type"
+            abbrev: "fc_nvme.cmd.iu_type"
+            bits: 8
+            value: "0x00"
+            description: "CMD IU (0x00) — contains NVMe Write SQE"
+          - name: "NVMe SQE: Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x01"
+            description: "NVMe Write (0x01)"
+            spec_refs:
+              - document: "NVMe Base Spec 2.0"
+                section: "7.1"
+                title: "Write command"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "NVMe SQE: NSID"
+            abbrev: "nvme.cmd.nsid"
+            bits: 32
+            value: 1
+            description: "Namespace 1"
+          - name: "NVMe SQE: Starting LBA"
+            abbrev: "nvme.cmd.slba"
+            bits: 64
+            value: "0x0000000000000000"
+            description: "LBA 0 — start of namespace"
+          - name: "NVMe SQE: Number of Logical Blocks"
+            abbrev: "nvme.cmd.nlb"
+            bits: 16
+            value: 7
+            description: "8 blocks (0-based) x 512B = 4KB write"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 32GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS-FEC"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 32GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "32GFC (14.025 Gbps per lane)"
+            description: "Physical signaling rate — 32GFC Gen 6 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP28)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
+
+  # ── NVMe Write XFER_RDY IU ────────────────────────────────────
+  - id: "nvme_write_xfer_rdy"
+    name: "NVMe FC XFER_RDY IU: Transfer Ready"
+    description: >
+      Target sends XFER_RDY IU granting the host permission to send write data.
+      This is analogous to FCP_XFER_RDY in traditional FC writes. The XFER_RDY
+      specifies the relative offset and byte count the host may transfer.
+      In NVMe-oF/RDMA, this step does not exist — the target fetches write data
+      via RDMA READ. In FC-NVMe, the host pushes data after receiving XFER_RDY.
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 15200000
+    total_bytes: 40
+    color: "#991b1b"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x05"
+            description: "Transfer Ready — NVMe FC XFER_RDY IU (same R_CTL as FCP_XFER_RDY)"
+            spec_refs:
+              - document: "FC-NVMe-2"
+                section: "7.3"
+                title: "FC-NVMe XFER_RDY IU"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+            description: "Host FCID"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x28"
+            description: "NVMe over FC"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x800000"
+            description: "Exchange responder, sequence initiative retained by target"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x01"
+            description: "XFER_RDY sequence"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0010"
+            description: "Same exchange as Write command"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0010"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+      - name: "NVMe FC XFER_RDY IU"
+        abbrev: "fc_nvme.xfer_rdy"
+        layer: 4
+        total_bytes: 12
+        fields:
+          - name: "IU Type"
+            abbrev: "fc_nvme.xfer_rdy.iu_type"
+            bits: 8
+            value: "0x50"
+            description: "XFER_RDY IU (0x50)"
+          - name: "Relative Offset"
+            abbrev: "fc_nvme.xfer_rdy.offset"
+            bits: 32
+            value: "0x00000000"
+            description: "Start data transfer at byte 0"
+          - name: "Byte Count"
+            abbrev: "fc_nvme.xfer_rdy.count"
+            bits: 32
+            value: 4096
+            description: "Transfer up to 4096 bytes (full 4KB write)"
+
+  # ── NVMe Write DATA IU ────────────────────────────────────────
+  - id: "nvme_write_data"
+    name: "NVMe FC DATA IU: Write Payload (4KB)"
+    description: >
+      Host sends 4KB write data as FC-NVMe DATA IU after receiving XFER_RDY.
+      The DATA IU payload is the raw NVMe write data. For 4KB with max FC frame
+      size of 2112 bytes, this is split across two FC frames (2048 + 2048).
+      Shown here as a single logical transfer for clarity.
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 15400000
+    total_bytes: 4120
+    color: "#991b1b"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x01"
+            description: "Solicited Data — NVMe FC DATA IU (write direction, host to target)"
+            spec_refs:
+              - document: "FC-NVMe-2"
+                section: "7.2"
+                title: "FC-NVMe DATA IU"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage target FCID"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+            description: "Host FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x28"
+            description: "NVMe over FC"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x290000"
+            description: "Exchange originator, first+last in sequence, SI transfer"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x02"
+            description: "Data sequence"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0010"
+            description: "Same exchange"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0010"
+          - name: "Parameter (Relative Offset)"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Data starts at byte offset 0"
+      - name: "NVMe Write Data Payload"
+        abbrev: "fc_nvme.data"
+        layer: 4
+        total_bytes: 4096
+        fields:
+          - name: "Data"
+            abbrev: "fc_nvme.data.payload"
+            bits: 32768
+            value: "4096 bytes of application write data"
+            description: "Raw NVMe write data being transferred to target. In FC-NVMe, this traverses the FC fabric as standard FC sequences — no RDMA, no IP. BB_Credit flow control prevents buffer overrun."
+
+  # ── NVMe Write RSP IU ─────────────────────────────────────────
+  - id: "nvme_write_rsp"
+    name: "NVMe FC RSP IU: Write Complete"
+    description: >
+      Target confirms NVMe Write completed successfully. The RSP IU contains
+      the NVMe CQE (Completion Queue Entry) with status. This is the FC-NVMe
+      equivalent of the NVMe completion — compared to FCP_RSP which carries
+      a SCSI status byte, the RSP IU carries a full NVMe CQE.
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 15700000
+    total_bytes: 48
+    color: "#991b1b"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x07"
+            description: "Command Status — NVMe FC RSP IU"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+            description: "Host FCID"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x28"
+            description: "NVMe over FC"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x990000"
+            description: "Exchange responder, last sequence, end sequence, SI transfer — closes exchange"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x03"
+            description: "Completion sequence"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0010"
+            description: "Same exchange — now complete"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0010"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+      - name: "NVMe FC RSP IU"
+        abbrev: "fc_nvme.rsp"
+        layer: 4
+        total_bytes: 16
+        fields:
+          - name: "IU Type"
+            abbrev: "fc_nvme.rsp.iu_type"
+            bits: 8
+            value: "0x02"
+            description: "RSP IU (0x02) — contains NVMe CQE"
+          - name: "NVMe CQE: Status"
+            abbrev: "nvme.cqe.status"
+            bits: 16
+            value: "0x0000"
+            description: "Success — 4KB written to LBA 0"
+          - name: "NVMe CQE: SQ ID"
+            abbrev: "nvme.cqe.sqid"
+            bits: 16
+            value: 1
+            description: "I/O Queue 1"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 32GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS-FEC"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 32GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "32GFC (14.025 Gbps per lane)"
+            description: "Physical signaling rate — 32GFC Gen 6 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP28)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
+
+  # ── NVMe Read Command (CMD IU) ─────────────────────────────────
+  - id: "nvme_read_cmd"
+    name: "NVMe FC CMD IU: Read (4KB at LBA 0)"
+    description: >
+      Host sends NVMe Read command. Unlike writes, reads do NOT require an
+      XFER_RDY IU — the target sends data immediately. Read flow is:
+      CMD IU → DATA IU → RSP IU (three frames, no XFER_RDY).
+      This matches the same asymmetry seen in FCP reads vs writes.
+    from: "initiator"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 17000000
+    total_bytes: 96
+    color: "#6b21a8"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x06"
+            description: "Command — NVMe FC CMD IU"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage target FCID"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+            description: "Host FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x28"
+            description: "NVMe over FC"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x210000"
+            description: "Exchange originator, first sequence, SI transfer"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0011"
+            description: "Exchange ID for this NVMe Read I/O"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+      - name: "NVMe FC CMD IU"
+        abbrev: "fc_nvme.cmd"
+        layer: 4
+        total_bytes: 64
+        fields:
+          - name: "IU Type"
+            abbrev: "fc_nvme.cmd.iu_type"
+            bits: 8
+            value: "0x00"
+            description: "CMD IU"
+          - name: "NVMe SQE: Opcode"
+            abbrev: "nvme.cmd.opc"
+            bits: 8
+            value: "0x02"
+            description: "NVMe Read (0x02)"
+            spec_refs:
+              - document: "NVMe Base Spec 2.0"
+                section: "7.2"
+                title: "Read command"
+                url: "https://nvmexpress.org/specifications/"
+          - name: "NVMe SQE: NSID"
+            abbrev: "nvme.cmd.nsid"
+            bits: 32
+            value: 1
+            description: "Namespace 1"
+          - name: "NVMe SQE: Starting LBA"
+            abbrev: "nvme.cmd.slba"
+            bits: 64
+            value: "0x0000000000000000"
+            description: "LBA 0 — same block we just wrote"
+          - name: "NVMe SQE: Number of Logical Blocks"
+            abbrev: "nvme.cmd.nlb"
+            bits: 16
+            value: 7
+            description: "8 blocks x 512B = 4KB read"
+
+  # ── NVMe Read DATA IU ─────────────────────────────────────────
+  - id: "nvme_read_data"
+    name: "NVMe FC DATA IU: Read Payload (4KB)"
+    description: >
+      Target sends 4KB read data as FC-NVMe DATA IU. No XFER_RDY was needed —
+      the target sends data immediately after the CMD IU. In NVMe-oF/RDMA this
+      would be an RDMA WRITE directly into host memory (zero-copy). In FC-NVMe,
+      the data traverses the FC fabric as standard FC sequences.
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 17200000
+    total_bytes: 4120
+    color: "#6b21a8"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x01"
+            description: "Solicited Data — NVMe FC DATA IU (read direction, target to host)"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+            description: "Host FCID"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x28"
+            description: "NVMe over FC"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x880000"
+            description: "Exchange responder, end sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x01"
+            description: "Data sequence"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0011"
+            description: "Same exchange as Read command"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0011"
+          - name: "Parameter (Relative Offset)"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Data starts at byte offset 0"
+      - name: "NVMe Read Data Payload"
+        abbrev: "fc_nvme.data"
+        layer: 4
+        total_bytes: 4096
+        fields:
+          - name: "Data"
+            abbrev: "fc_nvme.data.payload"
+            bits: 32768
+            value: "4096 bytes of data read from NVMe SSD"
+            description: "The data previously written to LBA 0. Delivered as FC-NVMe DATA IU — data traverses the FC fabric using FC BB_Credit flow control."
+
+  # ── NVMe Read RSP IU ──────────────────────────────────────────
+  - id: "nvme_read_rsp"
+    name: "NVMe FC RSP IU: Read Complete"
+    description: "Target confirms NVMe Read completed. Data is now in host buffer."
+    from: "target"
+    to: "initiator"
+    via: ["switch"]
+    timestamp_ns: 17400000
+    total_bytes: 48
+    color: "#6b21a8"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x07"
+            description: "Command Status — NVMe FC RSP IU"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010200"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x28"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x990000"
+            description: "Exchange responder, last sequence, end sequence, SI transfer — closes exchange"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x02"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0011"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0011"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+      - name: "NVMe FC RSP IU"
+        abbrev: "fc_nvme.rsp"
+        layer: 4
+        total_bytes: 16
+        fields:
+          - name: "IU Type"
+            abbrev: "fc_nvme.rsp.iu_type"
+            bits: 8
+            value: "0x02"
+            description: "RSP IU — NVMe CQE"
+          - name: "NVMe CQE: Status"
+            abbrev: "nvme.cqe.status"
+            bits: 16
+            value: "0x0000"
+            description: "Success — 4KB read from LBA 0, data matches previous write"
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+
+  # ── Phase 1: Physical Link Up ──────────────────────────────────
+  - id: "evt_link_init"
+    type: "state_change"
+    t_ns: 0
+    annotation:
+      text: "Physical links initializing — 32GFC, signal detect on both segments"
+      detail: >
+        Both 32GFC links begin speed negotiation. FC uses point-to-point links
+        (no shared medium), with 64b/66b encoding and mandatory RS-FEC at 32GFC.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical"
+            state_fields:
+              signal_detect: true
+              phy_state: "initializing"
+      - actor_id: "switch"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical (per-port)"
+            state_fields:
+              port_a_phy: "initializing"
+              port_b_phy: "initializing"
+
+  - id: "evt_link_up_a"
+    type: "state_change"
+    t_ns: 2000000
+    annotation:
+      text: "Link A UP — Host to Switch at 32GFC"
+      detail: >
+        Speed negotiation complete: 32GFC (28.05 Gbps line rate, ~14 Gbps payload).
+        64b/66b encoding active. BB_Credit flow control initialized.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical"
+            state_fields:
+              phy_state: "UP"
+              speed: "32GFC"
+          - layer: 1
+            name: "FC-1 Encoding"
+            state_fields:
+              word_sync: true
+      - actor_id: "switch"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical (per-port)"
+            state_fields:
+              port_a_phy: "UP"
+
+  - id: "evt_link_up_b"
+    type: "state_change"
+    t_ns: 2500000
+    annotation:
+      text: "Link B UP — Switch to Storage at 32GFC"
+      detail: >
+        Both physical links are now up. The switch can forward FC frames between
+        ports. Storage array was previously logged into the fabric (FCID 0x010200 pre-assigned).
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical"
+            state_fields:
+              phy_state: "UP"
+              speed: "32GFC"
+          - layer: 1
+            name: "FC-1 Encoding"
+            state_fields:
+              word_sync: true
+      - actor_id: "switch"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical (per-port)"
+            state_fields:
+              port_b_phy: "UP"
+          - layer: 2
+            name: "FC-2 Frame Forwarding / Fabric Services"
+            state_fields:
+              fwd_table_entries: 1
+
+  # ── Phase 2: FLOGI ─────────────────────────────────────────────
+  - id: "evt_flogi"
+    type: "frame_tx"
+    t_ns: 5000000
+    frame_id: "flogi"
+    annotation:
+      text: "FLOGI — Host requests fabric login (S_ID=0x000000 -> D_ID=0xFFFFFE)"
+      detail: >
+        The host has no FCID yet (S_ID=0x000000). FLOGI is identical for FC-NVMe
+        and traditional FCP — the upper-layer protocol is not yet negotiated.
+        The FLOGI carries the host's WWPN, BB_Credit, and supported features.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              fabric_login: "FLOGI_SENT"
+              active_exchanges: 1
+
+  - id: "evt_flogi_acc"
+    type: "frame_tx"
+    t_ns: 5200000
+    frame_id: "flogi_acc"
+    annotation:
+      text: "FLOGI ACC — Fabric assigns FCID 0x010100 to host"
+      detail: >
+        The fabric accepts login and assigns N_Port ID 0x010100. This FCID
+        will be the host's S_ID in all subsequent frames.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              my_fcid: "0x010100"
+              bb_credit: 16
+              fabric_login: "complete"
+              active_exchanges: 0
+              ox_id_next: "0x0002"
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Frame Forwarding / Fabric Services"
+            state_fields:
+              fcid_pool_next: "0x010101"
+              fwd_table_entries: 2
+
+  # ── Phase 3: PLOGI to Target ───────────────────────────────────
+  - id: "evt_plogi_target"
+    type: "frame_tx"
+    t_ns: 7000000
+    frame_id: "plogi_target"
+    annotation:
+      text: "PLOGI to storage (0x010200) — port-level login"
+      detail: >
+        Host sends PLOGI to the NVMe storage target. Name Server queries
+        (PLOGI to NS, GID_FT with FC-4 type 0x28) are elided for brevity.
+        The GID_FT query used type 0x28 (NVMe) instead of 0x08 (FCP) —
+        this is how an FC-NVMe host discovers NVMe targets specifically.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              target_plogi: "PLOGI_SENT"
+              active_exchanges: 1
+
+  - id: "evt_plogi_target_acc"
+    type: "frame_tx"
+    t_ns: 7200000
+    frame_id: "plogi_target_acc"
+    annotation:
+      text: "Storage accepts PLOGI — port-level login established"
+      detail: >
+        Storage accepts port login. Next step: PRLI with NVMe type code 0x28.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              target_plogi: "complete"
+              active_exchanges: 0
+              ox_id_next: "0x0003"
+      - actor_id: "target"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              host_plogi: "complete"
+
+  # ── Phase 4: PRLI for NVMe (THE KEY STEP) ─────────────────────
+  - id: "evt_prli_nvme"
+    type: "frame_tx"
+    t_ns: 8000000
+    frame_id: "prli_nvme"
+    annotation:
+      text: "PRLI with TYPE 0x28 (NVMe) — THE KEY DIFFERENCE from traditional FC"
+      detail: >
+        This is the pivotal frame in the FC-NVMe flow. The PRLI Service Parameter
+        Page Type is 0x28 (NVMe) instead of 0x08 (FCP/SCSI). This single byte
+        determines whether the FC association carries NVMe commands or SCSI commands.
+
+        Comparison:
+        - Traditional FC: PRLI type 0x08 -> FCP -> SCSI CDBs in FCP_CMND
+        - FC-NVMe:        PRLI type 0x28 -> NVMe -> NVMe SQEs in CMD IU
+
+        A dual-mode target can accept BOTH PRLI types from the same host,
+        presenting SCSI LUNs via FCP and NVMe namespaces via FC-NVMe simultaneously.
+
+        Linux: lpfc_issue_els_prli() sets page type based on cfg_enable_fc4_type.
+      spec_refs:
+        - document: "FC-NVMe-2"
+          section: "5.1"
+          title: "PRLI for NVMe — Service Parameter Page"
+          url: "https://www.t11.org/fcSite/fcretr.html"
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol (NVMe)"
+            state_fields:
+              nvme_state: "PRLI_SENT"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              nvme_prli: "PRLI_SENT"
+
+  - id: "evt_prli_nvme_acc"
+    type: "frame_tx"
+    t_ns: 8200000
+    frame_id: "prli_nvme_acc"
+    annotation:
+      text: "PRLI ACC — NVMe association established. FC-NVMe I/O can begin."
+      detail: >
+        Storage accepts NVMe PRLI and declares itself as an NVMe target with
+        Discovery Controller capability. The FC-NVMe association is now live.
+        From this point, all NVMe commands use FC frame TYPE=0x28.
+
+        Compare with NVMe-oF/RDMA: there is no PRLI equivalent — RDMA uses
+        the CM (Connection Manager) REQ/REP/RTU to establish QP connections,
+        then NVMe Fabrics Connect at the NVMe layer. FC-NVMe reuses the
+        established FC login infrastructure instead.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol (NVMe)"
+            state_fields:
+              nvme_state: "PRLI complete"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              nvme_prli: "complete"
+              active_exchanges: 0
+              ox_id_next: "0x0004"
+      - actor_id: "target"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol (NVMe)"
+            state_fields:
+              nvme_prli: "complete"
+
+  # ── Phase 5: Discovery Controller ──────────────────────────────
+  - id: "evt_disc_create_assoc"
+    type: "frame_tx"
+    t_ns: 9000000
+    frame_id: "nvme_disc_create_assoc"
+    annotation:
+      text: "FC-NVMe LS: Create Association with Discovery Controller"
+      detail: >
+        Host creates an NVMe association with the Discovery Controller using
+        the FC-NVMe LS (Link Service) protocol. This is the FC transport's
+        equivalent of NVMe Fabrics Connect. The LS request is sent as an FC
+        frame with TYPE=0x28.
+
+        Note: In FC-NVMe, both the Discovery Controller and I/O Controller
+        associations share the same FC port login (PLOGI/PRLI). There is no
+        separate RDMA QP or TCP connection — all NVMe traffic flows over the
+        single FC port-pair identified by FCID.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol (NVMe)"
+            state_fields:
+              discovery_state: "connecting"
+              nvme_state: "discovery in progress"
+
+  - id: "evt_disc_create_assoc_acc"
+    type: "frame_tx"
+    t_ns: 9100000
+    frame_id: "nvme_disc_create_assoc_acc"
+    annotation:
+      text: "Discovery Controller association created — CNTLID=0xFFFF"
+      detail: >
+        Discovery Controller accepts association. Dynamic controller ID 0xFFFF
+        is assigned (same convention as NVMe-oF/RDMA).
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol (NVMe)"
+            state_fields:
+              discovery_state: "connected"
+              cntlid: "0xFFFF"
+
+  - id: "evt_disc_get_log"
+    type: "frame_tx"
+    t_ns: 10000000
+    frame_id: "nvme_disc_get_log"
+    annotation:
+      text: "Get Log Page (Discovery) — NVMe CMD IU via FC"
+      detail: >
+        Host sends NVMe Get Log Page (LID=0x70) as FC-NVMe CMD IU to retrieve
+        the Discovery Log Page. The command is identical to NVMe-oF/RDMA's
+        Get Log Page, but instead of an SGL for RDMA WRITE, FC-NVMe returns
+        data as FC-NVMe DATA IU frames within the FC exchange.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol (NVMe)"
+            state_fields:
+              nvme_state: "retrieving discovery log"
+
+  - id: "evt_disc_log_data"
+    type: "frame_tx"
+    t_ns: 10100000
+    frame_id: "nvme_disc_log_data"
+    annotation:
+      text: "Discovery Log Page data — 1 entry, FC transport, NQN for I/O subsystem"
+      detail: >
+        Discovery Log contains one entry:
+        - Transport Type: FC (0x02)
+        - SubNQN: nqn.2024-01.com.example:nvme-array01
+        - Transport Address: WWNN 50:00:00:0e:1e:dd:ee:00
+        - Service ID: WWPN 50:00:00:0e:1e:dd:ee:ff
+
+        For FC transport, the address is the WWNN/WWPN pair (not IP address).
+        The host uses this to create an I/O Controller association.
+    state_after: []
+
+  - id: "evt_disc_log_rsp"
+    type: "frame_tx"
+    t_ns: 10200000
+    frame_id: "nvme_disc_log_rsp"
+    annotation:
+      text: "Discovery Log Page complete — NVMe FC RSP IU"
+      detail: "NVMe completion confirms log page delivered successfully."
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol (NVMe)"
+            state_fields:
+              nvme_state: "discovery complete"
+              discovery_state: "complete"
+
+  # ── Phase 6: I/O Controller Connect ─────────────────────────────
+  - id: "evt_io_create_assoc"
+    type: "frame_tx"
+    t_ns: 12000000
+    frame_id: "nvme_io_create_assoc"
+    annotation:
+      text: "FC-NVMe LS: Create Association with I/O Controller"
+      detail: >
+        Host connects to the I/O subsystem NQN discovered from the Discovery Log.
+        In FC-NVMe, this association shares the existing FC port login — no new
+        PLOGI or PRLI is needed. Compare with NVMe-oF/RDMA where each IO queue
+        requires a separate RDMA QP (CM REQ/REP/RTU + Fabrics Connect).
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol (NVMe)"
+            state_fields:
+              io_ctrl_state: "connecting"
+
+  - id: "evt_io_create_assoc_acc"
+    type: "frame_tx"
+    t_ns: 12100000
+    frame_id: "nvme_io_create_assoc_acc"
+    annotation:
+      text: "I/O Controller association created — CNTLID=0x0041"
+      detail: >
+        I/O Controller assigns controller ID 0x0041. NVMe I/O commands can
+        now be issued. The host will first send Identify Controller and
+        Identify Namespace to learn target capabilities.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol (NVMe)"
+            state_fields:
+              io_ctrl_state: "connected"
+              cntlid: "0x0041"
+      - actor_id: "target"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol (NVMe)"
+            state_fields:
+              cntlid_assigned: "0x0041"
+
+  # ── Phase 7: Identify Controller ────────────────────────────────
+  - id: "evt_identify_ctrl"
+    type: "frame_tx"
+    t_ns: 13000000
+    frame_id: "nvme_identify_ctrl_cmd"
+    annotation:
+      text: "Identify Controller — enumerate target capabilities"
+      detail: >
+        Host sends NVMe Identify Controller (CNS=0x01) via CMD IU.
+        Returns 4KB data structure with model number, firmware revision,
+        max queue entries, NVMe version, optional features, etc.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol (NVMe)"
+            state_fields:
+              last_cmd: "Identify Controller"
+
+  - id: "evt_identify_ctrl_rsp"
+    type: "frame_tx"
+    t_ns: 13200000
+    frame_id: "nvme_identify_ctrl_rsp"
+    annotation:
+      text: "Identify Controller complete — target enumerated"
+      detail: >
+        Controller identified. 4KB Identify Controller data (delivered via DATA IU,
+        elided) describes the target's capabilities. Host now knows namespace count,
+        max queue depth, and supported NVMe features.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol (NVMe)"
+            state_fields:
+              nsid: 1
+              nvme_state: "IO ready"
+
+  # ── Phase 8: NVMe Write ────────────────────────────────────────
+  - id: "evt_nvme_write_cmd"
+    type: "frame_tx"
+    t_ns: 15000000
+    frame_id: "nvme_write_cmd"
+    annotation:
+      text: "NVMe Write (4KB at LBA 0) — CMD IU sent"
+      detail: >
+        Host sends NVMe Write command as FC-NVMe CMD IU. The NVMe SQE contains
+        opcode 0x01 (Write), NSID=1, LBA=0, NLB=7 (8 blocks = 4KB).
+
+        FC-NVMe Write flow:
+        1. Host -> Target: CMD IU (NVMe Write SQE)
+        2. Target -> Host: XFER_RDY IU (permission to send data)
+        3. Host -> Target: DATA IU (4KB write data)
+        4. Target -> Host: RSP IU (NVMe CQE — completion)
+
+        Compare with NVMe-oF/RDMA Write flow:
+        1. Host -> Target: RDMA SEND (NVMe Write command + SGL)
+        2. Target -> Host: RDMA READ Request (fetch write data)
+        3. Host -> Target: RDMA READ Response (4KB data, zero-copy)
+        4. Target -> Host: RDMA SEND (NVMe CQE)
+
+        Both use 4 operations, but the mechanics differ: FC-NVMe pushes data
+        (host sends DATA IU), while RDMA pulls data (target RDMA READs from host).
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol (NVMe)"
+            state_fields:
+              last_cmd: "NVMe Write"
+              io_tag: "0x0010"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              active_exchanges: 1
+
+  - id: "evt_nvme_write_xfer_rdy"
+    type: "frame_tx"
+    t_ns: 15200000
+    frame_id: "nvme_write_xfer_rdy"
+    annotation:
+      text: "XFER_RDY IU — target ready to receive 4KB write data"
+      detail: >
+        Target sends XFER_RDY IU granting host permission to transfer 4096 bytes
+        starting at offset 0. This is the same flow control mechanism as
+        FCP_XFER_RDY in traditional FC writes. The host must not send data
+        before receiving this IU (unless First Burst is negotiated).
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol (NVMe)"
+            state_fields:
+              last_cmd_received: "NVMe Write"
+
+  - id: "evt_nvme_write_data"
+    type: "frame_tx"
+    t_ns: 15400000
+    frame_id: "nvme_write_data"
+    annotation:
+      text: "DATA IU — 4KB write data transferred to target"
+      detail: >
+        Host sends 4KB write data as FC-NVMe DATA IU. The data traverses the
+        FC fabric as standard FC sequences. BB_Credit flow control ensures
+        the switch and target are not overwhelmed — this is the FC equivalent
+        of PFC in RoCEv2/RDMA networks. No special lossless Ethernet
+        configuration is needed because FC is inherently lossless.
+    state_after: []
+
+  - id: "evt_nvme_write_rsp"
+    type: "frame_tx"
+    t_ns: 15700000
+    frame_id: "nvme_write_rsp"
+    annotation:
+      text: "RSP IU — NVMe Write complete, 4KB committed at LBA 0"
+      detail: >
+        NVMe CQE shows status 0x0000 (Success). The 4KB has been written to the
+        NVMe SSD. Exchange OX_ID 0x0010 is now complete and freed.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol (NVMe)"
+            state_fields:
+              last_cmd: "Write complete"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              active_exchanges: 0
+              ox_id_next: "0x0011"
+      - actor_id: "target"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol (NVMe)"
+            state_fields:
+              last_cmd_received: "Write complete"
+
+  # ── Phase 9: NVMe Read ─────────────────────────────────────────
+  - id: "evt_nvme_read_cmd"
+    type: "frame_tx"
+    t_ns: 17000000
+    frame_id: "nvme_read_cmd"
+    annotation:
+      text: "NVMe Read (4KB at LBA 0) — CMD IU sent"
+      detail: >
+        Host reads back the same 4KB. NVMe Read flow is simpler than Write —
+        NO XFER_RDY is needed:
+        1. Host -> Target: CMD IU (NVMe Read SQE)
+        2. Target -> Host: DATA IU (4KB read data)
+        3. Target -> Host: RSP IU (NVMe CQE)
+
+        Compare with NVMe-oF/RDMA Read:
+        1. Host -> Target: RDMA SEND (NVMe Read + SGL)
+        2. Target -> Host: RDMA WRITE (4KB data, zero-copy)
+        3. Target -> Host: RDMA SEND (NVMe CQE)
+
+        Both use 3 operations. FC-NVMe delivers data via FC sequences (CPU-mediated),
+        while RDMA delivers via RDMA WRITE (zero-copy, no host CPU involvement).
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol (NVMe)"
+            state_fields:
+              last_cmd: "NVMe Read"
+              io_tag: "0x0011"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              active_exchanges: 1
+
+  - id: "evt_nvme_read_data"
+    type: "frame_tx"
+    t_ns: 17200000
+    frame_id: "nvme_read_data"
+    annotation:
+      text: "DATA IU — 4KB read data delivered to host (no XFER_RDY needed)"
+      detail: >
+        Target sends read data immediately — no XFER_RDY handshake required
+        for reads. This is the same behavior as FCP reads. The 4KB data
+        should match the data previously written to LBA 0.
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol (NVMe)"
+            state_fields:
+              last_cmd_received: "NVMe Read"
+
+  - id: "evt_nvme_read_rsp"
+    type: "frame_tx"
+    t_ns: 17400000
+    frame_id: "nvme_read_rsp"
+    annotation:
+      text: "RSP IU — NVMe Read complete, data verified"
+      detail: >
+        NVMe CQE status 0x0000 (Success). Read data is in host buffer and
+        should match the write data, confirming end-to-end data integrity
+        through the FC-NVMe fabric.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol (NVMe)"
+            state_fields:
+              last_cmd: "Read complete"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              active_exchanges: 0
+
+  # ── Summary ─────────────────────────────────────────────────────
+  - id: "evt_summary"
+    type: "annotation"
+    t_ns: 20000000
+    annotation:
+      text: "Scenario complete — FC-NVMe Discovery and I/O"
+      detail: >
+        This scenario demonstrated NVMe over Fibre Channel (FC-NVMe):
+
+        1. LINK — 32GFC physical establishment (FC-0/FC-1)
+        2. FLOGI — Fabric login, FCID assignment (identical to traditional FC)
+        3. PLOGI — Port login with target (identical to traditional FC)
+        4. PRLI TYPE 0x28 — THE KEY DIFFERENCE: NVMe process login instead of FCP (0x08)
+        5. DISCOVERY — FC-NVMe LS Create Association + Get Log Page (Discovery)
+        6. IO CONNECT — FC-NVMe LS Create Association to I/O Controller
+        7. IDENTIFY — Identify Controller + Namespace (NVMe admin commands via CMD IU)
+        8. WRITE — CMD IU -> XFER_RDY IU -> DATA IU -> RSP IU (4 frames)
+        9. READ — CMD IU -> DATA IU -> RSP IU (3 frames, no XFER_RDY)
+
+        FC-NVMe vs Traditional FCP/SCSI:
+        - Same: FLOGI, PLOGI, FC frame header, BB_Credit, exchange management
+        - Different: PRLI type (0x28 vs 0x08), TYPE field (0x28 vs 0x08), NVMe SQE vs SCSI CDB
+
+        FC-NVMe vs NVMe-oF/RDMA:
+        - FC-NVMe: No IP stack, no RDMA, no lossless Ethernet config needed
+        - NVMe-oF/RDMA: Zero-copy data path, requires PFC + RNIC
+        - Both: Same NVMe command set, same Discovery Log Page, same NQN system
+
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
+glossary:
+  - term: "FC-NVMe"
+    definition: "NVMe over Fibre Channel — a transport binding that maps NVMe commands and data to FC sequences. Defined by FC-NVMe-2 (INCITS 560). Reuses the FC login infrastructure (FLOGI, PLOGI) but uses PRLI type 0x28 to negotiate NVMe instead of FCP/SCSI. The FC frame header TYPE field is 0x28 for all NVMe data frames."
+    spec_refs:
+      - document: "FC-NVMe-2"
+        section: "1"
+        title: "FC-NVMe Overview"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "Information Unit"
+    abbrev: "IU"
+    definition: "The FC-NVMe data structure carried in FC frame payloads. Four IU types: CMD IU (0x00, contains NVMe SQE), DATA IU (0x40, carries read/write data), RSP IU (0x02, contains NVMe CQE), and XFER_RDY IU (0x50, grants write data transfer permission)."
+    spec_refs:
+      - document: "FC-NVMe-2"
+        section: "7"
+        title: "FC-NVMe Information Units"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "CMD IU"
+    definition: "FC-NVMe Command Information Unit (type 0x00). Contains a 64-byte NVMe Submission Queue Entry (SQE). Sent from initiator to target in an FC frame with R_CTL=0x06 and TYPE=0x28. Analogous to FCP_CMND in traditional FC."
+    spec_refs:
+      - document: "FC-NVMe-2"
+        section: "7.1"
+        title: "CMD IU"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "RSP IU"
+    definition: "FC-NVMe Response Information Unit (type 0x02). Contains a 16-byte NVMe Completion Queue Entry (CQE) with command status. Sent from target to initiator in an FC frame with R_CTL=0x07 and TYPE=0x28. Analogous to FCP_RSP."
+    spec_refs:
+      - document: "FC-NVMe-2"
+        section: "7.4"
+        title: "RSP IU"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "XFER_RDY IU"
+    definition: "FC-NVMe Transfer Ready Information Unit (type 0x50). Sent by the target to grant the initiator permission to send write data. Contains relative offset and byte count. Required for write operations (unless First Burst is negotiated). Not used for reads. Analogous to FCP_XFER_RDY."
+    spec_refs:
+      - document: "FC-NVMe-2"
+        section: "7.3"
+        title: "XFER_RDY IU"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "DATA IU"
+    definition: "FC-NVMe Data Information Unit (type 0x40). Carries the actual read or write data payload within FC sequences. For writes, sent from initiator to target after XFER_RDY. For reads, sent from target to initiator immediately after CMD IU."
+    spec_refs:
+      - document: "FC-NVMe-2"
+        section: "7.2"
+        title: "DATA IU"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "NVMe SQE"
+    abbrev: "Submission Queue Entry"
+    definition: "The 64-byte NVMe command structure. Contains opcode, namespace ID, starting LBA, block count, and other command-specific fields. In FC-NVMe, the SQE is encapsulated inside a CMD IU. In NVMe-oF/RDMA, it is sent via RDMA SEND."
+    spec_refs:
+      - document: "NVMe Base Spec 2.0"
+        section: "4.2"
+        title: "Submission Queue Entry"
+        url: "https://nvmexpress.org/specifications/"
+
+  - term: "NVMe CQE"
+    abbrev: "Completion Queue Entry"
+    definition: "The 16-byte NVMe completion structure. Contains status code, SQ ID, and command-specific results. In FC-NVMe, the CQE is encapsulated inside a RSP IU. Indicates success (0x0000) or specific error codes."
+    spec_refs:
+      - document: "NVMe Base Spec 2.0"
+        section: "4.6"
+        title: "Completion Queue Entry"
+        url: "https://nvmexpress.org/specifications/"
+
+  - term: "NVMe Qualified Name"
+    abbrev: "NQN"
+    definition: "Globally unique identifier for NVMe subsystems and hosts. Format: nqn.YYYY-MM.reverse-domain:user-string. Used in FC-NVMe Create Association LS requests (same as NVMe-oF/RDMA Fabrics Connect). Discovery Controller uses well-known NQN nqn.2014-08.org.nvmexpress.discovery."
+    spec_refs:
+      - document: "NVMe Base Spec 2.0"
+        section: "4.5"
+        title: "NVMe Qualified Name"
+        url: "https://nvmexpress.org/specifications/"
+
+  - term: "PRLI"
+    abbrev: "Process Login"
+    definition: "Establishes an FC-4 upper-layer protocol association. The Service Parameter Page Type field determines the protocol: 0x08 = FCP/SCSI, 0x28 = NVMe. This single byte is what differentiates an FC-NVMe fabric from a traditional FCP fabric on the wire."
+    spec_refs:
+      - document: "FC-LS-4"
+        section: "5.6"
+        title: "Process Login (PRLI)"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "FLOGI"
+    abbrev: "Fabric Login"
+    definition: "The first ELS command after physical link up. Sent to well-known address 0xFFFFFE. The fabric assigns an N_Port ID (FCID). FLOGI is identical for FC-NVMe and traditional FCP — it occurs before the upper-layer protocol is negotiated."
+    spec_refs:
+      - document: "FC-LS-4"
+        section: "5.3"
+        title: "Fabric Login (FLOGI)"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "FCID"
+    abbrev: "N_Port ID"
+    definition: "A 24-bit address assigned by the fabric to an N_Port during FLOGI. Used as S_ID and D_ID in FC frame headers for routing. Format: domain:area:port (e.g., 0x010200 = domain 1, area 2, port 0)."
+    spec_refs:
+      - document: "FC-FS-5"
+        section: "15.1"
+        title: "Address Identifier"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "BB_Credit"
+    abbrev: "Buffer-to-Buffer Credit"
+    definition: "FC flow control mechanism. Each port advertises how many frames it can buffer. The sender decrements credit per frame and replenishes on R_RDY. This is FC's native lossless mechanism — no PFC or ECN configuration needed, unlike RoCEv2/RDMA."
+    spec_refs:
+      - document: "FC-FS-5"
+        section: "17.2"
+        title: "Buffer-to-buffer flow control"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "Exchange"
+    definition: "A bidirectional conversation between two FC N_Ports identified by OX_ID (originator) and RX_ID (responder). An exchange contains one or more sequences. In FC-NVMe, each NVMe I/O operation is one exchange (CMD IU + optional XFER_RDY + DATA + RSP IU)."
+    spec_refs:
+      - document: "FC-FS-5"
+        section: "16"
+        title: "Exchange and Sequence Management"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "FC-NVMe LS"
+    abbrev: "Link Service"
+    definition: "FC-NVMe Link Service operations used for controller association management. Create Association establishes an NVMe controller connection. Disconnect Association tears it down. These are FC-4 level services, distinct from FC-2 ELS commands like FLOGI/PLOGI."
+    spec_refs:
+      - document: "FC-NVMe-2"
+        section: "6"
+        title: "FC-NVMe Link Services"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "First Burst"
+    definition: "An FC-NVMe optimization negotiated in PRLI that allows the host to send the initial portion of write data immediately with the CMD IU, without waiting for XFER_RDY. Reduces write latency by eliminating one round-trip for small writes."
+    spec_refs:
+      - document: "FC-NVMe-2"
+        section: "5.1.4"
+        title: "First Burst Size"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "TYPE 0x28 vs TYPE 0x08"
+    definition: "The FC frame header TYPE field distinguishes FC-NVMe (0x28) from FCP/SCSI (0x08). All FC-NVMe data frames use TYPE=0x28. Login ELS frames (FLOGI, PLOGI, PRLI) still use TYPE=0x01 (ELS). The PRLI service parameter page type (also 0x28 vs 0x08) determines which FC-4 protocol is negotiated."

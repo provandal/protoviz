@@ -1,0 +1,2223 @@
+meta:
+  id: "fc-bb-credit-flow-control"
+  title: "FC Buffer Credits: Lossless Flow Control Without Pause Frames"
+  protocol: "Fibre Channel"
+  protocol_family: "SAN"
+  version: "1.0.0"
+  description: >
+    How Fibre Channel achieves lossless, zero-drop delivery at every hop using
+    buffer-to-buffer credits (BB_Credit). Unlike Ethernet, where frames can be
+    silently dropped when switch buffers overflow, FC guarantees that every frame
+    sent will be received — at the cost of stalling senders when credits are
+    exhausted. This scenario traces the complete BB_Credit lifecycle: negotiation
+    during FLOGI, steady-state credit consumption and replenishment via R_RDY
+    primitives, credit starvation under congestion, and recovery. It contrasts
+    FC's proactive, per-hop, frame-level flow control with Ethernet PFC (reactive,
+    per-hop, priority-level) and TCP window scaling (end-to-end, byte-level, dynamic).
+    Understanding BB_Credit is essential for diagnosing FC slow-drain, credit
+    starvation, and fabric congestion — the most common performance problems in
+    SAN environments.
+
+  learning_objectives:
+    - "Understand how BB_Credit values are negotiated during FLOGI — set once at login, never changed dynamically"
+    - "Trace the per-frame credit lifecycle: sender decrements credit on TX, receiver sends R_RDY to replenish one credit"
+    - "See why R_RDY is a primitive signal (4 bytes, not a full FC frame) and how it differs from ACK"
+    - "Observe credit starvation: when BB_Credit_available reaches 0, the sender MUST stop — even on a physically idle link"
+    - "Understand slow-drain: a single slow device can propagate credit starvation across the entire fabric"
+    - "Compare FC BB_Credit (proactive, per-hop, frame-level) vs Ethernet PFC (reactive, per-hop, priority-level) vs TCP window (end-to-end, byte-level, dynamic)"
+    - "Learn why FC's lossless guarantee comes at the cost of potential sender stalls — the fundamental FC vs Ethernet design trade-off"
+    - "Recognize that BB_Credit is buffer-to-buffer (per-hop) while EE_Credit is end-to-end — two independent flow control layers"
+
+  difficulty: "intermediate"
+
+  authors:
+    - name: "Erik Smith"
+      org: "Dell Technologies"
+    - name: "Claude"
+      org: "Anthropic"
+
+  created: "2026-03-30"
+  updated: "2026-03-30"
+
+  tags:
+    - "Fibre Channel"
+    - "FC"
+    - "SAN"
+    - "BB_Credit"
+    - "flow control"
+    - "R_RDY"
+    - "credit starvation"
+    - "slow drain"
+    - "lossless"
+    - "32GFC"
+    - "FLOGI"
+    - "education"
+
+  primary_specs:
+    - document: "FC-FS-5"
+      section: "17.2"
+      title: "Buffer-to-buffer flow control"
+      url: "https://www.t11.org/fcSite/fcretr.html"
+      alt_url: "https://www.oninit.com/manual/data/fcstor/5_bb_credit.html"
+    - document: "FC-FS-5"
+      section: "7.4"
+      title: "R_RDY Ordered Set (Primitive Signal)"
+      url: "https://www.t11.org/fcSite/fcretr.html"
+    - document: "FC-LS-4"
+      section: "5.3.3"
+      title: "FLOGI Common Service Parameters — BB_Credit field"
+      url: "https://www.t11.org/fcSite/fcretr.html"
+    - document: "FC-PI-7"
+      section: "6"
+      title: "Physical Interface — buffer sizing and credit recovery"
+      url: "https://www.t11.org/fcSite/fcretr.html"
+
+  source_references:
+    - repo: "torvalds/linux"
+      path: "drivers/scsi/lpfc/lpfc_els.c"
+      description: "Emulex/Broadcom lpfc — FLOGI BB_Credit negotiation"
+    - repo: "torvalds/linux"
+      path: "drivers/scsi/lpfc/lpfc_sli.c"
+      description: "lpfc SLI ring — BB_Credit tracking and R_RDY processing"
+    - repo: "torvalds/linux"
+      path: "drivers/scsi/qla2xxx/qla_init.c"
+      description: "QLogic/Marvell qla2xxx — BB_Credit management during fabric login"
+    - repo: "torvalds/linux"
+      path: "drivers/scsi/qla2xxx/qla_isr.c"
+      description: "qla2xxx ISR — R_RDY interrupt handling and credit replenishment"
+
+  content_disclaimer: >
+    Protocol descriptions in this scenario are based on open-source implementations
+    (Linux kernel lpfc and qla2xxx drivers) and publicly available T11/INCITS
+    standards summaries. No proprietary specification text has been reproduced.
+    Spec references are provided as citations for further reading.
+
+# ---------------------------------------------------------------------
+# TOPOLOGY
+# ---------------------------------------------------------------------
+topology:
+  actors:
+    - id: "hba"
+      type: "initiator"
+      label: "Host Bus Adapter (HBA)"
+      description: "FC initiator — Linux host with 32GFC HBA running lpfc driver. Initiates FLOGI and sends FCP frames to storage."
+      hardware: "32GFC dual-port HBA (e.g., Emulex LPe36000)"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "FC Switch"
+      description: "32GFC FC switch with 16 frame buffers per port. Manages BB_Credit independently on each port. Routes frames via D_ID lookup."
+      hardware: "32GFC FC switch (e.g., 48-port director blade)"
+      position: "center"
+
+    - id: "target"
+      type: "target"
+      label: "Storage Array (Target)"
+      description: "FC storage array presenting SCSI LUNs over FCP. Downstream congestion at this target causes the switch to stall, propagating credit starvation upstream to the HBA."
+      hardware: "32GFC storage array"
+      position: "right"
+
+  links:
+    - id: "link-hba-sw"
+      from: "hba"
+      to: "switch"
+      speed_gbps: 32
+      media: "fiber_sr"
+      fec: "RS-FEC"
+    - id: "link-sw-target"
+      from: "switch"
+      to: "target"
+      speed_gbps: 32
+      media: "fiber_sr"
+      fec: "RS-FEC"
+
+# ---------------------------------------------------------------------
+# LAYER DEFINITIONS (per actor)
+# FC uses FC-0 through FC-4 rather than the OSI model.
+# Layer numbers match the FC layer designation (FC-0=0, FC-1=1, FC-2=2, FC-4=4).
+# ---------------------------------------------------------------------
+osi_layers:
+  hba:
+    - layer: 4
+      name: "FC-4 Upper Layer Protocol"
+      components: ["FCP-4", "lpfc_scsi.c", "SCSI sd_mod", "block layer"]
+      state_schema:
+        fcp_state:
+          type: "string"
+          description: "FCP/SCSI I/O state"
+          initial: "idle"
+        io_pending:
+          type: "integer"
+          description: "Number of FCP I/O operations waiting to be sent"
+          initial: 0
+        io_stalled:
+          type: "boolean"
+          description: "True when I/O cannot proceed due to credit starvation"
+          initial: false
+
+    - layer: 2
+      name: "FC-2 Framing / Signaling"
+      components: ["lpfc_sli.c", "lpfc_els.c", "lpfc_hw.h", "FC-LS", "BB_Credit manager"]
+      state_schema:
+        my_fcid:
+          type: "string"
+          description: "Assigned N_Port ID (FCID) — set by fabric during FLOGI"
+          initial: "0x000000"
+        bb_credit_max:
+          type: "integer"
+          description: "Maximum BB_Credit — the value the switch offered during FLOGI (how many frames the switch can buffer from us)"
+          initial: 0
+        bb_credit_available:
+          type: "integer"
+          description: "Current BB_Credit available — decremented on each frame TX, incremented on each R_RDY RX"
+          initial: 0
+        frames_sent_since_last_rrdy:
+          type: "integer"
+          description: "Frames sent since last R_RDY received — helps visualize credit consumption rate"
+          initial: 0
+        rrdy_received_count:
+          type: "integer"
+          description: "Total R_RDY primitives received from switch"
+          initial: 0
+        fabric_login:
+          type: "string"
+          description: "Fabric login state (FLOGI)"
+          initial: "none"
+        ox_id_next:
+          type: "string"
+          description: "Next originator exchange ID to allocate"
+          initial: "0x0001"
+
+    - layer: 1
+      name: "FC-1 Encoding"
+      components: ["64b/66b encoding", "word sync"]
+      state_schema:
+        encoding:
+          type: "string"
+          initial: "64b/66b"
+        word_sync:
+          type: "boolean"
+          initial: false
+
+    - layer: 0
+      name: "FC-0 Physical"
+      components: ["32GFC SFP28", "850nm VCSEL"]
+      state_schema:
+        phy_state:
+          type: "string"
+          description: "Physical port state (point-to-point link to switch)"
+          initial: "down"
+        speed:
+          type: "string"
+          initial: "unknown"
+        signal_detect:
+          type: "boolean"
+          initial: false
+
+  switch:
+    - layer: 2
+      name: "FC-2 Frame Forwarding / BB_Credit Management"
+      components: ["D_ID routing", "BB_Credit management", "FCID assignment", "per-port buffer pools"]
+      state_schema:
+        port_hba_bb_credit_max:
+          type: "integer"
+          description: "BB_Credit offered to HBA during FLOGI — number of frames switch can buffer from HBA"
+          initial: 16
+        port_hba_bb_credit_available:
+          type: "integer"
+          description: "BB_Credit available toward HBA — frames switch can still accept from HBA before running out of buffers"
+          initial: 16
+        port_hba_buffers_used:
+          type: "integer"
+          description: "Number of receive buffers currently occupied by frames from HBA"
+          initial: 0
+        port_hba_rrdy_sent_count:
+          type: "integer"
+          description: "Total R_RDY primitives sent toward HBA"
+          initial: 0
+        port_target_bb_credit_max:
+          type: "integer"
+          description: "BB_Credit available toward storage target"
+          initial: 16
+        port_target_bb_credit_available:
+          type: "integer"
+          description: "Credits available for sending frames toward target"
+          initial: 16
+        port_target_buffers_used:
+          type: "integer"
+          description: "Receive buffers occupied by frames from target"
+          initial: 0
+        congested:
+          type: "boolean"
+          description: "Switch is experiencing downstream congestion (target not draining buffers)"
+          initial: false
+        fcid_pool_next:
+          type: "string"
+          initial: "0x010100"
+        fwd_table_entries:
+          type: "integer"
+          initial: 1
+
+    - layer: 0
+      name: "FC-0 Physical (per-port)"
+      components: ["32GFC SFP28"]
+      state_schema:
+        port_hba_phy:
+          type: "string"
+          description: "Physical state of port facing HBA"
+          initial: "down"
+        port_target_phy:
+          type: "string"
+          description: "Physical state of port facing storage target"
+          initial: "down"
+
+  target:
+    - layer: 4
+      name: "FC-4 Upper Layer Protocol"
+      components: ["SCSI target mode", "FCP target processing", "block storage backend"]
+      state_schema:
+        target_state:
+          type: "string"
+          initial: "online"
+        processing_delay:
+          type: "string"
+          description: "Current I/O processing delay at the target (affects R_RDY generation rate)"
+          initial: "normal"
+
+    - layer: 2
+      name: "FC-2 Framing / Signaling"
+      components: ["frame header", "CRC", "BB_Credit management", "exchange management"]
+      state_schema:
+        my_fcid:
+          type: "string"
+          description: "Storage array FCID"
+          initial: "0x010200"
+        bb_credit_max:
+          type: "integer"
+          description: "BB_Credit offered to switch during login"
+          initial: 8
+        bb_credit_available:
+          type: "integer"
+          description: "Credits available for sending frames toward switch"
+          initial: 8
+        buffers_used:
+          type: "integer"
+          description: "Receive buffers occupied by frames from switch"
+          initial: 0
+        rrdy_sent_count:
+          type: "integer"
+          description: "Total R_RDY primitives sent toward switch"
+          initial: 0
+        fabric_login:
+          type: "string"
+          initial: "complete"
+
+    - layer: 0
+      name: "FC-0 Physical"
+      components: ["32GFC SFP28"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "down"
+        speed:
+          type: "string"
+          initial: "unknown"
+        signal_detect:
+          type: "boolean"
+          initial: false
+
+# ---------------------------------------------------------------------
+# FRAME LIBRARY
+# ---------------------------------------------------------------------
+frames:
+
+  # -- FLOGI (HBA -> Switch) -----------------------------------------
+  - id: "flogi"
+    name: "FLOGI (Fabric Login)"
+    description: >
+      Host sends Fabric Login to well-known Fabric Controller address 0xFFFFFE.
+      S_ID is 0x000000 because the host has no FCID yet. The FLOGI payload
+      carries BB_Credit=8, meaning the HBA can buffer 8 frames from the switch.
+      Linux: lpfc_els.c lpfc_issue_els_flogi()
+    from: "hba"
+    to: "switch"
+    timestamp_ns: 5000000
+    total_bytes: 148
+    color: "#d97706"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x22"
+            description: "Unsolicited Control — ELS request frame"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.3"
+                title: "R_CTL field encoding"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0xFFFFFE"
+            description: "Well-known address for Fabric Controller. FLOGI always goes here."
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "15.2"
+                title: "Well-known address identifiers"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-specific control"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x000000"
+            description: "Source ID is 0x000000 — host has no FCID assigned yet"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.7"
+                title: "TYPE field — protocol type identifier"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x290000"
+            description: "Exchange originator, first+last sequence, sequence initiative"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.5"
+                title: "F_CTL — Frame Control"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0001"
+            description: "Originator Exchange ID — tracks this FLOGI exchange"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.10"
+                title: "OX_ID and RX_ID — Exchange identification"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — 0xFFFF means unassigned (fabric will assign)"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for ELS frames"
+      - name: "FLOGI Payload (ELS)"
+        abbrev: "fc.els.flogi"
+        layer: 2
+        total_bytes: 116
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x04000000"
+            description: "0x04 = FLOGI command code"
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "5.3"
+                title: "FLOGI — Fabric Login"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "Common Service Parameters"
+            abbrev: "fc.els.csp"
+            bits: 128
+            value: "BB_Credit=8, Recv_Size=2112"
+            description: >
+              The HBA offers BB_Credit=8: 'I can buffer 8 frames from you (the switch)
+              before you must wait for my R_RDY.' This value is stored in Common Service
+              Parameters word 1, bits 15:0. The BB_Credit value is set by the HBA's firmware
+              based on available buffer memory — typically 8-128 for HBAs.
+              Recv_Size=2112 is the maximum FC frame data field size (2048 payload + 64 optional header).
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "5.3.3"
+                title: "Common Service Parameters — BB_Credit"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+            kernel_ref:
+              file: "drivers/scsi/lpfc/lpfc_els.c"
+              function: "lpfc_issue_els_flogi"
+              notes: "Sets BB_Credit in Common Service Parameters word 1 bits 15:0; value comes from lpfc_hba->cfg_cr_count"
+          - name: "Port Name (WWPN)"
+            abbrev: "fc.els.wwpn"
+            bits: 64
+            value: "21:00:00:0e:1e:12:34:56"
+            description: "World Wide Port Name — globally unique 64-bit identifier for this HBA port"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "15.3"
+                title: "Name_Identifier format"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "Node Name (WWNN)"
+            abbrev: "fc.els.wwnn"
+            bits: 64
+            value: "20:00:00:0e:1e:12:34:56"
+            description: "World Wide Node Name — identifies the physical node (may have multiple ports)"
+          - name: "Class 3 Service Parameters"
+            abbrev: "fc.els.class3"
+            bits: 128
+            value: "Class 3 supported"
+            description: "Class 3 (connectionless, no confirmation) — the standard FC class for modern SANs"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 32GFC, replacing 8b/10b used in earlier FC generations"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS-FEC"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 32GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "32GFC (28.05 Gbps)"
+            description: "Physical signaling rate — 32GFC Gen 6 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP28)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
+
+  # -- FLOGI ACC (Switch -> HBA) -------------------------------------
+  - id: "flogi_acc"
+    name: "FLOGI ACC (Fabric Login Accept)"
+    description: >
+      Fabric accepts login and assigns FCID 0x010100 to the HBA. The switch's
+      FLOGI ACC carries BB_Credit=16, meaning the switch can buffer 16 frames
+      from the HBA. This BB_Credit value is the HBA's transmit budget.
+    from: "switch"
+    to: "hba"
+    timestamp_ns: 5200000
+    total_bytes: 148
+    color: "#d97706"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x23"
+            description: "Solicited Control — ELS response (ACC)"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010100"
+            description: "Newly assigned FCID for the HBA — this is the fabric's answer"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0xFFFFFE"
+            description: "Fabric Controller"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+            description: "ELS"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x980000"
+            description: "Exchange responder, last sequence, end sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0001"
+            description: "Same OX_ID as the FLOGI request — correlates request and response"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0001"
+            description: "Responder Exchange ID assigned by fabric"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "FLOGI ACC Payload"
+        abbrev: "fc.els.flogi_acc"
+        layer: 2
+        total_bytes: 116
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x02000000"
+            description: "0x02 = LS_ACC (Link Service Accept)"
+          - name: "Common Service Parameters"
+            abbrev: "fc.els.csp"
+            bits: 128
+            value: "BB_Credit=16, Recv_Size=2112"
+            description: >
+              The switch offers BB_Credit=16: 'I can buffer 16 frames from you (the HBA)
+              before you must wait for my R_RDY.' This is the HBA's initial transmit budget.
+              Switch ports typically offer 16-500+ credits depending on port buffer allocation.
+              The HBA stores this value as bb_credit_max and initializes bb_credit_available=16.
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "5.3.3"
+                title: "Common Service Parameters — BB_Credit in FLOGI ACC"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "Switch WWPN"
+            abbrev: "fc.els.wwpn"
+            bits: 64
+            value: "20:01:00:05:73:01:02:03"
+            description: "Switch port's World Wide Port Name"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 32GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS-FEC"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 32GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "32GFC (28.05 Gbps)"
+            description: "Physical signaling rate — 32GFC Gen 6 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP28)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
+
+  # -- FCP DATA Frame (HBA -> Switch -> Target) ----------------------
+  - id: "fcp_data_1"
+    name: "FCP_DATA Frame #1"
+    description: >
+      First FCP data frame in a burst. The HBA decrements BB_Credit_available
+      from 16 to 15 before transmitting. This frame consumes one credit on the
+      HBA-to-switch link.
+    from: "hba"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 10000000
+    total_bytes: 2148
+    color: "#2563eb"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x01"
+            description: "FC-4 Device Data — solicited data (FCP_DATA write)"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.3"
+                title: "R_CTL encoding"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage array FCID"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+            description: "HBA's assigned FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x08"
+            description: "0x08 = FCP (SCSI over FC)"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x210000"
+            description: "Exchange originator, first sequence, write data"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x01"
+            description: "Sequence identifier"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "No optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "First frame in this data sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0010"
+            description: "Exchange ID for this FCP I/O"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0x0001"
+            description: "Responder exchange ID assigned by target"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — byte offset 0 in write data"
+      - name: "FCP_DATA Payload"
+        abbrev: "fcp.data"
+        layer: 4
+        total_bytes: 2048
+        fields:
+          - name: "Write Data"
+            abbrev: "fcp.data.payload"
+            bits: 16384
+            value: "2048 bytes SCSI write data"
+            description: "SCSI write payload — one maximum-size FC data frame"
+      - name: "FC CRC"
+        abbrev: "fc.crc"
+        layer: 2
+        total_bytes: 4
+        fields:
+          - name: "CRC-32"
+            abbrev: "fc.crc32"
+            bits: 32
+            value: "0xA1B2C3D4"
+            description: "Frame CRC for error detection — covers header + payload"
+
+  - id: "fcp_data_2"
+    name: "FCP_DATA Frame #2"
+    description: "Second data frame. BB_Credit_available decrements from 15 to 14."
+    from: "hba"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 10600000
+    total_bytes: 2148
+    color: "#2563eb"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x01"
+            description: "FC-4 Device Data — solicited data"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage array FCID"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+            description: "HBA FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x08"
+            description: "FCP"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 1
+            description: "Second frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0010"
+            description: "Same exchange"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000800"
+            description: "Relative offset 2048 — second 2KB chunk"
+
+  - id: "fcp_data_3"
+    name: "FCP_DATA Frame #3"
+    description: "Third data frame. BB_Credit_available decrements from 14 to 13."
+    from: "hba"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 11200000
+    total_bytes: 2148
+    color: "#2563eb"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x01"
+            description: "FC-4 Device Data — solicited data"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage array FCID"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+            description: "HBA FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x08"
+            description: "FCP"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 2
+            description: "Third frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0010"
+            description: "Same exchange"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00001000"
+            description: "Relative offset 4096 — third 2KB chunk"
+
+  - id: "fcp_data_4"
+    name: "FCP_DATA Frame #4"
+    description: "Fourth data frame. BB_Credit_available decrements from 13 to 12."
+    from: "hba"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 11800000
+    total_bytes: 2148
+    color: "#2563eb"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x01"
+            description: "FC-4 Device Data — solicited data"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage array FCID"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+            description: "HBA FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x08"
+            description: "FCP"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 3
+            description: "Fourth frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0010"
+            description: "Same exchange"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00001800"
+            description: "Relative offset 6144 — fourth 2KB chunk"
+
+  # -- R_RDY Primitives (Switch -> HBA) ------------------------------
+  - id: "rrdy_1"
+    name: "R_RDY (Receiver Ready) #1"
+    description: >
+      R_RDY is a PRIMITIVE SIGNAL, not a full FC frame. It is exactly 4 bytes
+      (one Ordered Set): K28.5 D21.4 D10.2 D21.2. R_RDY is transmitted between
+      frames in the inter-frame gap — it does not consume BB_Credit itself.
+      Each R_RDY replenishes exactly one credit at the sender.
+    from: "switch"
+    to: "hba"
+    timestamp_ns: 10400000
+    total_bytes: 4
+    color: "#16a34a"
+    headers:
+      - name: "R_RDY Primitive Signal"
+        abbrev: "fc.rrdy"
+        layer: 2
+        total_bytes: 4
+        fields:
+          - name: "Ordered Set"
+            abbrev: "fc.rrdy.os"
+            bits: 32
+            value: "K28.5 D21.4 D10.2 D21.2"
+            description: >
+              R_RDY (Receiver Ready) is an FC Ordered Set — a 4-byte primitive signal,
+              NOT a full FC frame. It has no frame header, no payload, no CRC. It is
+              inserted into the inter-frame gap by the receiver's FC port hardware.
+              Each R_RDY signals: 'I have freed one receive buffer — you may send one
+              more frame.' This is the fundamental credit replenishment mechanism.
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "7.4"
+                title: "R_RDY Ordered Set"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "Credit Effect"
+            abbrev: "fc.rrdy.credit"
+            bits: 0
+            value: "+1 BB_Credit to sender"
+            description: >
+              When the HBA receives this R_RDY, it increments bb_credit_available by 1.
+              R_RDY does NOT carry any credit count — each R_RDY always means exactly +1.
+              If the receiver needs to replenish N credits, it sends N separate R_RDY primitives.
+
+  - id: "rrdy_2"
+    name: "R_RDY (Receiver Ready) #2"
+    description: "Second R_RDY — replenishes one more credit. BB_Credit_available increments by 1."
+    from: "switch"
+    to: "hba"
+    timestamp_ns: 11000000
+    total_bytes: 4
+    color: "#16a34a"
+    headers:
+      - name: "R_RDY Primitive Signal"
+        abbrev: "fc.rrdy"
+        layer: 2
+        total_bytes: 4
+        fields:
+          - name: "Ordered Set"
+            abbrev: "fc.rrdy.os"
+            bits: 32
+            value: "K28.5 D21.4 D10.2 D21.2"
+            description: "R_RDY primitive — frees one buffer, restores one credit"
+          - name: "Credit Effect"
+            abbrev: "fc.rrdy.credit"
+            bits: 0
+            value: "+1 BB_Credit to sender"
+            description: "HBA increments bb_credit_available by 1"
+
+  - id: "rrdy_3"
+    name: "R_RDY (Receiver Ready) #3"
+    description: "Third R_RDY from switch. Steady-state: credits flow back as switch forwards frames to target."
+    from: "switch"
+    to: "hba"
+    timestamp_ns: 11600000
+    total_bytes: 4
+    color: "#16a34a"
+    headers:
+      - name: "R_RDY Primitive Signal"
+        abbrev: "fc.rrdy"
+        layer: 2
+        total_bytes: 4
+        fields:
+          - name: "Ordered Set"
+            abbrev: "fc.rrdy.os"
+            bits: 32
+            value: "K28.5 D21.4 D10.2 D21.2"
+            description: "R_RDY primitive — frees one buffer, restores one credit"
+          - name: "Credit Effect"
+            abbrev: "fc.rrdy.credit"
+            bits: 0
+            value: "+1 BB_Credit to sender"
+            description: "HBA increments bb_credit_available by 1"
+
+  - id: "rrdy_4"
+    name: "R_RDY (Receiver Ready) #4"
+    description: "Fourth R_RDY. In steady state, R_RDY rate roughly matches frame rate."
+    from: "switch"
+    to: "hba"
+    timestamp_ns: 12200000
+    total_bytes: 4
+    color: "#16a34a"
+    headers:
+      - name: "R_RDY Primitive Signal"
+        abbrev: "fc.rrdy"
+        layer: 2
+        total_bytes: 4
+        fields:
+          - name: "Ordered Set"
+            abbrev: "fc.rrdy.os"
+            bits: 32
+            value: "K28.5 D21.4 D10.2 D21.2"
+            description: "R_RDY primitive"
+          - name: "Credit Effect"
+            abbrev: "fc.rrdy.credit"
+            bits: 0
+            value: "+1 BB_Credit to sender"
+            description: "HBA increments bb_credit_available by 1"
+
+  # -- Congestion Phase: Rapid frame burst consuming credits ---------
+  - id: "fcp_data_burst_5"
+    name: "FCP_DATA Frame #5 (Congestion Phase)"
+    description: "Continued data flow. Switch buffers filling because target is slow to drain."
+    from: "hba"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 20000000
+    total_bytes: 2148
+    color: "#dc2626"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x01"
+            description: "FC-4 Device Data"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage array"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+            description: "HBA"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x08"
+            description: "FCP"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 4
+            description: "Fifth frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0010"
+            description: "Same exchange"
+
+  - id: "fcp_data_burst_6"
+    name: "FCP_DATA Frame #6 (Credits Depleting)"
+    description: "BB_Credit_available is now very low. Switch not sending R_RDY — target backpressure."
+    from: "hba"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 20600000
+    total_bytes: 2148
+    color: "#dc2626"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x01"
+            description: "FC-4 Device Data"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage array"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+            description: "HBA"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x08"
+            description: "FCP"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 5
+            description: "Sixth frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0010"
+            description: "Same exchange"
+
+  - id: "fcp_data_burst_7"
+    name: "FCP_DATA Frame #7 (Last Credit)"
+    description: "This frame consumes the LAST BB_Credit. BB_Credit_available will be 0 after this TX."
+    from: "hba"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 21200000
+    total_bytes: 2148
+    color: "#dc2626"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x01"
+            description: "FC-4 Device Data"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage array"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+            description: "HBA"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x08"
+            description: "FCP"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 6
+            description: "Seventh frame — last before credit starvation"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0010"
+            description: "Same exchange"
+
+  # -- Recovery: R_RDY resumes flow ----------------------------------
+  - id: "rrdy_recovery_1"
+    name: "R_RDY (Recovery) #1"
+    description: >
+      After congestion clears, the switch sends R_RDY to replenish credits.
+      The HBA can now resume sending frames.
+    from: "switch"
+    to: "hba"
+    timestamp_ns: 30000000
+    total_bytes: 4
+    color: "#16a34a"
+    headers:
+      - name: "R_RDY Primitive Signal"
+        abbrev: "fc.rrdy"
+        layer: 2
+        total_bytes: 4
+        fields:
+          - name: "Ordered Set"
+            abbrev: "fc.rrdy.os"
+            bits: 32
+            value: "K28.5 D21.4 D10.2 D21.2"
+            description: "R_RDY primitive — first credit restored after starvation"
+          - name: "Credit Effect"
+            abbrev: "fc.rrdy.credit"
+            bits: 0
+            value: "+1 BB_Credit to sender"
+            description: "HBA bb_credit_available goes from 0 to 1 — transmission can resume"
+
+  - id: "rrdy_recovery_2"
+    name: "R_RDY (Recovery) #2"
+    description: "Second recovery R_RDY — credits building back up."
+    from: "switch"
+    to: "hba"
+    timestamp_ns: 30200000
+    total_bytes: 4
+    color: "#16a34a"
+    headers:
+      - name: "R_RDY Primitive Signal"
+        abbrev: "fc.rrdy"
+        layer: 2
+        total_bytes: 4
+        fields:
+          - name: "Ordered Set"
+            abbrev: "fc.rrdy.os"
+            bits: 32
+            value: "K28.5 D21.4 D10.2 D21.2"
+            description: "R_RDY primitive"
+          - name: "Credit Effect"
+            abbrev: "fc.rrdy.credit"
+            bits: 0
+            value: "+1 BB_Credit to sender"
+            description: "bb_credit_available = 2"
+
+  - id: "fcp_data_resume_1"
+    name: "FCP_DATA Frame (Resumed)"
+    description: "HBA resumes sending after credits are restored. Flow control worked — no frames were lost."
+    from: "hba"
+    to: "target"
+    via: ["switch"]
+    timestamp_ns: 30400000
+    total_bytes: 2148
+    color: "#2563eb"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x01"
+            description: "FC-4 Device Data"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x010200"
+            description: "Storage array"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x010100"
+            description: "HBA"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x08"
+            description: "FCP"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 7
+            description: "Continues from where it left off — no frames lost during stall"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0010"
+            description: "Same exchange — I/O continues after credit recovery"
+
+  - id: "rrdy_recovery_steady"
+    name: "R_RDY (Steady State Restored)"
+    description: "R_RDY flow resumes normal rate. Credits are being replenished as fast as frames are sent."
+    from: "switch"
+    to: "hba"
+    timestamp_ns: 30800000
+    total_bytes: 4
+    color: "#16a34a"
+    headers:
+      - name: "R_RDY Primitive Signal"
+        abbrev: "fc.rrdy"
+        layer: 2
+        total_bytes: 4
+        fields:
+          - name: "Ordered Set"
+            abbrev: "fc.rrdy.os"
+            bits: 32
+            value: "K28.5 D21.4 D10.2 D21.2"
+            description: "R_RDY primitive — steady state restored"
+          - name: "Credit Effect"
+            abbrev: "fc.rrdy.credit"
+            bits: 0
+            value: "+1 BB_Credit to sender"
+            description: "Normal credit replenishment resumed"
+
+# ---------------------------------------------------------------------
+# TIMELINE
+# ---------------------------------------------------------------------
+timeline:
+
+  # -- Phase 1: Link Up and Credit Negotiation -----------------------
+  - id: "evt_phy_link_hba"
+    type: "state_change"
+    t_ns: 0
+    annotation:
+      text: "Link A: signal detected — HBA ↔ FC Switch"
+      detail: >
+        Optical transceiver on HBA detects light from FC switch port.
+        FC link initialization begins. Physical link is point-to-point.
+    state_after:
+      - actor_id: "hba"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical"
+            state_fields:
+              phy_state: "initializing"
+              signal_detect: true
+      - actor_id: "switch"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical (per-port)"
+            state_fields:
+              port_hba_phy: "initializing"
+
+  - id: "evt_phy_link_target"
+    type: "state_change"
+    t_ns: 200000
+    annotation:
+      text: "Link B: signal detected — FC Switch ↔ Storage Array"
+      detail: "Storage array port detects light from switch. Independent physical link."
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical"
+            state_fields:
+              phy_state: "initializing"
+              signal_detect: true
+      - actor_id: "switch"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical (per-port)"
+            state_fields:
+              port_target_phy: "initializing"
+
+  - id: "evt_link_up_hba"
+    type: "state_change"
+    t_ns: 2000000
+    annotation:
+      text: "Link A UP — HBA ↔ Switch at 32GFC"
+      detail: >
+        Speed negotiation complete: 32GFC. 64b/66b encoding active.
+        FC primitives can now be exchanged. BB_Credit flow control will be
+        initialized during FLOGI — until then, no frames can be sent.
+    state_after:
+      - actor_id: "hba"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical"
+            state_fields:
+              phy_state: "UP"
+              speed: "32GFC"
+          - layer: 1
+            name: "FC-1 Encoding"
+            state_fields:
+              word_sync: true
+      - actor_id: "switch"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical (per-port)"
+            state_fields:
+              port_hba_phy: "UP"
+
+  - id: "evt_link_up_target"
+    type: "state_change"
+    t_ns: 2500000
+    annotation:
+      text: "Link B UP — Switch ↔ Storage at 32GFC"
+      detail: >
+        Both physical links are now up. Storage array was previously logged into
+        the fabric (FCID 0x010200 pre-assigned). Switch-to-target BB_Credit was
+        negotiated in the target's earlier FLOGI (target offered BB_Credit=8 to switch).
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical"
+            state_fields:
+              phy_state: "UP"
+              speed: "32GFC"
+      - actor_id: "switch"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical (per-port)"
+            state_fields:
+              port_target_phy: "UP"
+          - layer: 2
+            name: "FC-2 Frame Forwarding / BB_Credit Management"
+            state_fields:
+              fwd_table_entries: 1
+              port_target_bb_credit_available: 8
+
+  - id: "evt_flogi"
+    type: "frame_tx"
+    t_ns: 5000000
+    frame_id: "flogi"
+    annotation:
+      text: "FLOGI — HBA requests fabric login. HBA offers BB_Credit=8."
+      detail: >
+        The HBA sends FLOGI to the Fabric Controller (0xFFFFFE). In the Common
+        Service Parameters, the HBA advertises BB_Credit=8, meaning: 'I have 8
+        receive buffers available — you (the switch) can send me up to 8 frames
+        before waiting for my R_RDY.' This credit value is determined by the HBA's
+        firmware configuration and available buffer memory.
+
+        BB_Credit is negotiated ONCE during FLOGI. Unlike TCP's receive window
+        which changes dynamically with every ACK, FC's BB_Credit is fixed for the
+        lifetime of the login. To change it, you must LOGO (logout) and re-FLOGI.
+      spec_refs:
+        - document: "FC-LS-4"
+          section: "5.3.3"
+          title: "FLOGI Common Service Parameters"
+          url: "https://www.t11.org/fcSite/fcretr.html"
+    state_after:
+      - actor_id: "hba"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              fabric_login: "FLOGI_SENT"
+              bb_credit_max: 0
+              bb_credit_available: 0
+
+  - id: "evt_flogi_acc"
+    type: "frame_tx"
+    t_ns: 5200000
+    frame_id: "flogi_acc"
+    annotation:
+      text: "FLOGI ACC — Switch assigns FCID 0x010100 and grants BB_Credit=16"
+      detail: >
+        The fabric accepts login and assigns N_Port ID 0x010100. Critically, the
+        switch's FLOGI ACC carries BB_Credit=16 in its Common Service Parameters.
+        This means: 'I (the switch) have 16 receive buffers for your port — you (the HBA)
+        may send up to 16 frames before waiting for R_RDY.'
+
+        After this exchange, the credit state is:
+        - HBA transmit budget:  BB_Credit_max=16 (set by switch), BB_Credit_available=16
+        - Switch transmit budget: BB_Credit_max=8 (set by HBA), BB_Credit_available=8
+
+        Note: BB_Credit is ASYMMETRIC. The switch can buffer more frames from the HBA (16)
+        than the HBA can buffer from the switch (8). This is typical — switch ASIC port
+        buffers are much larger than HBA buffers.
+      spec_refs:
+        - document: "FC-FS-5"
+          section: "17.2"
+          title: "Buffer-to-buffer flow control model"
+          url: "https://www.t11.org/fcSite/fcretr.html"
+    state_after:
+      - actor_id: "hba"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              my_fcid: "0x010100"
+              bb_credit_max: 16
+              bb_credit_available: 16
+              fabric_login: "complete"
+              ox_id_next: "0x0002"
+              rrdy_received_count: 0
+              frames_sent_since_last_rrdy: 0
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Frame Forwarding / BB_Credit Management"
+            state_fields:
+              port_hba_bb_credit_max: 16
+              port_hba_bb_credit_available: 16
+              port_hba_buffers_used: 0
+              fcid_pool_next: "0x010101"
+              fwd_table_entries: 2
+
+  - id: "evt_bb_credit_annotation"
+    type: "annotation"
+    t_ns: 5500000
+    annotation:
+      text: "BB_Credit represents the number of frames the receiver can accept without acknowledgment"
+      detail: >
+        Key insight: BB_Credit is negotiated ONCE during login — it does NOT change
+        dynamically like a TCP window. The value is fixed for the lifetime of the login
+        session. This is a deliberate design choice:
+
+        - TCP window: Changes with every ACK segment. Receiver dynamically advertises
+          available buffer space. Works end-to-end across multiple hops.
+
+        - FC BB_Credit: Set at login, fixed forever. The ONLY way to 'recover' credit
+          is via R_RDY primitives, which restore credits one-at-a-time. Works per-hop
+          (each link has independent credits).
+
+        - Ethernet PFC PAUSE: No negotiation at all — reactive mechanism triggered when
+          switch buffers cross a threshold. Pauses an entire priority class, not individual
+          flows.
+
+        BB_Credit guarantees that the receiver ALWAYS has buffer space for incoming frames.
+        The sender cannot overwhelm the receiver because it physically cannot send more
+        frames than the receiver has buffers. This is why FC is lossless by design.
+      spec_refs:
+        - document: "FC-FS-5"
+          section: "17.2"
+          title: "Buffer-to-buffer flow control"
+          url: "https://www.t11.org/fcSite/fcretr.html"
+
+  # -- Phase 2: Normal Operation — Credit Consumption & Replenishment
+  - id: "evt_data_frame_1"
+    type: "frame_tx"
+    t_ns: 10000000
+    frame_id: "fcp_data_1"
+    annotation:
+      text: "FCP_DATA #1 — HBA sends frame, BB_Credit_available: 16 -> 15"
+      detail: >
+        The HBA begins sending FCP write data to the storage array via the switch.
+        Before transmitting each frame, the HBA checks bb_credit_available > 0.
+        It is 16 (full), so the frame is sent and bb_credit_available decrements to 15.
+
+        The frame traverses the switch (D_ID routing to 0x010200). When the switch
+        receives the frame into its port buffer, it now holds 1 of its 16 buffers
+        for this port. The switch will process/forward the frame and then send R_RDY
+        back to the HBA to replenish the credit.
+
+        At 32GFC with 2148-byte frames: ~600 ns per frame on the wire.
+    state_after:
+      - actor_id: "hba"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              bb_credit_available: 15
+              frames_sent_since_last_rrdy: 1
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Frame Forwarding / BB_Credit Management"
+            state_fields:
+              port_hba_bb_credit_available: 15
+              port_hba_buffers_used: 1
+
+  - id: "evt_rrdy_1"
+    type: "frame_tx"
+    t_ns: 10400000
+    frame_id: "rrdy_1"
+    annotation:
+      text: "R_RDY #1 — Switch replenishes one credit. BB_Credit_available: 15 -> 16"
+      detail: >
+        The switch has forwarded frame #1 toward the target and freed the receive
+        buffer. It sends R_RDY — a 4-byte primitive signal (not a full FC frame) —
+        back to the HBA. The HBA increments bb_credit_available from 15 back to 16.
+
+        R_RDY timing depends on how quickly the switch can forward the frame and
+        free the buffer. In a lightly loaded switch, this is very fast (~200-400 ns).
+        Under heavy load, buffer freeing may be delayed, causing credit pressure.
+      spec_refs:
+        - document: "FC-FS-5"
+          section: "7.4"
+          title: "R_RDY Primitive Signal"
+          url: "https://www.t11.org/fcSite/fcretr.html"
+    state_after:
+      - actor_id: "hba"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              bb_credit_available: 16
+              rrdy_received_count: 1
+              frames_sent_since_last_rrdy: 0
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Frame Forwarding / BB_Credit Management"
+            state_fields:
+              port_hba_bb_credit_available: 16
+              port_hba_buffers_used: 0
+              port_hba_rrdy_sent_count: 1
+
+  - id: "evt_data_frame_2"
+    type: "frame_tx"
+    t_ns: 10600000
+    frame_id: "fcp_data_2"
+    annotation:
+      text: "FCP_DATA #2 — BB_Credit_available: 16 -> 15"
+      detail: "Second data frame sent. Credit consumed. Steady-state pattern: send frame, receive R_RDY, repeat."
+    state_after:
+      - actor_id: "hba"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              bb_credit_available: 15
+              frames_sent_since_last_rrdy: 1
+
+  - id: "evt_rrdy_2"
+    type: "frame_tx"
+    t_ns: 11000000
+    frame_id: "rrdy_2"
+    annotation:
+      text: "R_RDY #2 — Credit replenished. BB_Credit_available: 15 -> 16"
+      detail: "Switch freed buffer, sent R_RDY. Normal credit cycling continues."
+    state_after:
+      - actor_id: "hba"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              bb_credit_available: 16
+              rrdy_received_count: 2
+              frames_sent_since_last_rrdy: 0
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Frame Forwarding / BB_Credit Management"
+            state_fields:
+              port_hba_rrdy_sent_count: 2
+              port_hba_buffers_used: 0
+
+  - id: "evt_data_frame_3"
+    type: "frame_tx"
+    t_ns: 11200000
+    frame_id: "fcp_data_3"
+    annotation:
+      text: "FCP_DATA #3 — BB_Credit_available: 16 -> 15"
+      detail: "Third data frame. Steady-state credit flow continues. Switch forwards and replenishes."
+    state_after:
+      - actor_id: "hba"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              bb_credit_available: 15
+              frames_sent_since_last_rrdy: 1
+
+  - id: "evt_rrdy_3"
+    type: "frame_tx"
+    t_ns: 11600000
+    frame_id: "rrdy_3"
+    annotation:
+      text: "R_RDY #3 — Steady state. Credits cycling normally."
+      detail: >
+        In steady state, the HBA never runs out of credits because R_RDY arrives
+        before the HBA exhausts its budget. The credit pool acts like a sliding
+        window: the HBA can have up to 16 frames in flight (in the switch's buffers)
+        at any instant. As long as the switch can forward frames to the target and
+        free buffers at the same rate the HBA sends, throughput is at line rate.
+    state_after:
+      - actor_id: "hba"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              bb_credit_available: 16
+              rrdy_received_count: 3
+              frames_sent_since_last_rrdy: 0
+
+  - id: "evt_data_frame_4"
+    type: "frame_tx"
+    t_ns: 11800000
+    frame_id: "fcp_data_4"
+    annotation:
+      text: "FCP_DATA #4 — BB_Credit_available: 16 -> 15"
+      detail: "Fourth data frame. Normal operation — one credit consumed, one will be replenished."
+    state_after:
+      - actor_id: "hba"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              bb_credit_available: 15
+              frames_sent_since_last_rrdy: 1
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Frame Forwarding / BB_Credit Management"
+            state_fields:
+              port_hba_buffers_used: 1
+
+  - id: "evt_rrdy_4"
+    type: "frame_tx"
+    t_ns: 12200000
+    frame_id: "rrdy_4"
+    annotation:
+      text: "R_RDY #4 — Last R_RDY before congestion hits. BB_Credit_available: 15 -> 16"
+      detail: "Switch replenishes credit. This is the last R_RDY the HBA will receive for a while..."
+    state_after:
+      - actor_id: "hba"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
+            state_fields:
+              fcp_state: "active"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              bb_credit_available: 16
+              rrdy_received_count: 4
+              frames_sent_since_last_rrdy: 0
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Frame Forwarding / BB_Credit Management"
+            state_fields:
+              port_hba_rrdy_sent_count: 4
+              port_hba_buffers_used: 0
+
+  # -- Phase 3: Credit Starvation -----------------------------------
+  - id: "evt_congestion_starts"
+    type: "state_change"
+    t_ns: 18000000
+    annotation:
+      text: "Downstream congestion — storage target becomes slow to process I/O"
+      detail: >
+        The storage array hits an internal bottleneck (e.g., disk rebuild, cache
+        contention, firmware garbage collection). It slows its frame processing,
+        causing it to delay sending R_RDY to the switch on the switch-to-target link.
+
+        The switch's target-facing port begins accumulating frames in its buffers
+        because it cannot forward them (target's BB_Credit toward switch is exhausted).
+        Consequently, the switch's HBA-facing port also fills — it cannot free HBA-side
+        buffers because outbound frames to the target are stuck.
+
+        This is the 'slow drain' pattern: a single slow device causes credit starvation
+        that propagates upstream through the fabric, potentially affecting all hosts
+        sharing those switch ports or ISLs.
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
+            state_fields:
+              processing_delay: "HIGH — internal congestion"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              buffers_used: 8
+              rrdy_sent_count: 0
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Frame Forwarding / BB_Credit Management"
+            state_fields:
+              congested: true
+              port_target_bb_credit_available: 0
+              port_target_buffers_used: 8
+
+  - id: "evt_data_burst_5"
+    type: "frame_tx"
+    t_ns: 20000000
+    frame_id: "fcp_data_burst_5"
+    annotation:
+      text: "FCP_DATA #5 — BB_Credit_available: 16 -> 15 (HBA unaware of downstream congestion)"
+      detail: >
+        The HBA continues sending at line rate. It has no visibility into the
+        switch-to-target link — BB_Credit is per-hop, not end-to-end. The HBA only
+        knows about its own BB_Credit_available toward the switch.
+
+        But the switch is now struggling: its target-facing buffers are full (no R_RDY
+        from target), so frames from the HBA are accumulating in the switch's HBA-facing
+        receive buffers. The switch cannot free those buffers, so it STOPS sending R_RDY
+        to the HBA.
+    state_after:
+      - actor_id: "hba"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              bb_credit_available: 15
+              frames_sent_since_last_rrdy: 1
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Frame Forwarding / BB_Credit Management"
+            state_fields:
+              port_hba_buffers_used: 1
+              port_hba_bb_credit_available: 15
+
+  - id: "evt_data_burst_6"
+    type: "frame_tx"
+    t_ns: 20600000
+    frame_id: "fcp_data_burst_6"
+    annotation:
+      text: "FCP_DATA #6 — BB_Credit_available: 15 -> 14 (NO R_RDY coming back!)"
+      detail: >
+        Still no R_RDY from the switch. The switch's buffers are filling.
+        Each frame the HBA sends consumes another credit with no replenishment.
+        The credit counter is now a countdown timer to stall.
+
+        This is the critical difference from Ethernet:
+        - Ethernet: Switch drops excess frames silently. Sender doesn't know.
+        - FC: Switch CANNOT drop frames. Instead, it stops sending R_RDY, which
+          causes the sender to self-throttle when credits hit zero.
+    state_after:
+      - actor_id: "hba"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              bb_credit_available: 14
+              frames_sent_since_last_rrdy: 2
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Frame Forwarding / BB_Credit Management"
+            state_fields:
+              port_hba_buffers_used: 2
+              port_hba_bb_credit_available: 14
+
+  - id: "evt_data_burst_7"
+    type: "frame_tx"
+    t_ns: 21200000
+    frame_id: "fcp_data_burst_7"
+    annotation:
+      text: "FCP_DATA #7 — LAST CREDIT CONSUMED. BB_Credit_available: 1 -> 0"
+      detail: >
+        This frame exhausts the HBA's BB_Credit. The HBA has sent frames that
+        consumed all 16 credits without receiving a single R_RDY in return (due to
+        downstream congestion). The switch's HBA-facing receive buffers are now full.
+
+        Note: In this scenario we show the credits dropping to 0 rapidly for
+        educational clarity. In practice, the progression from 16 to 0 may take
+        longer (more frames between the congestion onset and complete starvation)
+        depending on how much residual buffer capacity the switch has.
+    state_after:
+      - actor_id: "hba"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              bb_credit_available: 0
+              frames_sent_since_last_rrdy: 3
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Frame Forwarding / BB_Credit Management"
+            state_fields:
+              port_hba_buffers_used: 3
+              port_hba_bb_credit_available: 13
+
+  - id: "evt_credit_starvation"
+    type: "state_change"
+    t_ns: 22000000
+    annotation:
+      text: "CREDIT STARVATION — HBA MUST stop sending. Link is physically idle but logically blocked."
+      detail: >
+        BB_Credit_available = 0. The HBA MUST NOT transmit any frames. The FC
+        specification absolutely prohibits sending when credits are exhausted —
+        there is no exception, no override, no 'best effort' option.
+
+        The 32GFC link between HBA and switch is now PHYSICALLY IDLE — no photons
+        carrying frame data — even though the HBA has frames queued and the link
+        hardware is fully operational. This is the most counterintuitive aspect of
+        FC flow control: a perfectly good link sitting idle because of a software-layer
+        credit counter.
+
+        Unlike Ethernet where frames can be dropped when buffers fill, FC guarantees
+        delivery. The cost is that senders stall when credits are exhausted. This is
+        FC's fundamental design difference from Ethernet.
+
+        Every pending FCP I/O at the HBA is now stalled. If this persists, the SCSI
+        midlayer will eventually time out the commands (default 30-60 seconds).
+      spec_refs:
+        - document: "FC-FS-5"
+          section: "17.2.2"
+          title: "BB_Credit — sender behavior when credit exhausted"
+          url: "https://www.t11.org/fcSite/fcretr.html"
+    state_after:
+      - actor_id: "hba"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
+            state_fields:
+              fcp_state: "STALLED — waiting for credits"
+              io_pending: 8
+              io_stalled: true
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              bb_credit_available: 0
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Frame Forwarding / BB_Credit Management"
+            state_fields:
+              congested: true
+              port_hba_bb_credit_available: 13
+              port_hba_buffers_used: 3
+
+  - id: "evt_starvation_annotation"
+    type: "annotation"
+    t_ns: 25000000
+    annotation:
+      text: "Credit starvation propagation: slow drain is the #1 FC fabric performance problem"
+      detail: >
+        What just happened illustrates the 'slow drain' problem — the most common and
+        most damaging performance issue in FC SAN environments:
+
+        1. One storage target slows down (firmware issue, disk rebuild, resource contention)
+        2. Target stops sending R_RDY to its switch port
+        3. Switch port buffers toward target fill up
+        4. Switch cannot free HBA-facing buffers (frames stuck waiting for target)
+        5. Switch stops sending R_RDY to HBA
+        6. HBA's BB_Credit hits 0 — ALL I/O from this HBA stops
+        7. If the switch has ISL (Inter-Switch Link) traffic, other switches' credits
+           can also be exhausted, spreading the stall across the entire fabric
+
+        A single slow device can stall hundreds of hosts. This is why FC fabric
+        monitoring tools track BB_Credit zero counts, R_RDY rates, and per-port
+        buffer utilization as critical health metrics.
+
+        Modern FC switches implement mitigations:
+        - Slow drain device detection (F_Port credit starvation timer)
+        - Automatic port throttling or isolation of slow-drain ports
+        - FPIN (Fabric Performance Impact Notification) — FC-LS-4 extension
+          that notifies hosts about congestion
+      spec_refs:
+        - document: "FC-FS-5"
+          section: "17.2"
+          title: "Buffer-to-buffer flow control"
+          url: "https://www.t11.org/fcSite/fcretr.html"
+
+  # -- Phase 4: Recovery ---------------------------------------------
+  - id: "evt_target_recovers"
+    type: "state_change"
+    t_ns: 29000000
+    annotation:
+      text: "Storage target clears congestion — begins freeing buffers"
+      detail: >
+        The storage array completes its internal processing bottleneck. It begins
+        sending R_RDY to the switch (freeing target-side buffers). The switch can
+        now forward queued frames to the target, which frees HBA-side buffers.
+        The credit recovery cascade begins: target -> switch -> HBA.
+    state_after:
+      - actor_id: "target"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
+            state_fields:
+              processing_delay: "normal"
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              buffers_used: 2
+              rrdy_sent_count: 6
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Frame Forwarding / BB_Credit Management"
+            state_fields:
+              congested: false
+              port_target_bb_credit_available: 6
+              port_target_buffers_used: 2
+
+  - id: "evt_rrdy_recovery_1"
+    type: "frame_tx"
+    t_ns: 30000000
+    frame_id: "rrdy_recovery_1"
+    annotation:
+      text: "R_RDY (Recovery) — First credit restored! BB_Credit_available: 0 -> 1"
+      detail: >
+        The switch has freed a buffer (forwarded a queued frame to the now-responsive
+        target) and sends R_RDY to the HBA. The HBA's bb_credit_available goes from
+        0 to 1. The HBA can now send ONE frame.
+
+        This is the moment the stall breaks. Credit recovery is gradual — one R_RDY
+        at a time. The HBA will resume sending as soon as it has at least 1 credit,
+        not waiting for the full 16 to be restored.
+    state_after:
+      - actor_id: "hba"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              bb_credit_available: 1
+              rrdy_received_count: 5
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Frame Forwarding / BB_Credit Management"
+            state_fields:
+              port_hba_buffers_used: 2
+              port_hba_rrdy_sent_count: 5
+
+  - id: "evt_rrdy_recovery_2"
+    type: "frame_tx"
+    t_ns: 30200000
+    frame_id: "rrdy_recovery_2"
+    annotation:
+      text: "R_RDY (Recovery) — Second credit restored. BB_Credit_available: 1 -> 2"
+      detail: "Credit recovery continues. Each R_RDY frees one buffer and restores one credit."
+    state_after:
+      - actor_id: "hba"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              bb_credit_available: 2
+              rrdy_received_count: 6
+
+  - id: "evt_data_resume"
+    type: "frame_tx"
+    t_ns: 30400000
+    frame_id: "fcp_data_resume_1"
+    annotation:
+      text: "FCP_DATA RESUMED — HBA sends frame with restored credit. BB_Credit_available: 2 -> 1"
+      detail: >
+        The HBA resumes sending as soon as it has available credit. Frame sequence
+        continues from where it left off (SEQ_CNT=7). NO FRAMES WERE LOST during
+        the stall — the I/O simply paused. This is the fundamental FC guarantee:
+        lossless delivery at the cost of potential stalls.
+
+        Contrast with Ethernet under congestion:
+        - Without PFC: frames are silently dropped. TCP retransmits after timeout.
+        - With PFC: entire priority class is paused. Different mechanism, same goal.
+        - FC BB_Credit: individual port-pair flow control. Most granular approach.
+    state_after:
+      - actor_id: "hba"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
+            state_fields:
+              fcp_state: "active"
+              io_stalled: false
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              bb_credit_available: 1
+              frames_sent_since_last_rrdy: 1
+
+  - id: "evt_rrdy_recovery_steady"
+    type: "frame_tx"
+    t_ns: 30800000
+    frame_id: "rrdy_recovery_steady"
+    annotation:
+      text: "R_RDY — Steady state restored. Credits cycling normally again."
+      detail: >
+        With the downstream congestion cleared, R_RDY flows freely again.
+        The credit cycle returns to steady state: frame -> R_RDY -> frame -> R_RDY.
+        The HBA's bb_credit_available will gradually climb back toward 16 as the
+        switch drains its remaining queued frames.
+    state_after:
+      - actor_id: "hba"
+        layers:
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
+            state_fields:
+              fcp_state: "active"
+              io_pending: 0
+              io_stalled: false
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              bb_credit_available: 2
+              rrdy_received_count: 7
+              frames_sent_since_last_rrdy: 0
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Frame Forwarding / BB_Credit Management"
+            state_fields:
+              congested: false
+              port_hba_buffers_used: 0
+              port_hba_rrdy_sent_count: 7
+              port_target_bb_credit_available: 8
+
+  - id: "evt_comparison_annotation"
+    type: "annotation"
+    t_ns: 35000000
+    annotation:
+      text: "Flow control comparison: FC BB_Credit vs Ethernet PFC vs TCP Window"
+      detail: >
+        Three fundamentally different approaches to preventing data loss:
+
+        FC BB_Credit (what you just saw):
+        - Scope: Per-hop, per-port-pair
+        - Granularity: Per-frame (each frame consumes exactly 1 credit)
+        - Negotiation: ONCE at login (FLOGI/FLOGI ACC), fixed for session lifetime
+        - Mechanism: Proactive — sender cannot send without credits
+        - Recovery: R_RDY primitive (+1 credit each), sent when receiver frees a buffer
+        - Guarantee: Zero frame loss — sender stalls instead of overflowing receiver
+        - Limitation: Credit starvation can propagate across fabric (slow drain)
+
+        Ethernet PFC PAUSE (IEEE 802.1Qbb):
+        - Scope: Per-hop, per-priority-class (8 priorities via 802.1Q PCP bits)
+        - Granularity: Per-priority — pauses ALL flows in the priority class
+        - Negotiation: None — XOFF/XON thresholds configured statically on switch
+        - Mechanism: Reactive — switch sends PAUSE when buffer crosses XOFF threshold
+        - Recovery: Timer expiry or explicit XON (PAUSE with quanta=0)
+        - Guarantee: Zero frame loss for paused priority (if thresholds tuned correctly)
+        - Limitation: Head-of-line blocking, pause storms, affects all flows in priority
+
+        TCP Receive Window:
+        - Scope: End-to-end (across all intermediate hops)
+        - Granularity: Per-byte (window size in bytes, changes dynamically)
+        - Negotiation: Continuous — every ACK carries updated window size
+        - Mechanism: Reactive — sender adjusts rate based on receiver's advertised window
+        - Recovery: Window update in next ACK
+        - Guarantee: None at network layer — relies on retransmission for lost segments
+        - Limitation: Cannot prevent in-network packet loss; adds latency on loss
+      spec_refs:
+        - document: "FC-FS-5"
+          section: "17.2"
+          title: "Buffer-to-buffer flow control"
+          url: "https://www.t11.org/fcSite/fcretr.html"
+        - document: "IEEE 802.1Qbb"
+          section: "36"
+          title: "Priority-based Flow Control"
+          url: "https://standards.ieee.org/ieee/802.1Qbb/4788/"
+        - document: "RFC 9293"
+          section: "3.8"
+          title: "TCP Window Management"
+          url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.8"
+
+# ---------------------------------------------------------------------
+# GLOSSARY
+# ---------------------------------------------------------------------
+glossary:
+  - term: "BB_Credit"
+    abbrev: "Buffer-to-Buffer Credit"
+    definition: >
+      Flow control mechanism in FC. Each port advertises during login (FLOGI or FLOGI ACC)
+      how many frames it can buffer. The sender decrements its available credit count for
+      each frame transmitted and increments it for each R_RDY received. When credit reaches
+      zero, the sender MUST stop transmitting. BB_Credit is per-hop (each link has independent
+      credit pools) and fixed for the lifetime of the login — it does not change dynamically.
+    spec_refs:
+      - document: "FC-FS-5"
+        section: "17.2"
+        title: "Buffer-to-buffer flow control"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "R_RDY"
+    abbrev: "Receiver Ready"
+    definition: >
+      A 4-byte FC Ordered Set (primitive signal): K28.5 D21.4 D10.2 D21.2. Sent by the
+      receiver to the sender to indicate that one receive buffer has been freed. Each R_RDY
+      replenishes exactly one BB_Credit at the sender. R_RDY is NOT a full FC frame — it has
+      no frame header, no payload, no CRC. It is transmitted in the inter-frame gap and does
+      not consume BB_Credit itself.
+    spec_refs:
+      - document: "FC-FS-5"
+        section: "7.4"
+        title: "R_RDY Ordered Set"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "Credit Starvation"
+    definition: >
+      Condition where a sender's BB_Credit_available reaches zero, preventing it from
+      transmitting any frames. Caused when the receiver fails to send R_RDY (typically
+      because its buffers are full due to downstream congestion). The link is physically
+      idle but logically blocked. Also known as 'credit zero' or 'zero credit' condition.
+      FC switch monitoring tools track credit starvation events as critical performance alerts.
+    spec_refs:
+      - document: "FC-FS-5"
+        section: "17.2.2"
+        title: "BB_Credit exhaustion"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "Slow Drain"
+    definition: >
+      A fabric-level performance problem caused by a single device that is slow to process
+      incoming frames. The slow device stops sending R_RDY, which causes its upstream switch
+      port to fill, which causes that switch to stop sending R_RDY to ITS upstream devices,
+      propagating credit starvation across the fabric. One slow storage target can stall
+      hundreds of initiators. Modern FC switches implement slow drain detection and automatic
+      port isolation to mitigate this.
+
+  - term: "EE_Credit"
+    abbrev: "End-to-End Credit"
+    definition: >
+      A separate, independent flow control mechanism that operates end-to-end between two
+      N_Ports (not per-hop like BB_Credit). EE_Credit is negotiated during PLOGI and controls
+      the number of sequences (not frames) that can be open simultaneously between two ports.
+      EE_Credit and BB_Credit operate independently — a frame must have BOTH BB_Credit
+      (to traverse each hop) and EE_Credit (to be part of an active sequence at the endpoint).
+      In practice, most modern FC implementations use Class 3 which does not use EE_Credit.
+    spec_refs:
+      - document: "FC-FS-5"
+        section: "17.3"
+        title: "End-to-end flow control"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "Primitive Signal"
+    definition: >
+      A 4-byte FC Ordered Set used for low-level link communication. Primitive signals are
+      NOT frames — they have no frame header, payload, or CRC. They are transmitted in the
+      inter-frame gap and processed by FC port hardware. Key primitive signals include:
+      R_RDY (receiver ready / credit replenishment), IDLE (link keepalive),
+      ARB (arbitration, used in FC-AL), and various link reset primitives (LR, LRR, NOS, OLS).
+    spec_refs:
+      - document: "FC-FS-5"
+        section: "7.3"
+        title: "Ordered Sets — Primitive Signals"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "Buffer-to-Buffer"
+    definition: >
+      Refers to flow control between adjacent FC ports (one hop). Each physical link has
+      its own independent BB_Credit pool. A frame traversing a multi-switch fabric consumes
+      and replenishes BB_Credit independently at each hop. This per-hop design means that
+      congestion on one link does not directly consume credits on other links — but it can
+      cause indirect credit starvation through the slow-drain propagation mechanism.
+
+  - term: "FPIN"
+    abbrev: "Fabric Performance Impact Notification"
+    definition: >
+      An FC-LS extension (defined in FC-LS-4) that allows the fabric to notify end devices
+      about congestion events. FPIN ELS frames carry structured descriptors for link integrity,
+      delivery failure, peer congestion, and congestion events. FPIN provides end-to-end
+      visibility that BB_Credit's per-hop model lacks. Linux supports FPIN via the lpfc driver
+      (lpfc_els.c lpfc_els_rcv_fpin).
+    spec_refs:
+      - document: "FC-LS-4"
+        section: "4.17"
+        title: "FPIN — Fabric Performance Impact Notification"
+        url: "https://www.t11.org/fcSite/fcretr.html"

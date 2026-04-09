@@ -1,0 +1,1653 @@
+meta:
+  id: "fc-flogi-reject"
+  title: "FC FLOGI Reject: When Fabric Login Fails"
+  protocol: "Fibre Channel"
+  protocol_family: "SAN"
+  version: "1.0.0"
+  description: >
+    Demonstrates three common failure modes during Fibre Channel Fabric Login (FLOGI).
+    The host HBA sends a FLOGI request to the FC switch, which responds with LS_RJT
+    (Link Service Reject) instead of the expected LS_ACC. Each failure is annotated with
+    root cause analysis and remediation steps: (1) zoning misconfiguration where the HBA
+    WWPN is not in the active zone set, (2) port type mismatch where an F-port receives
+    an E-port ISL initialization, and (3) duplicate WWPN detected in the fabric.
+    Understanding these failures is critical for SAN troubleshooting because a failed
+    FLOGI means the host cannot obtain an FCID and is completely isolated from the fabric.
+
+  learning_objectives:
+    - "Understand the FLOGI exchange and why it must succeed before any other FC communication"
+    - "Recognize the LS_RJT frame format including reason_code and reason_code_explanation fields"
+    - "Diagnose zone configuration errors that prevent fabric login"
+    - "Identify port type mismatch failures (F-port vs E-port) and how to correct switch port configuration"
+    - "Understand duplicate WWPN detection and its implications for fabric integrity"
+    - "Learn the FC port state machine transitions when FLOGI fails (the port remains offline)"
+    - "Map LS_RJT reason codes to actionable troubleshooting steps"
+
+  difficulty: "advanced"
+
+  authors:
+    - name: "Erik Smith"
+      org: "Dell Technologies"
+    - name: "Claude"
+      org: "Anthropic"
+
+  created: "2026-03-30"
+  updated: "2026-03-30"
+
+  tags:
+    - "Fibre Channel"
+    - "FC"
+    - "SAN"
+    - "FLOGI"
+    - "LS_RJT"
+    - "error"
+    - "troubleshooting"
+    - "zoning"
+    - "64GFC"
+    - "education"
+
+  primary_specs:
+    - document: "FC-LS-4"
+      section: "5.3"
+      title: "Fabric Login (FLOGI)"
+      url: "https://www.t11.org/fcSite/fcretr.html"
+    - document: "FC-LS-4"
+      section: "4.6"
+      title: "LS_RJT — Link Service Reject"
+      url: "https://www.t11.org/fcSite/fcretr.html"
+    - document: "FC-FS-5"
+      section: "7"
+      title: "Port State Machine"
+      url: "https://www.t11.org/fcSite/fcretr.html"
+    - document: "FC-SW-7"
+      section: "7"
+      title: "Switch fabric login processing"
+      url: "https://www.t11.org/fcSite/fcretr.html"
+
+  source_references:
+    - repo: "torvalds/linux"
+      path: "drivers/scsi/lpfc/lpfc_els.c"
+      description: "Emulex/Broadcom lpfc — FLOGI issue and completion handling, LS_RJT processing"
+    - repo: "torvalds/linux"
+      path: "drivers/scsi/qla2xxx/qla_init.c"
+      description: "QLogic/Marvell qla2xxx — fabric login state machine, error recovery"
+    - repo: "torvalds/linux"
+      path: "drivers/scsi/lpfc/lpfc_hw4.h"
+      description: "lpfc — FC frame header definitions, ELS command codes, LS_RJT reason codes"
+
+  content_disclaimer: >
+    Protocol descriptions in this scenario are based on open-source implementations
+    (Linux kernel, open-fc) and publicly available T11/INCITS standards summaries.
+    No proprietary specification text has been reproduced. Spec references are
+    provided as citations for further reading.
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "initiator"
+      type: "initiator"
+      label: "Host (Initiator HBA)"
+      description: "FC initiator — Linux host with dual-port 64GFC HBA running lpfc or qla2xxx driver"
+      hardware: "64GFC dual-port HBA"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "FC Switch"
+      description: "64GFC FC switch with embedded Name Server, zoning, and FCID assignment"
+      hardware: "64GFC FC switch"
+      position: "right"
+
+  links:
+    - id: "link-host-sw"
+      from: "initiator"
+      to: "switch"
+      speed_gbps: 64
+      media: "fiber_sr"
+      fec: "RS-FEC"
+
+# ─────────────────────────────────────────────────────────────────
+# LAYER DEFINITIONS (per actor)
+# FC uses FC-0 through FC-4 rather than the OSI model.
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  initiator:
+    - layer: 4
+      name: "FC-4 Upper Layer Protocol"
+      components: ["FCP-4", "lpfc_scsi.c", "SCSI sd_mod"]
+      state_schema:
+        scsi_state:
+          type: "string"
+          description: "SCSI host adapter state"
+          initial: "offline"
+
+    - layer: 2
+      name: "FC-2 Framing / Signaling"
+      components: ["lpfc_sli.c", "lpfc_els.c", "lpfc_hw.h", "FC-LS"]
+      state_schema:
+        my_fcid:
+          type: "string"
+          description: "Assigned N_Port ID (FCID) — set by fabric during FLOGI"
+          initial: "0x000000"
+        bb_credit:
+          type: "integer"
+          description: "Buffer-to-buffer credit (frames we can send before ACK)"
+          initial: 0
+        ox_id_next:
+          type: "string"
+          description: "Next originator exchange ID to allocate"
+          initial: "0x0001"
+        active_exchanges:
+          type: "integer"
+          description: "Number of active exchanges"
+          initial: 0
+        fabric_login:
+          type: "string"
+          description: "Fabric login state (FLOGI)"
+          initial: "none"
+        port_state:
+          type: "string"
+          description: "FC port state machine state"
+          initial: "offline"
+        flogi_retries:
+          type: "integer"
+          description: "Number of FLOGI attempts made"
+          initial: 0
+        last_ls_rjt_reason:
+          type: "string"
+          description: "Reason code from most recent LS_RJT"
+          initial: "none"
+
+    - layer: 1
+      name: "FC-1 Encoding"
+      components: ["64b/66b encoding", "word sync"]
+      state_schema:
+        encoding:
+          type: "string"
+          initial: "64b/66b"
+        word_sync:
+          type: "boolean"
+          initial: false
+
+    - layer: 0
+      name: "FC-0 Physical"
+      components: ["64GFC SFP56", "850nm VCSEL"]
+      state_schema:
+        phy_state:
+          type: "string"
+          description: "Physical port state (point-to-point link to switch)"
+          initial: "down"
+        speed:
+          type: "string"
+          initial: "unknown"
+        signal_detect:
+          type: "boolean"
+          initial: false
+
+  switch:
+    - layer: 2
+      name: "FC-2 Frame Forwarding / Fabric Services"
+      components: ["D_ID routing", "BB_Credit management", "Name Server", "FCID assignment", "Zone enforcement"]
+      state_schema:
+        zone_active:
+          type: "string"
+          description: "Active zone set name"
+          initial: "prod_zone_cfg"
+        fcid_pool_next:
+          type: "string"
+          description: "Next FCID to assign"
+          initial: "0x010100"
+        fwd_table_entries:
+          type: "integer"
+          description: "FCIDs in routing table"
+          initial: 1
+        port_type_config:
+          type: "string"
+          description: "Configured port type for host-facing port"
+          initial: "F-port (auto)"
+        flogi_reject_reason:
+          type: "string"
+          description: "Reason the switch rejected the last FLOGI"
+          initial: "none"
+        wwpn_database_conflict:
+          type: "boolean"
+          description: "Whether a duplicate WWPN was detected"
+          initial: false
+        port_bb_credit:
+          type: "integer"
+          description: "BB_Credit available toward host"
+          initial: 16
+
+    - layer: 0
+      name: "FC-0 Physical (per-port)"
+      components: ["64GFC SFP56"]
+      state_schema:
+        port_phy:
+          type: "string"
+          description: "Physical state of port facing host"
+          initial: "down"
+
+# ─────────────────────────────────────────────────────────────────
+# FRAME LIBRARY
+# ─────────────────────────────────────────────────────────────────
+frames:
+
+  # ── FLOGI Request (same for all three failure scenarios) ───────
+  - id: "flogi_request"
+    name: "FLOGI (Fabric Login)"
+    description: >
+      Host sends Fabric Login to well-known address 0xFFFFFE (Fabric Controller).
+      S_ID is 0x000000 because the host has no FCID yet.
+      This is the first ELS command after physical link up — the host is asking
+      the fabric to admit it and assign an N_Port ID.
+      Linux: lpfc_els.c lpfc_issue_els_flogi()
+    from: "initiator"
+    to: "switch"
+    timestamp_ns: 5000000
+    total_bytes: 148
+    color: "#d97706"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x22"
+            description: "Unsolicited Control — ELS request frame"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.3"
+                title: "R_CTL field encoding"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0xFFFFFE"
+            description: "Well-known address for Fabric Controller. FLOGI always goes here."
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "15.2"
+                title: "Well-known address identifiers"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-specific control"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x000000"
+            description: "Source ID is 0x000000 — host has no FCID assigned yet"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.7"
+                title: "TYPE field — protocol type identifier"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x290000"
+            description: "Exchange originator, first+last sequence, sequence initiative"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.5"
+                title: "F_CTL — Frame Control"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier within exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0001"
+            description: "Originator Exchange ID — tracks this FLOGI exchange"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.10"
+                title: "OX_ID and RX_ID — Exchange identification"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — 0xFFFF means unassigned (fabric will assign)"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for ELS frames"
+      - name: "FLOGI Payload (ELS)"
+        abbrev: "fc.els.flogi"
+        layer: 2
+        total_bytes: 116
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x04000000"
+            description: "0x04 = FLOGI command code"
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "5.3"
+                title: "FLOGI — Fabric Login"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "Common Service Parameters"
+            abbrev: "fc.els.csp"
+            bits: 128
+            value: "BB_Credit=16, Recv_Size=2112"
+            description: "Includes BB_Credit offered (16), max receive data field size (2112 bytes), E_D_TOV"
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "5.3.3"
+                title: "Common Service Parameters"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+            kernel_ref:
+              file: "drivers/scsi/lpfc/lpfc_els.c"
+              function: "lpfc_issue_els_flogi"
+              notes: "Sets BB_Credit, data field size, and feature bits in FLOGI payload"
+          - name: "Port Name (WWPN)"
+            abbrev: "fc.els.wwpn"
+            bits: 64
+            value: "21:00:00:0e:1e:12:34:56"
+            description: "World Wide Port Name — globally unique 64-bit identifier for this HBA port"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "15.3"
+                title: "Name_Identifier format"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "Node Name (WWNN)"
+            abbrev: "fc.els.wwnn"
+            bits: 64
+            value: "20:00:00:0e:1e:12:34:56"
+            description: "World Wide Node Name — identifies the physical node (may have multiple ports)"
+          - name: "Class 3 Service Parameters"
+            abbrev: "fc.els.class3"
+            bits: 128
+            value: "Class 3 supported"
+            description: "Class 3 (connectionless, no confirmation) — the standard FC class for modern SANs"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
+
+  # ── LS_RJT: Zone Configuration Error ──────────────────────────
+  - id: "ls_rjt_zone"
+    name: "LS_RJT (Zone Config — WWPN Not in Active Zone Set)"
+    description: >
+      Switch rejects FLOGI because the host's WWPN (21:00:00:0e:1e:12:34:56) is
+      not a member of any zone in the active zone configuration. The switch enforces
+      hard zoning at the port level — if a WWPN is not zoned, the port is denied
+      fabric access entirely. This is the most common cause of FLOGI rejection in
+      production environments.
+      Reason: 0x09 (Unable to perform command request)
+      Explanation: 0x0B (Insufficient fabric resources — zone policy denial)
+    from: "switch"
+    to: "initiator"
+    timestamp_ns: 5200000
+    total_bytes: 32
+    color: "#dc2626"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x23"
+            description: "Solicited Control — ELS response frame"
+            spec_refs:
+              - document: "FC-FS-5"
+                section: "9.3"
+                title: "R_CTL field encoding"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x000000"
+            description: "Destination is the host — but host has no FCID, so D_ID remains 0x000000"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0xFFFFFE"
+            description: "Fabric Controller well-known address"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+            description: "ELS"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x980000"
+            description: "Exchange responder, last sequence, end sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0001"
+            description: "Same OX_ID as the FLOGI request — correlates reject to the original request"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — 0xFFFF, exchange rejected before RX_ID assignment"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "LS_RJT Payload"
+        abbrev: "fc.els.ls_rjt"
+        layer: 2
+        total_bytes: 8
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x01000000"
+            description: "0x01 = LS_RJT (Link Service Reject)"
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "4.6"
+                title: "LS_RJT — Link Service Reject"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "Reserved"
+            abbrev: "fc.els.ls_rjt.rsvd"
+            bits: 8
+            value: "0x00"
+            description: "Reserved byte"
+          - name: "Reason Code"
+            abbrev: "fc.els.ls_rjt.reason"
+            bits: 8
+            value: "0x09"
+            description: "0x09 = Unable to perform command request. The switch cannot process the FLOGI due to a policy or configuration constraint."
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "4.6.2"
+                title: "LS_RJT Reason Codes"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "Reason Code Explanation"
+            abbrev: "fc.els.ls_rjt.reason_exp"
+            bits: 8
+            value: "0x0B"
+            description: "0x0B = Insufficient fabric resources. In context of FLOGI, this typically means a zone policy denied access — the WWPN is not in any active zone."
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "4.6.3"
+                title: "LS_RJT Reason Code Explanations"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "Vendor Specific"
+            abbrev: "fc.els.ls_rjt.vendor"
+            bits: 8
+            value: "0x00"
+            description: "Vendor-specific code — 0x00 (no additional vendor detail). Some switch vendors encode proprietary diagnostic codes here."
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber optics — OM4 multimode, up to 100m"
+
+  # ── FLOGI Retry (after zone reject) ───────────────────────────
+  - id: "flogi_retry_2"
+    name: "FLOGI Retry #2 (after zone reject)"
+    description: >
+      Host HBA driver retries FLOGI after receiving LS_RJT. The lpfc driver will
+      retry up to 8 times with increasing delay. The retry will also fail because
+      the zone configuration has not changed — this demonstrates the second failure
+      mode: port type mismatch.
+    from: "initiator"
+    to: "switch"
+    timestamp_ns: 8000000
+    total_bytes: 148
+    color: "#d97706"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x22"
+            description: "Unsolicited Control — ELS request frame"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0xFFFFFE"
+            description: "Fabric Controller well-known address"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-specific control"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x000000"
+            description: "Source still 0x000000 — host was never assigned an FCID"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+            description: "ELS"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x290000"
+            description: "Exchange originator, first+last sequence, sequence initiative"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0002"
+            description: "New exchange for the retry — OX_ID incremented"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Unassigned"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset"
+      - name: "FLOGI Payload (ELS)"
+        abbrev: "fc.els.flogi"
+        layer: 2
+        total_bytes: 116
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x04000000"
+            description: "0x04 = FLOGI command code"
+          - name: "Common Service Parameters"
+            abbrev: "fc.els.csp"
+            bits: 128
+            value: "BB_Credit=16, Recv_Size=2112"
+            description: "Same service parameters — host configuration unchanged"
+          - name: "Port Name (WWPN)"
+            abbrev: "fc.els.wwpn"
+            bits: 64
+            value: "21:00:00:0e:1e:12:34:56"
+            description: "Same WWPN — hardware identity does not change between retries"
+          - name: "Node Name (WWNN)"
+            abbrev: "fc.els.wwnn"
+            bits: 64
+            value: "20:00:00:0e:1e:12:34:56"
+            description: "Same WWNN"
+          - name: "Class 3 Service Parameters"
+            abbrev: "fc.els.class3"
+            bits: 128
+            value: "Class 3 supported"
+            description: "Class 3 parameters"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "64b/66b encoding"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "RS-FEC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "64GFC physical layer"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber"
+
+  # ── LS_RJT: Port Type Mismatch ────────────────────────────────
+  - id: "ls_rjt_port_type"
+    name: "LS_RJT (Port Type Mismatch — F-port vs E-port)"
+    description: >
+      Switch rejects FLOGI because the port is configured as an E-port (ISL) but
+      received an N_Port FLOGI instead of ELP/ESC for inter-switch link initialization.
+      This happens when a cable is moved from an ISL trunk port to a host-facing port
+      without reconfiguring the port type, or when auto-negotiation fails to detect
+      the correct port type.
+      Reason: 0x09 (Unable to perform command request)
+      Explanation: 0x03 (N_Port login not established — port type conflict)
+    from: "switch"
+    to: "initiator"
+    timestamp_ns: 8200000
+    total_bytes: 32
+    color: "#dc2626"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x23"
+            description: "Solicited Control — ELS response frame"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x000000"
+            description: "Host has no FCID"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0xFFFFFE"
+            description: "Fabric Controller"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+            description: "ELS"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x980000"
+            description: "Exchange responder, last sequence, end sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0002"
+            description: "Matches the retry FLOGI OX_ID"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Exchange rejected before RX_ID assignment"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset"
+      - name: "LS_RJT Payload"
+        abbrev: "fc.els.ls_rjt"
+        layer: 2
+        total_bytes: 8
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x01000000"
+            description: "0x01 = LS_RJT (Link Service Reject)"
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "4.6"
+                title: "LS_RJT — Link Service Reject"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "Reserved"
+            abbrev: "fc.els.ls_rjt.rsvd"
+            bits: 8
+            value: "0x00"
+            description: "Reserved byte"
+          - name: "Reason Code"
+            abbrev: "fc.els.ls_rjt.reason"
+            bits: 8
+            value: "0x09"
+            description: "0x09 = Unable to perform command request. The switch port cannot process FLOGI because it expects ISL traffic."
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "4.6.2"
+                title: "LS_RJT Reason Codes"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "Reason Code Explanation"
+            abbrev: "fc.els.ls_rjt.reason_exp"
+            bits: 8
+            value: "0x03"
+            description: "0x03 = N_Port login not established. The switch port is configured as E-port (ISL) and cannot accept an N_Port FLOGI. Port type must be reconfigured to F-port or auto."
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "4.6.3"
+                title: "LS_RJT Reason Code Explanations"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+              - document: "FC-SW-7"
+                section: "7.3"
+                title: "E_Port initialization"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "Vendor Specific"
+            abbrev: "fc.els.ls_rjt.vendor"
+            bits: 8
+            value: "0x45"
+            description: "Vendor-specific code 0x45 — some switches use this to indicate 'E-port mode expected ISL'. Check switch-specific documentation for vendor code interpretation."
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "64b/66b encoding"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "RS-FEC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "64GFC physical layer"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber"
+
+  # ── FLOGI Retry #3 (third attempt) ────────────────────────────
+  - id: "flogi_retry_3"
+    name: "FLOGI Retry #3 (after port type reject)"
+    description: >
+      Host retries FLOGI again. This time the switch has been reconfigured to F-port
+      mode, but now detects a duplicate WWPN already logged in elsewhere in the fabric.
+    from: "initiator"
+    to: "switch"
+    timestamp_ns: 12000000
+    total_bytes: 148
+    color: "#d97706"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x22"
+            description: "Unsolicited Control — ELS request frame"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0xFFFFFE"
+            description: "Fabric Controller well-known address"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-specific control"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0x000000"
+            description: "Still no FCID — all previous FLOGI attempts have failed"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+            description: "ELS"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x290000"
+            description: "Exchange originator, first+last sequence, sequence initiative"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0003"
+            description: "Third exchange — OX_ID incremented again"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Unassigned"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset"
+      - name: "FLOGI Payload (ELS)"
+        abbrev: "fc.els.flogi"
+        layer: 2
+        total_bytes: 116
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x04000000"
+            description: "0x04 = FLOGI command code"
+          - name: "Common Service Parameters"
+            abbrev: "fc.els.csp"
+            bits: 128
+            value: "BB_Credit=16, Recv_Size=2112"
+            description: "Same service parameters"
+          - name: "Port Name (WWPN)"
+            abbrev: "fc.els.wwpn"
+            bits: 64
+            value: "21:00:00:0e:1e:12:34:56"
+            description: "Same WWPN — this WWPN is already in use elsewhere in the fabric"
+          - name: "Node Name (WWNN)"
+            abbrev: "fc.els.wwnn"
+            bits: 64
+            value: "20:00:00:0e:1e:12:34:56"
+            description: "Same WWNN"
+          - name: "Class 3 Service Parameters"
+            abbrev: "fc.els.class3"
+            bits: 128
+            value: "Class 3 supported"
+            description: "Class 3 parameters"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "64b/66b encoding"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "RS-FEC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "64GFC physical layer"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber"
+
+  # ── LS_RJT: Duplicate WWPN ────────────────────────────────────
+  - id: "ls_rjt_dup_wwpn"
+    name: "LS_RJT (Duplicate WWPN Detected)"
+    description: >
+      Switch rejects FLOGI because the WWPN presented by this host
+      (21:00:00:0e:1e:12:34:56) is already logged in from another port in the
+      fabric. This can happen due to: (a) NPIV misconfiguration where the same
+      virtual WWPN is assigned to two hosts, (b) a cloned VM that inherited the
+      parent's HBA WWPN, or (c) a split-brain scenario during HBA failover where
+      the old path was not properly cleaned up.
+      Reason: 0x09 (Unable to perform command request)
+      Explanation: 0x1F (Duplicate port name — WWPN already registered)
+    from: "switch"
+    to: "initiator"
+    timestamp_ns: 12200000
+    total_bytes: 32
+    color: "#dc2626"
+    headers:
+      - name: "FC Frame Header"
+        abbrev: "fc"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.r_ctl"
+            bits: 8
+            value: "0x23"
+            description: "Solicited Control — ELS response frame"
+          - name: "D_ID"
+            abbrev: "fc.d_id"
+            bits: 24
+            value: "0x000000"
+            description: "Host has no FCID"
+          - name: "CS_CTL"
+            abbrev: "fc.cs_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control"
+          - name: "S_ID"
+            abbrev: "fc.s_id"
+            bits: 24
+            value: "0xFFFFFE"
+            description: "Fabric Controller"
+          - name: "TYPE"
+            abbrev: "fc.type"
+            bits: 8
+            value: "0x01"
+            description: "ELS"
+          - name: "F_CTL"
+            abbrev: "fc.f_ctl"
+            bits: 24
+            value: "0x980000"
+            description: "Exchange responder, last sequence, end sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.seq_id"
+            bits: 8
+            value: "0x00"
+            description: "Sequence identifier"
+          - name: "DF_CTL"
+            abbrev: "fc.df_ctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control"
+          - name: "SEQ_CNT"
+            abbrev: "fc.seq_cnt"
+            bits: 16
+            value: 0
+            description: "Sequence count"
+          - name: "OX_ID"
+            abbrev: "fc.ox_id"
+            bits: 16
+            value: "0x0003"
+            description: "Matches the third FLOGI attempt"
+          - name: "RX_ID"
+            abbrev: "fc.rx_id"
+            bits: 16
+            value: "0xFFFF"
+            description: "Exchange rejected before RX_ID assignment"
+          - name: "Parameter"
+            abbrev: "fc.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset"
+      - name: "LS_RJT Payload"
+        abbrev: "fc.els.ls_rjt"
+        layer: 2
+        total_bytes: 8
+        fields:
+          - name: "LS_Command"
+            abbrev: "fc.els.cmd"
+            bits: 32
+            value: "0x01000000"
+            description: "0x01 = LS_RJT (Link Service Reject)"
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "4.6"
+                title: "LS_RJT — Link Service Reject"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "Reserved"
+            abbrev: "fc.els.ls_rjt.rsvd"
+            bits: 8
+            value: "0x00"
+            description: "Reserved byte"
+          - name: "Reason Code"
+            abbrev: "fc.els.ls_rjt.reason"
+            bits: 8
+            value: "0x09"
+            description: "0x09 = Unable to perform command request. The fabric cannot admit this port because its identity conflicts with an existing registration."
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "4.6.2"
+                title: "LS_RJT Reason Codes"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "Reason Code Explanation"
+            abbrev: "fc.els.ls_rjt.reason_exp"
+            bits: 8
+            value: "0x1F"
+            description: "0x1F = Duplicate port name (WWPN). The WWPN 21:00:00:0e:1e:12:34:56 is already registered in the Name Server from a different physical port. The fabric refuses to allow two ports with the same WWPN."
+            spec_refs:
+              - document: "FC-LS-4"
+                section: "4.6.3"
+                title: "LS_RJT Reason Code Explanations"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+              - document: "FC-SW-7"
+                section: "7.7"
+                title: "Duplicate WWPN detection"
+                url: "https://www.t11.org/fcSite/fcretr.html"
+          - name: "Vendor Specific"
+            abbrev: "fc.els.ls_rjt.vendor"
+            bits: 8
+            value: "0xDF"
+            description: "Vendor-specific code 0xDF — may indicate the conflicting FCID or port index in vendor-specific logging. Consult switch event logs for the existing WWPN registration."
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "64b/66b encoding"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "RS-FEC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "64GFC physical layer"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm VCSEL multimode fiber (SFP56)"
+            description: "Short-reach fiber"
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+
+  # ── Phase 1: Physical Link Establishment ───────────────────────
+  - id: "evt_phy_signal"
+    type: "state_change"
+    t_ns: 0
+    annotation:
+      text: "Signal detected — Host HBA ↔ FC Switch"
+      detail: >
+        Optical transceiver on host HBA detects light from FC switch port.
+        FC link initialization begins. Physical link is point-to-point.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical"
+            state_fields:
+              phy_state: "initializing"
+              signal_detect: true
+      - actor_id: "switch"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical (per-port)"
+            state_fields:
+              port_phy: "initializing"
+
+  - id: "evt_link_up"
+    type: "state_change"
+    t_ns: 2000000
+    annotation:
+      text: "Link UP — Host ↔ Switch at 64GFC"
+      detail: >
+        Speed negotiation complete: 64GFC (64.0 Gbps). 64b/66b encoding active.
+        FC primitives can now be exchanged. BB_Credit flow control initialized.
+        The host HBA driver will now attempt FLOGI to join the fabric.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical"
+            state_fields:
+              phy_state: "UP"
+              speed: "64GFC"
+          - layer: 1
+            name: "FC-1 Encoding"
+            state_fields:
+              word_sync: true
+      - actor_id: "switch"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical (per-port)"
+            state_fields:
+              port_phy: "UP"
+
+  # ── Phase 2: FLOGI Attempt #1 — Zone Configuration Error ──────
+  - id: "evt_flogi_1"
+    type: "frame_tx"
+    t_ns: 5000000
+    frame_id: "flogi_request"
+    annotation:
+      text: "FLOGI — Host requests fabric login (S_ID=0x000000 → D_ID=0xFFFFFE)"
+      detail: >
+        The host has no FCID yet (S_ID=0x000000). It sends FLOGI to the well-known
+        Fabric Controller address (0xFFFFFE). The FLOGI carries the host's WWPN
+        (21:00:00:0e:1e:12:34:56), BB_Credit=16, and supported features.
+        This is always the first ELS command after link up.
+        Linux: lpfc_els.c lpfc_issue_els_flogi()
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              fabric_login: "FLOGI_SENT"
+              active_exchanges: 1
+              port_state: "FLOGI pending"
+              flogi_retries: 1
+
+  - id: "evt_ls_rjt_zone"
+    type: "error"
+    t_ns: 5200000
+    frame_id: "ls_rjt_zone"
+    annotation:
+      text: "LS_RJT — FLOGI rejected: WWPN not in active zone set"
+      detail: >
+        The switch rejects FLOGI with reason_code=0x09 (Unable to perform command
+        request), reason_code_explanation=0x0B (Insufficient fabric resources).
+        ROOT CAUSE: The host's WWPN 21:00:00:0e:1e:12:34:56 is not a member of
+        any zone in the active zone configuration 'prod_zone_cfg'. When hard zoning
+        is enforced, a port whose WWPN is not zoned is denied fabric login entirely.
+        FIX: Add the WWPN to the appropriate zone and re-activate the zone configuration.
+        Example (Brocade): zoneAdd "zone_name", "21:00:00:0e:1e:12:34:56" ; cfgSave ; cfgEnable "prod_zone_cfg"
+        Example (Cisco MDS): zone name zone_name vsan 1 ; member pwwn 21:00:00:0e:1e:12:34:56 ; zoneset activate name prod_zone_cfg vsan 1
+        Linux log: lpfc_cmpl_els_flogi: FLOGI rejected — LS_RJT reason 0x09/0x0B
+      spec_refs:
+        - document: "FC-LS-4"
+          section: "4.6"
+          title: "LS_RJT — Link Service Reject"
+          url: "https://www.t11.org/fcSite/fcretr.html"
+        - document: "FC-SW-7"
+          section: "6.1"
+          title: "Zone enforcement during fabric login"
+          url: "https://www.t11.org/fcSite/fcretr.html"
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              fabric_login: "REJECTED"
+              active_exchanges: 0
+              port_state: "offline"
+              last_ls_rjt_reason: "0x09/0x0B — zone policy denial"
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
+            state_fields:
+              scsi_state: "offline"
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Frame Forwarding / Fabric Services"
+            state_fields:
+              flogi_reject_reason: "WWPN not in active zone set"
+
+  - id: "evt_zone_annotation"
+    type: "annotation"
+    t_ns: 6000000
+    annotation:
+      text: "Diagnosis: Zone configuration error"
+      detail: >
+        The port stays offline after LS_RJT. The HBA driver will retry FLOGI
+        periodically, but retries will continue to fail until the zone configuration
+        is corrected. Key diagnostic steps:
+        1. Check switch zone configuration: 'zoneshow' (Brocade) or 'show zone active' (Cisco MDS)
+        2. Verify the host WWPN appears in an active zone
+        3. Ensure the zone configuration has been activated (not just saved)
+        4. Check the host-side kernel log: dmesg | grep -i flogi
+        5. On the switch, check: 'errdump' or 'show logging' for FLOGI reject events
+        Without zoning, the host is completely invisible to the fabric and cannot
+        access any storage resources.
+      spec_refs:
+        - document: "FC-SW-7"
+          section: "6"
+          title: "Zoning"
+          url: "https://www.t11.org/fcSite/fcretr.html"
+
+  # ── Phase 3: FLOGI Attempt #2 — Port Type Mismatch ────────────
+  - id: "evt_flogi_2"
+    type: "frame_tx"
+    t_ns: 8000000
+    frame_id: "flogi_retry_2"
+    annotation:
+      text: "FLOGI Retry #2 — Host retries after LS_RJT (OX_ID=0x0002)"
+      detail: >
+        The HBA driver retries FLOGI after a delay. The lpfc driver uses exponential
+        backoff between retries. This retry demonstrates a different failure mode:
+        the switch port has been reconfigured for zone access, but is now set to
+        E-port mode (ISL) instead of F-port mode.
+        Linux: lpfc_els_retry() schedules retry via lpfc_issue_els_flogi()
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              fabric_login: "FLOGI_SENT"
+              active_exchanges: 1
+              port_state: "FLOGI pending"
+              flogi_retries: 2
+              ox_id_next: "0x0003"
+
+  - id: "evt_ls_rjt_port_type"
+    type: "error"
+    t_ns: 8200000
+    frame_id: "ls_rjt_port_type"
+    annotation:
+      text: "LS_RJT — FLOGI rejected: E-port received N_Port FLOGI"
+      detail: >
+        The switch rejects FLOGI with reason_code=0x09 (Unable to perform command
+        request), reason_code_explanation=0x03 (N_Port login not established).
+        ROOT CAUSE: The switch port is configured as an E-port (ISL — Inter-Switch
+        Link). E-ports expect ELP (Exchange Link Parameters) from another switch,
+        not FLOGI from an N_Port. This mismatch occurs when:
+        - A cable was moved from an ISL trunk to a host-facing port without changing port config
+        - The port was manually locked to E-port mode
+        - Auto-negotiation is disabled and the wrong mode was configured
+        FIX: Reconfigure the switch port to F-port mode (or auto):
+        Example (Brocade): portCfgDefault <port_number>  OR  switchPort --setPortType F <port_number>
+        Example (Cisco MDS): interface fc1/1 ; switchport mode auto
+        Linux log: lpfc_cmpl_els_flogi: FLOGI rejected — LS_RJT reason 0x09/0x03
+      spec_refs:
+        - document: "FC-SW-7"
+          section: "7.3"
+          title: "E_Port initialization"
+          url: "https://www.t11.org/fcSite/fcretr.html"
+        - document: "FC-FS-5"
+          section: "7.4"
+          title: "F_Port and N_Port login"
+          url: "https://www.t11.org/fcSite/fcretr.html"
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              fabric_login: "REJECTED"
+              active_exchanges: 0
+              port_state: "offline"
+              last_ls_rjt_reason: "0x09/0x03 — port type mismatch"
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
+            state_fields:
+              scsi_state: "offline"
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Frame Forwarding / Fabric Services"
+            state_fields:
+              flogi_reject_reason: "E-port received N_Port FLOGI"
+              port_type_config: "E-port (ISL locked)"
+
+  - id: "evt_port_type_annotation"
+    type: "annotation"
+    t_ns: 9500000
+    annotation:
+      text: "Diagnosis: Port type mismatch (F-port vs E-port)"
+      detail: >
+        The switch port is in E-port mode, expecting inter-switch link (ISL)
+        initialization. An N_Port FLOGI is invalid on an E-port. Diagnostic steps:
+        1. Check switch port configuration: 'portShow <port>' (Brocade) or 'show interface fc1/x' (Cisco MDS)
+        2. Look for port type: should show 'F-Port' or 'Auto' for host connections
+        3. If it shows 'E-Port' or 'TE-Port', the port is configured for ISL
+        4. Verify the physical cabling — was this port previously part of an ISL trunk?
+        5. After reconfiguring to F-port/auto, the port will reset and the host can retry FLOGI
+        Port type mismatch is easy to overlook during data center moves and cable changes.
+      spec_refs:
+        - document: "FC-SW-7"
+          section: "7"
+          title: "Port types and initialization"
+          url: "https://www.t11.org/fcSite/fcretr.html"
+
+  # ── Phase 4: FLOGI Attempt #3 — Duplicate WWPN ────────────────
+  - id: "evt_flogi_3"
+    type: "frame_tx"
+    t_ns: 12000000
+    frame_id: "flogi_retry_3"
+    annotation:
+      text: "FLOGI Retry #3 — Host retries after port type fix (OX_ID=0x0003)"
+      detail: >
+        The administrator has corrected the port type to F-port (auto). The host
+        retries FLOGI. However, this attempt reveals a third failure: the host's
+        WWPN is already registered in the fabric Name Server from another port,
+        indicating a duplicate WWPN condition.
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              fabric_login: "FLOGI_SENT"
+              active_exchanges: 1
+              port_state: "FLOGI pending"
+              flogi_retries: 3
+              ox_id_next: "0x0004"
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Frame Forwarding / Fabric Services"
+            state_fields:
+              port_type_config: "F-port (auto)"
+
+  - id: "evt_ls_rjt_dup_wwpn"
+    type: "error"
+    t_ns: 12200000
+    frame_id: "ls_rjt_dup_wwpn"
+    annotation:
+      text: "LS_RJT — FLOGI rejected: Duplicate WWPN detected in fabric"
+      detail: >
+        The switch rejects FLOGI with reason_code=0x09 (Unable to perform command
+        request), reason_code_explanation=0x1F (Duplicate port name).
+        ROOT CAUSE: The WWPN 21:00:00:0e:1e:12:34:56 is already registered in
+        the fabric's Name Server database. Another port in the fabric is using the
+        same WWPN. This can happen due to:
+        - NPIV virtual port misconfiguration (same WWPN assigned to multiple VMs)
+        - VM cloning that copied the virtual HBA's WWPN
+        - A stale login from a previous host that was not properly logged out (LOGO)
+        - Split-brain during HBA failover where old and new paths are both active
+        FIX: Identify the conflicting port using Name Server queries or switch tools:
+        Example (Brocade): nsShow — find which port holds the duplicate WWPN
+        Example (Cisco MDS): show fcns database — search for the WWPN
+        Then either: (a) force-logout the stale entry, (b) assign a unique WWPN to
+        each port, or (c) resolve the NPIV/VM configuration conflict.
+        Linux log: lpfc_cmpl_els_flogi: FLOGI rejected — LS_RJT reason 0x09/0x1F
+      spec_refs:
+        - document: "FC-LS-4"
+          section: "4.6.3"
+          title: "LS_RJT Reason Code Explanations"
+          url: "https://www.t11.org/fcSite/fcretr.html"
+        - document: "FC-SW-7"
+          section: "7.7"
+          title: "Duplicate WWPN detection"
+          url: "https://www.t11.org/fcSite/fcretr.html"
+    state_after:
+      - actor_id: "initiator"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Signaling"
+            state_fields:
+              fabric_login: "REJECTED"
+              active_exchanges: 0
+              port_state: "offline"
+              last_ls_rjt_reason: "0x09/0x1F — duplicate WWPN"
+          - layer: 4
+            name: "FC-4 Upper Layer Protocol"
+            state_fields:
+              scsi_state: "offline"
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Frame Forwarding / Fabric Services"
+            state_fields:
+              flogi_reject_reason: "Duplicate WWPN in fabric"
+              wwpn_database_conflict: true
+
+  - id: "evt_dup_wwpn_annotation"
+    type: "annotation"
+    t_ns: 13500000
+    annotation:
+      text: "Diagnosis: Duplicate WWPN in fabric"
+      detail: >
+        A duplicate WWPN is a serious fabric integrity issue. Each WWPN must be
+        globally unique — if two ports present the same WWPN, the fabric cannot
+        correctly route frames or enforce zoning. Diagnostic steps:
+        1. Query the Name Server: 'nsShow' (Brocade) or 'show fcns database' (Cisco MDS)
+        2. Find which port currently holds the WWPN 21:00:00:0e:1e:12:34:56
+        3. If the existing registration is stale, force it out: 'portLogout <port>' or LOGO
+        4. If this is a VM/NPIV issue, ensure each virtual port has a unique WWPN
+        5. Check for VM cloning events — cloned VMs inherit parent WWPN by default
+        6. For multipath configurations, verify that both paths use distinct WWPNs
+        Until the duplicate is resolved, this port cannot join the fabric and will
+        remain in offline state with no access to storage.
+      spec_refs:
+        - document: "FC-FS-5"
+          section: "15.3"
+          title: "Name_Identifier uniqueness requirements"
+          url: "https://www.t11.org/fcSite/fcretr.html"
+
+  # ── Final State: Port remains offline ──────────────────────────
+  - id: "evt_final_state"
+    type: "annotation"
+    t_ns: 15000000
+    annotation:
+      text: "Final state: Port offline — all three FLOGI attempts rejected"
+      detail: >
+        After three failed FLOGI attempts with different root causes, the host port
+        remains in offline state. The FC port state machine never advanced beyond the
+        initial login phase. Consequences:
+        - No FCID assigned — the host has no identity in the fabric
+        - No Name Server queries possible — cannot discover targets
+        - No PLOGI/PRLI possible — cannot establish sessions with storage
+        - No SCSI I/O possible — storage is completely inaccessible
+        - The HBA driver will continue retrying FLOGI periodically (default: every ~2s)
+        - dmesg will show repeated 'FLOGI failure' messages
+        The host will remain in this state until all configuration issues are resolved.
+        In production, a single FLOGI reject can cause a host outage if it is the
+        only path to storage — underscoring the importance of multipath configurations.
+      spec_refs:
+        - document: "FC-FS-5"
+          section: "7"
+          title: "FC Port State Machine"
+          url: "https://www.t11.org/fcSite/fcretr.html"
+
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
+glossary:
+  - term: "FLOGI"
+    abbrev: "Fabric Login"
+    definition: "The first ELS command sent by an N_Port after physical link up. Sent to the well-known Fabric Controller address 0xFFFFFE. The fabric responds with either LS_ACC (assigning an FCID) or LS_RJT (rejecting login). A failed FLOGI means the port cannot participate in the fabric."
+    spec_refs:
+      - document: "FC-LS-4"
+        section: "5.3"
+        title: "Fabric Login (FLOGI)"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "LS_RJT"
+    abbrev: "Link Service Reject"
+    definition: "A generic ELS response indicating that the requested Link Service was rejected. Contains a reason_code (1 byte), reason_code_explanation (1 byte), and vendor_specific (1 byte) field. For FLOGI, common reason codes include zone policy denial, port type mismatch, and duplicate WWPN."
+    spec_refs:
+      - document: "FC-LS-4"
+        section: "4.6"
+        title: "LS_RJT — Link Service Reject"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "WWPN"
+    abbrev: "World Wide Port Name"
+    definition: "A globally unique 64-bit identifier assigned to each FC port. Analogous to a MAC address in Ethernet but assigned by the manufacturer using an IEEE OUI prefix. Used for zoning, persistent binding, and fabric Name Server registration. Must be unique across the entire fabric."
+    spec_refs:
+      - document: "FC-FS-5"
+        section: "15.3"
+        title: "Name_Identifier format"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "Zone"
+    definition: "A logical grouping of FC ports (by WWPN or FCID) that controls which ports can communicate. Zoning enforces access control in the fabric — ports not in the same zone cannot see each other. Hard zoning (enforced at the switch ASIC level) can prevent FLOGI if the WWPN is not in any zone."
+    spec_refs:
+      - document: "FC-SW-7"
+        section: "6"
+        title: "Zoning"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "F-port"
+    abbrev: "Fabric Port"
+    definition: "A switch port that connects to an N_Port (host or storage HBA). F-ports accept FLOGI from N_Ports and assign FCIDs. If a switch port is not configured as an F-port (or auto-sensing), it will reject N_Port FLOGI requests."
+    spec_refs:
+      - document: "FC-SW-7"
+        section: "3.2"
+        title: "Port types"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "E-port"
+    abbrev: "Expansion Port"
+    definition: "A switch port that connects to another FC switch to form an Inter-Switch Link (ISL). E-ports use ELP (Exchange Link Parameters) for initialization, not FLOGI. Connecting an HBA to an E-port results in FLOGI rejection."
+    spec_refs:
+      - document: "FC-SW-7"
+        section: "3.3"
+        title: "E_Port"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "FCID"
+    abbrev: "N_Port ID"
+    definition: "A 24-bit address assigned by the fabric to an N_Port during FLOGI. Used as S_ID and D_ID in FC frame headers for routing. Format is domain:area:port (e.g., 0x010100). Without a successful FLOGI, the port has no FCID (0x000000) and cannot send or receive routed frames."
+    spec_refs:
+      - document: "FC-FS-5"
+        section: "15.1"
+        title: "Address Identifier"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "BB_Credit"
+    abbrev: "Buffer-to-Buffer Credit"
+    definition: "Flow control mechanism in FC. Each port advertises how many frames it can buffer. The sender decrements credit for each frame sent and replenishes when R_RDY primitives are received. BB_Credit is exchanged during FLOGI but not activated if FLOGI is rejected."
+    spec_refs:
+      - document: "FC-FS-5"
+        section: "17.2"
+        title: "Buffer-to-buffer flow control"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "ELS"
+    abbrev: "Extended Link Service"
+    definition: "FC frame type 0x01 used for login, logout, and other link-level operations. FLOGI, PLOGI, PRLI, LS_ACC, and LS_RJT are all ELS frames. ELS frames use R_CTL=0x22 (request) or R_CTL=0x23 (response)."
+    spec_refs:
+      - document: "FC-LS-4"
+        section: "4"
+        title: "Extended Link Service overview"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "NPIV"
+    abbrev: "N_Port ID Virtualization"
+    definition: "A Fibre Channel feature that allows a single physical HBA port to register multiple virtual WWPNs and FCIDs with the fabric. Used by hypervisors to give each VM its own FC identity. Misconfigured NPIV can cause duplicate WWPN conflicts."
+    spec_refs:
+      - document: "FC-LS-4"
+        section: "5.3.1"
+        title: "FDISC — Discover F_Port Service Parameters (NPIV)"
+        url: "https://www.t11.org/fcSite/fcretr.html"
+
+  - term: "ISL"
+    abbrev: "Inter-Switch Link"
+    definition: "A physical link between two FC switches that carries fabric traffic. ISL ports (E-ports) use ELP for initialization and cannot accept N_Port FLOGI. ISL trunking groups multiple ISLs for bandwidth aggregation."
+    spec_refs:
+      - document: "FC-SW-7"
+        section: "8"
+        title: "Inter-Switch Link initialization"
+        url: "https://www.t11.org/fcSite/fcretr.html"
