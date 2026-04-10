@@ -38,7 +38,24 @@
     "san": "Storage Area Networks",
     "sanDesc": "Fibre Channel ファブリックログイン、iSCSI セッション、専用ストレージネットワーク上の SCSI コマンド処理。",
     "storage": "GPU & アクセラレーテッドストレージ",
-    "storageDesc": "GPUDirect Storage：CPU をバイパスし、NVMe および NVMe-oF データパスを GPU メモリに直接接続。"
+    "storageDesc": "GPUDirect Storage：CPU をバイパスし、NVMe および NVMe-oF データパスを GPU メモリに直接接続。",
+    "fabric": "ファブリックシナリオ",
+    "fabricDesc": "トポロジーレベルのシミュレーション：ファブリック全体で輻輳、障害、AI/ストレージワークロードが展開される様子を観察します。任意のリンクにカーソルを合わせると、そのリンク上で起きているパケットレベルの交換を表示できます。"
+  },
+  "netsim": {
+    "loading": "ファブリックシナリオを読み込み中...",
+    "fabricBadge": "FABRIC",
+    "linkUtilization": "リンク使用率",
+    "utilization": "使用率",
+    "throughput": "スループット",
+    "pfcPauses": "PFC ポーズ",
+    "drops": "ドロップ",
+    "clickForPacketView": "クリックしてこのリンク上のパケットレベルの交換を表示",
+    "restart": "再開",
+    "jumpToEnd": "最後にジャンプ",
+    "speed": "速度",
+    "play": "再生",
+    "pause": "一時停止"
   },
   "contributing": {
     "title": "コントリビューション",

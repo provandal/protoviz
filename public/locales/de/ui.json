@@ -254,7 +254,24 @@
     "san": "Storage Area Networks",
     "sanDesc": "Fibre-Channel-Fabric-Login, iSCSI-Sitzungen und SCSI-Befehlsverarbeitung über dedizierte Speichernetzwerke.",
     "storage": "GPU & Beschleunigter Speicher",
-    "storageDesc": "GPUDirect Storage: NVMe- und NVMe-oF-Datenpfade direkt zum GPU-Speicher unter Umgehung der CPU."
+    "storageDesc": "GPUDirect Storage: NVMe- und NVMe-oF-Datenpfade direkt zum GPU-Speicher unter Umgehung der CPU.",
+    "fabric": "Fabric-Szenarien",
+    "fabricDesc": "Simulationen auf Topologieebene: Beobachten Sie Überlastungen, Ausfälle und KI-/Speicher-Workloads über ein gesamtes Fabric hinweg. Bewegen Sie den Mauszeiger über eine beliebige Verbindung, um den Paketaustausch darauf zu sehen."
+  },
+  "netsim": {
+    "loading": "Fabric-Szenario wird geladen...",
+    "fabricBadge": "FABRIC",
+    "linkUtilization": "Verbindungsauslastung",
+    "utilization": "Auslastung",
+    "throughput": "Durchsatz",
+    "pfcPauses": "PFC-Pausen",
+    "drops": "Verworfen",
+    "clickForPacketView": "Klicken, um den Paketaustausch auf dieser Verbindung zu sehen",
+    "restart": "Neu starten",
+    "jumpToEnd": "Zum Ende springen",
+    "speed": "Geschwindigkeit",
+    "play": "Wiedergabe",
+    "pause": "Pause"
   },
   "contributing": {
     "title": "Mitwirken",

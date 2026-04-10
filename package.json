@@ -10,6 +10,9 @@
     "test": "vitest"
   },
   "dependencies": {
+    "d3-scale": "^4.0.2",
+    "d3-selection": "^3.0.0",
+    "d3-zoom": "^3.0.0",
     "geolingua": "^0.1.1",
     "i18next": "^25.8.20",
     "i18next-browser-languagedetector": "^8.2.1",

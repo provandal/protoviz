@@ -38,7 +38,24 @@
     "san": "Storage Area Networks",
     "sanDesc": "Fibre Channel 光纤通道登录、iSCSI 会话以及专用存储网络上的 SCSI 命令处理。",
     "storage": "GPU 与加速存储",
-    "storageDesc": "GPUDirect Storage：NVMe 和 NVMe-oF 数据路径直接连接 GPU 内存，绕过 CPU。"
+    "storageDesc": "GPUDirect Storage：NVMe 和 NVMe-oF 数据路径直接连接 GPU 内存，绕过 CPU。",
+    "fabric": "Fabric 场景",
+    "fabricDesc": "拓扑级仿真：观察拥塞、故障以及 AI/存储工作负载在整个 fabric 中的展开过程。悬停在任意链路上即可查看该链路上正在发生的数据包级交换。"
+  },
+  "netsim": {
+    "loading": "正在加载 fabric 场景...",
+    "fabricBadge": "FABRIC",
+    "linkUtilization": "链路利用率",
+    "utilization": "利用率",
+    "throughput": "吞吐量",
+    "pfcPauses": "PFC 暂停",
+    "drops": "丢包",
+    "clickForPacketView": "点击查看此链路上的数据包级交换",
+    "restart": "重新开始",
+    "jumpToEnd": "跳到末尾",
+    "speed": "速度",
+    "play": "播放",
+    "pause": "暂停"
   },
   "contributing": {
     "title": "参与贡献",

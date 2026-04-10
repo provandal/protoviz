@@ -296,7 +296,24 @@
     "san": "Redes de Área de Almacenamiento",
     "sanDesc": "Inicio de sesión en fabric Fibre Channel, sesiones iSCSI y procesamiento de comandos SCSI sobre redes de almacenamiento dedicadas.",
     "storage": "GPU y Almacenamiento Acelerado",
-    "storageDesc": "GPUDirect Storage: rutas de datos NVMe y NVMe-oF directamente a la memoria GPU, sin pasar por la CPU."
+    "storageDesc": "GPUDirect Storage: rutas de datos NVMe y NVMe-oF directamente a la memoria GPU, sin pasar por la CPU.",
+    "fabric": "Escenarios de Fabric",
+    "fabricDesc": "Simulaciones a nivel de topología: observa cómo se desarrollan la congestión, las fallas y las cargas de trabajo de IA/almacenamiento en todo un fabric. Pasa el cursor sobre cualquier enlace para ver el intercambio de paquetes que ocurre en él."
+  },
+  "netsim": {
+    "loading": "Cargando escenario de fabric...",
+    "fabricBadge": "FABRIC",
+    "linkUtilization": "Utilización del Enlace",
+    "utilization": "Utilización",
+    "throughput": "Rendimiento",
+    "pfcPauses": "Pausas PFC",
+    "drops": "Descartes",
+    "clickForPacketView": "Haz clic para ver el intercambio de paquetes en este enlace",
+    "restart": "Reiniciar",
+    "jumpToEnd": "Saltar al final",
+    "speed": "Velocidad",
+    "play": "Reproducir",
+    "pause": "Pausar"
   },
   "contributing": {
     "title": "Contribuir",

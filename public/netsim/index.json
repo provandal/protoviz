@@ -1,0 +1,15 @@
+{
+  "scenarios": [
+    {
+      "slug": "pfc-storm",
+      "title": "PFC Storm: Head-of-Line Blocking Propagation",
+      "protocol": "RoCEv2 / PFC",
+      "protocol_family": "Fabric Scenarios",
+      "difficulty": "advanced",
+      "description": "A single slow receiver triggers PFC pause frames that propagate up through the aggregation and core layers. Innocent flows across the entire priority class get starved. Toggle PFC on/off to see the alternative: congestion collapse from packet drops.",
+      "tags": ["PFC", "RoCEv2", "lossless", "head-of-line blocking", "fabric", "congestion", "simulation"],
+      "type": "fabric",
+      "path": "pfc-storm/topology.json"
+    }
+  ]
+}

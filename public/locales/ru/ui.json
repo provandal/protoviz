@@ -38,7 +38,24 @@
     "san": "Storage Area Networks",
     "sanDesc": "Вход в фабрику Fibre Channel, сессии iSCSI и обработка команд SCSI в выделенных сетях хранения.",
     "storage": "GPU и ускоренное хранение",
-    "storageDesc": "GPUDirect Storage: пути данных NVMe и NVMe-oF напрямую в память GPU, минуя CPU."
+    "storageDesc": "GPUDirect Storage: пути данных NVMe и NVMe-oF напрямую в память GPU, минуя CPU.",
+    "fabric": "Сценарии фабрики",
+    "fabricDesc": "Симуляции на уровне топологии: наблюдайте, как перегрузки, сбои и рабочие нагрузки AI/хранилища разворачиваются по всей фабрике. Наведите курсор на любую связь, чтобы увидеть обмен пакетами, происходящий на ней."
+  },
+  "netsim": {
+    "loading": "Загрузка сценария фабрики...",
+    "fabricBadge": "FABRIC",
+    "linkUtilization": "Использование связи",
+    "utilization": "Использование",
+    "throughput": "Пропускная способность",
+    "pfcPauses": "Паузы PFC",
+    "drops": "Потери",
+    "clickForPacketView": "Нажмите, чтобы увидеть обмен пакетами на этой связи",
+    "restart": "Перезапустить",
+    "jumpToEnd": "Перейти в конец",
+    "speed": "Скорость",
+    "play": "Воспроизвести",
+    "pause": "Пауза"
   },
   "contributing": {
     "title": "Участие в проекте",

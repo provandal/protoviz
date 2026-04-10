@@ -254,7 +254,24 @@
     "san": "רשתות אחסון",
     "sanDesc": "כניסה ל-fabric של Fibre Channel, הפעלות iSCSI ועיבוד פקודות SCSI על גבי רשתות אחסון ייעודיות.",
     "storage": "GPU ואחסון מואץ",
-    "storageDesc": "GPUDirect Storage: נתיבי נתונים של NVMe ו-NVMe-oF ישירות לזיכרון GPU, תוך עקיפת המעבד."
+    "storageDesc": "GPUDirect Storage: נתיבי נתונים של NVMe ו-NVMe-oF ישירות לזיכרון GPU, תוך עקיפת המעבד.",
+    "fabric": "תרחישי Fabric",
+    "fabricDesc": "סימולציות ברמת הטופולוגיה: צפו בעומסים, בכשלים ובעומסי עבודה של AI/אחסון מתרחשים על פני fabric שלם. רחפו מעל כל קישור כדי לראות את חילופי החבילות המתרחשים עליו."
+  },
+  "netsim": {
+    "loading": "טוען תרחיש fabric...",
+    "fabricBadge": "FABRIC",
+    "linkUtilization": "ניצול הקישור",
+    "utilization": "ניצול",
+    "throughput": "תפוקה",
+    "pfcPauses": "השהיות PFC",
+    "drops": "השלכות",
+    "clickForPacketView": "לחצו כדי לראות את חילופי החבילות בקישור זה",
+    "restart": "הפעל מחדש",
+    "jumpToEnd": "קפוץ לסוף",
+    "speed": "מהירות",
+    "play": "הפעל",
+    "pause": "השהה"
   },
   "contributing": {
     "title": "תרומה לפרויקט",

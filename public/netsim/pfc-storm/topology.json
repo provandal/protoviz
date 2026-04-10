@@ -1,0 +1,95 @@
+{
+  "id": "pfc-storm",
+  "title": "PFC Storm: Head-of-Line Blocking Propagation",
+  "description": "Three-tier RoCEv2 fabric (core / aggregation / edge). One slow receiver causes PFC pauses that propagate up the fabric, starving innocent flows across the entire priority class. Toggle PFC on/off to see congestion collapse instead.",
+  "protocol_family": "Fabric Scenarios",
+  "difficulty": "advanced",
+  "duration_ms": 15000,
+  "primary_specs": [
+    {
+      "document": "IEEE 802.1Qbb",
+      "section": "3.2",
+      "title": "Priority-based Flow Control"
+    },
+    {
+      "document": "IETF RFC 8926",
+      "section": "RoCEv2 Considerations",
+      "title": "Remote Direct Memory Access Protocol over UDP/IP"
+    }
+  ],
+  "authors": ["Erik Smith", "Claude"],
+  "topology": {
+    "width": 900,
+    "height": 560,
+    "nodes": [
+      { "id": "core1", "type": "switch", "label": "Core-1", "x": 320, "y": 80 },
+      { "id": "core2", "type": "switch", "label": "Core-2", "x": 580, "y": 80 },
+
+      { "id": "agg1", "type": "switch", "label": "Agg-1", "x": 180, "y": 220 },
+      { "id": "agg2", "type": "switch", "label": "Agg-2", "x": 720, "y": 220 },
+
+      { "id": "edge1", "type": "switch", "label": "Edge-1", "x": 100, "y": 360 },
+      { "id": "edge2", "type": "switch", "label": "Edge-2", "x": 260, "y": 360 },
+      { "id": "edge3", "type": "switch", "label": "Edge-3", "x": 640, "y": 360 },
+      { "id": "edge4", "type": "switch", "label": "Edge-4", "x": 800, "y": 360 },
+
+      { "id": "s1", "type": "initiator", "label": "S1", "x": 60, "y": 490 },
+      { "id": "s2", "type": "initiator", "label": "S2", "x": 140, "y": 490 },
+      { "id": "s3", "type": "initiator", "label": "S3", "x": 220, "y": 490 },
+      { "id": "s4", "type": "initiator", "label": "S4", "x": 300, "y": 490 },
+      { "id": "s5", "type": "initiator", "label": "S5", "x": 600, "y": 490 },
+      { "id": "s6", "type": "initiator", "label": "S6", "x": 680, "y": 490 },
+      { "id": "s7", "type": "initiator", "label": "S7", "x": 760, "y": 490 },
+      { "id": "slow", "type": "target", "label": "Slow-RX", "x": 840, "y": 490 }
+    ],
+    "links": [
+      { "id": "l_core1_agg1", "src": "core1", "dst": "agg1", "capacity_gbps": 400, "packet_scenario": "pfc-ecn-dcqcn-congestion-control" },
+      { "id": "l_core1_agg2", "src": "core1", "dst": "agg2", "capacity_gbps": 400, "packet_scenario": "pfc-ecn-dcqcn-congestion-control" },
+      { "id": "l_core2_agg1", "src": "core2", "dst": "agg1", "capacity_gbps": 400, "packet_scenario": "pfc-ecn-dcqcn-congestion-control" },
+      { "id": "l_core2_agg2", "src": "core2", "dst": "agg2", "capacity_gbps": 400, "packet_scenario": "pfc-ecn-dcqcn-congestion-control" },
+
+      { "id": "l_agg1_edge1", "src": "agg1", "dst": "edge1", "capacity_gbps": 200, "packet_scenario": "pfc-ecn-dcqcn-congestion-control" },
+      { "id": "l_agg1_edge2", "src": "agg1", "dst": "edge2", "capacity_gbps": 200, "packet_scenario": "pfc-ecn-dcqcn-congestion-control" },
+      { "id": "l_agg2_edge3", "src": "agg2", "dst": "edge3", "capacity_gbps": 200, "packet_scenario": "pfc-ecn-dcqcn-congestion-control" },
+      { "id": "l_agg2_edge4", "src": "agg2", "dst": "edge4", "capacity_gbps": 200, "packet_scenario": "pfc-ecn-dcqcn-congestion-control" },
+
+      { "id": "l_edge1_s1", "src": "edge1", "dst": "s1", "capacity_gbps": 100, "packet_scenario": "roce-v2-rc-connection-rdma-write-read" },
+      { "id": "l_edge1_s2", "src": "edge1", "dst": "s2", "capacity_gbps": 100, "packet_scenario": "roce-v2-rc-connection-rdma-write-read" },
+      { "id": "l_edge2_s3", "src": "edge2", "dst": "s3", "capacity_gbps": 100, "packet_scenario": "roce-v2-rc-connection-rdma-write-read" },
+      { "id": "l_edge2_s4", "src": "edge2", "dst": "s4", "capacity_gbps": 100, "packet_scenario": "roce-v2-rc-connection-rdma-write-read" },
+      { "id": "l_edge3_s5", "src": "edge3", "dst": "s5", "capacity_gbps": 100, "packet_scenario": "roce-v2-rc-connection-rdma-write-read" },
+      { "id": "l_edge3_s6", "src": "edge3", "dst": "s6", "capacity_gbps": 100, "packet_scenario": "roce-v2-rc-connection-rdma-write-read" },
+      { "id": "l_edge4_s7", "src": "edge4", "dst": "s7", "capacity_gbps": 100, "packet_scenario": "roce-v2-rc-connection-rdma-write-read" },
+      { "id": "l_edge4_slow", "src": "edge4", "dst": "slow", "capacity_gbps": 100, "packet_scenario": "pfc-ecn-dcqcn-congestion-control" }
+    ]
+  },
+  "whatif_params": [
+    {
+      "id": "pfc_enabled",
+      "label": "PFC",
+      "type": "enum",
+      "options": ["enabled", "disabled"],
+      "default": "enabled"
+    }
+  ],
+  "variants": [
+    {
+      "params": { "pfc_enabled": "enabled" },
+      "frames_file": "frames_pfc_enabled.json",
+      "description": "PFC enabled (baseline): pause frames prevent loss but propagate back through the fabric, starving innocent flows."
+    },
+    {
+      "params": { "pfc_enabled": "disabled" },
+      "frames_file": "frames_pfc_disabled.json",
+      "description": "PFC disabled: no pauses, but the slow receiver causes tail drops, triggering RDMA NAKs and congestion collapse."
+    }
+  ],
+  "narrative_events": [
+    { "t_ms": 500, "text": "Baseline traffic: all edge servers pushing RDMA WRITE to their local storage targets." },
+    { "t_ms": 3000, "text": "Slow receiver begins stalling. Queue at Edge-4 → Slow-RX port begins filling." },
+    { "t_ms": 4500, "text": "PFC XOFF sent from Edge-4 to Agg-2. Innocent traffic on Agg-2 → Edge-4 paused." },
+    { "t_ms": 6000, "text": "Pause propagates up: Agg-2 → Core-1 and Core-2. Core uplinks now paused." },
+    { "t_ms": 8000, "text": "Flows from Edge-1 and Edge-2 destined for Edge-3 (innocent!) are now starved." },
+    { "t_ms": 12000, "text": "Slow receiver cleared. Credits return. Watch recovery ripple back down the fabric." }
+  ]
+}

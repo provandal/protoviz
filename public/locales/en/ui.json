@@ -38,7 +38,24 @@
     "san": "Storage Area Networks",
     "sanDesc": "Fibre Channel fabric login, iSCSI sessions, and SCSI command processing over dedicated storage networks.",
     "storage": "GPU & Accelerated Storage",
-    "storageDesc": "GPUDirect Storage: NVMe and NVMe-oF data paths directly to GPU memory, bypassing the CPU."
+    "storageDesc": "GPUDirect Storage: NVMe and NVMe-oF data paths directly to GPU memory, bypassing the CPU.",
+    "fabric": "Fabric Scenarios",
+    "fabricDesc": "Topology-level simulations: watch congestion, failures, and AI/storage workloads play out across a whole fabric. Hover any link to see the packet-level exchange happening on it."
+  },
+  "netsim": {
+    "loading": "Loading fabric scenario...",
+    "fabricBadge": "FABRIC",
+    "linkUtilization": "Link Utilization",
+    "utilization": "Utilization",
+    "throughput": "Throughput",
+    "pfcPauses": "PFC Pauses",
+    "drops": "Drops",
+    "clickForPacketView": "Click to see packet-level exchange on this link",
+    "restart": "Restart",
+    "jumpToEnd": "Jump to end",
+    "speed": "Speed",
+    "play": "Play",
+    "pause": "Pause"
   },
   "contributing": {
     "title": "Contributing",

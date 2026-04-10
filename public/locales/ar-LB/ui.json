@@ -296,7 +296,24 @@
     "san": "شبكات التخزين",
     "sanDesc": "تسجيل الدخول في بنية Fibre Channel، جلسات iSCSI، ومعالجة أوامر SCSI عبر شبكات تخزين مخصصة.",
     "storage": "GPU والتخزين المسرّع",
-    "storageDesc": "GPUDirect Storage: مسارات بيانات NVMe و NVMe-oF مباشرة إلى ذاكرة GPU، متجاوزة المعالج."
+    "storageDesc": "GPUDirect Storage: مسارات بيانات NVMe و NVMe-oF مباشرة إلى ذاكرة GPU، متجاوزة المعالج.",
+    "fabric": "سيناريوهات النسيج",
+    "fabricDesc": "محاكاة على مستوى الطوبولوجيا: شوف الازدحام والأعطال وأحمال عمل الذكاء الاصطناعي والتخزين كيف تشتغل عبر النسيج كله. مرّر الفأرة فوق أي وصلة لتشوف تبادل الحزم اللي عم يصير عليها."
+  },
+  "netsim": {
+    "loading": "عم يتم تحميل سيناريو النسيج...",
+    "fabricBadge": "FABRIC",
+    "linkUtilization": "استخدام الوصلة",
+    "utilization": "الاستخدام",
+    "throughput": "الإنتاجية",
+    "pfcPauses": "توقفات PFC",
+    "drops": "الإسقاطات",
+    "clickForPacketView": "اضغط لتشوف تبادل الحزم على هيدي الوصلة",
+    "restart": "إعادة تشغيل",
+    "jumpToEnd": "انتقل للنهاية",
+    "speed": "السرعة",
+    "play": "تشغيل",
+    "pause": "إيقاف مؤقت"
   },
   "contributing": {
     "title": "المساهمة",

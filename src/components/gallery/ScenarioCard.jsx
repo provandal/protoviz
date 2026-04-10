@@ -56,6 +56,16 @@ export default function ScenarioCard({ scenario, onClick }) {
             ● LIVE
           </span>
         )}
+        {scenario.type === 'fabric' && (
+          <span style={{
+            background: '#1c1917', color: '#f97316',
+            fontSize: 9, fontWeight: 700, padding: '2px 8px', borderRadius: 3,
+            border: '1px solid #f9731644',
+            marginInlineStart: 'auto',
+          }}>
+            ◆ FABRIC
+          </span>
+        )}
       </div>
 
       {/* Title */}

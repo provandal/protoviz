@@ -360,10 +360,14 @@ export default function Gallery() {
 
   useEffect(() => {
     const base = import.meta.env.BASE_URL;
-    fetch(`${base}scenarios/index.json`)
-      .then(r => r.json())
-      .then(data => { setScenarios(data.scenarios); setLoading(false); })
-      .catch(() => setLoading(false));
+    Promise.all([
+      fetch(`${base}scenarios/index.json`).then(r => r.json()).catch(() => ({ scenarios: [] })),
+      fetch(`${base}netsim/index.json`).then(r => r.json()).catch(() => ({ scenarios: [] })),
+    ]).then(([scenarioData, netsimData]) => {
+      const merged = [...scenarioData.scenarios, ...(netsimData.scenarios || [])];
+      setScenarios(merged);
+      setLoading(false);
+    });
   }, []);
 
   // Load gallery translations when language changes
@@ -511,7 +515,9 @@ export default function Gallery() {
                   key={s.slug}
                   scenario={s}
                   onClick={() => navigate(
-                    s.type === 'interactive' ? `/live/${s.slug}` : `/${s.slug}`
+                    s.type === 'interactive' ? `/live/${s.slug}` :
+                    s.type === 'fabric' ? `/netsim/${s.slug}` :
+                    `/${s.slug}`
                   )}
                 />
               ))}
@@ -525,7 +531,9 @@ export default function Gallery() {
                 expanded={isSectionExpanded(group.family)}
                 onToggle={() => toggleSection(group.family)}
                 onScenarioClick={(s) => navigate(
-                  s.type === 'interactive' ? `/live/${s.slug}` : `/${s.slug}`
+                  s.type === 'interactive' ? `/live/${s.slug}` :
+                  s.type === 'fabric' ? `/netsim/${s.slug}` :
+                  `/${s.slug}`
                 )}
               />
             ))

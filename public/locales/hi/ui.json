@@ -254,7 +254,24 @@
     "san": "स्टोरेज एरिया नेटवर्क",
     "sanDesc": "Fibre Channel फ़ैब्रिक लॉगिन, iSCSI सत्र, और समर्पित स्टोरेज नेटवर्क पर SCSI कमांड प्रोसेसिंग।",
     "storage": "GPU और त्वरित स्टोरेज",
-    "storageDesc": "GPUDirect Storage: CPU को बायपास करते हुए सीधे GPU मेमोरी तक NVMe और NVMe-oF डेटा पथ।"
+    "storageDesc": "GPUDirect Storage: CPU को बायपास करते हुए सीधे GPU मेमोरी तक NVMe और NVMe-oF डेटा पथ।",
+    "fabric": "Fabric परिदृश्य",
+    "fabricDesc": "टोपोलॉजी-स्तरीय सिमुलेशन: देखें कि भीड़, विफलताएं, और AI/स्टोरेज वर्कलोड पूरे fabric में कैसे चलते हैं। किसी भी लिंक पर हॉवर करें ताकि उस पर हो रहे पैकेट-स्तरीय आदान-प्रदान को देखा जा सके।"
+  },
+  "netsim": {
+    "loading": "Fabric परिदृश्य लोड हो रहा है...",
+    "fabricBadge": "FABRIC",
+    "linkUtilization": "लिंक उपयोग",
+    "utilization": "उपयोग",
+    "throughput": "थ्रूपुट",
+    "pfcPauses": "PFC विराम",
+    "drops": "ड्रॉप्स",
+    "clickForPacketView": "इस लिंक पर पैकेट-स्तरीय आदान-प्रदान देखने के लिए क्लिक करें",
+    "restart": "पुनः आरंभ",
+    "jumpToEnd": "अंत तक जाएं",
+    "speed": "गति",
+    "play": "चलाएं",
+    "pause": "रोकें"
   },
   "contributing": {
     "title": "योगदान",

@@ -38,7 +38,24 @@
     "san": "Storage Area Networks",
     "sanDesc": "Fibre Channel 패브릭 로그인, iSCSI 세션, 전용 스토리지 네트워크를 통한 SCSI 명령 처리.",
     "storage": "GPU 및 가속 스토리지",
-    "storageDesc": "GPUDirect Storage: CPU를 우회하여 NVMe 및 NVMe-oF 데이터 경로를 GPU 메모리에 직접 연결."
+    "storageDesc": "GPUDirect Storage: CPU를 우회하여 NVMe 및 NVMe-oF 데이터 경로를 GPU 메모리에 직접 연결.",
+    "fabric": "패브릭 시나리오",
+    "fabricDesc": "토폴로지 수준 시뮬레이션: 전체 패브릭에서 혼잡, 장애, AI/스토리지 워크로드가 전개되는 모습을 관찰하세요. 링크 위에 마우스를 올리면 해당 링크에서 일어나는 패킷 수준 교환을 볼 수 있습니다."
+  },
+  "netsim": {
+    "loading": "패브릭 시나리오 로딩 중...",
+    "fabricBadge": "FABRIC",
+    "linkUtilization": "링크 사용률",
+    "utilization": "사용률",
+    "throughput": "처리량",
+    "pfcPauses": "PFC 일시정지",
+    "drops": "드롭",
+    "clickForPacketView": "클릭하여 이 링크의 패킷 수준 교환 보기",
+    "restart": "다시 시작",
+    "jumpToEnd": "끝으로 이동",
+    "speed": "속도",
+    "play": "재생",
+    "pause": "일시정지"
   },
   "contributing": {
     "title": "기여하기",

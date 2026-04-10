@@ -296,7 +296,24 @@
     "san": "Rezo Zòn Estokaj",
     "sanDesc": "Koneksyon fabric Fibre Channel, sesyon iSCSI, ak tretman kòmand SCSI sou rezo estokaj dedye.",
     "storage": "GPU ak Estokaj Akselere",
-    "storageDesc": "GPUDirect Storage: chemen done NVMe ak NVMe-oF dirèkteman nan memwa GPU, san pase nan CPU."
+    "storageDesc": "GPUDirect Storage: chemen done NVMe ak NVMe-oF dirèkteman nan memwa GPU, san pase nan CPU.",
+    "fabric": "Senaryo Fabric",
+    "fabricDesc": "Similasyon nan nivo topoloji: gade konjesyon, pann, ak chaj travay AI/estokaj k ap dewoule atravè yon fabric antye. Pase souri w sou nenpòt lyen pou wè echanj pakè ki ap fèt sou li."
+  },
+  "netsim": {
+    "loading": "Y ap chaje senaryo fabric la...",
+    "fabricBadge": "FABRIC",
+    "linkUtilization": "Itilizasyon Lyen an",
+    "utilization": "Itilizasyon",
+    "throughput": "Debi",
+    "pfcPauses": "Poz PFC",
+    "drops": "Pakè Pèdi",
+    "clickForPacketView": "Klike pou wè echanj pakè sou lyen sa a",
+    "restart": "Rekòmanse",
+    "jumpToEnd": "Sote nan fen",
+    "speed": "Vitès",
+    "play": "Jwe",
+    "pause": "Poz"
   },
   "contributing": {
     "title": "Kontribisyon",
