@@ -14,7 +14,7 @@ meta:
     part of the Process Login (PRLI) parameter exchange, with zero
     configuration required from the IT administrator. For CNSA 2.0
     post-quantum compliance, FC-SP-3 provides the SA Establishment protocol
-    (SA_INIT + SA_AUTH), which supports ML-KEM-1024 key encapsulation
+    (IKE_SA_Init + IKE_Auth), which supports ML-KEM-1024 key encapsulation
     separately from DH-CHAP.
 
     The scenario also covers: what the FC switch sees (routing headers only —
@@ -26,7 +26,7 @@ meta:
     CNSA 2.0 accuracy note: AES-256-GCM is consistent with CNSA 2.0 symmetric
     algorithm requirements. The genuinely new CNSA 2.0 element is ML-KEM-1024
     for key establishment — this is handled by the SA Establishment protocol
-    (SA_INIT + SA_AUTH), not by DH-CHAP. CNSA 2.0 applies to National Security
+    (IKE_SA_Init + IKE_Auth), not by DH-CHAP. CNSA 2.0 applies to National Security
     Systems (NSS); commercial enterprises benefit from the same algorithms but
     are not mandated by CNSA 2.0 itself. Applicable commercial frameworks
     include DORA (EU financial sector) and NIS2 (EU critical infrastructure).
@@ -36,7 +36,7 @@ meta:
     - "Understand where FC-SP-3 authentication fits in the FC login sequence (after FLOGI/PLOGI, before or during PRLI)"
     - "Trace the DH-CHAP mutual authentication exchange: AUTH_Negotiate → Challenge → Reply → Success"
     - "Understand how FC-SP-3 separates DH-CHAP (classical DH authentication) from SA Establishment (which supports post-quantum key exchange for CNSA 2.0)"
-    - "Read the SA_INIT and SA_AUTH frames that establish the AES-256-GCM encryption session"
+    - "Read the IKE_SA_Init and IKE_Auth frames that establish the AES-256-GCM encryption session"
     - "Understand the FC frame structure with ESP_Header: routing header (plaintext) vs. payload (ciphertext)"
     - "Explain why fabric switches remain transparent — they route on D_ID/S_ID which are never encrypted"
     - "Understand why array-side decryption preserves dedupe, compression, and anomaly detection"
@@ -63,7 +63,7 @@ meta:
     - "intermediate"
     - "zero-trust"
   primary_specs:
-    - document: "FC-SP-3 (INCITS draft)"
+    - document: "FC-SP-3 (INCITS 577-202x)"
       section: "5"
       title: "Authentication Protocols"
       url: "https://www.t11.org/ftp/t11/pub/fc/sp-3/"
@@ -410,11 +410,11 @@ frames:
       (SHA-512 for CNSA 2.0 alignment), and the Diffie-Hellman group
       (e.g., DH Group 4 = 2048-bit MODP). Authentication negotiation does NOT
       include cipher/encryption negotiation — cipher parameters (AES-256-GCM)
-      are negotiated later in SA_INIT.
+      are negotiated later in IKE_SA_Init.
 
       Note: DH-CHAP uses classical Diffie-Hellman key exchange. For post-quantum
       key establishment (CNSA 2.0), FC-SP-3 provides the separate SA Establishment
-      protocol (SA_INIT + SA_AUTH), which supports ML-KEM-1024. DH-CHAP itself
+      protocol (IKE_SA_Init + IKE_Auth), which supports ML-KEM-1024. DH-CHAP itself
       does not use ML-KEM.
     from: "host"
     to: "array"
@@ -476,23 +476,29 @@ frames:
               Prevents replay attacks across sessions.
           - name: "Hash_List[0] — SHA-512"
             abbrev: "auth_neg.hash0"
-            bits: 8
+            bits: 32
             offset_bits: 48
-            value: "0x04"
+            value: "0x00000009"
             description: >
-              0x04 = SHA-512. Proposed as first preference. SHA-512 is in
-              CNSA 2.0; FC-SP-2 typically used MD5 or SHA-1 (both deprecated
-              for national security use). FC-SP-3 adds SHA-512 and SHA-384.
+              0x00000009 = SHA-512 (FC-SP-3 Table 13, INCITS 577-202x).
+              Proposed as first preference. SHA-512 is in CNSA 2.0.
+              FC-SP-3 Table 13 uses 32-bit hash identifiers. MD5 (0x00000005)
+              and SHA-1 (0x00000006) are marked OBSOLETE in FC-SP-3.
             spec_refs:
+              - document: "FC-SP-3 (INCITS 577-202x)"
+                section: "Table 13"
+                title: "Hash Function Identifiers"
               - document: "NSA CNSA 2.0"
                 section: "Table 1"
                 title: "Approved hash algorithms: SHA-384, SHA-512"
           - name: "Hash_List[1] — SHA-384"
             abbrev: "auth_neg.hash1"
-            bits: 8
-            offset_bits: 56
-            value: "0x03"
-            description: "0x03 = SHA-384. Second preference. Also CNSA 2.0 compliant."
+            bits: 32
+            offset_bits: 80
+            value: "0x00000008"
+            description: >
+              0x00000008 = SHA-384 (FC-SP-3 Table 13, INCITS 577-202x).
+              Second preference. Also CNSA 2.0 compliant.
           - name: "DH_Group — DH Group 4 (2048-bit MODP)"
             abbrev: "auth_neg.dhgroup"
             bits: 16
@@ -506,7 +512,7 @@ frames:
 
               Note: DH-CHAP does NOT support ML-KEM or other post-quantum
               algorithms. For CNSA 2.0 post-quantum key establishment, FC-SP-3
-              provides the separate SA Establishment protocol (SA_INIT + SA_AUTH),
+              provides the separate SA Establishment protocol (IKE_SA_Init + IKE_Auth),
               which handles ML-KEM-1024 independently of DH-CHAP.
             spec_refs:
               - document: "FC-SP-2"
@@ -646,13 +652,13 @@ frames:
           - name: "Auth_Msg_Code"
             abbrev: "auth_neg_rsp.msg"
             bits: 8
-            value: "0x0C"
-            description: "0x0C = Auth_Negotiate_RSP [FC-SP-3 — code assigned per T11 draft; closest FC-SP-2 equivalent is AUTH_Done]"
+            value: "0x0D"
+            description: "0x0D = AUTH_Negotiate_Rsp (FC-SP-3 Table 7, INCITS 577-202x)"
           - name: "Agreed Hash"
             abbrev: "auth_neg_rsp.hash"
-            bits: 8
-            value: "0x04"
-            description: "SHA-512 accepted as the hash algorithm."
+            bits: 32
+            value: "0x00000009"
+            description: "0x00000009 = SHA-512 accepted (FC-SP-3 Table 13, INCITS 577-202x)."
           - name: "Agreed DH Group"
             abbrev: "auth_neg_rsp.dhgroup"
             bits: 16
@@ -772,7 +778,7 @@ frames:
 
       DH-CHAP uses classical Diffie-Hellman only. For post-quantum key
       establishment (CNSA 2.0), FC-SP-3 provides the separate SA
-      Establishment protocol (SA_INIT + SA_AUTH), which supports ML-KEM-1024.
+      Establishment protocol (IKE_SA_Init + IKE_Auth), which supports ML-KEM-1024.
     from: "array"
     to: "host"
     via: ["switch"]
@@ -1208,20 +1214,21 @@ frames:
             value: "850nm multimode fiber (SFP-DD)"
             description: "Short-reach fiber optics"
 
-  # ── SA_Init ──────────────────────────────────────────────────────────────────
+  # ── IKE_SA_Init ──────────────────────────────────────────────────────────────
 
-  - id: "sa_init"
-    name: "SA_Init — Security Association Proposal (Host → Array)"
+  - id: "ike_sa_init"
+    name: "IKE_SA_Init — Security Association Proposal (Host → Array)"
     description: >
-      Following successful DH-CHAP, the host sends SA_Init to formally establish
+      Following successful DH-CHAP, the host sends IKE_SA_Init to formally establish
       the Security Association (SA) — the FC-SP-3 equivalent of an IPsec SA.
       The SA defines which FC frames are encrypted, the SA ID (used in
       ESP_Header), the cipher transform (AES-256-GCM — negotiated here, not
       in AUTH_Negotiate), and the key derivation parameters.
 
       SA Establishment uses IKEv2 (RFC 4595) with FC-specific extensions.
-      SA_INIT and SA_AUTH are exchanged in both directions. Frame-level
-      fields simplified for illustration — actual parameters per FC-SP-3 draft.
+      IKE_SA_Init and IKE_Auth are exchanged in both directions. Frame-level
+      fields simplified for illustration — actual parameters per FC-SP-3
+      (INCITS 577-202x) section 6.2.4.2.
 
       Key derivation per IKEv2 (RFC 7296) with FC-specific PRF.
       The session key is 256 bits (AES-256) and exists only in the two SecureHBA ASICs.
@@ -1232,21 +1239,21 @@ frames:
     total_bytes: 64
     color: "#2980b9"
     headers:
-      - name: "SA_Init PDU"
-        abbrev: "sa_init"
+      - name: "IKE_SA_Init PDU"
+        abbrev: "ike_sa_init"
         layer: 4
         fields:
           - name: "Auth_Msg_Code"
-            abbrev: "sa_init.msg"
+            abbrev: "ike_sa_init.msg"
             bits: 8
-            value: "0x30"
-            description: "0x30 = SA_Init."
+            value: "0x22"
+            description: "0x22 = IKE_SA_Init (FC-SP-3 Table 7, INCITS 577-202x)"
             spec_refs:
-              - document: "FC-SP-2"
-                section: "5.4"
-                title: "Security Association Management"
+              - document: "FC-SP-3 (INCITS 577-202x)"
+                section: "6.2.4.2"
+                title: "IKE_SA_Init"
           - name: "SA_ID"
-            abbrev: "sa_init.said"
+            abbrev: "ike_sa_init.said"
             bits: 32
             value: "0x000000A1"
             description: >
@@ -1254,17 +1261,17 @@ frames:
               to tell the receiver which SA (and therefore which key) to use
               for decryption. Analogous to IPsec SPI (Security Parameters Index).
           - name: "Transform: AES-256-GCM"
-            abbrev: "sa_init.xform"
+            abbrev: "ike_sa_init.xform"
             bits: 8
             value: "0x05"
             description: "Cipher confirmed: AES-256-GCM. Provides confidentiality + integrity."
           - name: "Key_Length"
-            abbrev: "sa_init.keylen"
+            abbrev: "ike_sa_init.keylen"
             bits: 16
             value: 256
             description: "256-bit AES key. Key derivation per IKEv2 (RFC 7296) with FC-specific PRF. Simplified for illustration."
           - name: "Rekey_Interval"
-            abbrev: "sa_init.rekey"
+            abbrev: "ike_sa_init.rekey"
             bits: 32
             value: 3600
             description: >
@@ -1274,7 +1281,7 @@ frames:
               I/O interruption — frames already in flight under the old SA
               complete normally; new frames use the new SA.
           - name: "Scope: All FC Frames"
-            abbrev: "sa_init.scope"
+            abbrev: "ike_sa_init.scope"
             bits: 0
             value: "ALL frames on this N_Port pair — FCP + NVMe/FC"
             description: >
@@ -1376,14 +1383,15 @@ frames:
             value: "850nm multimode fiber (SFP-DD)"
             description: "Short-reach fiber optics"
 
-  - id: "sa_auth"
-    name: "SA_AUTH — Security Association Authenticated & Active"
+  - id: "ike_auth"
+    name: "IKE_Auth — Security Association Authenticated & Active"
     description: >
-      The target responds with SA_AUTH, completing the SA Establishment
-      handshake. Both SecureHBA ASICs now load the derived AES-256-GCM
-      session key into their encryption/decryption engines. From this
-      point forward, ALL FC frames between this host port and this array
-      port are encrypted. The transition is instantaneous and seamless.
+      The target responds with IKE_Auth, completing the SA Establishment
+      handshake (FC-SP-3 section 6.2.4.3). Both SecureHBA ASICs now load
+      the derived AES-256-GCM session key into their encryption/decryption
+      engines. From this point forward, ALL FC frames between this host
+      port and this array port are encrypted. The transition is instantaneous
+      and seamless.
     from: "array"
     to: "host"
     via: ["switch"]
@@ -1391,22 +1399,22 @@ frames:
     total_bytes: 32
     color: "#27ae60"
     headers:
-      - name: "SA_AUTH"
-        abbrev: "sa_auth"
+      - name: "IKE_Auth"
+        abbrev: "ike_auth"
         layer: 4
         fields:
           - name: "Auth_Msg_Code"
-            abbrev: "sa_auth.msg"
+            abbrev: "ike_auth.msg"
             bits: 8
-            value: "0x31"
-            description: "0x31 = SA_AUTH. Security Association is live."
+            value: "0x23"
+            description: "0x23 = IKE_Auth (FC-SP-3 Table 7, INCITS 577-202x)"
           - name: "SA_ID (confirmed)"
-            abbrev: "sa_auth.said"
+            abbrev: "ike_auth.said"
             bits: 32
             value: "0x000000A1"
             description: "SA ID 0xA1 confirmed. Both sides load session key for this SA_ID."
           - name: "Encryption Status"
-            abbrev: "sa_auth.status"
+            abbrev: "ike_auth.status"
             bits: 0
             value: "ACTIVE — AES-256-GCM on all frames from next FC sequence"
             description: >
@@ -1508,16 +1516,16 @@ frames:
             value: "850nm multimode fiber (SFP-DD)"
             description: "Short-reach fiber optics"
 
-  # ── SA_Init (reverse direction: array → host) ───────────────────────────────
+  # ── IKE_SA_Init (reverse direction: array → host) ───────────────────────────
 
-  - id: "sa_init_reverse"
-    name: "SA_Init (Reverse) — Array Sends Its Own SA_INIT to Host"
+  - id: "ike_sa_init_reverse"
+    name: "IKE_SA_Init (Reverse) — Array Sends Its Own IKE_SA_Init to Host"
     description: >
       SA Establishment uses IKEv2 (RFC 4595) with FC-specific extensions.
-      SA_INIT and SA_AUTH are exchanged in both directions. The array now
-      sends its own SA_INIT to the host, proposing a Security Association
+      IKE_SA_Init and IKE_Auth are exchanged in both directions. The array now
+      sends its own IKE_SA_Init to the host, proposing a Security Association
       for the array-to-host direction. Frame-level fields simplified for
-      illustration — actual parameters per FC-SP-3 draft.
+      illustration — actual parameters per FC-SP-3 (INCITS 577-202x) section 6.2.4.2.
     from: "array"
     to: "host"
     via: ["switch"]
@@ -1525,17 +1533,17 @@ frames:
     total_bytes: 64
     color: "#27ae60"
     headers:
-      - name: "SA_Init PDU (Reverse)"
-        abbrev: "sa_init_rev"
+      - name: "IKE_SA_Init PDU (Reverse)"
+        abbrev: "ike_sa_init_rev"
         layer: 4
         fields:
           - name: "Auth_Msg_Code"
-            abbrev: "sa_init_rev.msg"
+            abbrev: "ike_sa_init_rev.msg"
             bits: 8
-            value: "0x30"
-            description: "0x30 = SA_Init."
+            value: "0x22"
+            description: "0x22 = IKE_SA_Init (FC-SP-3 Table 7, INCITS 577-202x)"
           - name: "SA_ID"
-            abbrev: "sa_init_rev.said"
+            abbrev: "ike_sa_init_rev.said"
             bits: 32
             value: "0x000000A1"
             description: >
@@ -1543,17 +1551,17 @@ frames:
               Carried in every ESP_Header to tell the receiver which SA
               (and therefore which key) to use for decryption.
           - name: "Transform: AES-256-GCM"
-            abbrev: "sa_init_rev.xform"
+            abbrev: "ike_sa_init_rev.xform"
             bits: 8
             value: "0x05"
             description: "Cipher confirmed: AES-256-GCM. Provides confidentiality + integrity."
           - name: "Key_Length"
-            abbrev: "sa_init_rev.keylen"
+            abbrev: "ike_sa_init_rev.keylen"
             bits: 16
             value: 256
             description: "256-bit AES key. Key derivation per IKEv2 (RFC 7296) with FC-specific PRF. Simplified for illustration."
           - name: "Rekey_Interval"
-            abbrev: "sa_init_rev.rekey"
+            abbrev: "ike_sa_init_rev.rekey"
             bits: 32
             value: 3600
             description: "Automatic re-key interval in seconds = 3600 (1 hour)."
@@ -1611,7 +1619,7 @@ frames:
             abbrev: "fc2.oxid"
             bits: 16
             value: "0x0014"
-            description: "Originator Exchange ID — reverse SA_INIT exchange"
+            description: "Originator Exchange ID — reverse IKE_SA_Init exchange"
           - name: "RX_ID"
             abbrev: "fc2.rxid"
             bits: 16
@@ -1651,15 +1659,16 @@ frames:
             value: "850nm multimode fiber (SFP-DD)"
             description: "Short-reach fiber optics"
 
-  # ── SA_AUTH (reverse direction: host → array) ──────────────────────────────
+  # ── IKE_Auth (reverse direction: host → array) ──────────────────────────────
 
-  - id: "sa_auth_reverse"
-    name: "SA_AUTH (Reverse) — Host Confirms Reverse SA"
+  - id: "ike_auth_reverse"
+    name: "IKE_Auth (Reverse) — Host Confirms Reverse SA"
     description: >
-      The host responds with SA_AUTH to the array's SA_INIT, completing the
-      bidirectional SA Establishment. Both directions now have active
-      Security Associations. SA Establishment uses IKEv2 (RFC 4595) with
-      FC-specific extensions. Frame-level fields simplified for illustration.
+      The host responds with IKE_Auth to the array's IKE_SA_Init, completing the
+      bidirectional SA Establishment (FC-SP-3 section 6.2.4.3). Both directions
+      now have active Security Associations. SA Establishment uses IKEv2
+      (RFC 4595) with FC-specific extensions. Frame-level fields simplified
+      for illustration.
     from: "host"
     to: "array"
     via: ["switch"]
@@ -1667,22 +1676,22 @@ frames:
     total_bytes: 32
     color: "#e67e22"
     headers:
-      - name: "SA_AUTH (Reverse)"
-        abbrev: "sa_auth_rev"
+      - name: "IKE_Auth (Reverse)"
+        abbrev: "ike_auth_rev"
         layer: 4
         fields:
           - name: "Auth_Msg_Code"
-            abbrev: "sa_auth_rev.msg"
+            abbrev: "ike_auth_rev.msg"
             bits: 8
-            value: "0x31"
-            description: "0x31 = SA_AUTH. Reverse Security Association is live."
+            value: "0x23"
+            description: "0x23 = IKE_Auth (FC-SP-3 Table 7, INCITS 577-202x)"
           - name: "SA_ID (confirmed)"
-            abbrev: "sa_auth_rev.said"
+            abbrev: "ike_auth_rev.said"
             bits: 32
             value: "0x000000A1"
             description: "SA ID 0xA1 confirmed for reverse direction."
           - name: "Encryption Status"
-            abbrev: "sa_auth_rev.status"
+            abbrev: "ike_auth_rev.status"
             bits: 0
             value: "ACTIVE — AES-256-GCM on all frames in reverse direction"
             description: >
@@ -1743,7 +1752,7 @@ frames:
             abbrev: "fc2.oxid"
             bits: 16
             value: "0x0015"
-            description: "Originator Exchange ID — reverse SA_AUTH exchange"
+            description: "Originator Exchange ID — reverse IKE_Auth exchange"
           - name: "RX_ID"
             abbrev: "fc2.rxid"
             bits: 16
@@ -1881,7 +1890,7 @@ frames:
             description: >
               Security Association ID = 0xA1. Tells the receiver which SA
               (and session key) to use for decryption. Both SecureHBA ASICs
-              have this SA loaded from the SA_INIT + SA_AUTH exchange.
+              have this SA loaded from the IKE_SA_Init + IKE_Auth exchange.
             spec_refs:
               - document: "FC-SP-2"
                 section: "6.2"
@@ -2198,7 +2207,7 @@ frames:
             abbrev: "fc.fcp.esp.said"
             bits: 32
             value: "0x000000A1"
-            description: "Same SA ID as established in SA_Init. Consistent for entire session."
+            description: "Same SA ID as established in IKE_SA_Init. Consistent for entire session."
           - name: "Sequence_Number"
             abbrev: "fc.fcp.esp.seq"
             bits: 32
@@ -2429,7 +2438,7 @@ frames:
       FCP_DATA IU. This is the 2048-byte SCSI data transfer plus FC overhead —
       the payload that was NOT included in the earlier FCP_CMND. The host sends
       exactly the burst length authorized by XFER_RDY (4096 bytes). Like every
-      frame after SA_AUTH, the data payload is AES-256-GCM encrypted. The switch
+      frame after IKE_Auth, the data payload is AES-256-GCM encrypted. The switch
       routes on D_ID and cannot read any write data.
     from: "host"
     to: "array"
@@ -2837,7 +2846,7 @@ frames:
           - name: "Process"
             abbrev: "rekey.process"
             bits: 0
-            value: "New DHCHAP_Challenge → DHCHAP_Reply → SA_INIT → SA_AUTH (SA_ID=0xA2)"
+            value: "New DHCHAP_Challenge → DHCHAP_Reply → IKE_SA_Init → IKE_Auth (SA_ID=0xA2)"
             description: >
               A full new DH-CHAP + SA exchange runs while I/O continues under
               SA 0xA1. New session key loaded into encryption engine as SA 0xA2.
@@ -3014,7 +3023,7 @@ timeline:
         Two choices define the auth posture: SHA-512 for hashing
         (CNSA 2.0 compliant) and DH Group 4 (2048-bit MODP) for classical
         Diffie-Hellman key agreement. Cipher negotiation (AES-256-GCM) happens
-        later in SA_INIT, not here.
+        later in IKE_SA_Init, not here.
         The ELS command code 0x90 shows how FC-SP-3 rides on top of FC's
         existing Extended Link Service infrastructure — no new frame types
         are needed.
@@ -3139,14 +3148,14 @@ timeline:
             state_fields:
               auth_state: "DHCHAP_Success received — verifying reverse response — PASS"
 
-  - id: "sa_init"
+  - id: "ike_sa_init"
     type: "frame_tx"
     t_ns: 15000
-    frame_id: "sa_init"
+    frame_id: "ike_sa_init"
     annotation:
-      text: "SA_Init — Security Association Proposal"
+      text: "IKE_SA_Init — Security Association Proposal"
       detail: >
-        SA_Init formalizes the Security Association: SA_ID=0xA1 (identifies
+        IKE_SA_Init formalizes the Security Association: SA_ID=0xA1 (identifies
         the SA in every subsequent ESP header), transform=AES-256-GCM,
         256-bit session key derived from K (key derivation per IKEv2 RFC 7296), re-key
         interval=3600 seconds. The scope covers ALL frames between these
@@ -3158,7 +3167,7 @@ timeline:
           - layer: 4
             name: "FC-4 Protocol Mapping"
             state_fields:
-              auth_state: "SA_Init sent — deriving session key"
+              auth_state: "IKE_SA_Init sent — deriving session key"
           - layer: 2
             name: "FC-2 Framing / Transport"
             state_fields:
@@ -3168,17 +3177,17 @@ timeline:
           - layer: 4
             name: "FC-4 / Data Services"
             state_fields:
-              auth_state: "SA_Init received — deriving session key"
+              auth_state: "IKE_SA_Init received — deriving session key"
 
-  - id: "sa_init_reverse"
+  - id: "ike_sa_init_reverse"
     type: "frame_tx"
     t_ns: 17000
-    frame_id: "sa_init_reverse"
+    frame_id: "ike_sa_init_reverse"
     annotation:
-      text: "SA_INIT (Reverse Direction) — Array Sends SA_INIT to Host"
+      text: "IKE_SA_Init (Reverse Direction) — Array Sends IKE_SA_Init to Host"
       detail: >
-        SA_INIT (reverse direction) — the array now sends its own SA_INIT
-        to the host. SA Establishment requires SA_INIT and SA_AUTH in both
+        IKE_SA_Init (reverse direction) — the array now sends its own IKE_SA_Init
+        to the host. SA Establishment requires IKE_SA_Init and IKE_Auth in both
         directions to establish bidirectional Security Associations.
     state_after:
       - actor_id: "array"
@@ -3186,16 +3195,16 @@ timeline:
           - layer: 4
             name: "FC-4 / Data Services"
             state_fields:
-              auth_state: "SA_Init (reverse) sent — establishing bidirectional SA"
+              auth_state: "IKE_SA_Init (reverse) sent — establishing bidirectional SA"
 
-  - id: "sa_auth_reverse"
+  - id: "ike_auth_reverse"
     type: "frame_tx"
     t_ns: 19000
-    frame_id: "sa_auth_reverse"
+    frame_id: "ike_auth_reverse"
     annotation:
-      text: "SA_AUTH (Reverse Direction) — Host Confirms Reverse SA"
+      text: "IKE_Auth (Reverse Direction) — Host Confirms Reverse SA"
       detail: >
-        SA_AUTH (reverse direction) — host sends SA_AUTH to complete the
+        IKE_Auth (reverse direction) — host sends IKE_Auth to complete the
         bidirectional SA establishment. Both directions now have active
         Security Associations.
     state_after:
@@ -3204,14 +3213,14 @@ timeline:
           - layer: 4
             name: "FC-4 Protocol Mapping"
             state_fields:
-              auth_state: "SA_AUTH (reverse) sent — bidirectional SA complete"
+              auth_state: "IKE_Auth (reverse) sent — bidirectional SA complete"
 
-  - id: "sa_auth"
+  - id: "ike_auth"
     type: "frame_tx"
     t_ns: 21000
-    frame_id: "sa_auth"
+    frame_id: "ike_auth"
     annotation:
-      text: "SA_AUTH — Security Association Active, Encryption ON"
+      text: "IKE_Auth — Security Association Active, Encryption ON"
       detail: >
         Security Association is live. Both SecureHBA ASICs load the 256-bit
         session key. Watch the OSI panel: host and array now show
@@ -3534,11 +3543,11 @@ glossary:
       Fibre Channel Security Protocols version 3. The INCITS T11 standard defining
       authentication protocols, Security Association management, and frame-level
       encryption for Fibre Channel. FC-SP-3 extends FC-SP-2 by adding AES-256-GCM
-      encryption and the SA Establishment protocol (SA_INIT + SA_AUTH), which
+      encryption and the SA Establishment protocol (IKE_SA_Init + IKE_Auth), which
       supports post-quantum key exchange (ML-KEM-1024) separately from DH-CHAP.
       DH-CHAP continues to use classical Diffie-Hellman for authentication.
     spec_refs:
-      - document: "FC-SP-3 (INCITS draft)"
+      - document: "FC-SP-3 (INCITS 577-202x)"
         section: "all"
         title: "Fibre Channel Security Protocols 3"
 
@@ -3552,7 +3561,7 @@ glossary:
       both endpoints prove their identity before any key material is used.
       Note: DH-CHAP uses classical DH only; post-quantum key establishment
       (ML-KEM) is handled separately by the SA Establishment protocol
-      (SA_INIT + SA_AUTH).
+      (IKE_SA_Init + IKE_Auth).
     spec_refs:
       - document: "FC-SP-2"
         section: "5.3"
@@ -3604,9 +3613,37 @@ glossary:
       Both the initiator and target must have a matching SA loaded to communicate.
       SA establishment follows successful DH-CHAP authentication.
     spec_refs:
-      - document: "FC-SP-2"
-        section: "5.4"
+      - document: "FC-SP-3 (INCITS 577-202x)"
+        section: "6"
         title: "Security Association Management"
+
+  - term: "IKE_SA_Init"
+    abbrev: "IKE_SA_Init"
+    definition: >
+      IKEv2 Security Association Initialization message adapted for Fibre Channel
+      (FC-SP-3 section 6.2.4.2, INCITS 577-202x). The first message in the
+      SA Establishment exchange. Proposes Security Association parameters including
+      cipher transform (AES-256-GCM), SA_ID, key length, and re-key interval.
+      Message code 0x22 (FC-SP-3 Table 7). Exchanged in both directions to
+      establish bidirectional Security Associations.
+    spec_refs:
+      - document: "FC-SP-3 (INCITS 577-202x)"
+        section: "6.2.4.2"
+        title: "IKE_SA_Init"
+
+  - term: "IKE_Auth"
+    abbrev: "IKE_Auth"
+    definition: >
+      IKEv2 Authentication message adapted for Fibre Channel (FC-SP-3 section
+      6.2.4.3, INCITS 577-202x). The second message in the SA Establishment
+      exchange. Confirms the Security Association and activates the session key
+      in the SecureHBA encryption/decryption engine. Message code 0x23
+      (FC-SP-3 Table 7). After IKE_Auth completes in both directions, all
+      subsequent FC frames are encrypted under the established SA.
+    spec_refs:
+      - document: "FC-SP-3 (INCITS 577-202x)"
+        section: "6.2.4.3"
+        title: "IKE_Auth"
 
   - term: "EDIF"
     abbrev: "EDIF"
@@ -3638,7 +3675,7 @@ glossary:
       derivation. The AES-256-GCM session key is derived from the shared secret K
       produced by the DH-CHAP exchange (or by SA Establishment for post-quantum
       scenarios). Key derivation per IKEv2 (RFC 7296) with FC-specific PRF.
-      Simplified for illustration — actual parameters per FC-SP-3 draft.
+      Simplified for illustration — actual parameters per FC-SP-3 (INCITS 577-202x).
 
   - term: "Re-key"
     abbrev: "rekey"
@@ -3666,7 +3703,7 @@ walkthroughs:
           AUTH_Negotiate proposes the authentication parameters. Note the two key
           choices: SHA-512 for hashing (CNSA 2.0 compliant) and DH Group 4
           (2048-bit MODP) for classical Diffie-Hellman key agreement. Cipher
-          negotiation (AES-256-GCM) happens later in SA_INIT, not here. Also
+          negotiation (AES-256-GCM) happens later in IKE_SA_Init, not here. Also
           note the ELS command code 0x90 — this is how FC-SP-3 rides on top of
           FC's Extended Link Service infrastructure.
         highlight_fields: ["els.cmd", "auth_neg.hash0", "auth_neg.dhgroup", "auth_neg.wwn"]
@@ -3698,18 +3735,18 @@ walkthroughs:
         highlight_fields: ["dhchap_s.resp", "dhchap_s.result"]
       - step: 6
         narration: >
-          SA_Init formalizes the Security Association: SA_ID=0xA1, AES-256-GCM,
+          IKE_SA_Init formalizes the Security Association: SA_ID=0xA1, AES-256-GCM,
           256-bit key derived from K (key derivation per IKEv2 RFC 7296), re-key interval 3600s.
           Note the scope — ALL frames, regardless of application or workload.
           Zero per-application configuration.
-        highlight_fields: ["sa_init.said", "sa_init.xform", "sa_init.keylen", "sa_init.rekey", "sa_init.scope"]
+        highlight_fields: ["ike_sa_init.said", "ike_sa_init.xform", "ike_sa_init.keylen", "ike_sa_init.rekey", "ike_sa_init.scope"]
       - step: 7
         narration: >
-          SA_AUTH: Security Association is live. Both ASICs load the session key.
+          IKE_Auth: Security Association is live. Both ASICs load the session key.
           Observe the OSI panel: FC-0 Physical now shows encryption_active=true on both
           host and array. The switch's payload_visibility changes to OPAQUE.
           Total time from PLOGI to encrypted: ~21 µs.
-        highlight_fields: ["sa_auth.said", "sa_auth.status"]
+        highlight_fields: ["ike_auth.said", "ike_auth.status"]
 
   - id: "encrypted-frame-anatomy"
     title: "Anatomy of an Encrypted FC Frame"
@@ -3717,7 +3754,7 @@ walkthroughs:
     steps:
       - step: 10
         narration: >
-          We're now post-SA_AUTH. PRLI runs encrypted — this is the first encrypted
+          We're now post-IKE_Auth. PRLI runs encrypted — this is the first encrypted
           frame. The FC header (R_CTL, D_ID, S_ID, F_CTL, OX_ID/RX_ID) is ALWAYS
           plaintext. The switch reads D_ID=0x020100 and routes normally.
           The ESP_Header follows: SA_ID identifies the key, Seq=1 starts anti-replay,
@@ -3785,8 +3822,8 @@ walkthroughs:
           (James Smart and team) for technical accuracy. Key corrections applied
           based on expert feedback: DH-CHAP uses classical Diffie-Hellman only
           (not ML-KEM); ML-KEM-1024 is handled by the separate SA Establishment
-          protocol (SA_INIT + SA_AUTH); the response to AUTH_Negotiate is
+          protocol (IKE_SA_Init + IKE_Auth); the response to AUTH_Negotiate is
           Auth_Negotiate_RSP (not ACC); and the SA Establishment sequence uses
-          SA_INIT + SA_AUTH (not SA_Setup). Frame-level details may be further
+          IKE_SA_Init + IKE_Auth (not SA_Setup). Frame-level details may be further
           refined as the FC-SP-3 draft progresses through INCITS T11.
         highlight_fields: []

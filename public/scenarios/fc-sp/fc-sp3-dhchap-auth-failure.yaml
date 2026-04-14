@@ -49,7 +49,7 @@ meta:
     - "logo"
     - "advanced"
   primary_specs:
-    - document: "FC-SP-3 (INCITS draft)"
+    - document: "FC-SP-3 (INCITS 577-202x, Rev 3.10)"
       section: "5"
       title: "Authentication Protocols"
       url: "https://www.t11.org/ftp/t11/pub/fc/sp-3/"
@@ -397,7 +397,7 @@ frames:
               authentication messages are carried as ELS frames on the
               established N_Port connection.
             spec_refs:
-              - document: "FC-SP-2 (INCITS 496-2012)"
+              - document: "FC-SP-3 (INCITS 577-202x)"
                 section: "5.1"
                 title: "AUTH_ELS — Authentication ELS"
       - name: "AUTH_Negotiate Payload"
@@ -413,7 +413,7 @@ frames:
             value_hex: "0x0B"
             description: "0x0B = AUTH_Negotiate (per Wireshark packet-fcsp.c)"
             spec_refs:
-              - document: "FC-SP-2"
+              - document: "FC-SP-3 (INCITS 577-202x)"
                 section: "5.3.1"
                 title: "AUTH_Negotiate message"
           - name: "Auth_Protocol"
@@ -433,16 +433,18 @@ frames:
               Prevents replay attacks across sessions.
           - name: "Hash_List[0] — SHA-256"
             abbrev: "auth_neg.hash0"
-            bits: 8
+            bits: 32
             offset_bits: 48
-            value: "0x02"
+            value: "0x00000007"
             description: >
-              0x02 = SHA-256 [FC-SP-3]. Proposed as the hash algorithm for the
-              CHAP challenge-response computation. SHA-256 was added in FC-SP-3
-              (FC-SP-2 only defined MD5=0x05 and SHA-1=0x06).
+              0x00000007 = SHA-256 (FC-SP-3 Table 13, INCITS 577-202x).
+              Proposed as the hash algorithm for the CHAP challenge-response
+              computation. FC-SP-3 uses 32-bit hash algorithm identifiers.
+              SHA-256 was added in FC-SP-3; MD5 (0x00000005) and SHA-1
+              (0x00000006) from FC-SP-2 are obsolete.
             spec_refs:
-              - document: "FC-SP-2"
-                section: "5.3.1.1"
+              - document: "FC-SP-3 (INCITS 577-202x)"
+                section: "Table 13"
                 title: "Hash algorithm identifiers"
           - name: "DH_Group — 2048-bit MODP (Group 4)"
             abbrev: "auth_neg.dhgroup"
@@ -456,7 +458,7 @@ frames:
               NOT related to the DH group — it is caused by mismatched shared
               secrets in the CHAP layer.
             spec_refs:
-              - document: "FC-SP-2"
+              - document: "FC-SP-3 (INCITS 577-202x)"
                 section: "5.3.1.2"
                 title: "DH Group identifiers"
           - name: "Initiator WWN"
@@ -589,17 +591,17 @@ frames:
           - name: "Auth_Msg_Code"
             abbrev: "auth_neg_rsp.msg"
             bits: 8
-            value: "0x0C"
-            description: "0x0C = Auth_Negotiate_RSP [FC-SP-3 -- code per T11 draft]"
+            value: "0x0D"
+            description: "0x0D = AUTH_Negotiate_Rsp (FC-SP-3 Table 7, INCITS 577-202x)"
             spec_refs:
-              - document: "FC-SP-2"
-                section: "5.3.1"
-                title: "Auth_Negotiate_RSP"
+              - document: "FC-SP-3 (INCITS 577-202x)"
+                section: "Table 7"
+                title: "AUTH_Negotiate_Rsp message code"
           - name: "Agreed Hash"
             abbrev: "auth_neg_rsp.hash"
-            bits: 8
-            value: "0x02"
-            description: "SHA-256 accepted as the hash algorithm for CHAP."
+            bits: 32
+            value: "0x00000007"
+            description: "0x00000007 = SHA-256 accepted as the hash algorithm for CHAP (FC-SP-3 Table 13, INCITS 577-202x)."
           - name: "Agreed DH Group"
             abbrev: "auth_neg_rsp.dhgroup"
             bits: 8
@@ -735,7 +737,7 @@ frames:
             value: "0x10"
             description: "0x10 = DHCHAP_Challenge (per Wireshark packet-fcsp.c)"
             spec_refs:
-              - document: "FC-SP-2"
+              - document: "FC-SP-3 (INCITS 577-202x)"
                 section: "5.3.2"
                 title: "DHCHAP_Challenge"
           - name: "Transaction_ID"
@@ -757,7 +759,7 @@ frames:
               shared secret. If the secrets differ, the hashes will not match
               and authentication will fail.
             spec_refs:
-              - document: "FC-SP-2"
+              - document: "FC-SP-3 (INCITS 577-202x)"
                 section: "5.3.2"
                 title: "DHCHAP_Challenge — Challenge_Value"
           - name: "DH Public Value g^b mod p (256 bytes)"
@@ -771,7 +773,7 @@ frames:
               into the CHAP response hash. The DH exchange itself succeeds —
               the failure is in the CHAP layer where the shared secret is used.
             spec_refs:
-              - document: "FC-SP-2"
+              - document: "FC-SP-3 (INCITS 577-202x)"
                 section: "5.3.2"
                 title: "DHCHAP_Challenge — DH value"
       - name: "FC-2 Frame Header (Routing — always plaintext)"
@@ -901,7 +903,7 @@ frames:
             value: "0x11"
             description: "0x11 = DHCHAP_Reply (per Wireshark packet-fcsp.c)"
             spec_refs:
-              - document: "FC-SP-2"
+              - document: "FC-SP-3 (INCITS 577-202x)"
                 section: "5.3.3"
                 title: "DHCHAP_Reply"
           - name: "Transaction_ID"
@@ -1074,7 +1076,7 @@ frames:
               exchange has failed. The switch terminates the AUTH transaction
               and will not allow this HBA to proceed with PRLI or I/O.
             spec_refs:
-              - document: "FC-SP-2"
+              - document: "FC-SP-3 (INCITS 577-202x)"
                 section: "5.3.6"
                 title: "AUTH_Reject message"
           - name: "Reason_Code"
@@ -1088,7 +1090,7 @@ frames:
               reason code in production environments — almost always caused by
               mismatched shared secrets.
             spec_refs:
-              - document: "FC-SP-2"
+              - document: "FC-SP-3 (INCITS 577-202x)"
                 section: "5.3.6.1"
                 title: "AUTH_Reject Reason Codes"
           - name: "Reason_Code_Explanation"
@@ -1102,7 +1104,7 @@ frames:
               This explanation distinguishes a hash mismatch from other failure
               modes (timeout, unsupported protocol, etc.).
             spec_refs:
-              - document: "FC-SP-2"
+              - document: "FC-SP-3 (INCITS 577-202x)"
                 section: "5.3.6.2"
                 title: "AUTH_Reject Reason Code Explanations"
           - name: "Transaction_ID"
@@ -1529,7 +1531,7 @@ timeline:
         The switch will now compute the expected hash using its own secret,
         compare the two hashes, and detect the mismatch.
       spec_refs:
-        - document: "FC-SP-2"
+        - document: "FC-SP-3 (INCITS 577-202x)"
           section: "5.3.3"
           title: "DHCHAP_Reply — CHAP response computation"
     state_after:
@@ -1573,7 +1575,7 @@ timeline:
         response was rejected — but does NOT reveal the specific cause
         (intentional security measure to prevent oracle attacks).
       spec_refs:
-        - document: "FC-SP-2"
+        - document: "FC-SP-3 (INCITS 577-202x)"
           section: "5.3.6"
           title: "AUTH_Reject"
     state_after:
@@ -1734,7 +1736,7 @@ glossary:
       is distinct from SA Establishment, which handles post-quantum key
       exchange separately.
     spec_refs:
-      - document: "FC-SP-2"
+      - document: "FC-SP-3 (INCITS 577-202x)"
         section: "5.3"
         title: "DH-CHAP"
 
@@ -1747,7 +1749,7 @@ glossary:
       code 0x90 (AUTH_ELS). The responder replies with Auth_Negotiate_RSP
       to confirm the agreed parameters, or AUTH_Negotiate RJT to reject.
     spec_refs:
-      - document: "FC-SP-2"
+      - document: "FC-SP-3 (INCITS 577-202x)"
         section: "5.3.1"
         title: "AUTH_Negotiate"
 
@@ -1761,7 +1763,7 @@ glossary:
       receiving AUTH_Reject, the initiator should expect LOGO (logout)
       and loss of fabric connectivity.
     spec_refs:
-      - document: "FC-SP-2"
+      - document: "FC-SP-3 (INCITS 577-202x)"
         section: "5.3.6"
         title: "AUTH_Reject"
 
@@ -1773,10 +1775,10 @@ glossary:
       endpoints — any difference (including trailing whitespace or encoding
       differences) causes authentication failure. Typically configured via
       the switch's fabric manager and the HBA's management utility.
-      FC-SP-2 specifies a minimum secret length of 12 characters and a
-      maximum of 64 characters.
+      FC-SP-3 (INCITS 577-202x) specifies a minimum secret length of 12
+      characters and a maximum of 64 characters.
     spec_refs:
-      - document: "FC-SP-2"
+      - document: "FC-SP-3 (INCITS 577-202x)"
         section: "5.3"
         title: "DH-CHAP shared secret requirements"
 
@@ -1805,7 +1807,7 @@ glossary:
       mutual authentication never completes because forward authentication
       fails first.
     spec_refs:
-      - document: "FC-SP-2"
+      - document: "FC-SP-3 (INCITS 577-202x)"
         section: "5.3"
         title: "DH-CHAP mutual authentication"
 
