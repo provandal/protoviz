@@ -18,7 +18,7 @@ meta:
     separately from DH-CHAP.
 
     The scenario also covers: what the FC switch sees (routing headers only —
-    payload is opaque ciphertext), why deduplification and compression survive
+    payload is opaque ciphertext), why deduplication and compression survive
     (decryption happens at the array port, not in the data services engine),
     and the automatic session re-key process that refreshes keys without
     interrupting I/O.
@@ -236,7 +236,7 @@ osi_layers:
           initial: false
     - layer: 1
       name: "FC-1 Encoding"
-      components: ["64b/66b encoding", "RS(544,514) FEC", "AES-256-GCM decryption engine"]
+      components: ["64b/66b encoding", "RS(544,514) FEC"]
       state_schema:
         encoding:
           type: "string"
@@ -244,7 +244,7 @@ osi_layers:
           initial: "64b/66b"
     - layer: 2
       name: "FC-2 Framing"
-      components: ["FC frame receive", "ESP_Header processing", "CRC validation post-decrypt"]
+      components: ["FC frame receive", "ESP_Header processing", "AES-256-GCM decryption engine", "CRC validation post-decrypt"]
       state_schema:
         frame_type:
           type: "string"
@@ -403,13 +403,14 @@ frames:
   # ── AUTH_NEGOTIATE ───────────────────────────────────────────────────────────
 
   - id: "auth_negotiate"
-    name: "AUTH_Negotiate — Propose Authentication & Encryption Parameters"
+    name: "AUTH_Negotiate — Propose Authentication Parameters"
     description: >
       The host SecureHBA sends AUTH_Negotiate as an FC Extended Link Service (ELS).
       This frame proposes the authentication protocol (DH-CHAP), the hash algorithm
-      (SHA-512 for CNSA 2.0 alignment), the Diffie-Hellman group
-      (e.g., DH Group 4 = 2048-bit MODP), and the encryption
-      transform (AES-256-GCM).
+      (SHA-512 for CNSA 2.0 alignment), and the Diffie-Hellman group
+      (e.g., DH Group 4 = 2048-bit MODP). Authentication negotiation does NOT
+      include cipher/encryption negotiation — cipher parameters (AES-256-GCM)
+      are negotiated later in SA_INIT.
 
       Note: DH-CHAP uses classical Diffie-Hellman key exchange. For post-quantum
       key establishment (CNSA 2.0), FC-SP-3 provides the separate SA Establishment
@@ -431,13 +432,13 @@ frames:
             abbrev: "els.cmd"
             bits: 8
             offset_bits: 0
-            value: "0x52"
-            value_hex: "0x52"
+            value: "0x90"
+            value_hex: "0x90"
             description: >
-              0x52 = AUTH_ELS. The FC-SP Authentication Extended Link Service
-              command code. This is how FC-SP-3 messages are carried — as ELS
-              frames on an established N_Port connection, not as separate fabric
-              services.
+              0x90 = AUTH ELS (per fc_els.h ELS_AUTH_ELS). The FC-SP
+              Authentication Extended Link Service command code. This is how
+              FC-SP-3 messages are carried — as ELS frames on an established
+              N_Port connection, not as separate fabric services.
             spec_refs:
               - document: "FC-SP-2 (INCITS 496-2012)"
                 section: "5.1"
@@ -451,9 +452,9 @@ frames:
             abbrev: "auth_neg.msg_code"
             bits: 8
             offset_bits: 0
-            value: "0x10"
-            value_hex: "0x10"
-            description: "AUTH_Negotiate message code = 0x10."
+            value: "0x0B"
+            value_hex: "0x0B"
+            description: "0x0B = AUTH_Negotiate (per Wireshark packet-fcsp.c fcauth_msgcode_vals)"
             spec_refs:
               - document: "FC-SP-2"
                 section: "5.3.1"
@@ -509,28 +510,8 @@ frames:
               which handles ML-KEM-1024 independently of DH-CHAP.
             spec_refs:
               - document: "FC-SP-2"
-                section: "5.3.1"
+                section: "5.3.1, Table 13"
                 title: "DH-CHAP DH Group negotiation"
-              - document: "RFC 3526"
-                section: "3"
-                title: "2048-bit MODP Group"
-          - name: "Encryption_Transform — AES-256-GCM"
-            abbrev: "auth_neg.cipher"
-            bits: 8
-            offset_bits: 80
-            value: "0x05"
-            description: >
-              0x05 = AES-256-GCM (FC-SP-3 cipher suite). GCM (Galois/Counter Mode)
-              provides both confidentiality (encryption) and integrity (authentication tag)
-              in a single pass. The 128-bit authentication tag detects any in-flight
-              tampering. AES-256 is approved for TOP SECRET in CNSA 1.0 and 2.0.
-            spec_refs:
-              - document: "NIST FIPS 197"
-                section: "all"
-                title: "AES-256"
-              - document: "NIST SP 800-38D"
-                section: "all"
-                title: "GCM mode"
           - name: "Initiator WWN"
             abbrev: "auth_neg.wwn"
             bits: 64
@@ -645,9 +626,12 @@ frames:
     name: "Auth_Negotiate_RSP — Target Confirms Parameters"
     description: >
       The array SecureHBA responds with Auth_Negotiate_RSP, confirming the
-      agreed authentication and encryption parameters. Both sides now have
-      a common understanding of the cipher suite before exchanging any
+      agreed authentication parameters. Both sides now have a common
+      understanding of the authentication algorithms before exchanging any
       key material. The switch passes this frame without inspection.
+
+      Auth_Negotiate_RSP is optional in FC-SP-3. This scenario shows one
+      possible flow where the target explicitly confirms parameters.
     from: "array"
     to: "host"
     via: ["switch"]
@@ -662,8 +646,8 @@ frames:
           - name: "Auth_Msg_Code"
             abbrev: "auth_neg_rsp.msg"
             bits: 8
-            value: "0x11"
-            description: "0x11 = Auth_Negotiate_RSP. Acceptance of proposed parameters."
+            value: "0x0C"
+            description: "0x0C = Auth_Negotiate_RSP [FC-SP-3 — code assigned per T11 draft; closest FC-SP-2 equivalent is AUTH_Done]"
           - name: "Agreed Hash"
             abbrev: "auth_neg_rsp.hash"
             bits: 8
@@ -674,11 +658,6 @@ frames:
             bits: 16
             value: "0x0004"
             description: "DH Group 4 (2048-bit MODP) accepted for DH-CHAP key agreement."
-          - name: "Agreed Cipher"
-            abbrev: "auth_neg_rsp.cipher"
-            bits: 8
-            value: "0x05"
-            description: "AES-256-GCM accepted. Session encryption transform confirmed."
           - name: "Responder WWN"
             abbrev: "auth_neg_rsp.wwn"
             bits: 64
@@ -808,8 +787,8 @@ frames:
           - name: "Auth_Msg_Code"
             abbrev: "dhchap_c.msg"
             bits: 8
-            value: "0x20"
-            description: "0x20 = DHCHAP_Challenge message code."
+            value: "0x10"
+            description: "0x10 = DHCHAP_Challenge (per Wireshark packet-fcsp.c)"
             spec_refs:
               - document: "FC-SP-2"
                 section: "5.3.2"
@@ -820,8 +799,10 @@ frames:
             value: "0xF4A2B8C1D3E09F715A6B2C8D4E3F1A09"
             description: >
               Random 128-bit challenge nonce generated by the target.
-              The initiator must respond with HMAC-SHA-512(shared_secret,
-              challenge_value || initiator_WWN || target_WWN).
+              The initiator must respond with SHA-512(challenge_value ||
+              K || shared_secret || initiator_WWN || target_WWN).
+              FC-SP-2 uses a plain SHA hash over concatenation (not HMAC —
+              HMAC is NVMe DH-HMAC-CHAP, a different protocol).
               This proves the initiator knows the shared secret without
               transmitting it.
           - name: "DH Public Value g^b mod p (256 bytes)"
@@ -830,14 +811,14 @@ frames:
             value: "[256-byte DH public value for Group 4 (2048-bit MODP)]"
             description: >
               The target's Diffie-Hellman public value g^b mod p, where g and p
-              are defined by DH Group 4 (2048-bit MODP per RFC 3526). The
-              initiator computes g^a mod p (its own public value) and derives
-              the shared secret K = g^(ab) mod p. Both sides independently
-              derive the same K without transmitting it.
+              are defined by DH Group 4 (2048-bit MODP per FC-SP-2 section
+              5.3.1, Table 13). The initiator computes g^a mod p (its own
+              public value) and derives the shared secret K = g^(ab) mod p.
+              Both sides independently derive the same K without transmitting it.
             spec_refs:
-              - document: "RFC 3526"
-                section: "3"
-                title: "2048-bit MODP Group"
+              - document: "FC-SP-2"
+                section: "5.3.1, Table 13"
+                title: "DH-CHAP DH Group parameters"
       - name: "FC-2 Frame Header (Routing — always plaintext)"
         abbrev: "fc2"
         layer: 2
@@ -939,7 +920,7 @@ frames:
     description: >
       The host SecureHBA responds with DHCHAP_Reply. This carries:
       1. The initiator's DH public value g^a mod p — allows both sides to derive K = g^(ab) mod p
-      2. The CHAP response — HMAC-SHA-512 over (K || challenge) proving knowledge of K
+      2. The CHAP response — SHA-512 over (challenge || K || shared_secret || WWNs) proving knowledge of K
       3. A reverse challenge — the initiator also challenges the target
          (mutual authentication: both sides prove identity)
 
@@ -959,8 +940,8 @@ frames:
           - name: "Auth_Msg_Code"
             abbrev: "dhchap_r.msg"
             bits: 8
-            value: "0x21"
-            description: "0x21 = DHCHAP_Reply."
+            value: "0x11"
+            description: "0x11 = DHCHAP_Reply (per Wireshark packet-fcsp.c)"
           - name: "DH Public Value g^a mod p (256 bytes)"
             abbrev: "dhchap_r.dhval"
             bits: 2048
@@ -971,17 +952,19 @@ frames:
               An eavesdropper cannot derive K from g^a or g^b alone (Computational
               Diffie-Hellman assumption).
             spec_refs:
-              - document: "RFC 3526"
-                section: "3"
-                title: "2048-bit MODP Group"
+              - document: "FC-SP-2"
+                section: "5.3.1, Table 13"
+                title: "DH-CHAP DH Group parameters"
           - name: "CHAP_Response (64 bytes)"
             abbrev: "dhchap_r.resp"
             bits: 512
-            value: "[HMAC-SHA-512(K || challenge_value || initiator_WWN || target_WWN)]"
+            value: "[SHA-512(challenge_value || K || shared_secret || initiator_WWN || target_WWN)]"
             description: >
-              64-byte HMAC-SHA-512 response over the target's challenge.
+              64-byte SHA-512 response over the target's challenge.
+              FC-SP-2 uses a plain hash over concatenation, not HMAC
+              (HMAC is NVMe DH-HMAC-CHAP, a different protocol).
               Proves the initiator derived the same K from the DH exchange.
-              The target verifies this by computing the same HMAC using its
+              The target verifies this by computing the same hash using its
               K (from g^(ab) mod p) — if they match, the initiator is authenticated.
           - name: "Reverse_Challenge (16 bytes)"
             abbrev: "dhchap_r.rev_chall"
@@ -1096,7 +1079,7 @@ frames:
       verified each other's identity. K is now a shared secret known only
       to the two SecureHBA ASICs.
 
-      Next step: derive the AES-256-GCM session key from K using HKDF-SHA-512.
+      Next step: derive the AES-256-GCM session key from K via IKEv2-based key derivation (RFC 7296) with FC-specific PRF.
     from: "array"
     to: "host"
     via: ["switch"]
@@ -1111,15 +1094,15 @@ frames:
           - name: "Auth_Msg_Code"
             abbrev: "dhchap_s.msg"
             bits: 8
-            value: "0x22"
-            description: "0x22 = DHCHAP_Success. Authentication complete."
+            value: "0x12"
+            description: "0x12 = DHCHAP_Success (per Wireshark packet-fcsp.c)"
           - name: "Reverse_Challenge_Response (64 bytes)"
             abbrev: "dhchap_s.resp"
             bits: 512
-            value: "[HMAC-SHA-512(K || reverse_challenge || target_WWN || initiator_WWN)]"
+            value: "[SHA-512(reverse_challenge || K || shared_secret || target_WWN || initiator_WWN)]"
             description: >
               Target proves it knows K by responding correctly to the initiator's
-              reverse challenge. On receipt, the initiator verifies this HMAC.
+              reverse challenge. On receipt, the initiator verifies this hash.
               If valid, mutual authentication is complete: both endpoints have
               proven their identity and both hold the same K.
           - name: "Authentication Result"
@@ -1228,16 +1211,20 @@ frames:
   # ── SA_Init ──────────────────────────────────────────────────────────────────
 
   - id: "sa_init"
-    name: "SA_Init — Security Association Proposal"
+    name: "SA_Init — Security Association Proposal (Host → Array)"
     description: >
       Following successful DH-CHAP, the host sends SA_Init to formally establish
       the Security Association (SA) — the FC-SP-3 equivalent of an IPsec SA.
       The SA defines which FC frames are encrypted, the SA ID (used in
-      ESP_Header), and the key derivation parameters.
+      ESP_Header), the cipher transform (AES-256-GCM — negotiated here, not
+      in AUTH_Negotiate), and the key derivation parameters.
 
-      The session key is derived from K using HKDF:
-        session_key = HKDF-SHA-512(K, salt="FC-ESP-SESSION-KEY", info=SA_ID || wwn_pair)
-      This key is 256 bits (AES-256) and exists only in the two SecureHBA ASICs.
+      SA Establishment uses IKEv2 (RFC 4595) with FC-specific extensions.
+      SA_INIT and SA_AUTH are exchanged in both directions. Frame-level
+      fields simplified for illustration — actual parameters per FC-SP-3 draft.
+
+      Key derivation per IKEv2 (RFC 7296) with FC-specific PRF.
+      The session key is 256 bits (AES-256) and exists only in the two SecureHBA ASICs.
     from: "host"
     to: "array"
     via: ["switch"]
@@ -1275,7 +1262,7 @@ frames:
             abbrev: "sa_init.keylen"
             bits: 16
             value: 256
-            description: "256-bit AES key derived via HKDF-SHA-512 from K."
+            description: "256-bit AES key. Key derivation per IKEv2 (RFC 7296) with FC-specific PRF. Simplified for illustration."
           - name: "Rekey_Interval"
             abbrev: "sa_init.rekey"
             bits: 32
@@ -1486,6 +1473,281 @@ frames:
             abbrev: "fc2.rxid"
             bits: 16
             value: "0x0012"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc2.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── SA_Init (reverse direction: array → host) ───────────────────────────────
+
+  - id: "sa_init_reverse"
+    name: "SA_Init (Reverse) — Array Sends Its Own SA_INIT to Host"
+    description: >
+      SA Establishment uses IKEv2 (RFC 4595) with FC-specific extensions.
+      SA_INIT and SA_AUTH are exchanged in both directions. The array now
+      sends its own SA_INIT to the host, proposing a Security Association
+      for the array-to-host direction. Frame-level fields simplified for
+      illustration — actual parameters per FC-SP-3 draft.
+    from: "array"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 17000
+    total_bytes: 64
+    color: "#27ae60"
+    headers:
+      - name: "SA_Init PDU (Reverse)"
+        abbrev: "sa_init_rev"
+        layer: 4
+        fields:
+          - name: "Auth_Msg_Code"
+            abbrev: "sa_init_rev.msg"
+            bits: 8
+            value: "0x30"
+            description: "0x30 = SA_Init."
+          - name: "SA_ID"
+            abbrev: "sa_init_rev.said"
+            bits: 32
+            value: "0x000000A1"
+            description: >
+              Security Association identifier for the reverse direction.
+              Carried in every ESP_Header to tell the receiver which SA
+              (and therefore which key) to use for decryption.
+          - name: "Transform: AES-256-GCM"
+            abbrev: "sa_init_rev.xform"
+            bits: 8
+            value: "0x05"
+            description: "Cipher confirmed: AES-256-GCM. Provides confidentiality + integrity."
+          - name: "Key_Length"
+            abbrev: "sa_init_rev.keylen"
+            bits: 16
+            value: 256
+            description: "256-bit AES key. Key derivation per IKEv2 (RFC 7296) with FC-specific PRF. Simplified for illustration."
+          - name: "Rekey_Interval"
+            abbrev: "sa_init_rev.rekey"
+            bits: 32
+            value: 3600
+            description: "Automatic re-key interval in seconds = 3600 (1 hour)."
+      - name: "FC-2 Frame Header (Routing — always plaintext)"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x22"
+            description: "Routing Control — Extended Link Service, unsolicited control"
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0x010200"
+            description: "Destination N_Port ID — host HBA port. ALWAYS PLAINTEXT."
+          - name: "CS_CTL"
+            abbrev: "fc2.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0x020100"
+            description: "Source N_Port ID — array target port. Always plaintext."
+          - name: "TYPE"
+            abbrev: "fc2.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc2.fctl"
+            bits: 24
+            value: "0x290000"
+            description: "Frame Control — exchange originator, first+last sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc2.seqid"
+            bits: 8
+            value: "0x00"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc2.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc2.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc2.oxid"
+            bits: 16
+            value: "0x0014"
+            description: "Originator Exchange ID — reverse SA_INIT exchange"
+          - name: "RX_ID"
+            abbrev: "fc2.rxid"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — not yet assigned"
+          - name: "Parameter"
+            abbrev: "fc2.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── SA_AUTH (reverse direction: host → array) ──────────────────────────────
+
+  - id: "sa_auth_reverse"
+    name: "SA_AUTH (Reverse) — Host Confirms Reverse SA"
+    description: >
+      The host responds with SA_AUTH to the array's SA_INIT, completing the
+      bidirectional SA Establishment. Both directions now have active
+      Security Associations. SA Establishment uses IKEv2 (RFC 4595) with
+      FC-specific extensions. Frame-level fields simplified for illustration.
+    from: "host"
+    to: "array"
+    via: ["switch"]
+    timestamp_ns: 19000
+    total_bytes: 32
+    color: "#e67e22"
+    headers:
+      - name: "SA_AUTH (Reverse)"
+        abbrev: "sa_auth_rev"
+        layer: 4
+        fields:
+          - name: "Auth_Msg_Code"
+            abbrev: "sa_auth_rev.msg"
+            bits: 8
+            value: "0x31"
+            description: "0x31 = SA_AUTH. Reverse Security Association is live."
+          - name: "SA_ID (confirmed)"
+            abbrev: "sa_auth_rev.said"
+            bits: 32
+            value: "0x000000A1"
+            description: "SA ID 0xA1 confirmed for reverse direction."
+          - name: "Encryption Status"
+            abbrev: "sa_auth_rev.status"
+            bits: 0
+            value: "ACTIVE — AES-256-GCM on all frames in reverse direction"
+            description: >
+              Both directions of the SA are now established. The SecureHBA
+              hardware encryption engines on both endpoints are armed for
+              bidirectional encryption.
+      - name: "FC-2 Frame Header (Routing — always plaintext)"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x22"
+            description: "Routing Control — Extended Link Service, unsolicited control"
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0x020100"
+            description: "Destination N_Port ID — array target port. ALWAYS PLAINTEXT."
+          - name: "CS_CTL"
+            abbrev: "fc2.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0x010200"
+            description: "Source N_Port ID — host HBA port. Always plaintext."
+          - name: "TYPE"
+            abbrev: "fc2.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc2.fctl"
+            bits: 24
+            value: "0x290000"
+            description: "Frame Control — exchange originator, first+last sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc2.seqid"
+            bits: 8
+            value: "0x00"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc2.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc2.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc2.oxid"
+            bits: 16
+            value: "0x0015"
+            description: "Originator Exchange ID — reverse SA_AUTH exchange"
+          - name: "RX_ID"
+            abbrev: "fc2.rxid"
+            bits: 16
+            value: "0xFFFF"
             description: "Responder Exchange ID"
           - name: "Parameter"
             abbrev: "fc2.parameter"
@@ -2508,7 +2770,7 @@ frames:
             value: "WRITE(10) CDB → FCP target → data path → DEDUPE ✓ COMPRESS ✓ RANSOMWARE DETECT ✓"
             description: >
               After decryption, the FCP payload is plaintext SCSI data.
-              Deduplification compares against existing data — works normally.
+              Deduplication compares against existing data — works normally.
               Compression operates on plaintext — full ratio achieved.
               Ransomware detection inspects plaintext write patterns — not blind.
               None of these services are impaired. This is only possible because
@@ -2549,7 +2811,7 @@ frames:
     description: >
       After the rekey_interval (3600 seconds in this scenario), the SecureHBAs
       automatically negotiate a new session key. A new DH-CHAP exchange produces
-      a new K, HKDF derives a new session key, and a new SA (SA_ID = 0xA2) is
+      a new K, IKEv2-based key derivation produces a new session key, and a new SA (SA_ID = 0xA2) is
       established. Frames in flight under SA 0xA1 complete normally. New frames
       use SA 0xA2. SA 0xA1 is retired after a brief overlap window.
 
@@ -2592,7 +2854,7 @@ frames:
             abbrev: "rekey.new_sa"
             bits: 0
             value: "SA_ID=0xA2, new AES-256-GCM key, Seq counter reset to 1"
-            description: "Fresh 256-bit session key derived from new K via HKDF-SHA-512."
+            description: "Fresh 256-bit session key derived from new K. Key derivation per IKEv2 (RFC 7296) with FC-specific PRF."
       - name: "FC-2 Frame Header (Routing — always plaintext)"
         abbrev: "fc2"
         layer: 2
@@ -2714,7 +2976,7 @@ timeline:
         the FC-SP-3 security capability bit in their PLOGI ACC service parameters.
         The host's SecureHBA detects this mutual capability match and automatically
         initiates authentication. No administrator action required. Note the
-        N_Port IDs: host=0x010100, array=0x010200 — these will be S_ID and D_ID
+        N_Port IDs: host=0x010200, array=0x020100 — these will be S_ID and D_ID
         in every subsequent frame.
     state_after:
       - actor_id: "host"
@@ -2746,13 +3008,14 @@ timeline:
     t_ns: 1000
     frame_id: "auth_negotiate"
     annotation:
-      text: "AUTH_Negotiate — Propose Authentication & Encryption Parameters"
+      text: "AUTH_Negotiate — Propose Authentication Parameters"
       detail: >
-        AUTH_Negotiate proposes the cipher suite for the entire session.
-        Three choices define the security posture: SHA-512 for hashing
-        (CNSA 2.0 compliant), DH Group 4 (2048-bit MODP) for classical
-        Diffie-Hellman key agreement, and AES-256-GCM for frame encryption.
-        The ELS command code 0x52 shows how FC-SP-3 rides on top of FC's
+        AUTH_Negotiate proposes the authentication parameters.
+        Two choices define the auth posture: SHA-512 for hashing
+        (CNSA 2.0 compliant) and DH Group 4 (2048-bit MODP) for classical
+        Diffie-Hellman key agreement. Cipher negotiation (AES-256-GCM) happens
+        later in SA_INIT, not here.
+        The ELS command code 0x90 shows how FC-SP-3 rides on top of FC's
         existing Extended Link Service infrastructure — no new frame types
         are needed.
     state_after:
@@ -2774,7 +3037,7 @@ timeline:
     t_ns: 6000
     frame_id: "auth_neg_rsp"
     annotation:
-      text: "Auth_Negotiate_RSP — SHA-512 + DH Group 4 + AES-256-GCM Agreed"
+      text: "Auth_Negotiate_RSP — SHA-512 + DH Group 4 Agreed"
       detail: >
         The array accepts all proposed parameters. From this point, both sides
         know exactly which algorithms they will use — no negotiation surprises
@@ -2786,7 +3049,7 @@ timeline:
           - layer: 4
             name: "FC-4 Protocol Mapping"
             state_fields:
-              auth_state: "Auth_Negotiate_RSP — SHA-512 + DH Group 4 + AES-256-GCM agreed"
+              auth_state: "Auth_Negotiate_RSP — SHA-512 + DH Group 4 agreed"
       - actor_id: "array"
         layers:
           - layer: 4
@@ -2830,7 +3093,7 @@ timeline:
       detail: >
         DHCHAP_Reply carries three payloads: the initiator's DH public value
         g^a mod p (enabling both sides to derive K = g^(ab) mod p), the CHAP
-        response (an HMAC-SHA-512 hash proving the host derived K correctly),
+        response (a SHA-512 hash proving the host derived K correctly),
         and a reverse challenge nonce for mutual authentication. The host CPU
         never sees K — everything runs in the SecureHBA ASIC hardware.
     state_after:
@@ -2885,7 +3148,7 @@ timeline:
       detail: >
         SA_Init formalizes the Security Association: SA_ID=0xA1 (identifies
         the SA in every subsequent ESP header), transform=AES-256-GCM,
-        256-bit session key derived via HKDF-SHA-512 from K, re-key
+        256-bit session key derived from K (key derivation per IKEv2 RFC 7296), re-key
         interval=3600 seconds. The scope covers ALL frames between these
         two N_Ports — regardless of FC-4 protocol or application workload.
         Zero per-application configuration needed.
@@ -2895,7 +3158,7 @@ timeline:
           - layer: 4
             name: "FC-4 Protocol Mapping"
             state_fields:
-              auth_state: "SA_Init sent — deriving session key via HKDF"
+              auth_state: "SA_Init sent — deriving session key"
           - layer: 2
             name: "FC-2 Framing / Transport"
             state_fields:
@@ -2905,7 +3168,43 @@ timeline:
           - layer: 4
             name: "FC-4 / Data Services"
             state_fields:
-              auth_state: "SA_Init received — deriving session key via HKDF"
+              auth_state: "SA_Init received — deriving session key"
+
+  - id: "sa_init_reverse"
+    type: "frame_tx"
+    t_ns: 17000
+    frame_id: "sa_init_reverse"
+    annotation:
+      text: "SA_INIT (Reverse Direction) — Array Sends SA_INIT to Host"
+      detail: >
+        SA_INIT (reverse direction) — the array now sends its own SA_INIT
+        to the host. SA Establishment requires SA_INIT and SA_AUTH in both
+        directions to establish bidirectional Security Associations.
+    state_after:
+      - actor_id: "array"
+        layers:
+          - layer: 4
+            name: "FC-4 / Data Services"
+            state_fields:
+              auth_state: "SA_Init (reverse) sent — establishing bidirectional SA"
+
+  - id: "sa_auth_reverse"
+    type: "frame_tx"
+    t_ns: 19000
+    frame_id: "sa_auth_reverse"
+    annotation:
+      text: "SA_AUTH (Reverse Direction) — Host Confirms Reverse SA"
+      detail: >
+        SA_AUTH (reverse direction) — host sends SA_AUTH to complete the
+        bidirectional SA establishment. Both directions now have active
+        Security Associations.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              auth_state: "SA_AUTH (reverse) sent — bidirectional SA complete"
 
   - id: "sa_auth"
     type: "frame_tx"
@@ -3332,15 +3631,14 @@ glossary:
         section: "all"
         url: "https://media.defense.gov/2022/Sep/07/2003071836/-1/-1/0/CSA_CNSA_2.0_ALGORITHMS_.PDF"
 
-  - term: "HKDF"
-    abbrev: "HKDF"
+  - term: "Key Derivation (SA Establishment)"
+    abbrev: "KDF"
     definition: >
-      HMAC-based Key Derivation Function (RFC 5869). Used to derive the AES-256-GCM
-      session key from the shared secret K produced by the DH-CHAP exchange
-      (or by SA Establishment for post-quantum scenarios). Takes K, a salt,
-      and context-specific info (SA_ID, WWN pair) and produces a cryptographically
-      strong derived key. Ensures that even if K were somehow compromised, the
-      session key has additional entropy from the derivation context.
+      SA Establishment uses IKEv2 (RFC 7296) with FC-specific extensions for key
+      derivation. The AES-256-GCM session key is derived from the shared secret K
+      produced by the DH-CHAP exchange (or by SA Establishment for post-quantum
+      scenarios). Key derivation per IKEv2 (RFC 7296) with FC-specific PRF.
+      Simplified for illustration — actual parameters per FC-SP-3 draft.
 
   - term: "Re-key"
     abbrev: "rekey"
@@ -3365,17 +3663,18 @@ walkthroughs:
         highlight_fields: ["ctx.sid", "ctx.did", "ctx.fcsp3"]
       - step: 1
         narration: >
-          AUTH_Negotiate proposes the cipher suite. Note the three key choices:
-          SHA-512 for hashing (CNSA 2.0 compliant), DH Group 4 (2048-bit MODP)
-          for classical Diffie-Hellman key agreement, and AES-256-GCM for frame
-          encryption. Also note the ELS command code 0x52 — this is how FC-SP-3
-          rides on top of FC's Extended Link Service infrastructure.
-        highlight_fields: ["els.cmd", "auth_neg.hash0", "auth_neg.dhgroup", "auth_neg.cipher", "auth_neg.wwn"]
+          AUTH_Negotiate proposes the authentication parameters. Note the two key
+          choices: SHA-512 for hashing (CNSA 2.0 compliant) and DH Group 4
+          (2048-bit MODP) for classical Diffie-Hellman key agreement. Cipher
+          negotiation (AES-256-GCM) happens later in SA_INIT, not here. Also
+          note the ELS command code 0x90 — this is how FC-SP-3 rides on top of
+          FC's Extended Link Service infrastructure.
+        highlight_fields: ["els.cmd", "auth_neg.hash0", "auth_neg.dhgroup", "auth_neg.wwn"]
       - step: 2
         narration: >
           Array accepts all proposed parameters. From this point, both sides know
           exactly what algorithms they'll use. No negotiation surprises later.
-        highlight_fields: ["auth_neg_rsp.hash", "auth_neg_rsp.dhgroup", "auth_neg_rsp.cipher"]
+        highlight_fields: ["auth_neg_rsp.hash", "auth_neg_rsp.dhgroup"]
       - step: 3
         narration: >
           The DH-CHAP Challenge carries two things: a 128-bit CHAP challenge nonce
@@ -3400,7 +3699,7 @@ walkthroughs:
       - step: 6
         narration: >
           SA_Init formalizes the Security Association: SA_ID=0xA1, AES-256-GCM,
-          256-bit key derived via HKDF-SHA-512 from K, re-key interval 3600s.
+          256-bit key derived from K (key derivation per IKEv2 RFC 7296), re-key interval 3600s.
           Note the scope — ALL frames, regardless of application or workload.
           Zero per-application configuration.
         highlight_fields: ["sa_init.said", "sa_init.xform", "sa_init.keylen", "sa_init.rekey", "sa_init.scope"]
