@@ -284,11 +284,11 @@
     },
     {
       "slug": "fc-sp3-secure-hba-edif",
-      "title": "FC-SP-3 Secure HBA: Fabric Authentication → Session Key → Encrypted I/O",
+      "title": "[UNDER REVIEW] FC-SP-3 Secure HBA: Fabric Authentication → Session Key → Encrypted I/O",
       "protocol": "FC-SP-3 / DH-CHAP / AES-256-GCM",
       "protocol_family": "SAN",
       "difficulty": "intermediate",
-      "description": "A companion to the FC Fabric scenario. Picks up at PLOGI and adds the FC-SP-3 security layer: DH-CHAP mutual authentication, Security Association establishment with ML-KEM-1024 post-quantum key encapsulation, AES-256-GCM session key derivation, and encrypted FC frames — all negotiated automatically as part of PRLI.",
+      "description": "A companion to the FC Fabric scenario. Picks up at PLOGI and adds the FC-SP-3 security layer: DH-CHAP mutual authentication (optional in SP-3), SA Establishment (SA_INIT + SA_AUTH), AES-256-GCM session key derivation, and encrypted FC frames. Under review with Broadcom FC-SP-3 maintainers for accuracy.",
       "tags": ["FC-SP-3", "DH-CHAP", "AES-256-GCM", "Fibre Channel", "SAN", "encryption", "post-quantum", "ML-KEM", "CNSA 2.0", "education"],
       "path": "fc-sp/fc-sp3-secure-hba-edif.yaml"
     },

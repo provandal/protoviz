@@ -81,7 +81,7 @@ topology:
       type: "switch"
       label: "FC Switch (64GFC)"
       description: >
-        FC director switch enforcing FC-SP-3 DH-CHAP authentication on all
+        FC director switch with FC-SP-3 DH-CHAP authentication configured on all
         F_Ports. The switch has a shared secret database (per-WWN or zone-based)
         that is used to validate incoming HBA authentication. In this scenario
         the switch's copy of the shared secret for this HBA's WWN does not
@@ -187,7 +187,7 @@ osi_layers:
         auth_policy:
           type: "string"
           description: "Authentication policy for this port"
-          initial: "DH-CHAP REQUIRED — reject unauthenticated logins"
+          initial: "DH-CHAP ENABLED — authentication policy enforced"
 
   array:
     - layer: 0
@@ -214,8 +214,8 @@ frames:
     name: "PLOGI ACC — N_Port Login Complete"
     description: >
       FLOGI and PLOGI have already completed. The host and switch have exchanged
-      N_Port IDs and WWNs. The switch's authentication policy requires DH-CHAP
-      before allowing any further fabric services or I/O. The host will now
+      N_Port IDs and WWNs. The switch's authentication policy has DH-CHAP enabled
+      and configured on this port before allowing further fabric services or I/O. The host will now
       initiate FC-SP-3 authentication.
     from: "host"
     to: "switch"
@@ -233,15 +233,15 @@ frames:
             value: "PLOGI ACC received — N_Port Login complete"
             description: >
               PLOGI has completed successfully. The host has N_Port ID 0x010200
-              assigned by the fabric. The switch now requires DH-CHAP
-              authentication before the host can access any target ports.
+              assigned by the fabric. The switch has DH-CHAP authentication
+              configured and will enforce it before the host can access any target ports.
           - name: "FC-SP-3 Capability"
             abbrev: "plogi_ctx.fcsp3"
             bits: 0
-            value: "Both endpoints: FC-SP-3 DH-CHAP required (from PLOGI Service Parameters)"
+            value: "Both endpoints: FC-SP-3 DH-CHAP configured (from PLOGI Service Parameters)"
             description: >
               During PLOGI, the switch indicated FC-SP-3 authentication is
-              mandatory on this port (Common Service Parameters, Security bit
+              enabled on this port (Common Service Parameters, Security bit
               set). The host also advertised FC-SP-3 capability. Authentication
               must complete before any PRLI or I/O is allowed.
             spec_refs:
@@ -421,7 +421,7 @@ frames:
             bits: 8
             offset_bits: 8
             value: "0x01"
-            description: "0x01 = DH-CHAP. The mandatory authentication protocol in FC-SP."
+            description: "0x01 = DH-CHAP. An authentication protocol option in FC-SP."
           - name: "Transaction_ID"
             abbrev: "auth_neg.txn_id"
             bits: 32
@@ -566,12 +566,12 @@ frames:
             value: "850nm multimode fiber (SFP-DD)"
             description: "Short-reach fiber optics"
 
-  # ── AUTH_Negotiate ACC ────────────────────────────────────────────────────────
+  # ── Auth_Negotiate_RSP ────────────────────────────────────────────────────────
 
-  - id: "auth_neg_acc"
-    name: "AUTH_Negotiate ACC — Switch Confirms Parameters"
+  - id: "auth_neg_rsp"
+    name: "Auth_Negotiate_RSP — Switch Confirms Parameters"
     description: >
-      The switch responds with AUTH_Negotiate ACC, confirming agreement on
+      The switch responds with Auth_Negotiate_RSP, confirming agreement on
       DH-CHAP with SHA-256 and DH Group 4. Both sides now know the cipher
       suite. The switch generates a DH key pair and a challenge nonce.
       Note: the parameter negotiation succeeds — the failure comes later
@@ -582,31 +582,31 @@ frames:
     total_bytes: 48
     color: "#27ae60"
     headers:
-      - name: "AUTH_Negotiate ACC"
-        abbrev: "auth_neg_acc"
+      - name: "Auth_Negotiate_RSP"
+        abbrev: "auth_neg_rsp"
         layer: 4
         fields:
           - name: "Auth_Msg_Code"
-            abbrev: "auth_neg_acc.msg"
+            abbrev: "auth_neg_rsp.msg"
             bits: 8
             value: "0x11"
-            description: "0x11 = AUTH_Negotiate ACC. Acceptance of proposed parameters."
+            description: "0x11 = Auth_Negotiate_RSP. Response confirming proposed parameters."
             spec_refs:
               - document: "FC-SP-2"
                 section: "5.3.1"
-                title: "AUTH_Negotiate ACC"
+                title: "Auth_Negotiate_RSP"
           - name: "Agreed Hash"
-            abbrev: "auth_neg_acc.hash"
+            abbrev: "auth_neg_rsp.hash"
             bits: 8
             value: "0x02"
             description: "SHA-256 accepted as the hash algorithm for CHAP."
           - name: "Agreed DH Group"
-            abbrev: "auth_neg_acc.dhgroup"
+            abbrev: "auth_neg_rsp.dhgroup"
             bits: 8
             value: "0x04"
             description: "DH Group 4 (2048-bit MODP) accepted for key exchange."
           - name: "Responder WWN"
-            abbrev: "auth_neg_acc.wwn"
+            abbrev: "auth_neg_rsp.wwn"
             bits: 64
             value: "20:01:00:05:1E:A1:BB:01"
             description: "Switch F_Port WWN. The authenticator identity for this DH-CHAP exchange."
@@ -1381,7 +1381,7 @@ timeline:
       text: "Starting Point: PLOGI Complete, Authentication Required"
       detail: >
         FLOGI and PLOGI have completed. The host has an N_Port ID (0x010200)
-        and the switch requires DH-CHAP authentication before allowing PRLI
+        and the switch has DH-CHAP authentication configured before allowing PRLI
         or any I/O to target ports. The host's HBA has a shared secret
         configured, but it does NOT match the switch's stored secret for this
         HBA's WWN. The administrator is not yet aware of the mismatch.
@@ -1395,7 +1395,7 @@ timeline:
       detail: >
         PLOGI ACC received. The host has N_Port ID 0x010200, and both
         endpoints advertised FC-SP-3 capability in their service parameters.
-        The switch's authentication policy is set to MANDATORY — no HBA
+        The switch's authentication policy is set to ENABLED — no HBA
         can proceed to PRLI without successful DH-CHAP authentication.
         The host HBA initiates AUTH_Negotiate automatically.
     state_after:
@@ -1415,7 +1415,7 @@ timeline:
           - layer: 2
             name: "FC-2 Framing"
             state_fields:
-              auth_policy: "DH-CHAP MANDATORY — awaiting AUTH_Negotiate from host"
+              auth_policy: "DH-CHAP ENABLED — awaiting AUTH_Negotiate from host"
       - actor_id: "array"
         layers:
           - layer: 2
@@ -1444,7 +1444,7 @@ timeline:
           - layer: 4
             name: "FC-4 Protocol Mapping"
             state_fields:
-              auth_state: "AUTH_NEGOTIATE sent — awaiting ACC"
+              auth_state: "AUTH_NEGOTIATE sent — awaiting Auth_Negotiate_RSP"
       - actor_id: "switch"
         layers:
           - layer: 2
@@ -1452,14 +1452,14 @@ timeline:
             state_fields:
               auth_policy: "AUTH_NEGOTIATE received — evaluating parameters"
 
-  # ── Step 2: AUTH_Negotiate ACC ────────────────────────────────────────────────
+  # ── Step 2: Auth_Negotiate_RSP ────────────────────────────────────────────────
 
-  - id: "auth_neg_acc"
+  - id: "auth_neg_rsp"
     type: "frame_tx"
     t_ns: 5000
-    frame_id: "auth_neg_acc"
+    frame_id: "auth_neg_rsp"
     annotation:
-      text: "AUTH_Negotiate ACC — SHA-256 + DH Group 4 Agreed"
+      text: "Auth_Negotiate_RSP — SHA-256 + DH Group 4 Agreed"
       detail: >
         The switch accepts SHA-256 and DH Group 4. Parameter negotiation
         succeeds — the switch and HBA agree on the authentication mechanism.
@@ -1472,13 +1472,13 @@ timeline:
           - layer: 4
             name: "FC-4 Protocol Mapping"
             state_fields:
-              auth_state: "AUTH_NEGOTIATE ACC — DH-CHAP SHA-256 + Group 4 agreed"
+              auth_state: "Auth_Negotiate_RSP — DH-CHAP SHA-256 + Group 4 agreed"
       - actor_id: "switch"
         layers:
           - layer: 2
             name: "FC-2 Framing"
             state_fields:
-              auth_policy: "AUTH_NEGOTIATE ACC sent — generating DH key pair + challenge"
+              auth_policy: "Auth_Negotiate_RSP sent — generating DH key pair + challenge"
 
   # ── Step 3: DH-CHAP Challenge ────────────────────────────────────────────────
 
@@ -1729,7 +1729,7 @@ glossary:
   - term: "DH-CHAP"
     abbrev: "DH-CHAP"
     definition: >
-      Diffie-Hellman Challenge Handshake Authentication Protocol. The mandatory
+      Diffie-Hellman Challenge Handshake Authentication Protocol. An optional
       authentication protocol in FC-SP. Combines CHAP (challenge-response
       authentication using a shared secret) with a Diffie-Hellman key exchange
       (classical DH groups in FC-SP-2; ML-KEM post-quantum KEM in FC-SP-3).
@@ -1746,7 +1746,7 @@ glossary:
       The first message in an FC-SP authentication exchange. Proposes the
       authentication protocol (DH-CHAP), hash algorithm (SHA-256 or SHA-512),
       and DH group or KEM algorithm. Carried as an ELS frame with command
-      code 0x52 (AUTH_ELS). The responder replies with AUTH_Negotiate ACC
+      code 0x52 (AUTH_ELS). The responder replies with Auth_Negotiate_RSP
       to confirm the agreed parameters, or AUTH_Negotiate RJT to reject.
     spec_refs:
       - document: "FC-SP-2"
@@ -1819,7 +1819,7 @@ walkthroughs:
       - step: 0
         narration: >
           PLOGI is complete. The host has N_Port ID 0x010200 and both sides
-          advertised FC-SP-3 capability. The switch requires DH-CHAP
+          advertised FC-SP-3 capability. The switch has DH-CHAP
           authentication before any I/O. The host's shared secret does NOT
           match the switch's stored secret — but neither side knows this yet.
         highlight_fields: ["plogi_ctx.status", "plogi_ctx.fcsp3", "plogi_ctx.host_wwn"]
@@ -1835,7 +1835,7 @@ walkthroughs:
           Switch accepts the proposed parameters. SHA-256 and DH Group 4 are
           agreed. The switch generates a DH key pair and challenge nonce.
           Parameter negotiation succeeds — the failure comes later.
-        highlight_fields: ["auth_neg_acc.msg", "auth_neg_acc.hash", "auth_neg_acc.dhgroup"]
+        highlight_fields: ["auth_neg_rsp.msg", "auth_neg_rsp.hash", "auth_neg_rsp.dhgroup"]
       - step: 3
         narration: >
           The switch sends the DH-CHAP Challenge: a 128-bit random nonce and
