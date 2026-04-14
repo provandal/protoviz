@@ -448,18 +448,19 @@ frames:
                 title: "Hash algorithm identifiers"
           - name: "DH_Group — 2048-bit MODP (Group 4)"
             abbrev: "auth_neg.dhgroup"
-            bits: 8
+            bits: 32
             offset_bits: 56
-            value: "0x04"
+            value: "0x00000004"
             description: >
-              0x04 = DH Group 4 (2048-bit MODP). Classical Diffie-Hellman group
-              for key exchange. This is the most common DH group in existing
-              FC-SP deployments. The authentication failure in this scenario is
-              NOT related to the DH group — it is caused by mismatched shared
+              0x00000004 = DH Group 4 (2048-bit MODP). FC-SP-3 Table 14 —
+              32-bit identifier. Classical Diffie-Hellman group for key
+              exchange. This is the most common DH group in existing FC-SP
+              deployments. The authentication failure in this scenario is NOT
+              related to the DH group — it is caused by mismatched shared
               secrets in the CHAP layer.
             spec_refs:
               - document: "FC-SP-3 (INCITS 577-202x)"
-                section: "5.3.1.2"
+                section: "Table 14"
                 title: "DH Group identifiers"
           - name: "Initiator WWN"
             abbrev: "auth_neg.wwn"
@@ -604,9 +605,9 @@ frames:
             description: "0x00000007 = SHA-256 accepted as the hash algorithm for CHAP (FC-SP-3 Table 13, INCITS 577-202x)."
           - name: "Agreed DH Group"
             abbrev: "auth_neg_rsp.dhgroup"
-            bits: 8
-            value: "0x04"
-            description: "DH Group 4 (2048-bit MODP) accepted for key exchange."
+            bits: 32
+            value: "0x00000004"
+            description: "0x00000004 = DH Group 4 (2048-bit MODP) accepted for key exchange. FC-SP-3 Table 14 — 32-bit identifier."
           - name: "Responder WWN"
             abbrev: "auth_neg_rsp.wwn"
             bits: 64
@@ -1045,8 +1046,8 @@ frames:
       using its stored shared secret, and compares the result with the
       response in the DHCHAP_Reply. THE HASHES DO NOT MATCH.
 
-      The switch sends AUTH_Reject with reason code 0x05 (Authentication
-      Failed) and explanation code 0x01 (CHAP response mismatch). The switch
+      The switch sends AUTH_Reject with reason code 0x01 (Authentication
+      Failure) and explanation code 0x05 (Authentication Failed). The switch
       logs a security event: "DH-CHAP authentication failure for WWN
       10:00:00:10:9B:C7:2A:01 on port 0/12 — CHAP response verification
       failed."
@@ -1083,29 +1084,30 @@ frames:
             abbrev: "auth_rej.reason"
             bits: 8
             offset_bits: 8
-            value: "0x05"
+            value: "0x01"
             description: >
-              0x05 = Authentication Failed. The CHAP response hash did not match
-              the switch's computed hash. This is the most common AUTH_Reject
-              reason code in production environments — almost always caused by
-              mismatched shared secrets.
+              0x01 = Authentication Failure (FC-SP-3 Table 16). The CHAP
+              response hash did not match the switch's computed hash. This is
+              the most common AUTH_Reject reason code in production
+              environments — almost always caused by mismatched shared secrets.
             spec_refs:
               - document: "FC-SP-3 (INCITS 577-202x)"
-                section: "5.3.6.1"
+                section: "Table 16"
                 title: "AUTH_Reject Reason Codes"
           - name: "Reason_Code_Explanation"
             abbrev: "auth_rej.explanation"
             bits: 8
             offset_bits: 16
-            value: "0x01"
+            value: "0x05"
             description: >
-              0x01 = Authentication mechanism failure. The DH-CHAP protocol
-              completed its exchange but the response verification failed.
-              This explanation distinguishes a hash mismatch from other failure
-              modes (timeout, unsupported protocol, etc.).
+              0x05 = Authentication Failed (FC-SP-3 Table 17) — the CHAP
+              response hash did not match. The DH-CHAP protocol completed its
+              exchange but the response verification failed. This explanation
+              distinguishes a hash mismatch from other failure modes (timeout,
+              unsupported protocol, etc.).
             spec_refs:
               - document: "FC-SP-3 (INCITS 577-202x)"
-                section: "5.3.6.2"
+                section: "Table 17"
                 title: "AUTH_Reject Reason Code Explanations"
           - name: "Transaction_ID"
             abbrev: "auth_rej.txn_id"
@@ -1564,14 +1566,14 @@ timeline:
 
         Switch log entry (Brocade raslog):
           AUTH-3004: DH-CHAP authentication failed for port 0/12
-          (WWN 10:00:00:10:9B:C7:2A:01) — reason: CHAP response mismatch
+          (WWN 10:00:00:10:9B:C7:2A:01) — reason: Authentication Failed
 
         Switch log entry (Cisco MDS syslog):
           %AUTH-3-FC_SP_DHCHAP_FAILURE: DH-CHAP authentication failure for
           PWWN 10:00:00:10:9b:c7:2a:01 on interface fc1/12
 
-        The AUTH_Reject reason code 0x05 (Authentication Failed) with
-        explanation 0x01 (mechanism failure) tells the HBA that its CHAP
+        The AUTH_Reject reason code 0x01 (Authentication Failure) with
+        explanation 0x05 (Authentication Failed) tells the HBA that its CHAP
         response was rejected — but does NOT reveal the specific cause
         (intentional security measure to prevent oracle attacks).
       spec_refs:
@@ -1757,8 +1759,9 @@ glossary:
     abbrev: "AUTH_Reject"
     definition: >
       An FC-SP message indicating authentication failure. Carries a reason
-      code (e.g., 0x05 = Authentication Failed) and an explanation code
-      (e.g., 0x01 = mechanism failure). Intentionally provides minimal
+      code (e.g., 0x01 = Authentication Failure, per Table 16) and an
+      explanation code (e.g., 0x05 = Authentication Failed, per Table 17).
+      Intentionally provides minimal
       information about the failure cause to prevent oracle attacks. Upon
       receiving AUTH_Reject, the initiator should expect LOGO (logout)
       and loss of fabric connectivity.
@@ -1854,8 +1857,8 @@ walkthroughs:
         highlight_fields: ["dhchap_r.msg", "dhchap_r.resp", "dhchap_r.dhval", "dhchap_r.rev_chall"]
       - step: 5
         narration: >
-          AUTH_Reject. The switch detected the hash mismatch. Reason code 0x05
-          (Authentication Failed), explanation 0x01 (mechanism failure).
+          AUTH_Reject. The switch detected the hash mismatch. Reason code 0x01
+          (Authentication Failure, Table 16), explanation 0x05 (Authentication Failed, Table 17).
           Check the switch logs: AUTH-3004 on Brocade, %AUTH-3-FC_SP_DHCHAP_FAILURE
           on Cisco MDS. The switch does NOT reveal the expected hash or confirm
           what specifically failed — this is an intentional security measure.
