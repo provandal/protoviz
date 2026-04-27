@@ -1,0 +1,25 @@
+{
+  "stacks": [
+    {
+      "id": "nvme-tcp",
+      "name": "NVMe/TCP",
+      "family": "block-nvme",
+      "alignment": "osi",
+      "path": "nvme-tcp.yaml"
+    },
+    {
+      "id": "iser",
+      "name": "iSER",
+      "family": "block-scsi",
+      "alignment": "osi",
+      "path": "iser.yaml"
+    },
+    {
+      "id": "fcp",
+      "name": "FCP over Fibre Channel",
+      "family": "block-scsi",
+      "alignment": "fc",
+      "path": "fcp.yaml"
+    }
+  ]
+}

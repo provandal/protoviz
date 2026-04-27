@@ -1,0 +1,2986 @@
+meta:
+  id: "fc-sp3-c5-cnsa2-ikev2auth"
+  title: "FC-SP-3 SA-C5: Post-Quantum Authentication with IKEv2-AUTH (CNSA 2.0)"
+  protocol: "FC-SP-3 / IKEv2-AUTH / ML-KEM-1024 / ML-DSA-87"
+  protocol_family: "SAN"
+  version: "1.0"
+  description: >
+    The SA-C5 Implementation Profile from FC-SP-3 Annex A.11 — the post-quantum
+    future of Fibre Channel security. Unlike the companion DH2048-SA scenario
+    (which uses DH-CHAP with pre-shared secrets followed by SA concatenation),
+    SA-C5 uses IKEv2-AUTH for BOTH authentication AND SA management. There is
+    no DH-CHAP involvement at all. Authentication is certificate-based using
+    ML-DSA-87 (FIPS 204) digital signatures, and key exchange uses ML-KEM-1024
+    (FIPS 203) key encapsulation — both quantum-resistant algorithms mandated
+    by the NSA's CNSA 2.0 suite for National Security Systems.
+
+    The flow follows FC-SP-3 Figure 22 (section 6.3.3): AUTH_Negotiate selects
+    the IKEv2-AUTH protocol (not DH-CHAP), then IKE_SA_Init exchanges ML-KEM-1024
+    key material and negotiates the IKE_SA, then IKE_Auth exchanges ML-DSA-87
+    certificates and establishes the Child_SA for encrypted FC frame transport.
+    After IKE_Auth completes, all FC frames are encrypted with AES-256-GCM under
+    the ESP_Header — identical wire format to the DH-CHAP+SA scenario.
+
+    Key architectural difference from DH-CHAP: no shared secrets are needed.
+    Trust is established through a certificate chain rooted in a Certificate
+    Authority. This eliminates the shared-secret distribution problem that
+    plagues DH-CHAP at scale — instead of distributing secrets to N*(N-1)/2
+    port pairs, you issue certificates from a single CA.
+
+    Requested by FCIA / T11 leadership for education purposes.
+  difficulty: "advanced"
+  learning_objectives:
+    - "Understand the CNSA 2.0 mandate and why post-quantum cryptography is needed for FC SANs"
+    - "See how IKEv2-AUTH replaces DH-CHAP for certificate-based authentication — no shared secrets"
+    - "Follow the ML-KEM-1024 key exchange (IKE_SA_Init) and ML-DSA-87 certificate authentication (IKE_Auth)"
+    - "Understand the relationship between IKE_SA, Child_SA, and ESP_Header-encrypted FC frames"
+    - "Compare SA-C5 (CNSA 2.0) with SA-C4 (CNSA 1.0) and DH-CHAP approaches"
+  authors:
+    - name: "Erik Smith"
+      org: "Dell Technologies"
+      github: "provandal"
+    - name: "Claude"
+      org: "Anthropic"
+  created: "2026-03-30"
+  updated: "2026-03-30"
+  tags:
+    - "fibre-channel"
+    - "fc-sp-3"
+    - "security"
+    - "encryption"
+    - "ikev2-auth"
+    - "sa-c5"
+    - "cnsa-2.0"
+    - "post-quantum"
+    - "ml-kem-1024"
+    - "ml-dsa-87"
+    - "aes-256-gcm"
+    - "certificate-based"
+    - "advanced"
+    - "zero-trust"
+  primary_specs:
+    - document: "FC-SP-3 (INCITS 577-202x)"
+      section: "Annex A.11"
+      title: "SA-C5 Implementation Profile"
+      url: "https://www.t11.org/ftp/t11/pub/fc/sp-3/"
+    - document: "FC-SP-3 (INCITS 577-202x)"
+      section: "6.3.3"
+      title: "SA management transaction as authentication — IKEv2-AUTH"
+    - document: "FC-SP-3 (INCITS 577-202x)"
+      section: "6.2.4.2"
+      title: "IKE_SA_Init message"
+    - document: "FC-SP-3 (INCITS 577-202x)"
+      section: "6.2.4.3"
+      title: "IKE_Auth message"
+    - document: "FC-SP-3 (INCITS 577-202x)"
+      section: "Table 7"
+      title: "Auth_Msg_Code values"
+    - document: "FC-SP-3 (INCITS 577-202x)"
+      section: "Table 97"
+      title: "IKEv2-AUTH protocol identifiers"
+    - document: "FC-SP-3 (INCITS 577-202x)"
+      section: "Tables A.59-A.65"
+      title: "SA-C5 algorithm requirements"
+    - document: "FIPS 203 (ML-KEM)"
+      section: "all"
+      title: "Module-Lattice-Based Key-Encapsulation Mechanism Standard"
+      url: "https://csrc.nist.gov/pubs/fips/203/final"
+    - document: "FIPS 204 (ML-DSA)"
+      section: "all"
+      title: "Module-Lattice-Based Digital Signature Algorithm Standard"
+      url: "https://csrc.nist.gov/pubs/fips/204/final"
+    - document: "RFC 7296"
+      section: "all"
+      title: "Internet Key Exchange Protocol Version 2 (IKEv2)"
+      url: "https://www.rfc-editor.org/rfc/rfc7296"
+    - document: "NSA CNSA 2.0"
+      section: "all"
+      title: "Commercial National Security Algorithm Suite 2.0"
+      url: "https://media.defense.gov/2022/Sep/07/2003071836/-1/-1/0/CSA_CNSA_2.0_ALGORITHMS_.PDF"
+
+topology:
+  actors:
+    - id: "host"
+      type: "initiator"
+      label: "Host Server (HBA)"
+      description: >
+        Server with 64GFC HBA supporting FC-SP-3 SA-C5 profile. The HBA holds
+        a device certificate signed with ML-DSA-87 by the organization's CA,
+        plus the CA root certificate for validating peer certificates. All
+        IKEv2-AUTH negotiation, ML-KEM-1024 key encapsulation, and AES-256-GCM
+        encryption/decryption occur in ASIC hardware — zero CPU involvement.
+        No shared secrets are provisioned; trust comes from the certificate chain.
+      hardware: "64GFC HBA with SA-C5 profile support"
+      os: "Linux 6.8 / Windows Server 2025"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "FC Switch (64GFC)"
+      description: >
+        Standard 64GFC director. Completely unmodified — no firmware changes,
+        no configuration, no awareness of encryption or post-quantum algorithms.
+        Routes FC frames on D_ID/S_ID from the FC header, which is always
+        in plaintext. The switch never sees the payload. IKEv2-AUTH negotiation,
+        ML-KEM key exchange, and certificate exchanges all pass through as
+        normal ELS frames — the switch just routes them.
+      hardware: "Standard 64GFC switch"
+      position: "center"
+
+    - id: "array"
+      type: "target"
+      label: "Storage Array Target"
+      description: >
+        Storage array with 64GFC target ports supporting FC-SP-3 SA-C5 profile.
+        Holds its own ML-DSA-87 device certificate and the CA root certificate.
+        FC-SP-3 termination and AES-256-GCM decryption happen at the HBA ASIC
+        on the array port — data services (dedupe, compression, ransomware
+        detection) receive plaintext after decryption, exactly as in the
+        DH-CHAP+SA scenario.
+      hardware: "64GFC target port with SA-C5 profile support"
+      position: "right"
+
+  links:
+    - id: "host-switch"
+      from: "host"
+      to: "switch"
+      speed_gbps: 64
+      media: "fiber_sr"
+      fec: "RS(544,514)"
+      autoneg: true
+    - id: "switch-array"
+      from: "switch"
+      to: "array"
+      speed_gbps: 64
+      media: "fiber_sr"
+      fec: "RS(544,514)"
+      autoneg: true
+
+osi_layers:
+  host:
+    - layer: 0
+      name: "FC-0 Physical"
+      components: ["64GFC SerDes", "SFP-DD optics"]
+      state_schema:
+        link_state:
+          type: "string"
+          description: "Physical link state"
+          initial: "UP (64GFC)"
+        encryption_active:
+          type: "boolean"
+          description: "Whether AES-256-GCM encryption is active on this port"
+          initial: false
+    - layer: 1
+      name: "FC-1 Encoding"
+      components: ["64b/66b encoding", "RS(544,514) FEC"]
+      state_schema:
+        encoding:
+          type: "string"
+          description: "Line encoding scheme"
+          initial: "64b/66b"
+    - layer: 2
+      name: "FC-2 Framing / Transport"
+      components: ["FC frame header", "ESP_Header (when encrypted)", "CRC-32"]
+      state_schema:
+        frame_type:
+          type: "string"
+          description: "Current frame payload type"
+          initial: "plaintext"
+        sa_id:
+          type: "string"
+          description: "Active Security Association ID"
+          initial: "none"
+        sequence_number:
+          type: "integer"
+          description: "ESP anti-replay sequence number"
+          initial: 0
+    - layer: 4
+      name: "FC-4 Protocol Mapping"
+      components: ["FCP (SCSI over FC)", "NVMe/FC", "FC-SP-3 IKEv2-AUTH Frames"]
+      state_schema:
+        auth_state:
+          type: "string"
+          description: "FC-SP-3 IKEv2-AUTH authentication state machine"
+          initial: "AUTH_IDLE"
+        ike_sa_state:
+          type: "string"
+          description: "IKE_SA state"
+          initial: "none"
+        child_sa_state:
+          type: "string"
+          description: "Child_SA state (ESP encryption)"
+          initial: "none"
+
+  switch:
+    - layer: 0
+      name: "FC-0 Physical"
+      components: ["64GFC SerDes", "crossbar switch fabric"]
+      state_schema:
+        port_state:
+          type: "string"
+          description: "Physical port state"
+          initial: "UP (64GFC)"
+    - layer: 1
+      name: "FC-1 Encoding"
+      components: ["64b/66b encoding", "RS(544,514) FEC"]
+      state_schema:
+        encoding:
+          type: "string"
+          description: "Line encoding scheme"
+          initial: "64b/66b"
+    - layer: 2
+      name: "FC-2 Framing"
+      components: ["FC header inspection (D_ID/S_ID only)", "Credit management"]
+      state_schema:
+        routing_mode:
+          type: "string"
+          description: "Frame routing basis"
+          initial: "D_ID (always plaintext header)"
+        payload_visibility:
+          type: "string"
+          description: "What the switch can see of the frame payload"
+          initial: "OPAQUE — switch routes on header only"
+
+  array:
+    - layer: 0
+      name: "FC-0 Physical"
+      components: ["64GFC target port"]
+      state_schema:
+        link_state:
+          type: "string"
+          description: "Physical link state"
+          initial: "UP (64GFC)"
+        decryption_active:
+          type: "boolean"
+          description: "Whether decryption is active on this target port"
+          initial: false
+    - layer: 1
+      name: "FC-1 Encoding"
+      components: ["64b/66b encoding", "RS(544,514) FEC"]
+      state_schema:
+        encoding:
+          type: "string"
+          description: "Line encoding scheme"
+          initial: "64b/66b"
+    - layer: 2
+      name: "FC-2 Framing"
+      components: ["FC frame receive", "ESP_Header processing", "AES-256-GCM decryption engine", "CRC validation post-decrypt"]
+      state_schema:
+        frame_type:
+          type: "string"
+          description: "Frame type being received"
+          initial: "plaintext"
+        sa_id:
+          type: "string"
+          description: "Active Security Association ID (must match initiator)"
+          initial: "none"
+    - layer: 4
+      name: "FC-4 / Data Services"
+      components: ["FCP target", "NVMe/FC target", "Dedupe engine", "Compression", "Ransomware detection"]
+      state_schema:
+        auth_state:
+          type: "string"
+          description: "FC-SP-3 target authentication state"
+          initial: "AUTH_IDLE"
+        ike_sa_state:
+          type: "string"
+          description: "IKE_SA state"
+          initial: "none"
+        child_sa_state:
+          type: "string"
+          description: "Child_SA state"
+          initial: "none"
+        data_services:
+          type: "string"
+          description: "Status of array data services"
+          initial: "ACTIVE (operating on plaintext after HBA decryption)"
+
+frames:
+  # ── Phase 1: Fabric Login (abbreviated) ─────────────────────────────────────
+
+  - id: "fabric_login_context"
+    name: "Context: Physical Link Up + FLOGI + PLOGI Complete"
+    description: >
+      Physical link is up at 64GFC. FLOGI (Fabric Login) and PLOGI (N_Port Login)
+      have already completed — see the FC Fabric: FLOGI -> PLOGI -> PRLI -> SCSI I/O
+      scenario for those exchanges. Both endpoints have exchanged N_Port IDs,
+      WWNs, and service parameters. The connection is logically established
+      but NOT yet authenticated and NOT yet encrypted.
+
+      FC-SP-3 IKEv2-AUTH authentication runs AFTER PLOGI and BEFORE PRLI.
+      The host detects that the target advertises FC-SP-3 IKEv2-AUTH capability
+      in its PLOGI ACC service parameters and initiates the AUTH_Negotiate exchange.
+
+      Key difference from the DH-CHAP scenario: the host will propose IKEv2-AUTH
+      (protocol identifier 0x00000002) instead of DH-CHAP (0x00000001). No shared
+      secrets have been pre-provisioned — trust will be established through
+      ML-DSA-87 certificate chains.
+    from: "host"
+    to: "array"
+    via: ["switch"]
+    timestamp_ns: 0
+    total_bytes: 0
+    color: "#95a5a6"
+    headers:
+      - name: "Post-PLOGI State (Context Frame)"
+        abbrev: "ctx"
+        layer: 4
+        fields:
+          - name: "FC-SP-3 Capability"
+            abbrev: "ctx.fcsp3"
+            bits: 0
+            value: "Both endpoints: FC-SP-3 capable, IKEv2-AUTH supported (PLOGI ACC)"
+            description: >
+              During PLOGI, both host and array included FC-SP-3 capability bits
+              in the Common Service Parameters. Both endpoints support IKEv2-AUTH
+              as an authentication protocol, enabling the SA-C5 profile. The host
+              detects this match and will initiate AUTH_Negotiate with IKEv2-AUTH
+              as the proposed protocol. No shared secrets are needed — both
+              endpoints hold ML-DSA-87 device certificates issued by the
+              organization's Certificate Authority.
+            spec_refs:
+              - document: "FC-LS-3 (FC Login)"
+                section: "4.2.7"
+                title: "Common Service Parameters — Security bit"
+          - name: "Host WWN"
+            abbrev: "ctx.host_wwn"
+            bits: 64
+            value: "10:00:00:10:9B:C7:2A:01"
+            description: "Host HBA World Wide Port Name — will be the authentication initiator identity"
+          - name: "Array WWN"
+            abbrev: "ctx.array_wwn"
+            bits: 64
+            value: "50:00:11:0A:CB:3F:44:01"
+            description: "Array target port World Wide Port Name — will be the authentication responder identity"
+          - name: "Host N_Port ID"
+            abbrev: "ctx.host_nport"
+            bits: 24
+            value: "0x010200"
+            description: "Host N_Port ID assigned by FLOGI — will be S_ID in host-originated frames"
+          - name: "Array N_Port ID"
+            abbrev: "ctx.array_nport"
+            bits: 24
+            value: "0x020100"
+            description: "Array N_Port ID assigned by FLOGI — will be S_ID in array-originated frames"
+      - name: "FC-2 Frame Header (Reference)"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0x020100"
+            description: "Array target port N_Port ID. ALWAYS PLAINTEXT — the switch routes on this field."
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0x010200"
+            description: "Host N_Port ID. Always plaintext."
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── Phase 2: AUTH_Negotiate — IKEv2-AUTH Protocol Selection ────────────────
+
+  - id: "auth_negotiate"
+    name: "AUTH_Negotiate — Propose IKEv2-AUTH (SA-C5 Profile)"
+    description: >
+      The host sends AUTH_Negotiate as an FC Extended Link Service (ELS).
+      This is where SA-C5 diverges fundamentally from the DH-CHAP scenario:
+      the host proposes IKEv2-AUTH (protocol identifier 0x00000002) instead
+      of DH-CHAP (0x00000001). The IKEv2-AUTH Protocol Parameters (per Table 96)
+      specify the SA-C5 profile identifier 0x00000004 (CNSA 2.0).
+
+      The Concatenation bit is 0 — IKEv2-AUTH replaces authentication entirely.
+      There is no DH-CHAP exchange at all. Authentication will be performed
+      via ML-DSA-87 certificates within the IKE_Auth exchange, and key
+      establishment will use ML-KEM-1024 within IKE_SA_Init. No shared
+      secrets are needed at any point in this flow.
+    from: "host"
+    to: "array"
+    via: ["switch"]
+    timestamp_ns: 1000
+    total_bytes: 128
+    color: "#e67e22"
+    headers:
+      - name: "FC Extended Link Service (ELS) Header"
+        abbrev: "els"
+        layer: 4
+        total_bytes: 4
+        fields:
+          - name: "ELS Command Code"
+            abbrev: "els.cmd"
+            bits: 8
+            offset_bits: 0
+            value: "0x90"
+            value_hex: "0x90"
+            description: >
+              0x90 = AUTH ELS. The FC-SP Authentication Extended Link Service
+              command code. All FC-SP-3 authentication messages — whether
+              DH-CHAP or IKEv2-AUTH — are carried as ELS frames using this
+              command code. The switch routes them as normal ELS traffic.
+            spec_refs:
+              - document: "FC-SP-3 (INCITS 577-202x)"
+                section: "5.1"
+                title: "AUTH_ELS — Authentication ELS"
+      - name: "AUTH_Negotiate Payload"
+        abbrev: "auth_neg"
+        layer: 4
+        total_bytes: 124
+        fields:
+          - name: "Auth_Msg_Code"
+            abbrev: "auth_neg.msg_code"
+            bits: 8
+            offset_bits: 0
+            value: "0x0B"
+            value_hex: "0x0B"
+            description: >
+              0x0B = AUTH_Negotiate (FC-SP-3 Table 7). Same message code
+              regardless of whether DH-CHAP or IKEv2-AUTH is being proposed.
+              The protocol selection is in the subsequent fields.
+            spec_refs:
+              - document: "FC-SP-3 (INCITS 577-202x)"
+                section: "5.3.1"
+                title: "AUTH_Negotiate message"
+              - document: "FC-SP-3 (INCITS 577-202x)"
+                section: "Table 7"
+                title: "Auth_Msg_Code values"
+          - name: "Transaction_ID"
+            abbrev: "auth_neg.txn_id"
+            bits: 32
+            offset_bits: 8
+            value: "0xD7E42B19"
+            description: >
+              Random transaction ID generated by the initiator. All subsequent
+              AUTH_ELS frames in this IKEv2-AUTH session use this transaction ID.
+              Prevents replay attacks across sessions.
+          - name: "Authentication Initiator Name"
+            abbrev: "auth_neg.initiator_name"
+            bits: 64
+            offset_bits: 40
+            value: "10:00:00:10:9B:C7:2A:01"
+            description: >
+              Host HBA World Wide Port Name. This is the authentication initiator
+              identity. In the IKEv2-AUTH flow, this WWN will also appear as IDi
+              (Initiator Identity) in the IKE_Auth exchange, encoded as a
+              Name_Identifier with NAA=5 format.
+          - name: "Usable Authentication Protocols — IKEv2-AUTH"
+            abbrev: "auth_neg.proto"
+            bits: 32
+            offset_bits: 104
+            value: "0x00000002"
+            description: >
+              0x00000002 = IKEv2-AUTH. This is the critical field that distinguishes
+              SA-C5 from DH-CHAP. The DH2048-SA profile in the companion scenario
+              uses 0x00000001 (DH-CHAP). By proposing IKEv2-AUTH, the host signals
+              that authentication will be certificate-based — no shared secrets.
+
+              IKEv2-AUTH provides both authentication (via ML-DSA-87 certificate
+              signatures) and SA management (IKE_SA + Child_SA) in a single
+              protocol, replacing the DH-CHAP + separate SA concatenation model.
+            spec_refs:
+              - document: "FC-SP-3 (INCITS 577-202x)"
+                section: "6.3.3"
+                title: "SA management transaction as authentication — IKEv2-AUTH"
+              - document: "FC-SP-3 (INCITS 577-202x)"
+                section: "Table 97"
+                title: "IKEv2-AUTH protocol identifiers"
+          - name: "IKEv2-AUTH Protocol Identifier (SA-C5 / CNSA 2.0)"
+            abbrev: "auth_neg.ikev2_profile"
+            bits: 32
+            offset_bits: 136
+            value: "0x00000004"
+            description: >
+              0x00000004 = CNSA 2.0 / SA-C5 Profile (FC-SP-3 Table 97).
+              This selects the specific algorithm set within IKEv2-AUTH:
+              - Key exchange: ML-KEM-1024 (FIPS 203)
+              - Digital signatures: ML-DSA-87 (FIPS 204)
+              - Symmetric cipher: AES-256-GCM
+              - PRF: PRF-HMAC-SHA2-384
+              - Hash: SHA-384
+
+              For comparison, SA-C4 (CNSA 1.0) uses classical algorithms:
+              ECDH P-384 for key exchange and ECDSA P-384 for signatures.
+              SA-C5 is the post-quantum upgrade path.
+            spec_refs:
+              - document: "FC-SP-3 (INCITS 577-202x)"
+                section: "Annex A.11"
+                title: "SA-C5 Implementation Profile"
+              - document: "FC-SP-3 (INCITS 577-202x)"
+                section: "Tables A.59-A.65"
+                title: "SA-C5 algorithm requirements"
+          - name: "Concatenation Bit"
+            abbrev: "auth_neg.concat"
+            bits: 1
+            offset_bits: 168
+            value: "0"
+            description: >
+              Concatenation = 0. IKEv2-AUTH replaces authentication entirely —
+              it is NOT concatenated with DH-CHAP. When Concatenation=1, DH-CHAP
+              runs first and then IKEv2 runs as an SA management protocol. With
+              Concatenation=0 (as in SA-C5), IKEv2-AUTH handles everything: key
+              exchange, mutual authentication, and SA establishment. No DH-CHAP
+              exchange occurs at all.
+            spec_refs:
+              - document: "FC-SP-3 (INCITS 577-202x)"
+                section: "6.3.3"
+                title: "Concatenation bit semantics"
+      - name: "FC-2 Frame Header (Routing — always plaintext)"
+        abbrev: "fc.hdr"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL (Routing Control)"
+            abbrev: "fc.hdr.rctl"
+            bits: 8
+            value: "0x22"
+            description: "0x22 = Extended Link Service request. The switch routes on this + D_ID."
+          - name: "D_ID (Destination ID)"
+            abbrev: "fc.hdr.did"
+            bits: 24
+            value: "0x020100"
+            description: >
+              Array target port N_Port ID. ALWAYS PLAINTEXT — even after encryption
+              is active, the FC header D_ID and S_ID are never encrypted.
+          - name: "S_ID (Source ID)"
+            abbrev: "fc.hdr.sid"
+            bits: 24
+            value: "0x010200"
+            description: "Host N_Port ID. Always plaintext."
+          - name: "CS_CTL"
+            abbrev: "fc.hdr.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "TYPE"
+            abbrev: "fc.hdr.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc.hdr.fctl"
+            bits: 24
+            value: "0x290000"
+            description: "Frame Control — exchange originator, first+last sequence, sequence initiative transfer"
+          - name: "SEQ_ID"
+            abbrev: "fc.hdr.seqid"
+            bits: 8
+            value: "0x00"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.hdr.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.hdr.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.hdr.oxid"
+            bits: 16
+            value: "0x0010"
+            description: "Originator Exchange ID — AUTH exchange"
+          - name: "RX_ID"
+            abbrev: "fc.hdr.rxid"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — not yet assigned"
+          - name: "Parameter"
+            abbrev: "fc.hdr.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for ELS frames"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── AUTH_Negotiate_Rsp ─────────────────────────────────────────────────────
+
+  - id: "auth_neg_rsp"
+    name: "AUTH_Negotiate_Rsp — Target Confirms IKEv2-AUTH (SA-C5)"
+    description: >
+      The array responds with Auth_Negotiate_Rsp, confirming agreement on
+      IKEv2-AUTH with the SA-C5 (CNSA 2.0) profile. Both sides now know
+      that the next exchange will be IKE_SA_Init (not DH-CHAP Challenge).
+      No shared secrets have been exchanged or referenced. Trust will be
+      established entirely through ML-DSA-87 certificate chains.
+    from: "array"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 6000
+    total_bytes: 96
+    color: "#27ae60"
+    headers:
+      - name: "Auth_Negotiate_Rsp Payload"
+        abbrev: "auth_neg_rsp"
+        layer: 4
+        fields:
+          - name: "Auth_Msg_Code"
+            abbrev: "auth_neg_rsp.msg"
+            bits: 8
+            value: "0x0D"
+            description: >
+              0x0D = AUTH_Negotiate_Rsp (FC-SP-3 Table 7). Confirms the
+              selected authentication protocol and parameters.
+            spec_refs:
+              - document: "FC-SP-3 (INCITS 577-202x)"
+                section: "Table 7"
+                title: "Auth_Msg_Code values"
+          - name: "Authentication Responder Name"
+            abbrev: "auth_neg_rsp.responder_name"
+            bits: 64
+            value: "50:00:11:0A:CB:3F:44:01"
+            description: "Array target port WWN. Used as the responder identity throughout the IKEv2-AUTH exchange."
+          - name: "Selected Protocol — IKEv2-AUTH"
+            abbrev: "auth_neg_rsp.proto"
+            bits: 32
+            value: "0x00000002"
+            description: >
+              0x00000002 = IKEv2-AUTH confirmed. The target agrees to use
+              IKEv2-AUTH for authentication and SA management. No DH-CHAP
+              will occur. The next message from the host will be IKE_SA_Init.
+          - name: "Selected IKEv2-AUTH Protocol Identifier"
+            abbrev: "auth_neg_rsp.ikev2_profile"
+            bits: 32
+            value: "0x00000004"
+            description: >
+              0x00000004 = CNSA 2.0 / SA-C5 Profile confirmed. Both endpoints
+              will use ML-KEM-1024 for key exchange and ML-DSA-87 for certificate
+              authentication. AES-256-GCM for symmetric encryption.
+      - name: "FC-2 Frame Header (Routing — always plaintext)"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x23"
+            description: "0x23 = Extended Link Service reply (solicited control)"
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0x010200"
+            description: "Destination N_Port ID — host HBA port. ALWAYS PLAINTEXT."
+          - name: "CS_CTL"
+            abbrev: "fc2.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0x020100"
+            description: "Source N_Port ID — array target port. Always plaintext."
+          - name: "TYPE"
+            abbrev: "fc2.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc2.fctl"
+            bits: 24
+            value: "0x980000"
+            description: "Frame Control — exchange responder, first+last sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc2.seqid"
+            bits: 8
+            value: "0x01"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc2.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc2.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc2.oxid"
+            bits: 16
+            value: "0x0010"
+            description: "Originator Exchange ID"
+          - name: "RX_ID"
+            abbrev: "fc2.rxid"
+            bits: 16
+            value: "0x0010"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc2.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── Phase 3: IKE_SA_Init Exchange ──────────────────────────────────────────
+
+  - id: "ike_sa_init_request"
+    name: "IKE_SA_Init (Host → Array) — ML-KEM-1024 Key Exchange Proposal"
+    description: >
+      The host sends IKE_SA_Init to begin the IKE Security Association
+      establishment. This message carries the SA proposal (AES-256-GCM cipher,
+      PRF-HMAC-SHA2-384 pseudorandom function), the ML-KEM-1024 encapsulation
+      key (1568 bytes — this is the initiator's public key material for the
+      post-quantum key exchange), and a 32-byte initiator nonce.
+
+      This is fundamentally different from classical Diffie-Hellman: instead
+      of computing g^a mod p (which is vulnerable to Shor's algorithm on a
+      quantum computer), the initiator generates an ML-KEM-1024 key pair and
+      sends the encapsulation key. The responder will use this key to
+      encapsulate a shared secret, producing a ciphertext that only the
+      initiator can decapsulate.
+
+      Simplified for illustration — actual payloads per RFC 7296 and
+      FC-SP-3 section 6.2.
+    from: "host"
+    to: "array"
+    via: ["switch"]
+    timestamp_ns: 8000
+    total_bytes: 1680
+    color: "#2980b9"
+    headers:
+      - name: "IKE_SA_Init Request"
+        abbrev: "ike_sa_init_i"
+        layer: 4
+        fields:
+          - name: "Auth_Msg_Code"
+            abbrev: "ike_sa_init_i.msg_code"
+            bits: 8
+            offset_bits: 0
+            value: "0x22"
+            value_hex: "0x22"
+            description: >
+              0x22 = IKE_SA_Init (FC-SP-3 Table 7). The first message in the
+              SA Establishment exchange. Carries key exchange material and
+              SA proposals.
+            spec_refs:
+              - document: "FC-SP-3 (INCITS 577-202x)"
+                section: "6.2.4.2"
+                title: "IKE_SA_Init message"
+              - document: "FC-SP-3 (INCITS 577-202x)"
+                section: "Table 7"
+                title: "Auth_Msg_Code values"
+          - name: "IKE Header — SPI_i (Initiator SPI)"
+            abbrev: "ike_sa_init_i.spi_i"
+            bits: 64
+            offset_bits: 8
+            value: "0xA1B2C3D4E5F60718"
+            description: >
+              Security Parameter Index chosen by the initiator. Uniquely identifies
+              this IKE_SA from the initiator's perspective. Per RFC 7296 section 2.6.
+          - name: "IKE Header — Version"
+            abbrev: "ike_sa_init_i.version"
+            bits: 8
+            offset_bits: 72
+            value: "2.0"
+            description: "IKEv2 (RFC 7296). FC-SP-3 adapts IKEv2 for Fibre Channel transport."
+          - name: "IKE Header — Exchange Type"
+            abbrev: "ike_sa_init_i.exchange_type"
+            bits: 8
+            offset_bits: 80
+            value: "IKE_SA_INIT (34)"
+            description: "Exchange Type 34 = IKE_SA_INIT per RFC 7296 section 3.1."
+          - name: "IKE Header — Flags"
+            abbrev: "ike_sa_init_i.flags"
+            bits: 8
+            offset_bits: 88
+            value: "Initiator"
+            description: "Initiator flag set — this endpoint is the IKE initiator."
+          - name: "SAi1 Payload — ENCR_AES_GCM_256"
+            abbrev: "ike_sa_init_i.sai1_encr"
+            bits: 32
+            offset_bits: 96
+            value: "ENCR_AES_GCM (id=20) / 256-bit key"
+            description: >
+              Proposed encryption transform for the IKE_SA and Child_SA:
+              AES-256-GCM (AEAD). Provides both confidentiality and integrity
+              in a single operation. CNSA 2.0 requires AES-256 for symmetric
+              encryption — GCM mode is the standard AEAD choice.
+            spec_refs:
+              - document: "FC-SP-3 (INCITS 577-202x)"
+                section: "Tables A.59-A.65"
+                title: "SA-C5 symmetric algorithm: AES-256-GCM"
+          - name: "SAi1 Payload — PRF_HMAC_SHA2_384"
+            abbrev: "ike_sa_init_i.sai1_prf"
+            bits: 32
+            offset_bits: 128
+            value: "PRF_HMAC_SHA2_384 (id=7)"
+            description: >
+              Pseudorandom function for key derivation: HMAC-SHA-384.
+              Used to derive SKEYSEED from the ML-KEM shared secret and nonces.
+              CNSA 2.0 requires SHA-384 as minimum hash strength.
+          - name: "SAi1 Payload — Key Exchange ML-KEM-1024"
+            abbrev: "ike_sa_init_i.sai1_ke"
+            bits: 32
+            offset_bits: 160
+            value: "ML-KEM-1024 (id=37)"
+            description: >
+              Post-quantum key exchange method: ML-KEM-1024 (FIPS 203).
+              This is the core CNSA 2.0 upgrade — ML-KEM replaces classical
+              Diffie-Hellman for key establishment. DH Group id=37 is the
+              IANA-assigned identifier for ML-KEM-1024 in IKEv2.
+
+              Classical DH (used in the companion DH-CHAP scenario) computes
+              g^(ab) mod p. A quantum computer running Shor's algorithm can
+              solve the discrete logarithm problem and recover the shared
+              secret. ML-KEM is based on the Module Learning With Errors
+              (MLWE) lattice problem, for which no efficient quantum
+              algorithm is known.
+            spec_refs:
+              - document: "FIPS 203 (ML-KEM)"
+                section: "1"
+                title: "ML-KEM key encapsulation"
+              - document: "FC-SP-3 (INCITS 577-202x)"
+                section: "Tables A.59-A.65"
+                title: "SA-C5 key exchange: ML-KEM-1024"
+          - name: "KEi Payload — ML-KEM-1024 Encapsulation Key (1568 bytes)"
+            abbrev: "ike_sa_init_i.kei"
+            bits: 12544
+            offset_bits: 192
+            value: "[1568-byte ML-KEM-1024 encapsulation key (initiator's public key)]"
+            description: >
+              The initiator's ML-KEM-1024 encapsulation key — 1568 bytes. This
+              is the public key portion of the ML-KEM key pair. The responder
+              will run ML-KEM.Encaps() using this key to produce:
+              (1) a 32-byte shared secret K, and
+              (2) a 1568-byte ciphertext ct.
+
+              The ciphertext ct is returned in the responder's KEr payload.
+              The initiator runs ML-KEM.Decaps(ct, sk) using its private key
+              to recover the same shared secret K.
+
+              Key sizes compared to classical DH:
+              - DH Group 4 (2048-bit MODP): 256-byte public value
+              - ML-KEM-1024: 1568-byte encapsulation key
+              The larger key size is the cost of quantum resistance.
+            spec_refs:
+              - document: "FIPS 203"
+                section: "7.1"
+                title: "ML-KEM.KeyGen()"
+          - name: "Ni Payload — Initiator Nonce (32 bytes)"
+            abbrev: "ike_sa_init_i.ni"
+            bits: 256
+            offset_bits: 12736
+            value: "0x3F8A72C1 D4E56B09 1A2B3C4D 5E6F7081 92A3B4C5 D6E7F809 1B2C3D4E 5F607182"
+            description: >
+              32-byte random nonce from the initiator. Combined with the
+              responder nonce and the ML-KEM shared secret to derive SKEYSEED:
+              SKEYSEED = prf(Ni | Nr, shared_secret).
+              SKEYSEED is then used to derive all IKE_SA and Child_SA keys.
+              Per RFC 7296 section 2.14.
+      - name: "FC-2 Frame Header (Routing — always plaintext)"
+        abbrev: "fc.hdr"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.hdr.rctl"
+            bits: 8
+            value: "0x22"
+            description: "0x22 = Extended Link Service request"
+          - name: "D_ID"
+            abbrev: "fc.hdr.did"
+            bits: 24
+            value: "0x020100"
+            description: "Array target port. ALWAYS PLAINTEXT."
+          - name: "S_ID"
+            abbrev: "fc.hdr.sid"
+            bits: 24
+            value: "0x010200"
+            description: "Host N_Port ID. Always plaintext."
+          - name: "CS_CTL"
+            abbrev: "fc.hdr.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "TYPE"
+            abbrev: "fc.hdr.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc.hdr.fctl"
+            bits: 24
+            value: "0x290000"
+            description: "Frame Control — exchange originator, first+last sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.hdr.seqid"
+            bits: 8
+            value: "0x02"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.hdr.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.hdr.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.hdr.oxid"
+            bits: 16
+            value: "0x0011"
+            description: "Originator Exchange ID — IKE_SA_Init exchange"
+          - name: "RX_ID"
+            abbrev: "fc.hdr.rxid"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — not yet assigned"
+          - name: "Parameter"
+            abbrev: "fc.hdr.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for ELS frames"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  - id: "ike_sa_init_response"
+    name: "IKE_SA_Init (Array → Host) — ML-KEM-1024 Ciphertext + CERTREQ"
+    description: >
+      The array responds with IKE_SA_Init, carrying its selected crypto suite,
+      the ML-KEM-1024 ciphertext (the encapsulated shared secret — 1568 bytes),
+      its nonce, a CERTREQ payload requesting the initiator's certificate, and
+      a Notify payload advertising ML-DSA-87 as the supported authentication method.
+
+      After this exchange, both sides derive SKEYSEED from the ML-KEM shared
+      secret plus nonces. All subsequent IKE messages (IKE_Auth) are encrypted
+      under the IKE_SA — an eavesdropper cannot read the certificates or
+      authentication payloads exchanged in the next phase.
+
+      Simplified for illustration — actual payloads per RFC 7296 and
+      FC-SP-3 section 6.2.
+    from: "array"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 12000
+    total_bytes: 1720
+    color: "#27ae60"
+    headers:
+      - name: "IKE_SA_Init Response"
+        abbrev: "ike_sa_init_r"
+        layer: 4
+        fields:
+          - name: "Auth_Msg_Code"
+            abbrev: "ike_sa_init_r.msg_code"
+            bits: 8
+            offset_bits: 0
+            value: "0x22"
+            value_hex: "0x22"
+            description: >
+              0x22 = IKE_SA_Init (FC-SP-3 Table 7). Same message code for both
+              directions — the Flags field distinguishes initiator from responder.
+          - name: "IKE Header — SPI_r (Responder SPI)"
+            abbrev: "ike_sa_init_r.spi_r"
+            bits: 64
+            offset_bits: 8
+            value: "0x92F3A4B5C6D7E801"
+            description: >
+              Security Parameter Index chosen by the responder. Together with
+              SPI_i, uniquely identifies this IKE_SA. Per RFC 7296 section 2.6.
+          - name: "IKE Header — Flags"
+            abbrev: "ike_sa_init_r.flags"
+            bits: 8
+            offset_bits: 72
+            value: "Responder"
+            description: "Responder flag set — this endpoint is the IKE responder."
+          - name: "SAr1 Payload — Selected Crypto Suite"
+            abbrev: "ike_sa_init_r.sar1"
+            bits: 0
+            offset_bits: 80
+            value: "ENCR_AES_GCM_256, PRF_HMAC_SHA2_384, ML-KEM-1024"
+            description: >
+              The responder selects exactly one transform from each proposal:
+              AES-256-GCM for encryption, PRF-HMAC-SHA2-384 for key derivation,
+              and ML-KEM-1024 for key exchange. All CNSA 2.0 compliant.
+          - name: "KEr Payload — ML-KEM-1024 Ciphertext (1568 bytes)"
+            abbrev: "ike_sa_init_r.ker"
+            bits: 12544
+            offset_bits: 80
+            value: "[1568-byte ML-KEM-1024 ciphertext (encapsulated shared secret)]"
+            description: >
+              The ML-KEM-1024 ciphertext produced by ML-KEM.Encaps(ek_i).
+              The responder ran Encaps() using the initiator's encapsulation key
+              from KEi, producing: (1) a 32-byte shared secret K, and (2) this
+              1568-byte ciphertext ct.
+
+              The responder keeps K. The initiator will run ML-KEM.Decaps(ct, sk)
+              using its private decapsulation key to recover the same K.
+
+              An eavesdropper who captures both the encapsulation key and
+              the ciphertext CANNOT recover K — this is the IND-CCA2 security
+              guarantee of ML-KEM, which holds against both classical and
+              quantum adversaries.
+
+              Compare with classical DH: an eavesdropper captures g^a and g^b.
+              A quantum computer running Shor's algorithm can compute the discrete
+              log and recover g^(ab) = K. ML-KEM has no such vulnerability.
+            spec_refs:
+              - document: "FIPS 203"
+                section: "7.2"
+                title: "ML-KEM.Encaps()"
+          - name: "Nr Payload — Responder Nonce (32 bytes)"
+            abbrev: "ike_sa_init_r.nr"
+            bits: 256
+            offset_bits: 12624
+            value: "0x7C4D5E6F 80912A3B 4C5D6E7F 8091A2B3 C4D5E6F7 08192A3B 4C5D6E7F 80A1B2C3"
+            description: >
+              32-byte random nonce from the responder. Combined with
+              the initiator nonce and the ML-KEM shared secret to derive
+              SKEYSEED = prf(Ni | Nr, K). Per RFC 7296 section 2.14.
+          - name: "CERTREQ Payload — Certificate Request"
+            abbrev: "ike_sa_init_r.certreq"
+            bits: 0
+            offset_bits: 12880
+            value: "[SHA-384 hash(es) of trusted CA public key(s)]"
+            description: >
+              The responder requests the initiator's certificate by sending
+              SHA-384 hashes of trusted Certificate Authority public keys.
+              The initiator must present a certificate chain rooted in one
+              of these CAs during IKE_Auth. This is how the certificate-based
+              trust model works — both sides must have certificates signed by
+              a mutually trusted CA.
+
+              Compare with DH-CHAP: instead of CA hashes, DH-CHAP uses
+              pre-shared secrets that must be manually distributed to every
+              port pair. For N ports, DH-CHAP requires N*(N-1)/2 shared
+              secrets; the certificate model requires N certificates from one CA.
+            spec_refs:
+              - document: "RFC 7296"
+                section: "3.7"
+                title: "Certificate Request Payload"
+          - name: "Notify — SUPPORTED_AUTH_METHODS (ML-DSA-87)"
+            abbrev: "ike_sa_init_r.notify_auth"
+            bits: 0
+            offset_bits: 12880
+            value: "ML-DSA-87 (Digital Signature)"
+            description: >
+              Notify payload advertising ML-DSA-87 (FIPS 204) as the
+              supported authentication method. ML-DSA-87 is the CNSA 2.0
+              digital signature algorithm — a lattice-based replacement for
+              ECDSA and RSA signatures. Security category 5 (equivalent to
+              256-bit classical security).
+
+              ML-DSA-87 signature sizes: 4627 bytes (vs. 64 bytes for ECDSA P-384).
+              The larger signature is the cost of quantum resistance. Public key
+              size: 2592 bytes.
+            spec_refs:
+              - document: "FIPS 204 (ML-DSA)"
+                section: "1"
+                title: "ML-DSA digital signature algorithm"
+              - document: "FC-SP-3 (INCITS 577-202x)"
+                section: "Tables A.59-A.65"
+                title: "SA-C5 signature algorithm: ML-DSA-87"
+      - name: "FC-2 Frame Header (Routing — always plaintext)"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x23"
+            description: "0x23 = Extended Link Service reply"
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0x010200"
+            description: "Destination — host HBA port. ALWAYS PLAINTEXT."
+          - name: "CS_CTL"
+            abbrev: "fc2.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0x020100"
+            description: "Source — array target port. Always plaintext."
+          - name: "TYPE"
+            abbrev: "fc2.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc2.fctl"
+            bits: 24
+            value: "0x980000"
+            description: "Frame Control — exchange responder, first+last sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc2.seqid"
+            bits: 8
+            value: "0x03"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc2.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc2.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc2.oxid"
+            bits: 16
+            value: "0x0011"
+            description: "Originator Exchange ID — same IKE_SA_Init exchange"
+          - name: "RX_ID"
+            abbrev: "fc2.rxid"
+            bits: 16
+            value: "0x0011"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc2.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── Phase 4: IKE_Auth Exchange (encrypted under IKE_SA) ────────────────────
+
+  - id: "ike_auth_request"
+    name: "IKE_Auth (Host → Array) — ML-DSA-87 Certificate + Child_SA Proposal"
+    description: >
+      The host sends IKE_Auth, encrypted under the IKE_SA established by
+      IKE_SA_Init. This message carries the host's identity (WWN), its
+      ML-DSA-87 certificate chain (leaf certificate + CA root), a CERTREQ
+      for the responder's certificate, an AUTH payload containing the
+      ML-DSA-87 digital signature proving the host's identity, and a
+      Child_SA proposal for ESP-encrypted FC frame transport.
+
+      Everything inside the SK{} envelope is encrypted with AES-256-GCM
+      under the IKE_SA — an eavesdropper cannot read the certificates,
+      identities, or authentication payloads.
+
+      The AUTH payload contains a Digital Signature (Auth_Method=14 per
+      RFC 7296 section 3.8) computed with the host's ML-DSA-87 private
+      key over a hash of the IKE_SA_Init message. The responder verifies
+      this signature using the host's public key from the certificate.
+
+      Simplified for illustration — actual payloads per RFC 7296 and
+      FC-SP-3 section 6.2.
+    from: "host"
+    to: "array"
+    via: ["switch"]
+    timestamp_ns: 16000
+    total_bytes: 8192
+    color: "#8e44ad"
+    headers:
+      - name: "IKE_Auth Request (Encrypted — inside SK{} envelope)"
+        abbrev: "ike_auth_i"
+        layer: 4
+        fields:
+          - name: "Auth_Msg_Code"
+            abbrev: "ike_auth_i.msg_code"
+            bits: 8
+            offset_bits: 0
+            value: "0x23"
+            value_hex: "0x23"
+            description: >
+              0x23 = IKE_Auth (FC-SP-3 Table 7). The second message in the
+              SA Establishment exchange. Carries identity, certificates,
+              authentication, and Child_SA proposal — all encrypted.
+            spec_refs:
+              - document: "FC-SP-3 (INCITS 577-202x)"
+                section: "6.2.4.3"
+                title: "IKE_Auth message"
+              - document: "FC-SP-3 (INCITS 577-202x)"
+                section: "Table 7"
+                title: "Auth_Msg_Code values"
+          - name: "SK{} Encryption Envelope"
+            abbrev: "ike_auth_i.sk_envelope"
+            bits: 0
+            offset_bits: 8
+            value: "AES-256-GCM encrypted — all following payloads are inside SK{}"
+            description: >
+              SK{} indicates that all subsequent payloads are encrypted and
+              integrity-protected using the IKE_SA keys derived from SKEYSEED.
+              An eavesdropper sees only ciphertext from this point forward.
+              The switch passes the frame based on the FC header — it cannot
+              read any IKE_Auth payload content.
+          - name: "IDi — Initiator Identity (Host WWN)"
+            abbrev: "ike_auth_i.idi"
+            bits: 64
+            offset_bits: 8
+            value: "10:00:00:10:9B:C7:2A:01 (Name_Identifier, NAA=5)"
+            description: >
+              The initiator's identity: the host HBA's World Wide Port Name
+              encoded as a Name_Identifier with NAA=5 format. The responder
+              uses this to locate the correct certificate for verification.
+              Per FC-SP-3 section 6.2.5.8.
+          - name: "CERT — Leaf Certificate (ML-DSA-87 signed)"
+            abbrev: "ike_auth_i.cert_leaf"
+            bits: 0
+            offset_bits: 72
+            value: "[X.509 certificate: Subject=host WWN, Algorithm=ML-DSA-87, signed by Org CA]"
+            description: >
+              The host's device certificate. Key fields:
+              - Subject: host WWN (10:00:00:10:9B:C7:2A:01)
+              - Public Key Algorithm: ML-DSA-87 (OID 2.16.840.1.101.3.4.3.18)
+              - Public Key: 2592-byte ML-DSA-87 public key
+              - Signature Algorithm: ML-DSA-87 (signed by issuing CA)
+              - Issuer: Organization's Certificate Authority
+
+              The responder verifies the certificate chain: leaf cert is signed
+              by the CA whose root cert the responder already trusts. If the
+              chain validates, the responder trusts the host's public key
+              and can verify the AUTH signature below.
+            spec_refs:
+              - document: "FIPS 204 (ML-DSA)"
+                section: "3"
+                title: "ML-DSA key pair and certificate encoding"
+          - name: "CERT — CA Root Certificate"
+            abbrev: "ike_auth_i.cert_ca"
+            bits: 0
+            offset_bits: 72
+            value: "[X.509 CA root certificate: ML-DSA-87 self-signed]"
+            description: >
+              The Certificate Authority root certificate. Self-signed with
+              ML-DSA-87. Both endpoints must trust this CA for mutual
+              authentication to succeed. In an enterprise deployment,
+              this CA is typically managed by the security team and its
+              root certificate is pre-installed on all FC endpoints.
+          - name: "CERTREQ — Certificate Request"
+            abbrev: "ike_auth_i.certreq"
+            bits: 0
+            offset_bits: 72
+            value: "[SHA-384 hash(es) of trusted CA public key(s)]"
+            description: >
+              The initiator requests the responder's certificate, mirroring
+              the CERTREQ from the IKE_SA_Init response.
+          - name: "AUTH — Digital Signature (ML-DSA-87)"
+            abbrev: "ike_auth_i.auth"
+            bits: 0
+            offset_bits: 72
+            value: "[4627-byte ML-DSA-87 signature over InitiatorSignedOctets]"
+            description: >
+              Digital Signature authentication (Auth_Method=14 per RFC 7296
+              section 3.8). The host signs a hash of its IKE_SA_Init message
+              using its ML-DSA-87 private key. The responder verifies this
+              signature using the public key from the host's certificate.
+
+              If verification succeeds, the responder knows:
+              1. The host holds the private key corresponding to the certificate
+              2. The host generated the IKE_SA_Init message (not a replay)
+              3. The certificate chain is valid back to a trusted CA
+
+              ML-DSA-87 signature: 4627 bytes (vs. 64 bytes for ECDSA P-384).
+              The larger signature is the cost of quantum resistance. A quantum
+              computer cannot forge an ML-DSA-87 signature (no efficient quantum
+              algorithm for the MLWE/SIS problem).
+            spec_refs:
+              - document: "RFC 7296"
+                section: "3.8"
+                title: "Authentication Payload — Digital Signature"
+              - document: "FIPS 204"
+                section: "6"
+                title: "ML-DSA.Sign()"
+          - name: "SAi2 — Child_SA Proposal"
+            abbrev: "ike_auth_i.sai2"
+            bits: 0
+            offset_bits: 72
+            value: "ESP_Header with AES-256-GCM-ODP (Offloaded Data Path)"
+            description: >
+              Child_SA proposal for encrypted FC frame transport. The Child_SA
+              defines how FC frames will be encrypted after IKE_Auth completes:
+              - Protocol: ESP (Encapsulating Security Payload)
+              - Transform: AES-256-GCM
+              - Mode: Transport (FC frame header plaintext, payload encrypted)
+
+              AES-GCM-ODP indicates the encryption is offloaded to the HBA ASIC
+              (Offloaded Data Path) — zero CPU involvement for frame encryption.
+            spec_refs:
+              - document: "FC-SP-3 (INCITS 577-202x)"
+                section: "6.2.5.12"
+                title: "Child_SA negotiation"
+          - name: "TSi / TSr — Traffic Selectors"
+            abbrev: "ike_auth_i.ts"
+            bits: 0
+            offset_bits: 72
+            value: "Default: all traffic between these two N_Ports"
+            description: >
+              Traffic selectors define which FC frames are covered by the
+              Child_SA. Default selectors per FC-SP-3 section 6.2.5.12.2
+              cover ALL traffic between the two N_Port endpoints — regardless
+              of FC-4 protocol (FCP, NVMe/FC, ELS) or application workload.
+              No per-application configuration needed.
+      - name: "FC-2 Frame Header (Routing — always plaintext)"
+        abbrev: "fc.hdr"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.hdr.rctl"
+            bits: 8
+            value: "0x22"
+            description: "0x22 = Extended Link Service request"
+          - name: "D_ID"
+            abbrev: "fc.hdr.did"
+            bits: 24
+            value: "0x020100"
+            description: "Array target port. ALWAYS PLAINTEXT."
+          - name: "S_ID"
+            abbrev: "fc.hdr.sid"
+            bits: 24
+            value: "0x010200"
+            description: "Host N_Port ID. Always plaintext."
+          - name: "CS_CTL"
+            abbrev: "fc.hdr.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "TYPE"
+            abbrev: "fc.hdr.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc.hdr.fctl"
+            bits: 24
+            value: "0x290000"
+            description: "Frame Control — exchange originator, first+last sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc.hdr.seqid"
+            bits: 8
+            value: "0x04"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.hdr.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.hdr.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.hdr.oxid"
+            bits: 16
+            value: "0x0012"
+            description: "Originator Exchange ID — IKE_Auth exchange"
+          - name: "RX_ID"
+            abbrev: "fc.hdr.rxid"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — not yet assigned"
+          - name: "Parameter"
+            abbrev: "fc.hdr.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for ELS frames"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  - id: "ike_auth_response"
+    name: "IKE_Auth (Array → Host) — Array Certificate + Child_SA Accepted"
+    description: >
+      The array responds with IKE_Auth, also encrypted under the IKE_SA.
+      This message carries the array's identity (WWN), its ML-DSA-87
+      certificate chain, an AUTH payload with the array's digital signature,
+      and the accepted Child_SA parameters.
+
+      Both identities are now verified via ML-DSA-87 certificate chains.
+      The IKE_SA and Child_SA are established. From this point forward,
+      all FC frames between these two N_Ports are encrypted with
+      AES-256-GCM under the ESP_Header.
+
+      Simplified for illustration — actual payloads per RFC 7296 and
+      FC-SP-3 section 6.2.
+    from: "array"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 21000
+    total_bytes: 8192
+    color: "#27ae60"
+    headers:
+      - name: "IKE_Auth Response (Encrypted — inside SK{} envelope)"
+        abbrev: "ike_auth_r"
+        layer: 4
+        fields:
+          - name: "Auth_Msg_Code"
+            abbrev: "ike_auth_r.msg_code"
+            bits: 8
+            offset_bits: 0
+            value: "0x23"
+            value_hex: "0x23"
+            description: >
+              0x23 = IKE_Auth (FC-SP-3 Table 7). Same message code for both
+              directions — the IKE Header Flags distinguish initiator from responder.
+          - name: "SK{} Encryption Envelope"
+            abbrev: "ike_auth_r.sk_envelope"
+            bits: 0
+            offset_bits: 8
+            value: "AES-256-GCM encrypted — all payloads inside SK{}"
+            description: "All payloads encrypted and integrity-protected under IKE_SA keys."
+          - name: "IDr — Responder Identity (Array WWN)"
+            abbrev: "ike_auth_r.idr"
+            bits: 64
+            offset_bits: 8
+            value: "50:00:11:0A:CB:3F:44:01 (Name_Identifier, NAA=5)"
+            description: >
+              The responder's identity: the array target port's World Wide Port Name.
+              The initiator uses this to locate the correct certificate for verification.
+          - name: "CERT — Array Leaf Certificate (ML-DSA-87 signed)"
+            abbrev: "ike_auth_r.cert_leaf"
+            bits: 0
+            offset_bits: 72
+            value: "[X.509 certificate: Subject=array WWN, Algorithm=ML-DSA-87, signed by Org CA]"
+            description: >
+              The array's device certificate. Same structure as the host certificate:
+              - Subject: array WWN (50:00:11:0A:CB:3F:44:01)
+              - Public Key Algorithm: ML-DSA-87
+              - Issuer: same Organization CA trusted by both endpoints
+
+              The initiator verifies the certificate chain back to the trusted CA root.
+          - name: "CERT — CA Root Certificate"
+            abbrev: "ike_auth_r.cert_ca"
+            bits: 0
+            offset_bits: 72
+            value: "[X.509 CA root certificate — same CA as initiator's chain]"
+            description: >
+              The CA root certificate. In a well-managed enterprise, this is the
+              same CA that signed the host's certificate. Both endpoints trust
+              this CA, enabling mutual authentication without pre-shared secrets.
+          - name: "AUTH — Digital Signature (ML-DSA-87)"
+            abbrev: "ike_auth_r.auth"
+            bits: 0
+            offset_bits: 72
+            value: "[4627-byte ML-DSA-87 signature over ResponderSignedOctets]"
+            description: >
+              The array's ML-DSA-87 digital signature over its IKE_SA_Init
+              response message. The initiator verifies this signature using the
+              array's public key from the certificate.
+
+              After successful verification, mutual authentication is complete:
+              - The host has verified the array's identity via ML-DSA-87 certificate
+              - The array has verified the host's identity via ML-DSA-87 certificate
+              - Neither side needed a pre-shared secret
+              - Both signatures are quantum-resistant
+            spec_refs:
+              - document: "FIPS 204"
+                section: "7"
+                title: "ML-DSA.Verify()"
+          - name: "SAr2 — Accepted Child_SA"
+            abbrev: "ike_auth_r.sar2"
+            bits: 0
+            offset_bits: 72
+            value: "ESP_Header with AES-256-GCM — SA_ID=0x000000C5 assigned"
+            description: >
+              Child_SA accepted. SA_ID=0xC5 will appear in every ESP_Header
+              on encrypted FC frames. Both HBA ASICs load the Child_SA
+              session key derived from SKEYSEED. Encryption is now active.
+          - name: "TSi / TSr — Accepted Traffic Selectors"
+            abbrev: "ike_auth_r.ts"
+            bits: 0
+            offset_bits: 72
+            value: "All traffic between host (0x010200) and array (0x020100)"
+            description: >
+              Traffic selectors accepted. ALL FC frames between these two
+              N_Ports are covered — FCP, NVMe/FC, ELS, everything. No
+              per-application configuration.
+      - name: "FC-2 Frame Header (Routing — always plaintext)"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x23"
+            description: "0x23 = Extended Link Service reply"
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0x010200"
+            description: "Destination — host HBA port. ALWAYS PLAINTEXT."
+          - name: "CS_CTL"
+            abbrev: "fc2.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0x020100"
+            description: "Source — array target port. Always plaintext."
+          - name: "TYPE"
+            abbrev: "fc2.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc2.fctl"
+            bits: 24
+            value: "0x980000"
+            description: "Frame Control — exchange responder, first+last sequence"
+          - name: "SEQ_ID"
+            abbrev: "fc2.seqid"
+            bits: 8
+            value: "0x05"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc2.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc2.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc2.oxid"
+            bits: 16
+            value: "0x0012"
+            description: "Originator Exchange ID — same IKE_Auth exchange"
+          - name: "RX_ID"
+            abbrev: "fc2.rxid"
+            bits: 16
+            value: "0x0012"
+            description: "Responder Exchange ID"
+          - name: "Parameter"
+            abbrev: "fc2.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for this frame type"
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  # ── Phase 5: Encrypted I/O ─────────────────────────────────────────────────
+
+  - id: "prli_encrypted"
+    name: "PRLI — First Encrypted Frame (NVMe or FCP)"
+    description: >
+      Process Login (PRLI) is the first encrypted frame on this link. PRLI
+      establishes the FC-4 process association (NVMe type 0x28 or FCP type 0x08).
+      The FC header remains plaintext — the switch reads D_ID and routes normally.
+      After the FC header, the ESP_Header carries SA_ID=0xC5 (from the Child_SA
+      established in IKE_Auth), sequence number 1, and a unique IV. The PRLI
+      payload is AES-256-GCM ciphertext.
+    from: "host"
+    to: "array"
+    via: ["switch"]
+    timestamp_ns: 23000
+    total_bytes: 96
+    color: "#8e44ad"
+    headers:
+      - name: "FC Frame Header (PLAINTEXT)"
+        abbrev: "fc.prli.hdr"
+        layer: 2
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.prli.rctl"
+            bits: 8
+            value: "0x22"
+            description: "0x22 = Extended Link Service request — PRLI"
+          - name: "D_ID"
+            abbrev: "fc.prli.did"
+            bits: 24
+            value: "0x020100"
+            description: "Array target port. Switch routes here. Always plaintext."
+          - name: "CS_CTL"
+            abbrev: "fc.prli.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.prli.sid"
+            bits: 24
+            value: "0x010200"
+            description: "Host N_Port ID. Always plaintext."
+          - name: "TYPE"
+            abbrev: "fc.prli.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc.prli.fctl"
+            bits: 24
+            value: "0x290000"
+            description: "Frame Control — exchange originator, first+last sequence"
+          - name: "OX_ID"
+            abbrev: "fc.prli.oxid"
+            bits: 16
+            value: "0x0013"
+            description: "Originator Exchange ID — PRLI exchange"
+          - name: "RX_ID"
+            abbrev: "fc.prli.rxid"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — not yet assigned"
+      - name: "ESP_Header (FC-SP-3)"
+        abbrev: "esp.prli"
+        layer: 2
+        fields:
+          - name: "SA_ID"
+            abbrev: "esp.prli.said"
+            bits: 32
+            value: "0x000000C5"
+            description: >
+              SA_ID = 0xC5 — the Child_SA established by IKE_Auth. This value
+              appears in every encrypted frame for the lifetime of this SA.
+              The receiving endpoint uses SA_ID to look up the session key.
+          - name: "Sequence_Number"
+            abbrev: "esp.prli.seq"
+            bits: 32
+            value: 1
+            description: >
+              Anti-replay sequence number = 1. This is the very first encrypted
+              frame on this link. The counter increments monotonically. If a
+              frame arrives with a sequence number outside the anti-replay
+              window, it is silently dropped.
+          - name: "IV (Initialization Vector)"
+            abbrev: "esp.prli.iv"
+            bits: 96
+            value: "0xC5D6E7F8 01234567 00000001"
+            description: "Unique IV for this frame. Lower 32 bits = sequence number."
+      - name: "Encrypted PRLI Payload"
+        abbrev: "prli.enc"
+        layer: 4
+        fields:
+          - name: "Ciphertext (PRLI body)"
+            abbrev: "prli.enc.ct"
+            bits: 0
+            value: "[AES-256-GCM ciphertext — PRLI with NVMe type 0x28 or FCP type 0x08]"
+            description: >
+              PRLI payload encrypted. The switch cannot determine which FC-4
+              protocol is being registered (NVMe or FCP), nor any PRLI
+              service parameters. Only the two endpoints see the plaintext.
+          - name: "GCM Authentication Tag (16 bytes)"
+            abbrev: "prli.enc.tag"
+            bits: 128
+            value: "[128-bit AES-GCM integrity tag]"
+            description: "Covers ESP_Header + ciphertext. Any tampering detected before decryption."
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  - id: "prli_acc_encrypted"
+    name: "PRLI ACC — Process Login Accepted (Encrypted)"
+    description: >
+      The array accepts PRLI and returns ACC. Also encrypted under SA 0xC5.
+      The switch cannot determine whether process login succeeded or failed.
+      With PRLI complete, encrypted I/O can now flow.
+    from: "array"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 28000
+    total_bytes: 96
+    color: "#27ae60"
+    headers:
+      - name: "FC Frame Header (PLAINTEXT)"
+        abbrev: "fc.prli_acc.hdr"
+        layer: 2
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.prli_acc.rctl"
+            bits: 8
+            value: "0x23"
+            description: "0x23 = Extended Link Service reply"
+          - name: "D_ID"
+            abbrev: "fc.prli_acc.did"
+            bits: 24
+            value: "0x010200"
+            description: "Host N_Port ID. Switch routes here. Always plaintext."
+          - name: "CS_CTL"
+            abbrev: "fc.prli_acc.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.prli_acc.sid"
+            bits: 24
+            value: "0x020100"
+            description: "Array N_Port ID. Always plaintext."
+          - name: "TYPE"
+            abbrev: "fc.prli_acc.type"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = Extended Link Service (ELS)"
+          - name: "F_CTL"
+            abbrev: "fc.prli_acc.fctl"
+            bits: 24
+            value: "0x980000"
+            description: "Frame Control — exchange responder, first+last sequence"
+          - name: "OX_ID"
+            abbrev: "fc.prli_acc.oxid"
+            bits: 16
+            value: "0x0013"
+            description: "Same exchange as PRLI."
+          - name: "RX_ID"
+            abbrev: "fc.prli_acc.rxid"
+            bits: 16
+            value: "0x0013"
+            description: "Responder Exchange ID"
+      - name: "ESP_Header (FC-SP-3)"
+        abbrev: "esp.prli_acc"
+        layer: 2
+        fields:
+          - name: "SA_ID"
+            abbrev: "esp.prli_acc.said"
+            bits: 32
+            value: "0x000000C5"
+            description: "Same SA — every frame encrypted under SA 0xC5."
+          - name: "Sequence_Number"
+            abbrev: "esp.prli_acc.seq"
+            bits: 32
+            value: 2
+            description: "Anti-replay counter = 2. Only the second encrypted frame."
+          - name: "IV"
+            abbrev: "esp.prli_acc.iv"
+            bits: 96
+            value: "0xC5D6E7F8 01234567 00000002"
+            description: "Unique IV for this frame."
+      - name: "Encrypted PRLI ACC Payload"
+        abbrev: "prli_acc.enc"
+        layer: 4
+        fields:
+          - name: "Ciphertext (PRLI ACC body)"
+            abbrev: "prli_acc.enc.ct"
+            bits: 0
+            value: "[AES-256-GCM ciphertext — PRLI ACC with service parameters]"
+            description: "PRLI ACC payload encrypted. The switch cannot determine the outcome."
+          - name: "GCM Authentication Tag"
+            abbrev: "prli_acc.enc.tag"
+            bits: 128
+            value: "[128-bit AES-GCM integrity tag]"
+            description: "Authenticated encryption covers ESP_Header + ciphertext."
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  - id: "scsi_write_encrypted"
+    name: "Encrypted SCSI WRITE — Command + Data in ESP_Header"
+    description: >
+      An encrypted SCSI WRITE command demonstrating production I/O under
+      the Child_SA. The FC header is structurally identical to any unencrypted
+      FC frame — R_CTL, D_ID, S_ID, TYPE all plaintext. The switch reads D_ID
+      for routing and nothing else. The ESP_Header wraps the FCP_CMND IU
+      containing the SCSI WRITE(10) CDB. ESP sequence number 523 indicates
+      hundreds of frames have already been encrypted under this SA.
+    from: "host"
+    to: "array"
+    via: ["switch"]
+    timestamp_ns: 100000
+    total_bytes: 2112
+    color: "#8e44ad"
+    headers:
+      - name: "FC Frame Header (PLAINTEXT)"
+        abbrev: "fc.wr.hdr"
+        layer: 2
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.wr.rctl"
+            bits: 8
+            value: "0x06"
+            description: "0x06 = FC-4 Device Data — Unsolicited Command (FCP_CMND)"
+          - name: "D_ID"
+            abbrev: "fc.wr.did"
+            bits: 24
+            value: "0x020100"
+            description: "Array port. Switch routes here. Always plaintext."
+          - name: "CS_CTL"
+            abbrev: "fc.wr.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.wr.sid"
+            bits: 24
+            value: "0x010200"
+            description: "Host port. Always plaintext."
+          - name: "TYPE"
+            abbrev: "fc.wr.type"
+            bits: 8
+            value: "0x08"
+            description: "0x08 = FCP (SCSI Fibre Channel Protocol). Plaintext — switch can see frame type."
+          - name: "F_CTL"
+            abbrev: "fc.wr.fctl"
+            bits: 24
+            value: "0x290000"
+            description: "Frame Control — exchange originator, first+last sequence, SI transfer"
+          - name: "SEQ_ID"
+            abbrev: "fc.wr.seqid"
+            bits: 8
+            value: "0x00"
+            description: "Sequence ID within this exchange"
+          - name: "DF_CTL"
+            abbrev: "fc.wr.dfctl"
+            bits: 8
+            value: "0x00"
+            description: "Data Field Control — no optional headers"
+          - name: "SEQ_CNT"
+            abbrev: "fc.wr.seqcnt"
+            bits: 16
+            value: 0
+            description: "Sequence count — first frame in sequence"
+          - name: "OX_ID"
+            abbrev: "fc.wr.oxid"
+            bits: 16
+            value: "0x0030"
+            description: "Originator Exchange ID — SCSI WRITE exchange"
+          - name: "RX_ID"
+            abbrev: "fc.wr.rxid"
+            bits: 16
+            value: "0xFFFF"
+            description: "Responder Exchange ID — not yet assigned"
+          - name: "Parameter"
+            abbrev: "fc.wr.parameter"
+            bits: 32
+            value: "0x00000000"
+            description: "Relative offset — 0 for FCP_CMND"
+      - name: "ESP_Header (FC-SP-3 Child_SA)"
+        abbrev: "esp.wr"
+        layer: 2
+        fields:
+          - name: "SA_ID"
+            abbrev: "esp.wr.said"
+            bits: 32
+            value: "0x000000C5"
+            description: "Child_SA from IKE_Auth. Every frame uses this SA_ID."
+          - name: "Sequence_Number"
+            abbrev: "esp.wr.seq"
+            bits: 32
+            value: 523
+            description: >
+              Anti-replay counter = 523. This is the 523rd encrypted frame
+              in this session — production I/O is well underway.
+          - name: "IV"
+            abbrev: "esp.wr.iv"
+            bits: 96
+            value: "0xC5D6E7F8 01234567 0000020B"
+            description: "Unique IV. Lower 32 bits = sequence number 0x20B = 523."
+      - name: "Encrypted FCP Payload (ciphertext)"
+        abbrev: "fcp.enc"
+        layer: 4
+        fields:
+          - name: "Ciphertext (FCP_CMND — WRITE CDB)"
+            abbrev: "fcp.enc.ct"
+            bits: 0
+            value: "[AES-256-GCM ciphertext of FCP_CMND frame]"
+            description: >
+              FCP_CMND contains: LUN, task attribute, FCP_CDB (SCSI WRITE(10)),
+              and FCP_DL (expected data length). All encrypted. The switch sees
+              only ciphertext — it cannot determine which LUN is being accessed,
+              what operation is being performed, or what data is being written.
+          - name: "GCM Authentication Tag (16 bytes)"
+            abbrev: "fcp.enc.tag"
+            bits: 128
+            value: "[128-bit AES-GCM integrity tag]"
+            description: "Covers ESP_Header + ciphertext. Any tampering detected."
+      - name: "Switch Visibility (Annotation)"
+        abbrev: "sw.vis"
+        layer: 2
+        fields:
+          - name: "What the switch sees"
+            abbrev: "sw.vis.sees"
+            bits: 0
+            value: "FC header (D_ID=0x020100, S_ID=0x010200, R_CTL=0x06) + opaque payload"
+            description: >
+              The switch reads D_ID (3 bytes), routes to the correct output port.
+              The payload is indistinguishable from random bytes. Credit-based
+              flow control, BB_Credit management, and congestion detection all
+              work normally based on plaintext header and frame size.
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+  - id: "scsi_read_encrypted"
+    name: "Encrypted SCSI READ — Response Data in ESP_Header"
+    description: >
+      An encrypted SCSI READ response demonstrating the return data path.
+      The array sends read data back to the host, wrapped in ESP_Header.
+      This shows both directions of the link are encrypted under the
+      same Child_SA — the SA covers all traffic between the two N_Ports.
+    from: "array"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 105000
+    total_bytes: 2112
+    color: "#27ae60"
+    headers:
+      - name: "FC Frame Header (PLAINTEXT)"
+        abbrev: "fc.rd.hdr"
+        layer: 2
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc.rd.rctl"
+            bits: 8
+            value: "0x01"
+            description: "0x01 = FC-4 Device Data — Solicited Data (FCP_DATA for READ)"
+          - name: "D_ID"
+            abbrev: "fc.rd.did"
+            bits: 24
+            value: "0x010200"
+            description: "Host port. Switch routes here. Always plaintext."
+          - name: "CS_CTL"
+            abbrev: "fc.rd.csctl"
+            bits: 8
+            value: "0x00"
+            description: "Class-Specific Control — 0x00 for Class 3"
+          - name: "S_ID"
+            abbrev: "fc.rd.sid"
+            bits: 24
+            value: "0x020100"
+            description: "Array port. Always plaintext."
+          - name: "TYPE"
+            abbrev: "fc.rd.type"
+            bits: 8
+            value: "0x08"
+            description: "0x08 = FCP. Plaintext."
+          - name: "F_CTL"
+            abbrev: "fc.rd.fctl"
+            bits: 24
+            value: "0x890000"
+            description: "Frame Control — exchange responder, end sequence, SI transfer"
+          - name: "OX_ID"
+            abbrev: "fc.rd.oxid"
+            bits: 16
+            value: "0x0031"
+            description: "Originator Exchange ID — SCSI READ exchange"
+          - name: "RX_ID"
+            abbrev: "fc.rd.rxid"
+            bits: 16
+            value: "0x0031"
+            description: "Responder Exchange ID"
+      - name: "ESP_Header (FC-SP-3 Child_SA)"
+        abbrev: "esp.rd"
+        layer: 2
+        fields:
+          - name: "SA_ID"
+            abbrev: "esp.rd.said"
+            bits: 32
+            value: "0x000000C5"
+            description: "Same Child_SA — bidirectional encryption under SA 0xC5."
+          - name: "Sequence_Number"
+            abbrev: "esp.rd.seq"
+            bits: 32
+            value: 530
+            description: "Anti-replay counter = 530. READ data follows earlier exchanges."
+          - name: "IV"
+            abbrev: "esp.rd.iv"
+            bits: 96
+            value: "0xC5D6E7F8 01234567 00000212"
+            description: "Unique IV for this frame."
+      - name: "Encrypted FCP_DATA Payload (ciphertext)"
+        abbrev: "fcprd.enc"
+        layer: 4
+        fields:
+          - name: "Ciphertext (SCSI READ data)"
+            abbrev: "fcprd.enc.ct"
+            bits: 0
+            value: "[AES-256-GCM ciphertext — 2048 bytes of SCSI READ(10) data]"
+            description: >
+              SCSI READ data encrypted. An adversary recording SAN traffic
+              cannot read any data returning from storage. The switch sees
+              only ciphertext — the read payload is completely opaque.
+          - name: "GCM Authentication Tag"
+            abbrev: "fcprd.enc.tag"
+            bits: 128
+            value: "[128-bit AES-GCM integrity tag]"
+            description: "Authenticated encryption covers ESP_Header + ciphertext."
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "64b/66b"
+            description: "Line encoding scheme — 64b/66b for 64GFC"
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics"
+
+timeline:
+  - id: "context"
+    type: "annotation"
+    t_ns: 0
+    annotation:
+      text: "Starting Point: Physical Link Up, FLOGI + PLOGI Complete"
+      detail: >
+        Physical link is up at 64GFC. FLOGI and PLOGI are complete — both endpoints
+        have exchanged WWNs and N_Port IDs. Both sides advertised FC-SP-3 IKEv2-AUTH
+        capability. No shared secrets have been provisioned — both endpoints hold
+        ML-DSA-87 device certificates signed by the organization's Certificate Authority.
+        The host will now initiate AUTH_Negotiate proposing IKEv2-AUTH (not DH-CHAP).
+
+  - id: "fabric_login_ctx"
+    type: "frame_tx"
+    t_ns: 0
+    frame_id: "fabric_login_context"
+    annotation:
+      text: "FLOGI + PLOGI Complete — IKEv2-AUTH Capability Detected"
+      detail: >
+        Both SecureHBAs advertised FC-SP-3 IKEv2-AUTH support in their PLOGI ACC
+        service parameters. The host detects this mutual capability match and will
+        initiate AUTH_Negotiate with IKEv2-AUTH as the proposed authentication protocol.
+        This is the key divergence from the DH-CHAP companion scenario: no shared
+        secrets exist between these endpoints. Trust will be established entirely
+        through ML-DSA-87 certificate chains rooted in a common Certificate Authority.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              auth_state: "AUTH_IDLE — initiating AUTH_Negotiate (IKEv2-AUTH)"
+          - layer: 2
+            name: "FC-2 Framing / Transport"
+            state_fields:
+              frame_type: "plaintext (pre-SA)"
+              sa_id: "none"
+      - actor_id: "array"
+        layers:
+          - layer: 4
+            name: "FC-4 / Data Services"
+            state_fields:
+              auth_state: "AUTH_IDLE — awaiting AUTH_Negotiate"
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              payload_visibility: "VISIBLE (pre-encryption)"
+
+  - id: "auth_neg"
+    type: "frame_tx"
+    t_ns: 1000
+    frame_id: "auth_negotiate"
+    annotation:
+      text: "AUTH_Negotiate — IKEv2-AUTH (0x00000002) + SA-C5 Profile (0x00000004)"
+      detail: >
+        AUTH_Negotiate proposes IKEv2-AUTH (protocol identifier 0x00000002) instead
+        of DH-CHAP (0x00000001). The IKEv2-AUTH Protocol Parameters specify the SA-C5
+        profile (0x00000004 = CNSA 2.0). Concatenation bit = 0 means IKEv2-AUTH handles
+        everything — authentication, key exchange, and SA establishment — with no
+        DH-CHAP involvement at all.
+
+        The DH2048-SA profile in the companion scenario uses classical DH-CHAP with
+        pre-shared secrets followed by SA concatenation. The SA-C5 profile shown here
+        uses IKEv2-AUTH with certificates — no shared secrets, no DH-CHAP, fully
+        post-quantum.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              auth_state: "AUTH_NEGOTIATE sent — IKEv2-AUTH proposed"
+      - actor_id: "array"
+        layers:
+          - layer: 4
+            name: "FC-4 / Data Services"
+            state_fields:
+              auth_state: "AUTH_NEGOTIATE received — evaluating IKEv2-AUTH proposal"
+
+  - id: "auth_neg_rsp"
+    type: "frame_tx"
+    t_ns: 6000
+    frame_id: "auth_neg_rsp"
+    annotation:
+      text: "Auth_Negotiate_Rsp — IKEv2-AUTH + SA-C5 (CNSA 2.0) Agreed"
+      detail: >
+        The array confirms IKEv2-AUTH with SA-C5 profile. Both sides now know the
+        next exchange is IKE_SA_Init (not DH-CHAP Challenge). This is the last
+        plaintext control frame before the IKE exchanges begin. The array prepares
+        its ML-KEM-1024 key material for the IKE_SA_Init response.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              auth_state: "Auth_Negotiate_Rsp received — IKEv2-AUTH + SA-C5 agreed"
+      - actor_id: "array"
+        layers:
+          - layer: 4
+            name: "FC-4 / Data Services"
+            state_fields:
+              auth_state: "Auth_Negotiate_Rsp sent — awaiting IKE_SA_Init"
+
+  - id: "ike_sa_init_i"
+    type: "frame_tx"
+    t_ns: 8000
+    frame_id: "ike_sa_init_request"
+    annotation:
+      text: "IKE_SA_Init (Initiator) — ML-KEM-1024 Encapsulation Key (1568 bytes)"
+      detail: >
+        The host sends IKE_SA_Init with its ML-KEM-1024 encapsulation key (1568 bytes).
+        This is the post-quantum replacement for classical Diffie-Hellman: instead of
+        computing g^a mod p (which a quantum computer can break via Shor's algorithm),
+        the host generates an ML-KEM key pair based on the Module Learning With Errors
+        (MLWE) lattice problem, for which no efficient quantum algorithm exists.
+
+        The SA proposal requests: ENCR_AES_GCM_256, PRF_HMAC_SHA2_384, and ML-KEM-1024
+        key exchange — all CNSA 2.0 required algorithms. The 32-byte initiator nonce
+        provides freshness.
+
+        ML-KEM-1024 vs classical DH: encapsulation-based key exchange produces a
+        shared secret through Encaps/Decaps operations rather than exponentiation.
+        The shared secret is IND-CCA2 secure against both classical and quantum adversaries.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              auth_state: "IKE_SA_Init sent — ML-KEM-1024 encapsulation key transmitted"
+              ike_sa_state: "INIT_SENT"
+      - actor_id: "array"
+        layers:
+          - layer: 4
+            name: "FC-4 / Data Services"
+            state_fields:
+              auth_state: "IKE_SA_Init received — running ML-KEM.Encaps()"
+              ike_sa_state: "INIT_RECEIVED"
+
+  - id: "ike_sa_init_r"
+    type: "frame_tx"
+    t_ns: 12000
+    frame_id: "ike_sa_init_response"
+    annotation:
+      text: "IKE_SA_Init (Responder) — ML-KEM-1024 Ciphertext + CERTREQ + ML-DSA-87 Notify"
+      detail: >
+        The array responds with its ML-KEM-1024 ciphertext (1568 bytes — the
+        encapsulated shared secret), its nonce, a CERTREQ requesting the host's
+        certificate, and a Notify advertising ML-DSA-87 as the supported
+        authentication method.
+
+        After this exchange, both sides derive SKEYSEED from the ML-KEM shared
+        secret plus nonces: SKEYSEED = prf(Ni | Nr, K). All subsequent messages
+        (IKE_Auth) are encrypted under the IKE_SA — an eavesdropper cannot read
+        the certificates or authentication payloads exchanged in Phase 4.
+
+        The host now runs ML-KEM.Decaps(ciphertext, sk) to recover the same
+        shared secret K that the array derived during Encaps(). Both sides
+        hold identical K without ever transmitting it in plaintext.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              auth_state: "IKE_SA_Init response received — deriving SKEYSEED from ML-KEM shared secret"
+              ike_sa_state: "SKEYSEED derived — IKE_SA keys ready"
+      - actor_id: "array"
+        layers:
+          - layer: 4
+            name: "FC-4 / Data Services"
+            state_fields:
+              auth_state: "IKE_SA_Init sent — SKEYSEED derived"
+              ike_sa_state: "SKEYSEED derived — awaiting IKE_Auth"
+
+  - id: "skeyseed_annotation"
+    type: "annotation"
+    t_ns: 13000
+    annotation:
+      text: "SKEYSEED Derived — IKE_SA Established, Subsequent Messages Encrypted"
+      detail: >
+        Both endpoints have independently derived the same SKEYSEED from:
+        - The 32-byte ML-KEM shared secret (from ML-KEM.Encaps/Decaps)
+        - The initiator nonce Ni and responder nonce Nr
+        - PRF = HMAC-SHA-384
+
+        SKEYSEED = prf(Ni | Nr, K_mlkem)
+
+        From SKEYSEED, all IKE_SA keys are derived: encryption key (SK_ei/SK_er),
+        integrity key (SK_ai/SK_ar), and key derivation key (SK_d) for future
+        Child_SA key derivation. The IKE_Auth messages that follow are encrypted
+        under these keys — the certificates, identities, and AUTH signatures
+        are all protected from eavesdroppers.
+
+        Compare with DH-CHAP: in the companion scenario, K is derived from
+        g^(ab) mod p — vulnerable to quantum attack. Here, K comes from
+        ML-KEM — quantum-resistant.
+
+  - id: "ike_auth_i"
+    type: "frame_tx"
+    t_ns: 16000
+    frame_id: "ike_auth_request"
+    annotation:
+      text: "IKE_Auth (Initiator) — ML-DSA-87 Certificate + Digital Signature"
+      detail: >
+        The host sends IKE_Auth (encrypted under IKE_SA). Inside the SK{} envelope:
+        - IDi: host WWN (Name_Identifier, NAA=5)
+        - CERT: host's leaf certificate (ML-DSA-87 signed by Org CA) + CA root cert
+        - AUTH: 4627-byte ML-DSA-87 digital signature proving host identity
+        - SAi2: Child_SA proposal (ESP_Header with AES-256-GCM)
+        - TSi/TSr: traffic selectors (all traffic between these N_Ports)
+
+        ML-DSA-87 vs ECDSA: classical ECDSA P-384 produces 64-byte signatures.
+        ML-DSA-87 produces 4627-byte signatures — larger, but immune to quantum
+        attack. A quantum computer running Shor's algorithm can forge ECDSA
+        signatures. No efficient quantum algorithm can forge ML-DSA-87 signatures
+        (based on the MLWE/SIS hardness assumptions).
+
+        Certificate-based trust model vs shared-secret model: instead of distributing
+        N*(N-1)/2 shared secrets for N port pairs, the administrator issues N
+        certificates from one CA. Adding a new port requires only one new certificate,
+        not updating secrets on every existing port.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              auth_state: "IKE_Auth sent — certificate + ML-DSA-87 signature transmitted"
+              ike_sa_state: "AUTH_SENT"
+      - actor_id: "array"
+        layers:
+          - layer: 4
+            name: "FC-4 / Data Services"
+            state_fields:
+              auth_state: "IKE_Auth received — verifying ML-DSA-87 certificate chain + signature"
+
+  - id: "ike_auth_r"
+    type: "frame_tx"
+    t_ns: 21000
+    frame_id: "ike_auth_response"
+    annotation:
+      text: "IKE_Auth (Responder) — Mutual Auth Complete, Child_SA Active, Encryption ON"
+      detail: >
+        The array sends IKE_Auth with its own ML-DSA-87 certificate and signature.
+        The host verifies the array's certificate chain and signature. Both identities
+        are now verified. Child_SA established with SA_ID=0xC5.
+
+        Both HBA ASICs load the Child_SA session key (derived from SKEYSEED via SK_d).
+        Watch the OSI panel: host shows encryption_active=true, array shows
+        decryption_active=true, switch shows payload_visibility=OPAQUE.
+
+        Total elapsed from PLOGI to full encryption: ~21 us (dominated by two
+        network round-trips for IKE_SA_Init + IKE_Auth). Comparable to the DH-CHAP
+        scenario despite the larger ML-KEM/ML-DSA payloads — the HBA ASIC performs
+        all cryptographic operations in hardware.
+
+        From this point: every FC frame (PRLI, FCP commands, FCP data, FCP responses,
+        NVMe/FC capsules) is encrypted end-to-end with AES-256-GCM. The wire format
+        (ESP_Header) is identical to the DH-CHAP scenario — only the key establishment
+        and authentication methods differ.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical"
+            state_fields:
+              encryption_active: true
+          - layer: 2
+            name: "FC-2 Framing / Transport"
+            state_fields:
+              frame_type: "AES-256-GCM encrypted"
+              sa_id: "0x000000C5"
+              sequence_number: 0
+          - layer: 4
+            name: "FC-4 Protocol Mapping"
+            state_fields:
+              auth_state: "COMPLETE — IKEv2-AUTH mutual authentication PASSED"
+              ike_sa_state: "ESTABLISHED"
+              child_sa_state: "ACTIVE — SA_ID=0xC5, AES-256-GCM"
+      - actor_id: "array"
+        layers:
+          - layer: 0
+            name: "FC-0 Physical"
+            state_fields:
+              decryption_active: true
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              frame_type: "receiving AES-256-GCM encrypted"
+              sa_id: "0x000000C5"
+          - layer: 4
+            name: "FC-4 / Data Services"
+            state_fields:
+              auth_state: "COMPLETE — IKEv2-AUTH mutual authentication PASSED"
+              ike_sa_state: "ESTABLISHED"
+              child_sa_state: "ACTIVE — SA_ID=0xC5"
+              data_services: "ACTIVE — dedupe/compress/ransomware-detect on plaintext post-decrypt"
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              payload_visibility: "OPAQUE — switch routes on FC header only"
+
+  - id: "encryption_live"
+    type: "annotation"
+    t_ns: 22000
+    annotation:
+      text: "Encryption Active — All FC Frames Now AES-256-GCM Encrypted (Post-Quantum Key Establishment)"
+      detail: >
+        Total time from PLOGI to encryption active: ~21 us. No shared secrets
+        were provisioned. No DH-CHAP exchange occurred. Authentication was
+        certificate-based using ML-DSA-87. Key establishment used ML-KEM-1024.
+        Both algorithms are quantum-resistant.
+
+        The resulting encrypted frame format (ESP_Header + AES-256-GCM) is
+        identical to the DH-CHAP companion scenario. The switch, multipath
+        software, and applications see no difference. The cryptographic
+        improvement is entirely in the key establishment and authentication
+        phase — post-quantum algorithms replace classical ones, and certificates
+        replace shared secrets.
+
+  - id: "prli_encrypted"
+    type: "frame_tx"
+    t_ns: 23000
+    frame_id: "prli_encrypted"
+    annotation:
+      text: "PRLI — First Encrypted Frame (ESP Seq=1)"
+      detail: >
+        PRLI is the first encrypted frame. FC header plaintext — switch reads D_ID
+        and routes normally. ESP_Header: SA_ID=0xC5 (Child_SA from IKE_Auth),
+        Seq=1 starts anti-replay, unique IV. PRLI body is AES-256-GCM ciphertext.
+        The switch cannot determine which FC-4 protocol (NVMe or FCP) is being
+        registered.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Transport"
+            state_fields:
+              sequence_number: 1
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              routing_mode: "D_ID routing — payload opaque to switch"
+
+  - id: "prli_acc_encrypted"
+    type: "frame_tx"
+    t_ns: 28000
+    frame_id: "prli_acc_encrypted"
+    annotation:
+      text: "PRLI ACC — Process Association Established (Encrypted, ESP Seq=2)"
+      detail: >
+        PRLI ACC accepted — FCP or NVMe process association established.
+        Also encrypted under SA 0xC5. With PRLI complete, production I/O
+        can now flow. Every frame in both directions is AES-256-GCM encrypted
+        with post-quantum key establishment.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Transport"
+            state_fields:
+              sequence_number: 2
+      - actor_id: "array"
+        layers:
+          - layer: 4
+            name: "FC-4 / Data Services"
+            state_fields:
+              auth_state: "PRLI decrypted — FC-4 session READY"
+
+  - id: "scsi_write_encrypted"
+    type: "frame_tx"
+    t_ns: 100000
+    frame_id: "scsi_write_encrypted"
+    annotation:
+      text: "Encrypted SCSI WRITE — Production I/O Under Post-Quantum SA (ESP Seq=523)"
+      detail: >
+        Production I/O well underway. ESP Seq=523 indicates hundreds of frames
+        have already been encrypted. The FC header is identical to any unencrypted
+        frame — R_CTL=0x06, TYPE=0x08, D_ID/S_ID plaintext. The switch routes
+        on D_ID and sees only ciphertext beyond the ESP_Header.
+
+        From the application's perspective, this is a normal SCSI WRITE. The
+        encryption is completely transparent — the OS, HBA driver, multipath
+        software, and application are unaware. The HBA ASIC encrypts at line
+        rate with zero latency impact.
+    state_after:
+      - actor_id: "host"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Transport"
+            state_fields:
+              sequence_number: 523
+      - actor_id: "switch"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              payload_visibility: "OPAQUE — ciphertext only"
+
+  - id: "scsi_read_encrypted"
+    type: "frame_tx"
+    t_ns: 105000
+    frame_id: "scsi_read_encrypted"
+    annotation:
+      text: "Encrypted SCSI READ — Both Directions Encrypted (ESP Seq=530)"
+      detail: >
+        SCSI READ data returning from the array, also encrypted under SA 0xC5.
+        Both directions of the link use the same Child_SA. The array's HBA ASIC
+        encrypts read data at line rate before transmission. The host's HBA ASIC
+        decrypts at line rate upon receipt. The application receives plaintext
+        SCSI data — completely unaware of the encryption layer.
+
+        Array-side: data services (dedupe, compression, ransomware detection)
+        operate on plaintext before encryption. The HBA ASIC encrypts the
+        plaintext read data as it leaves the array port. This preserves full
+        data services functionality — identical to the DH-CHAP scenario.
+    state_after:
+      - actor_id: "array"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing"
+            state_fields:
+              frame_type: "sent encrypted FCP_DATA (READ)"
+      - actor_id: "host"
+        layers:
+          - layer: 2
+            name: "FC-2 Framing / Transport"
+            state_fields:
+              sequence_number: 530
+              frame_type: "received encrypted FCP_DATA — decrypted by HBA ASIC"
+
+glossary:
+  - term: "SA-C5 Profile"
+    abbrev: "SA-C5"
+    definition: >
+      SA-C5 Implementation Profile from FC-SP-3 Annex A.11. The CNSA 2.0
+      post-quantum profile for Fibre Channel security. Uses IKEv2-AUTH for
+      both authentication and SA management (no DH-CHAP). Key exchange:
+      ML-KEM-1024. Digital signatures: ML-DSA-87. Symmetric cipher: AES-256-GCM.
+      PRF: HMAC-SHA-384. This profile is designed for environments that must
+      comply with NSA CNSA 2.0 requirements (National Security Systems) or
+      that want quantum-resistant protection for long-lived data.
+    spec_refs:
+      - document: "FC-SP-3 (INCITS 577-202x)"
+        section: "Annex A.11"
+        title: "SA-C5 Implementation Profile"
+
+  - term: "CNSA 2.0"
+    abbrev: "CNSA 2.0"
+    definition: >
+      Commercial National Security Algorithm Suite 2.0. Published by the NSA
+      in September 2022. Specifies quantum-resistant cryptographic algorithms
+      for National Security Systems (NSS — DoD, Intelligence Community, classified
+      systems). Key changes from CNSA 1.0: adds ML-KEM-1024 for key establishment
+      and ML-DSA-87 for digital signatures. AES-256 and SHA-384/512 carry over.
+      CNSA 2.0 is mandatory for NSS; commercial enterprises benefit from the same
+      algorithms but are not directly mandated. Timeline: NSS must transition to
+      CNSA 2.0 algorithms by 2030 for software/firmware signing, 2033 for symmetric
+      keys, and 2035 for asymmetric key establishment.
+    spec_refs:
+      - document: "NSA CNSA 2.0"
+        section: "all"
+        url: "https://media.defense.gov/2022/Sep/07/2003071836/-1/-1/0/CSA_CNSA_2.0_ALGORITHMS_.PDF"
+
+  - term: "IKEv2-AUTH"
+    abbrev: "IKEv2-AUTH"
+    definition: >
+      The IKEv2-based authentication and SA management protocol defined in
+      FC-SP-3 section 6.3.3. When used as the authentication protocol (instead
+      of DH-CHAP), IKEv2-AUTH provides both mutual authentication (via digital
+      signatures and certificate chains) and Security Association management
+      (IKE_SA + Child_SA) in a single protocol. No shared secrets are needed.
+      This replaces the DH-CHAP + SA concatenation model used in earlier profiles.
+    spec_refs:
+      - document: "FC-SP-3 (INCITS 577-202x)"
+        section: "6.3.3"
+        title: "SA management transaction as authentication — IKEv2-AUTH"
+
+  - term: "ML-KEM-1024"
+    abbrev: "ML-KEM-1024"
+    definition: >
+      Module-Lattice-Based Key Encapsulation Mechanism, security parameter 1024.
+      FIPS 203 (2024) standard. A post-quantum key encapsulation mechanism based
+      on the Module Learning With Errors (MLWE) problem. Replaces classical
+      ECDH/DH for key establishment. Resistant to Shor's algorithm on a quantum
+      computer. Key sizes: 1568-byte encapsulation key, 1568-byte ciphertext,
+      32-byte shared secret. Security category 5 (equivalent to AES-256).
+    spec_refs:
+      - document: "FIPS 203"
+        section: "all"
+        title: "ML-KEM"
+        url: "https://csrc.nist.gov/pubs/fips/203/final"
+
+  - term: "ML-DSA-87"
+    abbrev: "ML-DSA-87"
+    definition: >
+      Module-Lattice-Based Digital Signature Algorithm, security parameter set 87.
+      FIPS 204 (2024) standard. A post-quantum digital signature algorithm based
+      on the Module Learning With Errors (MLWE) and Short Integer Solution (SIS)
+      problems. Replaces ECDSA/RSA for digital signatures. Resistant to quantum
+      attack. Key sizes: 2592-byte public key, 4032-byte private key.
+      Signature size: 4627 bytes. Security category 5.
+    spec_refs:
+      - document: "FIPS 204"
+        section: "all"
+        title: "ML-DSA"
+        url: "https://csrc.nist.gov/pubs/fips/204/final"
+
+  - term: "IKE_SA_Init"
+    abbrev: "IKE_SA_Init"
+    definition: >
+      The first message in the IKEv2 exchange, adapted for Fibre Channel
+      (FC-SP-3 section 6.2.4.2). Carries the SA proposal (cipher, PRF, key
+      exchange method), key exchange material (ML-KEM-1024 encapsulation key
+      from initiator, ciphertext from responder), and nonces. After this
+      exchange, both sides derive SKEYSEED and establish the IKE_SA for
+      encrypting subsequent IKE_Auth messages. Auth_Msg_Code = 0x22.
+    spec_refs:
+      - document: "FC-SP-3 (INCITS 577-202x)"
+        section: "6.2.4.2"
+        title: "IKE_SA_Init message"
+
+  - term: "IKE_Auth"
+    abbrev: "IKE_Auth"
+    definition: >
+      The second message in the IKEv2 exchange, adapted for Fibre Channel
+      (FC-SP-3 section 6.2.4.3). Encrypted under the IKE_SA. Carries identity
+      (IDi/IDr = WWN), certificates (ML-DSA-87 signed), digital signature
+      authentication (AUTH payload), and Child_SA proposal/acceptance.
+      After IKE_Auth completes in both directions, the Child_SA is active
+      and all FC frames are encrypted. Auth_Msg_Code = 0x23.
+    spec_refs:
+      - document: "FC-SP-3 (INCITS 577-202x)"
+        section: "6.2.4.3"
+        title: "IKE_Auth message"
+
+  - term: "Child_SA"
+    abbrev: "Child_SA"
+    definition: >
+      A Security Association negotiated within IKE_Auth for protecting FC frames.
+      Defines the ESP transform (AES-256-GCM), SA_ID (appears in every ESP_Header),
+      and traffic selectors (which FC frames are covered). The Child_SA session key
+      is derived from SKEYSEED via SK_d. Analogous to an IPsec Child SA but for
+      FC frame transport.
+    spec_refs:
+      - document: "RFC 7296"
+        section: "2.17"
+        title: "Child SA"
+
+  - term: "ESP_Header"
+    abbrev: "ESP"
+    definition: >
+      Encapsulating Security Payload header. Inserted between the FC frame header
+      and the encrypted payload. Contains SA_ID (identifies the Child_SA and
+      session key), sequence number (anti-replay), and initialization vector (IV).
+      The FC frame header remains plaintext — the switch routes on it normally.
+      Identical wire format regardless of whether the SA was established via
+      DH-CHAP+SA or IKEv2-AUTH.
+    spec_refs:
+      - document: "FC-SP-3 (INCITS 577-202x)"
+        section: "6.2"
+        title: "ESP_Header format"
+
+  - term: "SKEYSEED"
+    abbrev: "SKEYSEED"
+    definition: >
+      The master key derivation seed in IKEv2. Derived from the ML-KEM shared
+      secret and both nonces: SKEYSEED = prf(Ni | Nr, K_mlkem). From SKEYSEED,
+      all IKE_SA keys (SK_ei, SK_er, SK_ai, SK_ar, SK_d, SK_pi, SK_pr) are
+      derived. SK_d is then used to derive Child_SA keys for ESP encryption.
+      Per RFC 7296 section 2.14.
+    spec_refs:
+      - document: "RFC 7296"
+        section: "2.14"
+        title: "SKEYSEED generation"
+
+  - term: "Certificate Chain"
+    abbrev: "cert_chain"
+    definition: >
+      A sequence of X.509 certificates linking a device certificate to a
+      trusted Certificate Authority (CA) root. In the SA-C5 flow: the device's
+      leaf certificate (signed by the CA with ML-DSA-87) is presented along
+      with the CA root certificate. The verifier checks that the leaf cert's
+      signature is valid under the CA's public key, and that the CA root is
+      in its trust store. This eliminates the need for pre-shared secrets —
+      any device with a certificate from the trusted CA is automatically
+      authenticated.
+
+  - term: "Digital Signature"
+    abbrev: "digsig"
+    definition: >
+      A cryptographic proof that a message was created by the holder of a
+      specific private key. In IKE_Auth, the AUTH payload contains an ML-DSA-87
+      signature over the IKE_SA_Init message. The verifier uses the signer's
+      public key (from the certificate) to confirm the signature is valid.
+      Auth_Method=14 (Digital Signature) per RFC 7296 section 3.8.
+
+  - term: "Traffic Selector"
+    abbrev: "TS"
+    definition: >
+      Defines which FC frames are protected by the Child_SA. Default traffic
+      selectors (per FC-SP-3 section 6.2.5.12.2) cover ALL traffic between
+      the two N_Port endpoints — regardless of FC-4 protocol (FCP, NVMe/FC,
+      ELS) or application workload. No per-application configuration needed.
+    spec_refs:
+      - document: "FC-SP-3 (INCITS 577-202x)"
+        section: "6.2.5.12.2"
+        title: "Default traffic selectors"
+
+walkthroughs:
+  - id: "sa-c5-flow"
+    title: "SA-C5 Post-Quantum Authentication — From PLOGI to Encrypted"
+    description: "Trace the complete IKEv2-AUTH flow with ML-KEM-1024 and ML-DSA-87."
+    steps:
+      - step: 0
+        narration: >
+          PLOGI is complete. Both endpoints advertised FC-SP-3 IKEv2-AUTH capability.
+          No shared secrets exist between these endpoints — trust will come entirely
+          from ML-DSA-87 certificate chains. This is the fundamental difference from
+          the DH-CHAP companion scenario: no secrets to distribute, no secrets to rotate,
+          no secrets to compromise.
+        highlight_fields: ["ctx.fcsp3", "ctx.host_wwn", "ctx.array_wwn"]
+      - step: 1
+        narration: >
+          AUTH_Negotiate proposes IKEv2-AUTH (0x00000002) — not DH-CHAP (0x00000001).
+          The SA-C5 profile identifier (0x00000004) selects CNSA 2.0 algorithms.
+          Concatenation bit = 0 means IKEv2-AUTH handles everything: key exchange,
+          authentication, and SA establishment. No DH-CHAP will occur at all.
+        highlight_fields: ["els.cmd", "auth_neg.proto", "auth_neg.ikev2_profile", "auth_neg.concat"]
+      - step: 2
+        narration: >
+          Array confirms IKEv2-AUTH + SA-C5. Next exchange is IKE_SA_Init.
+          Compare with the DH-CHAP scenario where the next frame would be
+          DHCHAP_Challenge — here, there is no challenge/response at all.
+        highlight_fields: ["auth_neg_rsp.proto", "auth_neg_rsp.ikev2_profile"]
+      - step: 3
+        narration: >
+          IKE_SA_Init from the host carries the ML-KEM-1024 encapsulation key
+          (1568 bytes). This is the post-quantum replacement for g^a mod p.
+          The SA proposal requests AES-256-GCM + PRF-HMAC-SHA2-384 + ML-KEM-1024.
+          All CNSA 2.0 required algorithms.
+        highlight_fields: ["ike_sa_init_i.sai1_ke", "ike_sa_init_i.kei", "ike_sa_init_i.sai1_encr", "ike_sa_init_i.ni"]
+      - step: 4
+        narration: >
+          IKE_SA_Init response carries the ML-KEM-1024 ciphertext (encapsulated
+          shared secret), CERTREQ, and ML-DSA-87 auth method notification.
+          After this exchange, SKEYSEED is derived and the IKE_SA is established.
+          All subsequent messages are encrypted — an eavesdropper sees nothing.
+        highlight_fields: ["ike_sa_init_r.ker", "ike_sa_init_r.nr", "ike_sa_init_r.certreq", "ike_sa_init_r.notify_auth"]
+      - step: 5
+        narration: >
+          IKE_Auth from the host (encrypted under IKE_SA): identity (WWN),
+          ML-DSA-87 certificate chain, 4627-byte digital signature, and
+          Child_SA proposal (ESP + AES-256-GCM). The certificate replaces
+          the shared secret — no pre-provisioned secret needed.
+        highlight_fields: ["ike_auth_i.idi", "ike_auth_i.cert_leaf", "ike_auth_i.auth", "ike_auth_i.sai2"]
+      - step: 6
+        narration: >
+          IKE_Auth response: array's ML-DSA-87 certificate and signature.
+          Mutual authentication complete. Child_SA active with SA_ID=0xC5.
+          Both ASICs load the session key. Encryption is ON. Total time:
+          ~21 us. From here, every FC frame is AES-256-GCM encrypted with
+          post-quantum key establishment — the strongest protection currently
+          available for FC SAN traffic.
+        highlight_fields: ["ike_auth_r.idr", "ike_auth_r.auth", "ike_auth_r.sar2"]
+
+  - id: "dhchap-vs-ikev2auth"
+    title: "DH-CHAP vs IKEv2-AUTH — What Changed and Why"
+    description: "Side-by-side comparison with the DH2048-SA companion scenario."
+    steps:
+      - step: 0
+        narration: >
+          The DH2048-SA profile (companion scenario) uses DH-CHAP with pre-shared
+          secrets for authentication, followed by IKE SA Establishment for the
+          encryption SA. Two separate protocols, classical algorithms throughout.
+
+          The SA-C5 profile (this scenario) uses IKEv2-AUTH for everything — one
+          protocol handles authentication AND SA management. Certificate-based,
+          post-quantum algorithms throughout.
+        highlight_fields: []
+      - step: 1
+        narration: >
+          Key exchange: DH2048-SA uses classical DH (g^ab mod p) — vulnerable to
+          Shor's algorithm. SA-C5 uses ML-KEM-1024 (lattice-based encapsulation) —
+          quantum-resistant. Both produce a 32-byte shared secret, but ML-KEM's
+          security holds against quantum adversaries.
+        highlight_fields: ["ike_sa_init_i.sai1_ke", "ike_sa_init_i.kei"]
+      - step: 2
+        narration: >
+          Authentication: DH2048-SA uses shared secrets (must be pre-distributed
+          to every port pair). SA-C5 uses ML-DSA-87 certificates (issue N certs
+          from one CA instead of distributing N*(N-1)/2 secrets). Scales better,
+          no secret rotation headaches, no compromise of one secret affecting others.
+        highlight_fields: ["ike_auth_i.cert_leaf", "ike_auth_i.auth"]
+      - step: 3
+        narration: >
+          The encrypted frame format (ESP_Header + AES-256-GCM) is identical in
+          both scenarios. The switch sees no difference. The application sees no
+          difference. The improvement is entirely in the key establishment and
+          authentication phase — stronger algorithms, better scalability.
+        highlight_fields: ["esp.prli.said", "esp.wr.said"]

@@ -1,0 +1,67 @@
+id: iser
+name: iSER
+family: block-scsi
+alignment: osi
+
+summary: >
+  iSCSI Extensions for RDMA. Keeps the iSCSI control plane (login,
+  parameter negotiation) but replaces the data path with RDMA reads
+  and writes for zero-copy transfers. Typically deployed over RoCEv2.
+
+spec_refs:
+  - document: "RFC 7145"
+    title: "iSCSI Extensions for RDMA Specification"
+    url: "https://www.rfc-editor.org/rfc/rfc7145"
+  - document: "RFC 7143"
+    title: "iSCSI Protocol (RFC 3720 successor)"
+
+layers:
+  osi-l7:
+    component_id: block-device
+
+  osi-l6:
+    component_id: scsi
+    notes: "SCSI command set; CDBs flow through iSCSI control PDUs while data moves via RDMA."
+
+  osi-l5:
+    component_id: iser
+    notes: "iSER layers on top of iSCSI Login + Full Feature Phase but redirects data-transfer to RDMA verbs."
+
+  osi-l4:
+    # iSER itself doesn't sit on TCP for data; it sits on RDMA verbs.
+    # The control plane (iSCSI login) does use TCP, but in the
+    # canonical layering iSER's transport surface is verbs.
+    component_id: rdma-verbs
+    notes: "Verbs are the transport surface for iSER data. iSCSI login PDUs may run over TCP separately during connection setup."
+
+  osi-l3:
+    component_id: ip
+    notes: "RoCEv2 carries verbs-derived packets inside UDP/IP. (RoCEv1 uses raw Ethertype, no IP.)"
+
+  osi-l2:
+    component_id: dcb
+    notes: "RoCE requires a lossless fabric. PFC at minimum; ECN typically combined with DCQCN for congestion control."
+
+  osi-l1:
+    component_id: gbe-phy
+
+optional_layers:
+  - id: net-virt-row
+    name: Network Virtualization
+    position: between-osi-l2-osi-l1
+    default_enabled: false
+    description: "Overlay networks add encapsulation overhead and complicate PFC/ECN behavior; deploy with care."
+  - id: sr-iov-row
+    name: SR-IOV
+    position: between-osi-l2-osi-l1
+    default_enabled: false
+    description: "Common on RoCE-enabled NICs to expose verbs to VMs directly."
+
+scenarios:
+  - id: iser-login-rdma-write
+    label: "iSER Login + RDMA Data Transfer"
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-04-25"
+  license: "CC-BY-4.0"

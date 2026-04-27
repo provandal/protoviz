@@ -303,6 +303,16 @@
       "path": "fc-sp/fc-sp3-dhchap-auth-failure.yaml"
     },
     {
+      "slug": "fc-sp3-c5-cnsa2-ikev2auth",
+      "title": "FC-SP-3 SA-C5: Post-Quantum Authentication with IKEv2-AUTH (CNSA 2.0)",
+      "protocol": "FC-SP-3 / IKEv2-AUTH / ML-KEM-1024 / ML-DSA-87",
+      "protocol_family": "SAN",
+      "difficulty": "advanced",
+      "description": "The SA-C5 Implementation Profile: IKEv2-AUTH replaces DH-CHAP entirely for certificate-based, post-quantum authentication. Traces AUTH_Negotiate (IKEv2-AUTH selection), IKE_SA_Init (ML-KEM-1024 key encapsulation), IKE_Auth (ML-DSA-87 certificate chain authentication), and encrypted SCSI I/O under ESP_Header. No shared secrets — trust comes from ML-DSA-87 certificate chains. Compares with the DH-CHAP companion scenario throughout.",
+      "tags": ["FC-SP-3", "IKEv2-AUTH", "SA-C5", "CNSA 2.0", "post-quantum", "ML-KEM-1024", "ML-DSA-87", "Fibre Channel", "SAN", "encryption", "certificate-based", "AES-256-GCM", "education"],
+      "path": "fc-sp/fc-sp3-c5-cnsa2-ikev2auth.yaml"
+    },
+    {
       "slug": "parallel-to-serial-scsi-pcie",
       "title": "[DRAFT] Parallel vs. Serial: From SCSI Buses to PCIe Lanes",
       "protocol": "SCSI / PCIe",

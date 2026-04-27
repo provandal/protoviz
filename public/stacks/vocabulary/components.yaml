@@ -1,0 +1,303 @@
+# StackBuilder component vocabulary
+#
+# Canonical components stacks can reference. Each entry has:
+#   - a stable id (used by stack YAML files)
+#   - a display name
+#   - a color token (resolved by the renderer's theme)
+#   - aliases (alternate names contributors might use; validator resolves them)
+#   - default spec_refs (overridable per-cell in stack files)
+#   - a definition (shown in the cell detail panel)
+#
+# Color tokens are semantic, not hex. Themes provide the actual colors.
+# Adding a new component is a PR. Adding a new alias is also a PR but cheaper.
+
+components:
+
+  # ── L7 / Application ─────────────────────────────────────────────────────
+  - id: block-device
+    name: Block Device
+    color: neutral
+    aliases: ["Block", "Block Storage", "BlockDev"]
+    definition: >
+      The OS-level block device abstraction. The kernel exposes a /dev/sd*
+      or /dev/nvme* node; filesystems and applications submit reads and
+      writes in fixed-size blocks. All block storage protocols ultimately
+      surface here on the initiator side.
+
+  - id: file-system
+    name: File System
+    color: neutral
+    aliases: ["Filesystem", "FS"]
+    definition: >
+      The OS-level file abstraction (open, read, write, close on named
+      paths). NFS and SMB present remote file systems through this surface.
+
+  - id: object-api
+    name: Object API (HTTP)
+    color: neutral
+    aliases: ["S3", "HTTP Object", "Object"]
+    definition: >
+      Object storage interfaces (S3, Swift, Azure Blob) exposed over HTTP.
+      Sits at L7; uses TCP at L4 and TLS for transport security.
+
+  # ── L6 / Presentation-ish ────────────────────────────────────────────────
+  - id: nvme
+    name: NVMe
+    color: nvme
+    aliases: ["NVM Express"]
+    definition: >
+      NVM Express command set and queueing model. In NVMe-oF, NVMe is the
+      command layer; a binding (TCP, RDMA, FC) carries the commands and
+      data over a fabric.
+    spec_refs:
+      - document: "NVMe Base Specification 2.0"
+        url: "https://nvmexpress.org/specifications/"
+
+  - id: scsi
+    name: SCSI
+    color: scsi
+    aliases: ["SCSI Architecture"]
+    definition: >
+      Small Computer System Interface command set. Commands flow as CDBs
+      (Command Descriptor Blocks). Transports include FCP (over FC),
+      iSCSI (over TCP/IP), iSER (over RDMA), and SAS.
+    spec_refs:
+      - document: "INCITS SAM-5"
+        title: "SCSI Architecture Model - 5"
+      - document: "INCITS SBC-4"
+        title: "SCSI Block Commands - 4"
+
+  - id: smb-app
+    name: SMB (v2, v3)
+    color: smb
+    aliases: ["SMB", "CIFS", "SMB3"]
+    definition: >
+      Server Message Block file-sharing protocol. SMB 3.x adds SMB Direct
+      (RDMA), SMB Multichannel, and per-share encryption.
+
+  - id: nfs-app
+    name: NFS
+    color: nfs
+    aliases: ["NFSv3", "NFSv4", "NFSv4.1", "NFSv4.2"]
+    definition: >
+      Network File System. v3 uses RPC/XDR over UDP or TCP. v4.x integrates
+      session, state, and security; pNFS adds parallel data paths.
+
+  - id: xdr
+    name: XDR
+    color: nfs-aux
+    aliases: ["External Data Representation"]
+    definition: >
+      Wire-format encoding used by NFS and Sun RPC. Defines how integers,
+      strings, and structures serialize on the wire.
+    spec_refs:
+      - document: "RFC 4506"
+        title: "XDR: External Data Representation Standard"
+
+  - id: rpc
+    name: RPC
+    color: nfs-aux
+    aliases: ["ONC RPC", "Sun RPC"]
+    definition: >
+      Remote Procedure Call framing used by NFS. Carries XDR-encoded
+      arguments and replies.
+
+  # ── L5 / Session ─────────────────────────────────────────────────────────
+  - id: nvme-tcp-binding
+    name: NVMe/TCP
+    color: nvme
+    aliases: ["NVMe over TCP", "NVMe/TCP Binding"]
+    definition: >
+      The NVMe-oF binding that frames NVMe commands and data inside TCP
+      using PDUs. Adds a discovery flow (CDC) and per-queue connections.
+    spec_refs:
+      - document: "NVMe-oF 1.1"
+        section: "TCP Transport"
+
+  - id: nvme-rdma-binding
+    name: NVMe over RDMA
+    color: nvme
+    aliases: ["NVMe/RDMA"]
+    definition: >
+      The NVMe-oF binding that uses RDMA verbs (over RoCE, iWARP, or
+      InfiniBand) to carry NVMe commands and data with zero-copy transfers.
+
+  - id: smb-session
+    name: SMB Session Service
+    color: smb
+    aliases: ["NetBIOS Session Service"]
+    definition: >
+      Session-layer framing for SMB. On modern deployments runs directly
+      over TCP port 445.
+
+  - id: iscsi
+    name: iSCSI
+    color: iscsi
+    aliases: ["iSCSI Layer"]
+    definition: >
+      Internet SCSI. Encapsulates SCSI CDBs in PDUs over TCP. Login phase
+      negotiates session parameters; full-feature phase carries I/O.
+    spec_refs:
+      - document: "RFC 7143"
+        title: "Internet Small Computer System Interface (iSCSI) Protocol"
+
+  - id: scsi-fcp
+    name: SCSI-FCP
+    color: scsi
+    aliases: ["FCP", "SCSI over FC"]
+    definition: >
+      The FC-4 mapping that carries SCSI CDBs over Fibre Channel. Uses FC
+      sequences and exchanges; relies on FC-2 for ordering and delivery.
+
+  # ── L4-ish / RDMA Verbs (cross-cutting) ──────────────────────────────────
+  - id: rdma-verbs
+    name: RDMA Verbs
+    color: rdma
+    aliases: ["IB Verbs", "Verbs"]
+    definition: >
+      The RDMA programming surface. Sits above the underlying transport
+      (RoCE, iWARP, IB). Stacks like SMB Direct, NFS over RDMA, NVMe over
+      RDMA, and iSER all submit work via verbs.
+    spec_refs:
+      - document: "IBTA Vol 1"
+        title: "InfiniBand Architecture Specification"
+
+  - id: iser
+    name: iSER
+    color: iscsi
+    aliases: ["iSCSI Extensions for RDMA"]
+    definition: >
+      iSCSI extensions for RDMA. Replaces the iSCSI data-transfer path with
+      RDMA reads and writes while keeping the iSCSI control plane.
+    spec_refs:
+      - document: "RFC 7145"
+        title: "iSCSI Extensions for RDMA Specification"
+
+  # ── L4 / Transport ───────────────────────────────────────────────────────
+  - id: tcp
+    name: TCP
+    color: tcp
+    aliases: ["Transmission Control Protocol"]
+    definition: >
+      Reliable, ordered byte stream. Used by iSCSI, NVMe/TCP, NFS/TCP,
+      SMB, and HTTP-based object protocols.
+    spec_refs:
+      - document: "RFC 9293"
+        title: "Transmission Control Protocol (TCP)"
+
+  - id: udp
+    name: UDP
+    color: udp
+    aliases: ["User Datagram Protocol"]
+    definition: >
+      Unreliable datagram service. Used by NFSv3/UDP (legacy) and as the
+      outer carrier for iWARP-over-UDP variants in some configurations.
+    spec_refs:
+      - document: "RFC 768"
+
+  # ── L3 / Network ─────────────────────────────────────────────────────────
+  - id: ip
+    name: IP
+    color: ip
+    aliases: ["IPv4", "IPv6", "Internet Protocol"]
+    definition: >
+      Internet Protocol. Routes packets across networks. Both IPv4 and
+      IPv6 are in active production use across storage networks.
+
+  - id: fc-fs
+    name: FC-FS
+    color: fc
+    aliases: ["FC Framing and Signaling"]
+    definition: >
+      FC Framing and Signaling. The FC-2 layer specification covering
+      frame format, sequences, exchanges, and flow control.
+    spec_refs:
+      - document: "INCITS T11 FC-FS-5"
+
+  # ── L2 / Data Link ───────────────────────────────────────────────────────
+  - id: ethernet
+    name: Ethernet (DCB optional)
+    color: ethernet
+    aliases: ["Ethernet", "Ethernet/DCB", "DCB Ethernet"]
+    definition: >
+      Layer-2 Ethernet framing. DCB (Data Center Bridging) extensions add
+      Priority Flow Control (PFC) and Enhanced Transmission Selection
+      (ETS) to enable lossless behavior required by RoCE and FCoE.
+
+  - id: dcb
+    name: DCB
+    color: ethernet
+    aliases: ["Data Center Bridging", "DCB-only"]
+    definition: >
+      Data Center Bridging. The set of Ethernet extensions (PFC, ETS,
+      DCBX) that provide lossless lanes. Required for RoCE; required
+      for FCoE.
+
+  - id: fc-encode
+    name: Encode/Decode
+    color: fc
+    aliases: ["FC Encoding", "8b/10b", "64b/66b"]
+    definition: >
+      FC-1 transmission encoding. 8b/10b for legacy speeds; 64b/66b for
+      16GFC and above.
+
+  # ── L1 / Physical ────────────────────────────────────────────────────────
+  - id: gbe-phy
+    name: 10/25/40/50/100 GbE
+    color: phy
+    aliases: ["GbE", "Ethernet Physical", "Ethernet PHY"]
+    definition: >
+      Ethernet physical layer. Modern storage networks span 10G through
+      400G; 25G/100G are the volume tiers in 2025-2026.
+
+  - id: ib-phy
+    name: InfiniBand
+    color: phy
+    aliases: ["IB", "InfiniBand Physical"]
+    definition: >
+      InfiniBand physical layer. HDR (200G), NDR (400G), XDR (800G).
+      Native transport for IB-RDMA stacks.
+
+  - id: fc-phy
+    name: 1/2/4/...128G FC
+    color: phy
+    aliases: ["FC Physical", "GFC"]
+    definition: >
+      Fibre Channel physical layer. Speeds from 1GFC through 128GFC.
+      Optical (SFP+, SFP28, QSFP) and copper (DAC) media.
+
+  # ── Optional / Cross-cutting ─────────────────────────────────────────────
+  - id: net-virt
+    name: Network Virtualization
+    color: optional
+    aliases: ["Overlay", "VXLAN", "Geneve"]
+    definition: >
+      Optional overlay network (VXLAN, Geneve, NVGRE) decoupling tenant
+      L2/L3 from the physical underlay. Adds encapsulation overhead.
+
+  - id: sr-iov
+    name: SR-IOV
+    color: optional
+    aliases: ["Single Root I/O Virtualization"]
+    definition: >
+      PCIe Single Root I/O Virtualization. Lets a single physical NIC or
+      HBA expose multiple Virtual Functions to VMs, bypassing the
+      hypervisor for data-plane traffic.
+
+  - id: npiv
+    name: NPIV
+    color: optional
+    aliases: ["N_Port ID Virtualization"]
+    definition: >
+      N_Port ID Virtualization. Lets a single FC HBA log in as multiple
+      virtual N_Ports, enabling per-VM zoning and LUN masking.
+
+  - id: fc-sp-3
+    name: FC-SP-3
+    color: optional
+    aliases: ["FC Security Protocols"]
+    definition: >
+      FC Security Protocols generation 3. Adds AES-256-GCM authenticated
+      encryption to FC links at FC-3.
+    spec_refs:
+      - document: "INCITS T11 FC-SP-3"

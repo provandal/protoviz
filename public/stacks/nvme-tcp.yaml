@@ -1,0 +1,63 @@
+id: nvme-tcp
+name: NVMe/TCP
+family: block-nvme
+alignment: osi
+
+summary: >
+  NVMe-oF binding that carries NVMe commands and data over TCP/IP.
+  Default deployments use plain TCP; TLS is optional. Discovery uses
+  the Centralized Discovery Controller (CDC) flow.
+
+spec_refs:
+  - document: "NVMe-oF 1.1"
+    section: "TCP Transport"
+    url: "https://nvmexpress.org/specifications/"
+  - document: "NVMe Base Specification 2.0"
+    url: "https://nvmexpress.org/specifications/"
+
+layers:
+  osi-l7:
+    component_id: block-device
+    notes: "Initiator side exposes /dev/nvmeXnY; target side maps to backing namespaces."
+
+  osi-l6:
+    component_id: nvme
+    notes: "NVMe command set and queueing model. Admin and I/O queues map to TCP connections."
+
+  osi-l5:
+    component_id: nvme-tcp-binding
+    notes: "PDU framing for Capsule, Data, R2T, and CCD. Per-queue TCP connections."
+
+  osi-l4:
+    component_id: tcp
+
+  osi-l3:
+    component_id: ip
+
+  osi-l2:
+    component_id: ethernet
+    notes: "DCB is optional. NVMe/TCP runs on standard Ethernet without lossless requirements."
+
+  osi-l1:
+    component_id: gbe-phy
+
+optional_layers:
+  - id: net-virt-row
+    name: Network Virtualization
+    position: between-osi-l2-osi-l1
+    default_enabled: false
+    description: "Overlay (VXLAN/Geneve) when NVMe/TCP traffic crosses tenant networks."
+  - id: sr-iov-row
+    name: SR-IOV
+    position: between-osi-l2-osi-l1
+    default_enabled: false
+    description: "Common in virtualized initiator hosts to bypass the hypervisor data path."
+
+scenarios:
+  - id: nvme-tcp-discovery-io
+    label: "NVMe/TCP Discovery + I/O"
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-04-25"
+  license: "CC-BY-4.0"

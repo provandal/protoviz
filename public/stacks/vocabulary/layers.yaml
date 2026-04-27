@@ -1,0 +1,85 @@
+# StackBuilder layer vocabulary
+#
+# These are the canonical row slots the renderer aligns columns against.
+# Stacks reference these IDs in their `layers:` map.
+#
+# Two parallel grids exist: OSI (osi-l7..osi-l1) and FC (fc-4..fc-0).
+# A renderer combines the two into a single vertical axis using the
+# `equivalent_to` mappings below. When a stack uses `alignment: osi`,
+# only the OSI grid is shown; same for `fc`. When `alignment: both`,
+# both grids render side by side and equivalences draw faint guide rows.
+
+osi:
+  - id: osi-l7
+    name: Application
+    short: L7
+    description: "Application-layer protocols. For storage: filesystems exposed to the OS, block devices, object APIs."
+  - id: osi-l6
+    name: Presentation
+    short: L6
+    description: Data representation, encoding, encryption above transport. Many storage protocols collapse this into L5 or L7.
+  - id: osi-l5
+    name: Session
+    short: L5
+    description: Session establishment, login, authentication state. Where SMB Session Service, iSCSI login, NVMe-oF Connect live.
+  - id: osi-l4
+    name: Transport
+    short: L4
+    description: End-to-end byte streams or datagrams. TCP, UDP, RDMA verbs as a transport surface.
+  - id: osi-l3
+    name: Network
+    short: L3
+    description: Routing across networks. IP for Ethernet stacks; IB Network Layer for InfiniBand.
+  - id: osi-l2
+    name: Data Link
+    short: L2
+    description: Frame delivery on a single link. Ethernet, with DCB extensions for lossless behavior.
+  - id: osi-l1
+    name: Physical
+    short: L1
+    description: Bits on the wire. 10/25/40/50/100/200/400 GbE, InfiniBand HDR/NDR, etc.
+
+fc:
+  - id: fc-4
+    name: ULP / Protocol Mapping
+    short: FC-4
+    description: Upper-layer protocol mapping. FCP (SCSI), FC-NVMe, IPFC, FICON.
+  - id: fc-3
+    name: Common Services
+    short: FC-3
+    description: Services that span multiple N_Ports. Authentication (FC-SP-3), encryption.
+  - id: fc-2
+    name: Framing / Flow Control
+    short: FC-2
+    description: Frame formats, sequences, exchanges, BB_Credit flow control.
+  - id: fc-1
+    name: Encode / Decode
+    short: FC-1
+    description: 8b/10b (legacy), 64b/66b transmission encoding, ordered sets.
+  - id: fc-0
+    name: Physical
+    short: FC-0
+    description: Media, connectors, signaling rates. 1/2/4/8/16/32/64/128GFC.
+
+# Cross-axis equivalences. These are deliberately approximate — the FC and
+# OSI models do not map cleanly. The renderer uses these only for vertical
+# alignment when `alignment: both` is in play. Treat as guidance, not law.
+equivalences:
+  - osi: osi-l1
+    fc: [fc-0, fc-1]
+    note: "FC-0 covers media/signaling; FC-1 covers encoding. OSI L1 spans both in spirit."
+  - osi: osi-l2
+    fc: fc-2
+    note: "Framing and flow control."
+  - osi: osi-l3
+    fc: fc-2
+    note: "FC routing happens via D_ID/S_ID inside FC-2; there is no separate network layer."
+  - osi: osi-l4
+    fc: fc-2
+    note: "FC sequences/exchanges provide transport-like guarantees within FC-2."
+  - osi: osi-l5
+    fc: fc-3
+    note: "FC-3 covers cross-port services that fit at session-layer in OSI terms."
+  - osi: osi-l7
+    fc: fc-4
+    note: "FC-4 protocol mappings (FCP, NVMe/FC) are the application surface."

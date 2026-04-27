@@ -1,0 +1,61 @@
+id: fcp
+name: FCP over Fibre Channel
+family: block-scsi
+alignment: fc
+
+summary: >
+  SCSI over Fibre Channel. The classical block storage stack for
+  enterprise SANs. SCSI CDBs are mapped at FC-4; framing and ordering
+  are handled by FC-2; FC-1 and FC-0 cover encoding and physical media.
+
+spec_refs:
+  - document: "INCITS T11 FC-FS-5"
+    title: "Fibre Channel Framing and Signaling - 5"
+  - document: "INCITS T11 FCP-5"
+    title: "Fibre Channel Protocol for SCSI"
+  - document: "INCITS SAM-5"
+    title: "SCSI Architecture Model - 5"
+
+layers:
+  fc-4:
+    - component_id: scsi
+      notes: "SCSI command set sits at the application surface."
+    - component_id: scsi-fcp
+      notes: "FCP is the FC-4 mapping that frames SCSI CDBs into FC sequences and exchanges."
+
+  # FC-3 intentionally omitted: sparsely used in baseline FCP. FC-SP-3
+  # plugs in here when enabled (see optional_layers below).
+
+  fc-2:
+    component_id: fc-fs
+    notes: "Frame format, sequences, exchanges, BB_Credit flow control. The heart of FC."
+
+  fc-1:
+    component_id: fc-encode
+    notes: "8b/10b for 1/2/4/8GFC; 64b/66b for 16GFC and above."
+
+  fc-0:
+    component_id: fc-phy
+
+optional_layers:
+  - id: fc-sp-3-row
+    name: FC-SP-3
+    position: between-fc-4-fc-3
+    default_enabled: false
+    description: "FC Security Protocols generation 3. AES-256-GCM authenticated encryption at FC-3."
+  - id: npiv-row
+    name: NPIV
+    position: between-fc-2-fc-1
+    default_enabled: false
+    description: "N_Port ID Virtualization. Multiple virtual N_Ports on a single physical HBA."
+
+scenarios:
+  - id: fc-flogi-plogi-prli-scsi-io
+    label: "FC Login + SCSI Read/Write"
+  - id: fc-sp-3-secure-hba
+    label: "FC-SP-3 Encrypted Path (SecureHBA)"
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-04-25"
+  license: "CC-BY-4.0"
