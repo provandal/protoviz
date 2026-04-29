@@ -208,57 +208,43 @@ osi_layers:
           initial: "NOT REACHABLE — host has not authenticated"
 
 frames:
-  # ── PLOGI (context — already complete) ────────────────────────────────────────
+  # ── Phase 1: Fabric Login (pre-auth) ──────────────────────────────────────────
+  #
+  # DH-CHAP authentication runs at the Fabric Controller layer between the host
+  # and the switch — it must complete before any PLOGI to the Name Server or
+  # target N_Port is permitted. The only pre-auth context frames are FLOGI and
+  # its ACC. PLOGI to target will not happen in this scenario because auth
+  # fails. Both FLOGI frames are switch-terminated.
 
-  - id: "plogi_complete_context"
-    name: "PLOGI ACC — N_Port Login Complete"
+  - id: "flogi"
+    name: "FLOGI — Fabric Login Request"
     description: >
-      FLOGI and PLOGI have already completed. The host and switch have exchanged
-      N_Port IDs and WWNs. The switch's authentication policy has DH-CHAP enabled
-      and configured on this port before allowing further fabric services or I/O. The host will now
-      initiate FC-SP-3 authentication.
+      Host sends FLOGI to the switch's Fabric Controller (Well-Known Address
+      0xFFFFFE). **This frame terminates at the switch.** The Fabric Controller
+      will assign the host's N_Port_ID, return service parameters, and signal
+      the FC-SP-3 authentication requirement.
     from: "host"
     to: "switch"
+    via: []
     timestamp_ns: 0
     total_bytes: 116
-    color: "#27ae60"
+    color: "#7f8c8d"
     headers:
-      - name: "PLOGI Context (Summary)"
-        abbrev: "plogi_ctx"
+      - name: "FLOGI Request"
+        abbrev: "flogi"
         layer: 4
         fields:
-          - name: "PLOGI Status"
-            abbrev: "plogi_ctx.status"
-            bits: 0
-            value: "PLOGI ACC received — N_Port Login complete"
-            description: >
-              PLOGI has completed successfully. The host has N_Port ID 0x010200
-              assigned by the fabric. The switch has DH-CHAP authentication
-              configured and will enforce it before the host can access any target ports.
-          - name: "FC-SP-3 Capability"
-            abbrev: "plogi_ctx.fcsp3"
-            bits: 0
-            value: "Both endpoints: FC-SP-3 DH-CHAP configured (from PLOGI Service Parameters)"
-            description: >
-              During PLOGI, the switch indicated FC-SP-3 authentication is
-              enabled on this port (Common Service Parameters, Security bit
-              set). The host also advertised FC-SP-3 capability. Authentication
-              must complete before any PRLI or I/O is allowed.
-            spec_refs:
-              - document: "FC-LS-3 (FC Login)"
-                section: "4.2.7"
-                title: "Common Service Parameters — Security bit"
+          - name: "ELS Command"
+            abbrev: "flogi.cmd"
+            bits: 8
+            value: "0x04 = FLOGI"
+            description: "Extended Link Service command — Fabric Login (FC-LS-3)."
           - name: "Host WWN"
-            abbrev: "plogi_ctx.host_wwn"
+            abbrev: "flogi.host_wwn"
             bits: 64
             value: "10:00:00:10:9B:C7:2A:01"
-            description: "Host HBA World Wide Port Name — used as the authentication identity."
-          - name: "Switch WWN"
-            abbrev: "plogi_ctx.sw_wwn"
-            bits: 64
-            value: "20:01:00:05:1E:A1:BB:01"
-            description: "Switch F_Port World Wide Name — the authenticator identity."
-      - name: "FC-2 Frame Header (Routing — always plaintext)"
+            description: "Host HBA World Wide Port Name — used as the DH-CHAP authentication identity."
+      - name: "FC-2 Frame Header"
         abbrev: "fc2"
         layer: 2
         total_bytes: 24
@@ -266,71 +252,23 @@ frames:
           - name: "R_CTL"
             abbrev: "fc2.rctl"
             bits: 8
-            value: "0x23"
-            description: "0x23 = Extended Link Service ACC (PLOGI response)"
-            spec_refs:
-              - document: "FC-FS-5"
-                section: "9.1"
-                title: "R_CTL field encoding"
+            value: "0x22"
+            description: "Extended Link Service request."
           - name: "D_ID"
             abbrev: "fc2.did"
             bits: 24
-            value: "0x010200"
-            description: "Destination N_Port ID — host HBA port."
+            value: "0xFFFFFE"
+            description: "Fabric Controller Well-Known Address (F_Port Login Server). Lives on the switch."
           - name: "S_ID"
             abbrev: "fc2.sid"
             bits: 24
-            value: "0xFFFFFD"
-            description: "Source — Fabric Controller (switch F_Port). 0xFFFFFD = Fabric F_Port."
-          - name: "CS_CTL"
-            abbrev: "fc2.csctl"
-            bits: 8
-            value: "0x00"
-            description: "Class-Specific Control — 0x00 for Class 3"
+            value: "0x000000"
+            description: "Host N_Port_ID is unassigned at FLOGI request time."
           - name: "TYPE"
             abbrev: "fc2.type"
             bits: 8
             value: "0x01"
-            description: "0x01 = Extended Link Service (ELS)"
-            spec_refs:
-              - document: "FC-FS-5"
-                section: "9.1"
-                title: "TYPE field — FC-4 type codes"
-          - name: "F_CTL"
-            abbrev: "fc2.fctl"
-            bits: 24
-            value: "0x980000"
-            description: "Frame Control — exchange responder, first+last sequence"
-          - name: "SEQ_ID"
-            abbrev: "fc2.seqid"
-            bits: 8
-            value: "0x00"
-            description: "Sequence ID within this exchange"
-          - name: "DF_CTL"
-            abbrev: "fc2.dfctl"
-            bits: 8
-            value: "0x00"
-            description: "Data Field Control — no optional headers"
-          - name: "SEQ_CNT"
-            abbrev: "fc2.seqcnt"
-            bits: 16
-            value: 0
-            description: "Sequence count — first frame in sequence"
-          - name: "OX_ID"
-            abbrev: "fc2.oxid"
-            bits: 16
-            value: "0x0001"
-            description: "Originator Exchange ID — PLOGI exchange"
-          - name: "RX_ID"
-            abbrev: "fc2.rxid"
-            bits: 16
-            value: "0x0001"
-            description: "Responder Exchange ID"
-          - name: "Parameter"
-            abbrev: "fc2.parameter"
-            bits: 32
-            value: "0x00000000"
-            description: "Relative offset — 0 for ELS frames"
+            description: "Extended Link Service (ELS)."
       - name: "FC-1 Encoding"
         abbrev: "fc1"
         layer: 1
@@ -339,12 +277,12 @@ frames:
             abbrev: "fc1.encoding"
             bits: 0
             value: "256b/257b"
-            description: "Line encoding scheme — 256b/257b for 64GFC"
+            description: "Line encoding scheme — 256b/257b for 64GFC."
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
             value: "RS(544,514)"
-            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC"
+            description: "Reed-Solomon Forward Error Correction — mandatory for 64GFC."
       - name: "FC-0 Physical"
         abbrev: "fc0"
         layer: 0
@@ -353,12 +291,115 @@ frames:
             abbrev: "fc0.rate"
             bits: 0
             value: "64GFC (28.05 Gbps per lane)"
-            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel."
           - name: "Media"
             abbrev: "fc0.media"
             bits: 0
             value: "850nm multimode fiber (SFP-DD)"
-            description: "Short-reach fiber optics"
+            description: "Short-reach fiber optics."
+
+  - id: "flogi_acc"
+    name: "FLOGI ACC — Authentication Required"
+    description: >
+      Fabric Controller returns FLOGI ACC, assigning the host N_Port_ID
+      0x010200 and setting the FC-SP-3 Security bit in Common Service
+      Parameters. **This frame originates at the switch and terminates at
+      the host.** The host now knows DH-CHAP authentication is required
+      before any further fabric services (no PLOGI to Name Server, no PLOGI
+      to target) will be permitted.
+    from: "switch"
+    to: "host"
+    via: []
+    timestamp_ns: 100
+    total_bytes: 116
+    color: "#7f8c8d"
+    headers:
+      - name: "FLOGI ACC"
+        abbrev: "flogi_acc"
+        layer: 4
+        fields:
+          - name: "ELS Reply Command"
+            abbrev: "flogi_acc.cmd"
+            bits: 8
+            value: "0x02 = ACC (Accept)"
+            description: "Generic ACC reply confirming the FLOGI request succeeded."
+          - name: "Assigned N_Port_ID"
+            abbrev: "flogi_acc.nportid"
+            bits: 24
+            value: "0x010200"
+            description: "Host N_Port_ID assigned by the Fabric Controller."
+          - name: "FC-SP-3 Security Bit (Common Service Parameters)"
+            abbrev: "flogi_acc.fcsp3"
+            bits: 1
+            value: "1 (SET)"
+            description: >
+              Common Service Parameters Security bit set — the switch
+              requires FC-SP-3 authentication before any further fabric
+              services. The host's HBA must initiate AUTH_Negotiate before
+              attempting PLOGI to the Name Server or any target. Per FC-LS-3
+              §4.2.7.
+            spec_refs:
+              - document: "FC-LS-3 (FC Login)"
+                section: "4.2.7"
+                title: "Common Service Parameters — Security bit"
+          - name: "Switch WWN"
+            abbrev: "flogi_acc.sw_wwn"
+            bits: 64
+            value: "20:01:00:05:1E:A1:BB:01"
+            description: "Switch F_Port World Wide Name — the authenticator identity."
+      - name: "FC-2 Frame Header"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x23"
+            description: "Extended Link Service reply (solicited control)."
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0x010200"
+            description: "Newly assigned host N_Port_ID — first frame using the assigned address."
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0xFFFFFE"
+            description: "Fabric Controller Well-Known Address."
+          - name: "TYPE"
+            abbrev: "fc2.type"
+            bits: 8
+            value: "0x01"
+            description: "Extended Link Service (ELS)."
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC."
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon FEC — mandatory for 64GFC."
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate."
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics."
 
   # ── AUTH_NEGOTIATE ────────────────────────────────────────────────────────────
 
@@ -1376,32 +1417,43 @@ frames:
             description: "Short-reach fiber optics"
 
 timeline:
-  # ── Step 0: PLOGI context ─────────────────────────────────────────────────────
+  # ── Phase 1: Fabric Login (pre-auth) ─────────────────────────────────────────
 
-  - id: "context"
+  - id: "starting_state"
     type: "annotation"
     t_ns: 0
     annotation:
-      text: "Starting Point: PLOGI Complete, Authentication Required"
+      text: "Starting State: Physical Link Up at 64GFC, no logins yet"
       detail: >
-        FLOGI and PLOGI have completed. The host has an N_Port ID (0x010200)
-        and the switch has DH-CHAP authentication configured before allowing PRLI
-        or any I/O to target ports. The host's HBA has a shared secret
-        configured, but it does NOT match the switch's stored secret for this
-        HBA's WWN. The administrator is not yet aware of the mismatch.
+        Physical link is up. The switch's authentication policy is ENABLED —
+        DH-CHAP must complete before any fabric services beyond FLOGI are
+        permitted. The host's HBA has a shared secret configured, but it does
+        NOT match the switch's stored secret for this HBA's WWN. The
+        administrator is not yet aware of the mismatch.
 
-  - id: "plogi_ctx"
+  - id: "flogi_event"
     type: "frame_tx"
     t_ns: 0
-    frame_id: "plogi_complete_context"
+    frame_id: "flogi"
     annotation:
-      text: "PLOGI Complete — N_Port Login Done, Authentication Next"
+      text: "FLOGI Request — Host → Fabric Controller (switch)"
       detail: >
-        PLOGI ACC received. The host has N_Port ID 0x010200, and both
-        endpoints advertised FC-SP-3 capability in their service parameters.
-        The switch's authentication policy is set to ENABLED — no HBA
-        can proceed to PRLI without successful DH-CHAP authentication.
-        The host HBA initiates AUTH_Negotiate automatically.
+        Host requests Fabric Login. The Fabric Controller is a Well-Known
+        Address (0xFFFFFE) that lives on the switch. The arrow stops at the
+        switch; the storage array is not involved in this exchange.
+
+  - id: "flogi_acc_event"
+    type: "frame_tx"
+    t_ns: 100
+    frame_id: "flogi_acc"
+    annotation:
+      text: "FLOGI ACC — Authentication Required, N_Port_ID 0x010200 Assigned"
+      detail: >
+        Fabric Controller returns FLOGI ACC. The Common Service Parameters
+        Security bit is set, signaling that DH-CHAP authentication must
+        complete before further fabric services. PLOGI to the Name Server
+        and PLOGI to any target are blocked until auth succeeds. The host's
+        HBA initiates AUTH_Negotiate automatically.
     state_after:
       - actor_id: "host"
         layers:
@@ -1413,7 +1465,7 @@ timeline:
           - layer: 2
             name: "FC-2 Framing / Transport"
             state_fields:
-              login_state: "PLOGI complete — N_Port ID 0x010200 assigned"
+              login_state: "FLOGI complete — N_Port_ID 0x010200 assigned; PLOGI blocked pending DH-CHAP"
       - actor_id: "switch"
         layers:
           - layer: 2
@@ -1821,11 +1873,12 @@ walkthroughs:
     steps:
       - step: 0
         narration: >
-          PLOGI is complete. The host has N_Port ID 0x010200 and both sides
-          advertised FC-SP-3 capability. The switch has DH-CHAP
-          authentication before any I/O. The host's shared secret does NOT
-          match the switch's stored secret — but neither side knows this yet.
-        highlight_fields: ["plogi_ctx.status", "plogi_ctx.fcsp3", "plogi_ctx.host_wwn"]
+          FLOGI is complete. The host has N_Port_ID 0x010200 assigned by the
+          Fabric Controller, and FLOGI ACC indicated DH-CHAP authentication
+          is required before any further fabric services (PLOGI to Name
+          Server or target). The host's shared secret does NOT match the
+          switch's stored secret — but neither side knows this yet.
+        highlight_fields: ["flogi_acc.nportid", "flogi_acc.fcsp3", "flogi.host_wwn"]
       - step: 1
         narration: >
           AUTH_Negotiate proposes DH-CHAP with SHA-256 and DH Group 4.
