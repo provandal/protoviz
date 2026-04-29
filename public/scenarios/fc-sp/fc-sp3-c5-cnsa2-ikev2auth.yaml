@@ -42,7 +42,7 @@ meta:
     - name: "Claude"
       org: "Anthropic"
   created: "2026-03-30"
-  updated: "2026-03-30"
+  updated: "2026-04-29"
   tags:
     - "fibre-channel"
     - "fc-sp-3"
@@ -834,7 +834,8 @@ frames:
             description: >
               0x22 = IKE_SA_Init (FC-SP-3 Table 7). The first message in the
               SA Establishment exchange. Carries key exchange material and
-              SA proposals.
+              SA proposals. [INFERRED — verify code point against INCITS 577-202x
+              Table 7 in the published draft.]
             spec_refs:
               - document: "FC-SP-3 (INCITS 577-202x)"
                 section: "6.2.4.2"
@@ -891,16 +892,29 @@ frames:
               Pseudorandom function for key derivation: HMAC-SHA-384.
               Used to derive SKEYSEED from the ML-KEM shared secret and nonces.
               CNSA 2.0 requires SHA-384 as minimum hash strength.
+          - name: "SAi1 Payload — INTEG NONE"
+            abbrev: "ike_sa_init_i.sai1_integ"
+            bits: 32
+            offset_bits: 160
+            value: "NONE (id=0)"
+            description: >
+              Integrity transform: NONE. Required by RFC 7296 §3.3.2 when an
+              AEAD encryption transform (here AES-256-GCM) is selected — the
+              AEAD provides integrity, so a separate INTEG transform must be
+              explicitly absent (encoded as NONE).
           - name: "SAi1 Payload — Key Exchange ML-KEM-1024"
             abbrev: "ike_sa_init_i.sai1_ke"
             bits: 32
-            offset_bits: 160
-            value: "ML-KEM-1024 (id=37)"
+            offset_bits: 192
+            value: "ML-KEM-1024 (id=37 — proposed, see draft-ietf-ipsecme-ikev2-mlkem)"
             description: >
               Post-quantum key exchange method: ML-KEM-1024 (FIPS 203).
               This is the core CNSA 2.0 upgrade — ML-KEM replaces classical
-              Diffie-Hellman for key establishment. DH Group id=37 is the
-              IANA-assigned identifier for ML-KEM-1024 in IKEv2.
+              Diffie-Hellman for key establishment. NOTE: id=37 is a placeholder
+              from draft-ietf-ipsecme-ikev2-mlkem; the IANA Transform Type 4
+              codepoints for ML-KEM-512/768/1024 are not yet finalized at the
+              time of writing. [INFERRED — verify against the published RFC
+              once the draft is approved.]
 
               Classical DH (used in the companion DH-CHAP scenario) computes
               g^(ab) mod p. A quantum computer running Shor's algorithm can
@@ -918,7 +932,7 @@ frames:
           - name: "KEi Payload — ML-KEM-1024 Encapsulation Key (1568 bytes)"
             abbrev: "ike_sa_init_i.kei"
             bits: 12544
-            offset_bits: 192
+            offset_bits: 224
             value: "[1568-byte ML-KEM-1024 encapsulation key (initiator's public key)]"
             description: >
               The initiator's ML-KEM-1024 encapsulation key — 1568 bytes. This
@@ -942,7 +956,7 @@ frames:
           - name: "Ni Payload — Initiator Nonce (32 bytes)"
             abbrev: "ike_sa_init_i.ni"
             bits: 256
-            offset_bits: 12736
+            offset_bits: 12768
             value: "0x3F8A72C1 D4E56B09 1A2B3C4D 5E6F7081 92A3B4C5 D6E7F809 1B2C3D4E 5F607182"
             description: >
               32-byte random nonce from the initiator. Combined with the
@@ -1079,6 +1093,7 @@ frames:
             description: >
               0x22 = IKE_SA_Init (FC-SP-3 Table 7). Same message code for both
               directions — the Flags field distinguishes initiator from responder.
+              [INFERRED — verify code point against INCITS 577-202x Table 7.]
           - name: "IKE Header — SPI_r (Responder SPI)"
             abbrev: "ike_sa_init_r.spi_r"
             bits: 64
@@ -1095,17 +1110,19 @@ frames:
             description: "Responder flag set — this endpoint is the IKE responder."
           - name: "SAr1 Payload — Selected Crypto Suite"
             abbrev: "ike_sa_init_r.sar1"
-            bits: 0
+            bits: 128
             offset_bits: 80
-            value: "ENCR_AES_GCM_256, PRF_HMAC_SHA2_384, ML-KEM-1024"
+            value: "ENCR_AES_GCM_256, PRF_HMAC_SHA2_384, INTEG=NONE, ML-KEM-1024"
             description: >
               The responder selects exactly one transform from each proposal:
               AES-256-GCM for encryption, PRF-HMAC-SHA2-384 for key derivation,
-              and ML-KEM-1024 for key exchange. All CNSA 2.0 compliant.
+              INTEG=NONE (required when AEAD is used per RFC 7296 §3.3.2), and
+              ML-KEM-1024 for key exchange. All CNSA 2.0 compliant. Encoded as
+              four 32-bit transform substructures (128 bits total).
           - name: "KEr Payload — ML-KEM-1024 Ciphertext (1568 bytes)"
             abbrev: "ike_sa_init_r.ker"
             bits: 12544
-            offset_bits: 80
+            offset_bits: 208
             value: "[1568-byte ML-KEM-1024 ciphertext (encapsulated shared secret)]"
             description: >
               The ML-KEM-1024 ciphertext produced by ML-KEM.Encaps(ek_i).
@@ -1131,7 +1148,7 @@ frames:
           - name: "Nr Payload — Responder Nonce (32 bytes)"
             abbrev: "ike_sa_init_r.nr"
             bits: 256
-            offset_bits: 12624
+            offset_bits: 12752
             value: "0x7C4D5E6F 80912A3B 4C5D6E7F 8091A2B3 C4D5E6F7 08192A3B 4C5D6E7F 80A1B2C3"
             description: >
               32-byte random nonce from the responder. Combined with
@@ -1139,8 +1156,8 @@ frames:
               SKEYSEED = prf(Ni | Nr, K). Per RFC 7296 section 2.14.
           - name: "CERTREQ Payload — Certificate Request"
             abbrev: "ike_sa_init_r.certreq"
-            bits: 0
-            offset_bits: 12880
+            bits: 384
+            offset_bits: 13008
             value: "[SHA-384 hash(es) of trusted CA public key(s)]"
             description: >
               The responder requests the initiator's certificate by sending
@@ -1160,8 +1177,8 @@ frames:
                 title: "Certificate Request Payload"
           - name: "Notify — SUPPORTED_AUTH_METHODS (ML-DSA-87)"
             abbrev: "ike_sa_init_r.notify_auth"
-            bits: 0
-            offset_bits: 12880
+            bits: 64
+            offset_bits: 13392
             value: "ML-DSA-87 (Digital Signature)"
             description: >
               Notify payload advertising ML-DSA-87 (FIPS 204) as the
@@ -1292,8 +1309,19 @@ frames:
 
       The AUTH payload contains a Digital Signature (Auth_Method=14 per
       RFC 7296 section 3.8) computed with the host's ML-DSA-87 private
-      key over a hash of the IKE_SA_Init message. The responder verifies
-      this signature using the host's public key from the certificate.
+      key over InitiatorSignedOctets (RFC 7296 §2.15 — see AUTH field
+      below for the construction). The responder verifies this signature
+      using the host's public key from the certificate.
+
+      ABSTRACTION NOTE — FC-2 FRAGMENTATION: This view is the *logical*
+      IKE_Auth message (~8192 bytes). FC-2 caps a single frame's data field
+      at 2112 bytes, so on the wire this message is carried as a multi-frame
+      sequence (4 FC frames at this payload size). The first frame has
+      F_CTL bit "First Sequence" set; intermediate frames have neither
+      First nor End set; the last frame has "End Sequence" set; SEQ_CNT
+      increments 0,1,2,3 across the sequence; OX_ID/RX_ID/SEQ_ID stay
+      constant. The header fields shown below are the FIRST frame of the
+      sequence — middle and last frames are omitted for clarity.
 
       Simplified for illustration — actual payloads per RFC 7296 and
       FC-SP-3 section 6.2.
@@ -1302,6 +1330,7 @@ frames:
     via: ["switch"]
     timestamp_ns: 16000
     total_bytes: 8192
+    fragmentation_note: "Logical message; carried as a 4-frame FC-2 sequence on the wire."
     color: "#8e44ad"
     headers:
       - name: "IKE_Auth Request (Encrypted — inside SK{} envelope)"
@@ -1318,6 +1347,7 @@ frames:
               0x23 = IKE_Auth (FC-SP-3 Table 7). The second message in the
               SA Establishment exchange. Carries identity, certificates,
               authentication, and Child_SA proposal — all encrypted.
+              [INFERRED — verify code point against INCITS 577-202x Table 7.]
             spec_refs:
               - document: "FC-SP-3 (INCITS 577-202x)"
                 section: "6.2.4.3"
@@ -1393,9 +1423,16 @@ frames:
             value: "[4627-byte ML-DSA-87 signature over InitiatorSignedOctets]"
             description: >
               Digital Signature authentication (Auth_Method=14 per RFC 7296
-              section 3.8). The host signs a hash of its IKE_SA_Init message
-              using its ML-DSA-87 private key. The responder verifies this
-              signature using the public key from the host's certificate.
+              section 3.8). The host signs InitiatorSignedOctets with its
+              ML-DSA-87 private key. Per RFC 7296 §2.15, InitiatorSignedOctets
+              is constructed as:
+                  RealMessage1 | NonceRData | prf(SK_pi, IDi)
+              where RealMessage1 is the initiator's full IKE_SA_Init message
+              (header + payloads), NonceRData is the responder's nonce, and
+              prf(SK_pi, IDi) is the keyed PRF over the initiator's identity
+              payload. The responder constructs ResponderSignedOctets symmetrically
+              and signs that. The peer verifies the signature using the public
+              key from the certificate in the CERT payload.
 
               If verification succeeds, the responder knows:
               1. The host holds the private key corresponding to the certificate
@@ -1475,13 +1512,20 @@ frames:
           - name: "F_CTL"
             abbrev: "fc.hdr.fctl"
             bits: 24
-            value: "0x290000"
-            description: "Frame Control — exchange originator, first+last sequence"
+            value: "0x210000 (first frame of sequence)"
+            description: >
+              Frame Control of the FIRST frame in a multi-frame sequence:
+              Exchange Originator + First Sequence set, End Sequence NOT set.
+              Middle frames use 0x200000 (neither bit), and the last frame
+              uses 0x280000 (End Sequence) with Sequence Initiative transferred.
+              The 0x290000 value used in single-frame ELS exchanges (first+last
+              in one frame) does NOT apply here — IKE_Auth exceeds the 2112-byte
+              FC-2 payload limit and must be fragmented.
           - name: "SEQ_ID"
             abbrev: "fc.hdr.seqid"
             bits: 8
             value: "0x04"
-            description: "Sequence ID within this exchange"
+            description: "Sequence ID within this exchange — constant across all 4 frames of the sequence"
           - name: "DF_CTL"
             abbrev: "fc.hdr.dfctl"
             bits: 8
@@ -1491,12 +1535,12 @@ frames:
             abbrev: "fc.hdr.seqcnt"
             bits: 16
             value: 0
-            description: "Sequence count — first frame in sequence"
+            description: "Sequence count — 0 for the first frame; increments to 1, 2, 3 across the 4-frame sequence carrying the ~8192-byte IKE_Auth message"
           - name: "OX_ID"
             abbrev: "fc.hdr.oxid"
             bits: 16
             value: "0x0012"
-            description: "Originator Exchange ID — IKE_Auth exchange"
+            description: "Originator Exchange ID — IKE_Auth exchange (same OX_ID for every frame in the sequence)"
           - name: "RX_ID"
             abbrev: "fc.hdr.rxid"
             bits: 16
@@ -1549,6 +1593,11 @@ frames:
       all FC frames between these two N_Ports are encrypted with
       AES-256-GCM under the ESP_Header.
 
+      ABSTRACTION NOTE — FC-2 FRAGMENTATION: As with the request, this is
+      the logical IKE_Auth message (~8192 bytes) carried on the wire as a
+      multi-frame FC-2 sequence (4 frames). The header fields below are
+      the FIRST frame of the sequence; SEQ_CNT increments across frames.
+
       Simplified for illustration — actual payloads per RFC 7296 and
       FC-SP-3 section 6.2.
     from: "array"
@@ -1556,6 +1605,7 @@ frames:
     via: ["switch"]
     timestamp_ns: 21000
     total_bytes: 8192
+    fragmentation_note: "Logical message; carried as a 4-frame FC-2 sequence on the wire."
     color: "#27ae60"
     headers:
       - name: "IKE_Auth Response (Encrypted — inside SK{} envelope)"
@@ -1571,6 +1621,7 @@ frames:
             description: >
               0x23 = IKE_Auth (FC-SP-3 Table 7). Same message code for both
               directions — the IKE Header Flags distinguish initiator from responder.
+              [INFERRED — verify code point against INCITS 577-202x Table 7.]
           - name: "SK{} Encryption Envelope"
             abbrev: "ike_auth_r.sk_envelope"
             bits: 0
@@ -1629,9 +1680,9 @@ frames:
             abbrev: "ike_auth_r.sar2"
             bits: 0
             offset_bits: 72
-            value: "ESP_Header with AES-256-GCM — SA_ID=0x000000C5 assigned"
+            value: "ESP_Header with AES-256-GCM — SA_ID=0x4F12A37B assigned"
             description: >
-              Child_SA accepted. SA_ID=0xC5 will appear in every ESP_Header
+              Child_SA accepted. SA_ID=0x4F12A37B will appear in every ESP_Header
               on encrypted FC frames. Both HBA ASICs load the Child_SA
               session key derived from SKEYSEED. Encryption is now active.
           - name: "TSi / TSr — Accepted Traffic Selectors"
@@ -1676,13 +1727,19 @@ frames:
           - name: "F_CTL"
             abbrev: "fc2.fctl"
             bits: 24
-            value: "0x980000"
-            description: "Frame Control — exchange responder, first+last sequence"
+            value: "0x900000 (first frame of sequence)"
+            description: >
+              Frame Control of the FIRST frame of the responder's multi-frame
+              sequence: Exchange Responder + First Sequence set. Middle frames
+              use 0x800000; the last frame uses 0x980000 (Exchange Responder +
+              End Sequence + Sequence Initiative transferred). The 0x980000
+              value previously shown applies only to the LAST frame of the
+              sequence, not every frame.
           - name: "SEQ_ID"
             abbrev: "fc2.seqid"
             bits: 8
             value: "0x05"
-            description: "Sequence ID within this exchange"
+            description: "Sequence ID within this exchange — constant across all 4 frames of the sequence"
           - name: "DF_CTL"
             abbrev: "fc2.dfctl"
             bits: 8
@@ -1692,12 +1749,12 @@ frames:
             abbrev: "fc2.seqcnt"
             bits: 16
             value: 0
-            description: "Sequence count — first frame in sequence"
+            description: "Sequence count — 0 for the first frame; increments to 1, 2, 3 across the 4-frame sequence"
           - name: "OX_ID"
             abbrev: "fc2.oxid"
             bits: 16
             value: "0x0012"
-            description: "Originator Exchange ID — same IKE_Auth exchange"
+            description: "Originator Exchange ID — same IKE_Auth exchange (same OX_ID for every frame in the sequence)"
           - name: "RX_ID"
             abbrev: "fc2.rxid"
             bits: 16
@@ -1745,7 +1802,7 @@ frames:
       Process Login (PRLI) is the first encrypted frame on this link. PRLI
       establishes the FC-4 process association (NVMe type 0x28 or FCP type 0x08).
       The FC header remains plaintext — the switch reads D_ID and routes normally.
-      After the FC header, the ESP_Header carries SA_ID=0xC5 (from the Child_SA
+      After the FC header, the ESP_Header carries SA_ID=0x4F12A37B (from the Child_SA
       established in IKE_Auth), sequence number 1, and a unique IV. The PRLI
       payload is AES-256-GCM ciphertext.
     from: "host"
@@ -1806,9 +1863,9 @@ frames:
           - name: "SA_ID"
             abbrev: "esp.prli.said"
             bits: 32
-            value: "0x000000C5"
+            value: "0x4F12A37B"
             description: >
-              SA_ID = 0xC5 — the Child_SA established by IKE_Auth. This value
+              SA_ID = 0x4F12A37B — a randomly chosen 32-bit SPI for the Child_SA established by IKE_Auth (per RFC 7296 §2.6, SPIs are randomly chosen by the responder). This value
               appears in every encrypted frame for the lifetime of this SA.
               The receiving endpoint uses SA_ID to look up the session key.
           - name: "Sequence_Number"
@@ -1935,7 +1992,7 @@ frames:
           - name: "SA_ID"
             abbrev: "esp.prli_acc.said"
             bits: 32
-            value: "0x000000C5"
+            value: "0x4F12A37B"
             description: "Same SA — every frame encrypted under SA 0xC5."
           - name: "Sequence_Number"
             abbrev: "esp.prli_acc.seq"
@@ -2077,7 +2134,7 @@ frames:
           - name: "SA_ID"
             abbrev: "esp.wr.said"
             bits: 32
-            value: "0x000000C5"
+            value: "0x4F12A37B"
             description: "Child_SA from IKE_Auth. Every frame uses this SA_ID."
           - name: "Sequence_Number"
             abbrev: "esp.wr.seq"
@@ -2216,7 +2273,7 @@ frames:
           - name: "SA_ID"
             abbrev: "esp.rd.said"
             bits: 32
-            value: "0x000000C5"
+            value: "0x4F12A37B"
             description: "Same Child_SA — bidirectional encryption under SA 0xC5."
           - name: "Sequence_Number"
             abbrev: "esp.rd.seq"
@@ -2524,7 +2581,7 @@ timeline:
       detail: >
         The array sends IKE_Auth with its own ML-DSA-87 certificate and signature.
         The host verifies the array's certificate chain and signature. Both identities
-        are now verified. Child_SA established with SA_ID=0xC5.
+        are now verified. Child_SA established with SA_ID=0x4F12A37B.
 
         Both HBA ASICs load the Child_SA session key (derived from SKEYSEED via SK_d).
         Watch the OSI panel: host shows encryption_active=true, array shows
@@ -2550,14 +2607,14 @@ timeline:
             name: "FC-2 Framing / Transport"
             state_fields:
               frame_type: "AES-256-GCM encrypted"
-              sa_id: "0x000000C5"
+              sa_id: "0x4F12A37B"
               sequence_number: 0
           - layer: 4
             name: "FC-4 Protocol Mapping"
             state_fields:
               auth_state: "COMPLETE — IKEv2-AUTH mutual authentication PASSED"
               ike_sa_state: "ESTABLISHED"
-              child_sa_state: "ACTIVE — SA_ID=0xC5, AES-256-GCM"
+              child_sa_state: "ACTIVE — SA_ID=0x4F12A37B, AES-256-GCM"
       - actor_id: "array"
         layers:
           - layer: 0
@@ -2568,13 +2625,13 @@ timeline:
             name: "FC-2 Framing"
             state_fields:
               frame_type: "receiving AES-256-GCM encrypted"
-              sa_id: "0x000000C5"
+              sa_id: "0x4F12A37B"
           - layer: 4
             name: "FC-4 / Data Services"
             state_fields:
               auth_state: "COMPLETE — IKEv2-AUTH mutual authentication PASSED"
               ike_sa_state: "ESTABLISHED"
-              child_sa_state: "ACTIVE — SA_ID=0xC5"
+              child_sa_state: "ACTIVE — SA_ID=0x4F12A37B"
               data_services: "ACTIVE — dedupe/compress/ransomware-detect on plaintext post-decrypt"
       - actor_id: "switch"
         layers:
@@ -2609,7 +2666,7 @@ timeline:
       text: "PRLI — First Encrypted Frame (ESP Seq=1)"
       detail: >
         PRLI is the first encrypted frame. FC header plaintext — switch reads D_ID
-        and routes normally. ESP_Header: SA_ID=0xC5 (Child_SA from IKE_Auth),
+        and routes normally. ESP_Header: SA_ID=0x4F12A37B (Child_SA from IKE_Auth),
         Seq=1 starts anti-replay, unique IV. PRLI body is AES-256-GCM ciphertext.
         The switch cannot determine which FC-4 protocol (NVMe or FCP) is being
         registered.
@@ -2783,7 +2840,7 @@ glossary:
       FIPS 204 (2024) standard. A post-quantum digital signature algorithm based
       on the Module Learning With Errors (MLWE) and Short Integer Solution (SIS)
       problems. Replaces ECDSA/RSA for digital signatures. Resistant to quantum
-      attack. Key sizes: 2592-byte public key, 4032-byte private key.
+      attack. Key sizes: 2592-byte public key, 4896-byte private key.
       Signature size: 4627 bytes. Security category 5.
     spec_refs:
       - document: "FIPS 204"
@@ -2942,7 +2999,7 @@ walkthroughs:
       - step: 6
         narration: >
           IKE_Auth response: array's ML-DSA-87 certificate and signature.
-          Mutual authentication complete. Child_SA active with SA_ID=0xC5.
+          Mutual authentication complete. Child_SA active with SA_ID=0x4F12A37B.
           Both ASICs load the session key. Encryption is ON. Total time:
           ~21 us. From here, every FC frame is AES-256-GCM encrypted with
           post-quantum key establishment — the strongest protection currently
