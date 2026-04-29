@@ -312,7 +312,7 @@ frames:
       in its PLOGI ACC service parameters and initiates the AUTH_Negotiate exchange.
 
       Key difference from the DH-CHAP scenario: the host will propose IKEv2-AUTH
-      (protocol identifier 0x00000002) instead of DH-CHAP (0x00000001). No shared
+      (Authentication Protocol Identifier 0x00000005, FC-SP-3 Table 8) instead of DH-CHAP (0x00000001). No shared
       secrets have been pre-provisioned — trust will be established through
       ML-DSA-87 certificate chains.
     from: "host"
@@ -413,7 +413,7 @@ frames:
     description: >
       The host sends AUTH_Negotiate as an FC Extended Link Service (ELS).
       This is where SA-C5 diverges fundamentally from the DH-CHAP scenario:
-      the host proposes IKEv2-AUTH (protocol identifier 0x00000002) instead
+      the host proposes IKEv2-AUTH (Authentication Protocol Identifier 0x00000005, FC-SP-3 Table 8) instead
       of DH-CHAP (0x00000001). The IKEv2-AUTH Protocol Parameters (per Table 96)
       specify the SA-C5 profile identifier 0x00000004 (CNSA 2.0).
 
@@ -494,9 +494,10 @@ frames:
             abbrev: "auth_neg.proto"
             bits: 32
             offset_bits: 104
-            value: "0x00000002"
+            value: "0x00000005"
             description: >
-              0x00000002 = IKEv2-AUTH. This is the critical field that distinguishes
+              0x00000005 = IKEv2-AUTH (FC-SP-3 Rev 3.10 LB Table 8, Authentication
+              Protocol Identifiers). This is the critical field that distinguishes
               SA-C5 from DH-CHAP. The DH2048-SA profile in the companion scenario
               uses 0x00000001 (DH-CHAP). By proposing IKEv2-AUTH, the host signals
               that authentication will be certificate-based — no shared secrets.
@@ -505,19 +506,27 @@ frames:
               signatures) and SA management (IKE_SA + Child_SA) in a single
               protocol, replacing the DH-CHAP + separate SA concatenation model.
             spec_refs:
-              - document: "FC-SP-3 (INCITS 577-202x)"
+              - document: "FC-SP-3 (INCITS 577-202x Rev 3.10 LB)"
+                section: "Table 8"
+                title: "AUTH_Negotiate Authentication Protocol Identifiers"
+              - document: "FC-SP-3 (INCITS 577-202x Rev 3.10 LB)"
                 section: "6.3.3"
                 title: "SA management transaction as authentication — IKEv2-AUTH"
-              - document: "FC-SP-3 (INCITS 577-202x)"
-                section: "Table 97"
-                title: "IKEv2-AUTH protocol identifiers"
-          - name: "IKEv2-AUTH Protocol Identifier (SA-C5 / CNSA 2.0)"
+          - name: "SA Implementation Profile Identifier (SA-C5 / CNSA 2.0)"
             abbrev: "auth_neg.ikev2_profile"
             bits: 32
             offset_bits: 136
             value: "0x00000004"
             description: >
-              0x00000004 = CNSA 2.0 / SA-C5 Profile (FC-SP-3 Table 97).
+              0x00000004 = SA-C5 Profile / CNSA 2.0 (FC-SP-3 Rev 3.10 LB Table 97,
+              IKEv2-AUTH SA Implementation Profile Identifiers). Other Table 97
+              values: 0x00000001 = SA-IKEv2 Profile (Annex A.5); 0x00000002 =
+              SA-AUTH-Only Profile (Annex A.9); 0x00000003 = SA-C4 / CNSA 1.0
+              (Annex A.10); 0x00000004 = SA-C5 / CNSA 2.0 (Annex A.11).
+              This identifier selects the specific algorithm set within IKEv2-AUTH:
+              - Key exchange: ML-KEM-1024 (FIPS 203)
+              - Digital signatures: ML-DSA-87 (FIPS 204)
+              - Symmetric cipher: AES-256-GCM
               This selects the specific algorithm set within IKEv2-AUTH:
               - Key exchange: ML-KEM-1024 (FIPS 203)
               - Digital signatures: ML-DSA-87 (FIPS 204)
@@ -652,7 +661,7 @@ frames:
   - id: "auth_neg_rsp"
     name: "AUTH_Negotiate_Rsp — Target Confirms IKEv2-AUTH (SA-C5)"
     description: >
-      The array responds with Auth_Negotiate_Rsp, confirming agreement on
+      The array responds with AUTH_Negotiate_Rsp, confirming agreement on
       IKEv2-AUTH with the SA-C5 (CNSA 2.0) profile. Both sides now know
       that the next exchange will be IKE_SA_Init (not DH-CHAP Challenge).
       No shared secrets have been exchanged or referenced. Trust will be
@@ -664,7 +673,7 @@ frames:
     total_bytes: 96
     color: "#27ae60"
     headers:
-      - name: "Auth_Negotiate_Rsp Payload"
+      - name: "AUTH_Negotiate_Rsp Payload"
         abbrev: "auth_neg_rsp"
         layer: 4
         fields:
@@ -687,17 +696,18 @@ frames:
           - name: "Selected Protocol — IKEv2-AUTH"
             abbrev: "auth_neg_rsp.proto"
             bits: 32
-            value: "0x00000002"
+            value: "0x00000005"
             description: >
-              0x00000002 = IKEv2-AUTH confirmed. The target agrees to use
-              IKEv2-AUTH for authentication and SA management. No DH-CHAP
-              will occur. The next message from the host will be IKE_SA_Init.
-          - name: "Selected IKEv2-AUTH Protocol Identifier"
+              0x00000005 = IKEv2-AUTH confirmed (FC-SP-3 Rev 3.10 LB Table 8).
+              The target agrees to use IKEv2-AUTH for authentication and SA
+              management. No DH-CHAP will occur. The next message from the
+              host will be IKE_SA_Init.
+          - name: "Selected SA Implementation Profile"
             abbrev: "auth_neg_rsp.ikev2_profile"
             bits: 32
             value: "0x00000004"
             description: >
-              0x00000004 = CNSA 2.0 / SA-C5 Profile confirmed. Both endpoints
+              0x00000004 = SA-C5 / CNSA 2.0 confirmed (Table 97). Both endpoints
               will use ML-KEM-1024 for key exchange and ML-DSA-87 for certificate
               authentication. AES-256-GCM for symmetric encryption.
       - name: "FC-2 Frame Header (Routing — always plaintext)"
@@ -829,13 +839,13 @@ frames:
             abbrev: "ike_sa_init_i.msg_code"
             bits: 8
             offset_bits: 0
-            value: "0x22"
-            value_hex: "0x22"
+            value: "0x16"
+            value_hex: "0x16"
             description: >
-              0x22 = IKE_SA_Init (FC-SP-3 Table 7). The first message in the
+              0x16 = IKE_SA_Init (FC-SP-3 Rev 3.10 LB Table 7, codepoint range
+              0x16-0x18 reserved for IKE_SA_Init). The first message in the
               SA Establishment exchange. Carries key exchange material and
-              SA proposals. [INFERRED — verify code point against INCITS 577-202x
-              Table 7 in the published draft.]
+              SA proposals.
             spec_refs:
               - document: "FC-SP-3 (INCITS 577-202x)"
                 section: "6.2.4.2"
@@ -851,24 +861,25 @@ frames:
             description: >
               Security Parameter Index chosen by the initiator. Uniquely identifies
               this IKE_SA from the initiator's perspective. Per RFC 7296 section 2.6.
-          - name: "IKE Header — Version"
+          - name: "IKE Header — IKE Protocol Version"
             abbrev: "ike_sa_init_i.version"
             bits: 8
             offset_bits: 72
-            value: "2.0"
-            description: "IKEv2 (RFC 7296). FC-SP-3 adapts IKEv2 for Fibre Channel transport."
-          - name: "IKE Header — Exchange Type"
-            abbrev: "ike_sa_init_i.exchange_type"
-            bits: 8
-            offset_bits: 80
-            value: "IKE_SA_INIT (34)"
-            description: "Exchange Type 34 = IKE_SA_INIT per RFC 7296 section 3.1."
+            value: "0x20"
+            description: >
+              IKE Protocol Version, encoded as a single byte: high nibble = major
+              version (2), low nibble = minor version (0). FC-SP-3 Rev 3.10 LB
+              Table 49. NOTE: FC-SP-3 omits the IKEv2 "Exchange Type" field that
+              RFC 7296 carries — message identification is handled by the outer
+              AUTH ELS Auth_Msg_Code field instead.
           - name: "IKE Header — Flags"
             abbrev: "ike_sa_init_i.flags"
             bits: 8
             offset_bits: 88
             value: "Initiator"
-            description: "Initiator flag set — this endpoint is the IKE initiator."
+            description: >
+              Initiator flag set — this endpoint is the IKE initiator.
+              Per FC-SP-3 Table 49 the Reserved byte at offset 80 is skipped here.
           - name: "SAi1 Payload — ENCR_AES_GCM_256"
             abbrev: "ike_sa_init_i.sai1_encr"
             bits: 32
@@ -906,15 +917,15 @@ frames:
             abbrev: "ike_sa_init_i.sai1_ke"
             bits: 32
             offset_bits: 192
-            value: "ML-KEM-1024 (id=37 — proposed, see draft-ietf-ipsecme-ikev2-mlkem)"
+            value: "ML-KEM-1024 (Transform Type 4 id=37 per FC-SP-3 Annex A.62)"
             description: >
               Post-quantum key exchange method: ML-KEM-1024 (FIPS 203).
               This is the core CNSA 2.0 upgrade — ML-KEM replaces classical
-              Diffie-Hellman for key establishment. NOTE: id=37 is a placeholder
-              from draft-ietf-ipsecme-ikev2-mlkem; the IANA Transform Type 4
-              codepoints for ML-KEM-512/768/1024 are not yet finalized at the
-              time of writing. [INFERRED — verify against the published RFC
-              once the draft is approved.]
+              Diffie-Hellman for key establishment. FC-SP-3 Rev 3.10 LB Table A.62
+              lists ML-KEM-1024 as Transform Type 4 codepoint 37, marked Required
+              for SA-C5. The corresponding IANA assignment for IKEv2 is being
+              tracked in draft-ietf-ipsecme-ikev2-mlkem; FC-SP-3 carries the
+              Transform-Type-4 value forward from that draft.
 
               Classical DH (used in the companion DH-CHAP scenario) computes
               g^(ab) mod p. A quantum computer running Shor's algorithm can
@@ -1088,12 +1099,12 @@ frames:
             abbrev: "ike_sa_init_r.msg_code"
             bits: 8
             offset_bits: 0
-            value: "0x22"
-            value_hex: "0x22"
+            value: "0x16"
+            value_hex: "0x16"
             description: >
-              0x22 = IKE_SA_Init (FC-SP-3 Table 7). Same message code for both
-              directions — the Flags field distinguishes initiator from responder.
-              [INFERRED — verify code point against INCITS 577-202x Table 7.]
+              0x16 = IKE_SA_Init (FC-SP-3 Rev 3.10 LB Table 7). Same message
+              code for both directions — the IKE Flags field distinguishes
+              initiator from responder.
           - name: "IKE Header — SPI_r (Responder SPI)"
             abbrev: "ike_sa_init_r.spi_r"
             bits: 64
@@ -1341,13 +1352,12 @@ frames:
             abbrev: "ike_auth_i.msg_code"
             bits: 8
             offset_bits: 0
-            value: "0x23"
-            value_hex: "0x23"
+            value: "0x22"
+            value_hex: "0x22"
             description: >
-              0x23 = IKE_Auth (FC-SP-3 Table 7). The second message in the
-              SA Establishment exchange. Carries identity, certificates,
+              0x22 = IKE_Auth (FC-SP-3 Rev 3.10 LB Table 7). The second message
+              in the SA Establishment exchange. Carries identity, certificates,
               authentication, and Child_SA proposal — all encrypted.
-              [INFERRED — verify code point against INCITS 577-202x Table 7.]
             spec_refs:
               - document: "FC-SP-3 (INCITS 577-202x)"
                 section: "6.2.4.3"
@@ -1616,12 +1626,12 @@ frames:
             abbrev: "ike_auth_r.msg_code"
             bits: 8
             offset_bits: 0
-            value: "0x23"
-            value_hex: "0x23"
+            value: "0x22"
+            value_hex: "0x22"
             description: >
-              0x23 = IKE_Auth (FC-SP-3 Table 7). Same message code for both
-              directions — the IKE Header Flags distinguish initiator from responder.
-              [INFERRED — verify code point against INCITS 577-202x Table 7.]
+              0x22 = IKE_Auth (FC-SP-3 Rev 3.10 LB Table 7). Same message code
+              for both directions — the IKE Flags field distinguishes initiator
+              from responder.
           - name: "SK{} Encryption Envelope"
             abbrev: "ike_auth_r.sk_envelope"
             bits: 0
@@ -2387,9 +2397,9 @@ timeline:
     t_ns: 1000
     frame_id: "auth_negotiate"
     annotation:
-      text: "AUTH_Negotiate — IKEv2-AUTH (0x00000002) + SA-C5 Profile (0x00000004)"
+      text: "AUTH_Negotiate — IKEv2-AUTH (Auth_Protocol=0x00000005, Table 8) + SA-C5 Profile (Implementation=0x00000004, Table 97)"
       detail: >
-        AUTH_Negotiate proposes IKEv2-AUTH (protocol identifier 0x00000002) instead
+        AUTH_Negotiate proposes IKEv2-AUTH (Authentication Protocol Identifier 0x00000005, Table 8) instead
         of DH-CHAP (0x00000001). The IKEv2-AUTH Protocol Parameters specify the SA-C5
         profile (0x00000004 = CNSA 2.0). Concatenation bit = 0 means IKEv2-AUTH handles
         everything — authentication, key exchange, and SA establishment — with no
@@ -2418,7 +2428,7 @@ timeline:
     t_ns: 6000
     frame_id: "auth_neg_rsp"
     annotation:
-      text: "Auth_Negotiate_Rsp — IKEv2-AUTH + SA-C5 (CNSA 2.0) Agreed"
+      text: "AUTH_Negotiate_Rsp — IKEv2-AUTH + SA-C5 (CNSA 2.0) Agreed"
       detail: >
         The array confirms IKEv2-AUTH with SA-C5 profile. Both sides now know the
         next exchange is IKE_SA_Init (not DH-CHAP Challenge). This is the last
@@ -2430,13 +2440,13 @@ timeline:
           - layer: 4
             name: "FC-4 Protocol Mapping"
             state_fields:
-              auth_state: "Auth_Negotiate_Rsp received — IKEv2-AUTH + SA-C5 agreed"
+              auth_state: "AUTH_Negotiate_Rsp received — IKEv2-AUTH + SA-C5 agreed"
       - actor_id: "array"
         layers:
           - layer: 4
             name: "FC-4 / Data Services"
             state_fields:
-              auth_state: "Auth_Negotiate_Rsp sent — awaiting IKE_SA_Init"
+              auth_state: "AUTH_Negotiate_Rsp sent — awaiting IKE_SA_Init"
 
   - id: "ike_sa_init_i"
     type: "frame_tx"
@@ -2856,7 +2866,7 @@ glossary:
       exchange method), key exchange material (ML-KEM-1024 encapsulation key
       from initiator, ciphertext from responder), and nonces. After this
       exchange, both sides derive SKEYSEED and establish the IKE_SA for
-      encrypting subsequent IKE_Auth messages. Auth_Msg_Code = 0x22.
+      encrypting subsequent IKE_Auth messages. Auth_Msg_Code = 0x16 (Table 7).
     spec_refs:
       - document: "FC-SP-3 (INCITS 577-202x)"
         section: "6.2.4.2"
@@ -2870,7 +2880,7 @@ glossary:
       (IDi/IDr = WWN), certificates (ML-DSA-87 signed), digital signature
       authentication (AUTH payload), and Child_SA proposal/acceptance.
       After IKE_Auth completes in both directions, the Child_SA is active
-      and all FC frames are encrypted. Auth_Msg_Code = 0x23.
+      and all FC frames are encrypted. Auth_Msg_Code = 0x22 (Table 7).
     spec_refs:
       - document: "FC-SP-3 (INCITS 577-202x)"
         section: "6.2.4.3"
@@ -2964,7 +2974,7 @@ walkthroughs:
         highlight_fields: ["ctx.fcsp3", "ctx.host_wwn", "ctx.array_wwn"]
       - step: 1
         narration: >
-          AUTH_Negotiate proposes IKEv2-AUTH (0x00000002) — not DH-CHAP (0x00000001).
+          AUTH_Negotiate proposes IKEv2-AUTH (Auth_Protocol=0x00000005, Table 8) — not DH-CHAP (0x00000001).
           The SA-C5 profile identifier (0x00000004) selects CNSA 2.0 algorithms.
           Concatenation bit = 0 means IKEv2-AUTH handles everything: key exchange,
           authentication, and SA establishment. No DH-CHAP will occur at all.
