@@ -298,21 +298,21 @@ osi_layers:
 frames:
   # ── Phase 1: Fabric Login (abbreviated) ─────────────────────────────────────
   #
-  # Each step in this phase shows the correct arrow termination. FLOGI is a
-  # host-to-switch exchange (Fabric Controller WKA 0xFFFFFE). The first PLOGI
-  # is to the Name Server (WKA 0xFFFFFC), also switch-terminated. Only the
-  # final PLOGI-to-target traverses the switch all the way to the storage.
-  # The full login flow lives in scenario fc-fabric-login-scsi-io; what
-  # follows is an abbreviated three-frame summary.
+  # Each ELS request is followed by its ACC reply as a separate frame, matching
+  # the structure of the canonical fc-fabric-login-scsi-io scenario. FLOGI is a
+  # host-to-switch exchange (Fabric Controller WKA 0xFFFFFE). The first PLOGI is
+  # to the Name Server (WKA 0xFFFFFC), also switch-terminated. Only the final
+  # PLOGI-to-target traverses the switch all the way to the storage. The full
+  # login flow (including RFT_ID and GID_FT) lives in fc-fabric-login-scsi-io;
+  # what follows is an abbreviated six-frame summary.
 
-  - id: "flogi_exchange"
-    name: "FLOGI / FLOGI ACC — Host ↔ Fabric Controller"
+  - id: "flogi"
+    name: "FLOGI — Fabric Login Request"
     description: >
-      Host requests Fabric Login from the switch's Fabric Controller, addressed
-      to the Well-Known Address 0xFFFFFE. The Fabric Controller assigns the
-      host its N_Port_ID (0x010200), exchanges service parameters, and returns
-      FLOGI ACC. **This exchange terminates at the switch — the storage array
-      is not involved.** The arrow stops at the switch.
+      Host sends FLOGI to the switch's Fabric Controller, addressed to the
+      Well-Known Address 0xFFFFFE. **This frame terminates at the switch — the
+      storage array is not involved.** The Fabric Controller will assign the
+      host's N_Port_ID and reply with FLOGI ACC.
     from: "host"
     to: "switch"
     via: []
@@ -320,7 +320,7 @@ frames:
     total_bytes: 116
     color: "#7f8c8d"
     headers:
-      - name: "FLOGI Exchange (abbreviated round-trip)"
+      - name: "FLOGI Request"
         abbrev: "flogi"
         layer: 4
         fields:
@@ -329,11 +329,6 @@ frames:
             bits: 8
             value: "0x04 = FLOGI"
             description: "Extended Link Service command — Fabric Login (FC-LS-3)."
-          - name: "Assigned N_Port_ID (in FLOGI ACC)"
-            abbrev: "flogi.nportid"
-            bits: 24
-            value: "0x010200"
-            description: "Host N_Port_ID assigned by the Fabric Controller and returned in FLOGI ACC."
           - name: "Host WWN"
             abbrev: "flogi.host_wwn"
             bits: 64
@@ -393,45 +388,127 @@ frames:
             value: "850nm multimode fiber (SFP-DD)"
             description: "Short-reach fiber optics."
 
-  - id: "plogi_name_server"
-    name: "PLOGI to Name Server + RFT_ID + GID_FT — Host ↔ Name Server"
+  - id: "flogi_acc"
+    name: "FLOGI ACC — Fabric Login Accept"
     description: >
-      Host completes PLOGI with the Name Server (Well-Known Address 0xFFFFFC),
-      registers its FC-4 capabilities via RFT_ID, and queries for visible targets
-      via GID_FT. **All of these are switch-terminated** — the Name Server is a
-      Well-Known FC service that lives on the switch. The arrow stops at the
-      switch. (Multiple ELS / CT_IU frames collapsed for brevity.)
-    from: "host"
-    to: "switch"
+      Fabric Controller (on the switch) returns FLOGI ACC, assigning the host
+      an N_Port_ID (0x010200) and exchanging service parameters. **This frame
+      originates at the switch and terminates at the host — the storage array
+      is not involved.**
+    from: "switch"
+    to: "host"
     via: []
-    timestamp_ns: 200
-    total_bytes: 240
+    timestamp_ns: 100
+    total_bytes: 116
     color: "#7f8c8d"
     headers:
-      - name: "Name Server Exchanges (abbreviated)"
-        abbrev: "ns"
+      - name: "FLOGI ACC"
+        abbrev: "flogi_acc"
         layer: 4
         fields:
-          - name: "PLOGI to Name Server"
-            abbrev: "ns.plogi"
-            bits: 0
-            value: "ELS PLOGI (0x03) → D_ID = 0xFFFFFC"
-            description: "Host opens a PLOGI session with the Name Server before issuing CT requests."
-          - name: "RFT_ID Registration"
-            abbrev: "ns.rftid"
-            bits: 0
-            value: "FC-GS-7 CT_IU: RFT_ID — register FC-4 type bitmap"
-            description: "Host registers which FC-4 protocols it supports (e.g., FCP, NVMe/FC) so other hosts querying the Name Server can find it."
-          - name: "GID_FT Query"
-            abbrev: "ns.gidft"
-            bits: 0
-            value: "FC-GS-7 CT_IU: GID_FT — get N_Port_IDs by FC-4 type"
-            description: "Host queries the Name Server for visible targets matching its zone set. The reply lists the array's N_Port_ID 0x020100 (and any others)."
-      - name: "FC-2 Frame Header (representative — first PLOGI frame)"
+          - name: "ELS Reply Command"
+            abbrev: "flogi_acc.cmd"
+            bits: 8
+            value: "0x02 = ACC (Accept)"
+            description: "Generic ACC reply confirming the FLOGI request succeeded."
+          - name: "Assigned N_Port_ID"
+            abbrev: "flogi_acc.nportid"
+            bits: 24
+            value: "0x010200"
+            description: "Host N_Port_ID assigned by the Fabric Controller. The host will use this as S_ID for all subsequent host-originated frames."
+          - name: "Fabric WWN"
+            abbrev: "flogi_acc.fabric_wwn"
+            bits: 64
+            value: "10:00:00:05:1E:B1:FA:FE"
+            description: "Switch (fabric) Node Name returned in the service parameters."
+      - name: "FC-2 Frame Header"
         abbrev: "fc2"
         layer: 2
         total_bytes: 24
         fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x23"
+            description: "Extended Link Service reply (solicited control)."
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0x010200"
+            description: "Newly assigned host N_Port_ID — first frame using the assigned address."
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0xFFFFFE"
+            description: "Fabric Controller Well-Known Address."
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC."
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon FEC — mandatory for 64GFC."
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate."
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics."
+
+  - id: "plogi_ns"
+    name: "PLOGI to Name Server — Request"
+    description: >
+      Host opens a PLOGI session with the Name Server (Well-Known Address
+      0xFFFFFC). **This frame terminates at the switch.** Once the Name Server
+      session is open, the host typically registers its FC-4 capabilities
+      (RFT_ID) and queries for visible targets (GID_FT). Those CT_IU exchanges
+      are abbreviated here — see fc-fabric-login-scsi-io for the full sequence.
+    from: "host"
+    to: "switch"
+    via: []
+    timestamp_ns: 200
+    total_bytes: 116
+    color: "#7f8c8d"
+    headers:
+      - name: "PLOGI to Name Server"
+        abbrev: "plogi_ns"
+        layer: 4
+        fields:
+          - name: "ELS Command"
+            abbrev: "plogi_ns.cmd"
+            bits: 8
+            value: "0x03 = PLOGI"
+            description: "Extended Link Service command — N_Port Login (FC-LS-3)."
+          - name: "Host WWN"
+            abbrev: "plogi_ns.host_wwn"
+            bits: 64
+            value: "10:00:00:10:9B:C7:2A:01"
+            description: "Host HBA World Wide Port Name."
+      - name: "FC-2 Frame Header"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x22"
+            description: "Extended Link Service request."
           - name: "D_ID"
             abbrev: "fc2.did"
             bits: 24
@@ -445,8 +522,98 @@ frames:
           - name: "TYPE"
             abbrev: "fc2.type"
             bits: 8
-            value: "0x01 (ELS) / 0x20 (CT)"
-            description: "ELS for the PLOGI itself; CT (FC-GS-7 Common Transport) for RFT_ID and GID_FT."
+            value: "0x01"
+            description: "Extended Link Service (ELS)."
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC."
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon FEC — mandatory for 64GFC."
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate."
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics."
+
+  - id: "plogi_ns_acc"
+    name: "PLOGI ACC from Name Server (RFT_ID + GID_FT abbreviated)"
+    description: >
+      Name Server returns PLOGI ACC. **This frame originates at the switch and
+      terminates at the host.** Following this ACC, the host would normally
+      register FC-4 capabilities via RFT_ID and query for visible targets via
+      GID_FT (both switch-terminated CT_IU exchanges). Those frames are
+      abbreviated here; the GID_FT response identifies the array's N_Port_ID
+      0x020100, which the host uses as the destination for the next frame.
+    from: "switch"
+    to: "host"
+    via: []
+    timestamp_ns: 300
+    total_bytes: 116
+    color: "#7f8c8d"
+    headers:
+      - name: "PLOGI ACC from Name Server"
+        abbrev: "plogi_ns_acc"
+        layer: 4
+        fields:
+          - name: "ELS Reply Command"
+            abbrev: "plogi_ns_acc.cmd"
+            bits: 8
+            value: "0x02 = ACC (Accept)"
+            description: "Name Server confirms PLOGI session opened."
+          - name: "Name Server WWN"
+            abbrev: "plogi_ns_acc.ns_wwn"
+            bits: 64
+            value: "20:FC:00:05:1E:B1:FA:FE"
+            description: "Name Server N_Port_Name (WKA-rooted) returned in service parameters."
+          - name: "Subsequent Activity (abbreviated)"
+            abbrev: "plogi_ns_acc.subsequent"
+            bits: 0
+            value: "RFT_ID register (FC-4 type bitmap) + GID_FT query → returns 0x020100"
+            description: >
+              After this PLOGI session is open, the host issues two CT_IU
+              exchanges to the Name Server: RFT_ID to register that it supports
+              FCP/NVMe-FC, and GID_FT to discover visible targets. Both are
+              switch-terminated. The GID_FT response lists the array's
+              N_Port_ID (0x020100). Each CT_IU has its own request and ACC; full
+              frames are shown in fc-fabric-login-scsi-io.
+      - name: "FC-2 Frame Header"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x23"
+            description: "Extended Link Service reply."
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0x010200"
+            description: "Host N_Port_ID."
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0xFFFFFC"
+            description: "Name Server Well-Known Address."
       - name: "FC-1 Encoding"
         abbrev: "fc1"
         layer: 1
@@ -477,14 +644,12 @@ frames:
             description: "Short-reach fiber optics."
 
   - id: "plogi_target"
-    name: "PLOGI to Target — Host → Array (via Switch)"
+    name: "PLOGI to Target — Request"
     description: >
       Host initiates PLOGI directly with the storage array N_Port (0x020100).
       **This is the FIRST host-to-target exchange in the login sequence** —
-      the arrow traverses the switch and terminates at the storage array.
-      The array's PLOGI ACC includes the FC-SP-3 Security bit in Common Service
-      Parameters and advertises IKEv2-AUTH support, signaling that authentication
-      must occur before PRLI.
+      the arrow traverses the switch and terminates at the storage array. The
+      array will reply with PLOGI ACC carrying its FC-SP-3 capability.
     from: "host"
     to: "array"
     via: ["switch"]
@@ -492,7 +657,7 @@ frames:
     total_bytes: 116
     color: "#34495e"
     headers:
-      - name: "PLOGI Exchange (abbreviated round-trip)"
+      - name: "PLOGI to Target"
         abbrev: "plogi"
         layer: 4
         fields:
@@ -501,36 +666,21 @@ frames:
             bits: 8
             value: "0x03 = PLOGI"
             description: "Extended Link Service command — N_Port Login (FC-LS-3)."
-          - name: "FC-SP-3 Capability (returned in PLOGI ACC)"
-            abbrev: "plogi.fcsp3"
-            bits: 0
-            value: "Security bit SET; IKEv2-AUTH supported"
-            description: >
-              The array's PLOGI ACC sets the Security bit in the Common Service
-              Parameters and lists IKEv2-AUTH as a supported authentication
-              protocol. The host detects this match and will initiate
-              AUTH_Negotiate with IKEv2-AUTH as the proposed protocol. No shared
-              secrets are needed — both endpoints hold ML-DSA-87 device
-              certificates issued by the organization's Certificate Authority.
-            spec_refs:
-              - document: "FC-LS-3 (FC Login)"
-                section: "4.2.7"
-                title: "Common Service Parameters — Security bit"
           - name: "Host WWN"
             abbrev: "plogi.host_wwn"
             bits: 64
             value: "10:00:00:10:9B:C7:2A:01"
             description: "Host HBA World Wide Port Name."
-          - name: "Array WWN (returned in PLOGI ACC)"
-            abbrev: "plogi.array_wwn"
-            bits: 64
-            value: "50:00:11:0A:CB:3F:44:01"
-            description: "Array target port World Wide Port Name."
       - name: "FC-2 Frame Header"
         abbrev: "fc2"
         layer: 2
         total_bytes: 24
         fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x22"
+            description: "Extended Link Service request."
           - name: "D_ID"
             abbrev: "fc2.did"
             bits: 24
@@ -546,6 +696,102 @@ frames:
             bits: 8
             value: "0x01"
             description: "Extended Link Service (ELS)."
+      - name: "FC-1 Encoding"
+        abbrev: "fc1"
+        layer: 1
+        fields:
+          - name: "Encoding"
+            abbrev: "fc1.encoding"
+            bits: 0
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC."
+          - name: "FEC"
+            abbrev: "fc1.fec"
+            bits: 0
+            value: "RS(544,514)"
+            description: "Reed-Solomon FEC — mandatory for 64GFC."
+      - name: "FC-0 Physical"
+        abbrev: "fc0"
+        layer: 0
+        fields:
+          - name: "Line Rate"
+            abbrev: "fc0.rate"
+            bits: 0
+            value: "64GFC (28.05 Gbps per lane)"
+            description: "Physical signaling rate — 64GFC Gen 7 Fibre Channel."
+          - name: "Media"
+            abbrev: "fc0.media"
+            bits: 0
+            value: "850nm multimode fiber (SFP-DD)"
+            description: "Short-reach fiber optics."
+
+  - id: "plogi_target_acc"
+    name: "PLOGI ACC from Target — FC-SP-3 Capability Detected"
+    description: >
+      Array returns PLOGI ACC. **Arrow originates at the array, traverses the
+      switch, and terminates at the host.** The Common Service Parameters set
+      the FC-SP-3 Security bit and advertise IKEv2-AUTH support. The host
+      detects this match and will initiate AUTH_Negotiate proposing IKEv2-AUTH
+      (not DH-CHAP) — trust will be established through ML-DSA-87 certificate
+      chains rooted in a common Certificate Authority. No shared secrets are
+      needed.
+    from: "array"
+    to: "host"
+    via: ["switch"]
+    timestamp_ns: 600
+    total_bytes: 116
+    color: "#34495e"
+    headers:
+      - name: "PLOGI ACC from Target"
+        abbrev: "plogi_acc"
+        layer: 4
+        fields:
+          - name: "ELS Reply Command"
+            abbrev: "plogi_acc.cmd"
+            bits: 8
+            value: "0x02 = ACC (Accept)"
+            description: "Generic ACC reply confirming the PLOGI succeeded."
+          - name: "FC-SP-3 Security Bit (Common Service Parameters)"
+            abbrev: "plogi_acc.fcsp3"
+            bits: 1
+            value: "1 (SET)"
+            description: >
+              Common Service Parameters Security bit set — the array supports
+              FC-SP-3 authentication and requires it before PRLI. Per FC-LS-3
+              §4.2.7. The companion list of supported authentication protocols
+              advertises IKEv2-AUTH (FC-SP-3 Table 8 Auth Protocol = 0x00000005).
+            spec_refs:
+              - document: "FC-LS-3 (FC Login)"
+                section: "4.2.7"
+                title: "Common Service Parameters — Security bit"
+              - document: "FC-SP-3 (INCITS 577-202x Rev 3.10 LB)"
+                section: "Table 8"
+                title: "AUTH_Negotiate Authentication Protocol Identifiers"
+          - name: "Array WWN"
+            abbrev: "plogi_acc.array_wwn"
+            bits: 64
+            value: "50:00:11:0A:CB:3F:44:01"
+            description: "Array target port World Wide Port Name."
+      - name: "FC-2 Frame Header"
+        abbrev: "fc2"
+        layer: 2
+        total_bytes: 24
+        fields:
+          - name: "R_CTL"
+            abbrev: "fc2.rctl"
+            bits: 8
+            value: "0x23"
+            description: "Extended Link Service reply."
+          - name: "D_ID"
+            abbrev: "fc2.did"
+            bits: 24
+            value: "0x010200"
+            description: "Host N_Port_ID."
+          - name: "S_ID"
+            abbrev: "fc2.sid"
+            bits: 24
+            value: "0x020100"
+            description: "Array target port N_Port_ID — first frame originating at the storage."
       - name: "FC-1 Encoding"
         abbrev: "fc1"
         layer: 1
@@ -2519,51 +2765,81 @@ timeline:
       detail: >
         Physical link is up at 64GFC. The host and array hold ML-DSA-87 device
         certificates signed by the organization's Certificate Authority — no
-        shared secrets have been provisioned. The next three steps walk the
-        abbreviated fabric login (FLOGI to the Fabric Controller, PLOGI to the
-        Name Server, PLOGI to the target). Note where each arrow terminates.
+        shared secrets have been provisioned. The next six steps walk the
+        abbreviated fabric login as request/ACC pairs. Note where each arrow
+        terminates: FLOGI is host↔switch (Fabric Controller), the first PLOGI
+        is host↔switch (Name Server), only the final PLOGI traverses the
+        switch all the way to the storage.
 
   - id: "flogi_event"
     type: "frame_tx"
     t_ns: 0
-    frame_id: "flogi_exchange"
+    frame_id: "flogi"
     annotation:
-      text: "FLOGI — Host ↔ Fabric Controller (terminates at switch)"
+      text: "FLOGI Request — Host → Fabric Controller (switch)"
       detail: >
-        Host requests Fabric Login. The Fabric Controller is a Well-Known Address
-        (0xFFFFFE) that lives on the switch — the storage array is not involved
-        in this exchange. The arrow stops at the switch. The Fabric Controller
-        assigns the host its N_Port_ID (0x010200) and returns service parameters
-        in FLOGI ACC.
+        Host requests Fabric Login. The Fabric Controller is a Well-Known
+        Address (0xFFFFFE) that lives on the switch — the storage array is
+        not involved. The arrow stops at the switch.
+
+  - id: "flogi_acc_event"
+    type: "frame_tx"
+    t_ns: 100
+    frame_id: "flogi_acc"
+    annotation:
+      text: "FLOGI ACC — Switch → Host (N_Port_ID assigned)"
+      detail: >
+        Fabric Controller returns FLOGI ACC, assigning the host N_Port_ID
+        0x010200. From this point forward the host uses 0x010200 as S_ID for
+        all host-originated frames.
 
   - id: "plogi_ns_event"
     type: "frame_tx"
     t_ns: 200
-    frame_id: "plogi_name_server"
+    frame_id: "plogi_ns"
     annotation:
-      text: "PLOGI to Name Server + RFT_ID + GID_FT (all switch-terminated)"
+      text: "PLOGI to Name Server — Host → Switch (Name Server WKA)"
       detail: >
-        Host completes PLOGI with the Name Server (Well-Known Address 0xFFFFFC),
-        registers FC-4 capabilities via RFT_ID, and queries for visible targets
-        via GID_FT. All three exchanges terminate at the switch — the Name
-        Server is a Well-Known FC service. The query reply lists the array's
-        N_Port_ID 0x020100, which the host will use as the destination for
-        the next step.
+        Host opens a PLOGI session with the Name Server (Well-Known Address
+        0xFFFFFC). Switch-terminated.
+
+  - id: "plogi_ns_acc_event"
+    type: "frame_tx"
+    t_ns: 300
+    frame_id: "plogi_ns_acc"
+    annotation:
+      text: "PLOGI ACC from Name Server (RFT_ID + GID_FT abbreviated)"
+      detail: >
+        Name Server confirms PLOGI session opened. The host then issues RFT_ID
+        (register FC-4 capabilities) and GID_FT (query for visible targets) —
+        both switch-terminated CT_IU exchanges, each with its own request and
+        ACC. Those frames are abbreviated here. The GID_FT response identifies
+        the array's N_Port_ID 0x020100, which the host uses as D_ID for the
+        next step.
 
   - id: "plogi_target_event"
     type: "frame_tx"
     t_ns: 500
     frame_id: "plogi_target"
     annotation:
-      text: "PLOGI to Target — first end-to-end exchange; FC-SP-3 capability detected"
+      text: "PLOGI to Target — Host → Array (via Switch); first end-to-end frame"
       detail: >
-        Host initiates PLOGI directly with the storage array N_Port. This is
-        the first frame in the login sequence whose arrow traverses the switch
-        and terminates at the storage. The array's PLOGI ACC sets the FC-SP-3
-        Security bit and advertises IKEv2-AUTH support, signaling that
-        authentication must occur before PRLI. The host will now initiate
-        AUTH_Negotiate proposing IKEv2-AUTH (not DH-CHAP) — trust will be
-        established through ML-DSA-87 certificate chains.
+        Host initiates PLOGI directly with the storage array N_Port (0x020100).
+        First frame in the login sequence whose arrow traverses the switch and
+        terminates at the storage.
+
+  - id: "plogi_target_acc_event"
+    type: "frame_tx"
+    t_ns: 600
+    frame_id: "plogi_target_acc"
+    annotation:
+      text: "PLOGI ACC from Target — FC-SP-3 capability detected"
+      detail: >
+        Array returns PLOGI ACC traversing the switch to the host. The Common
+        Service Parameters set the FC-SP-3 Security bit and advertise IKEv2-AUTH
+        support. The host detects this match and will initiate AUTH_Negotiate
+        proposing IKEv2-AUTH (not DH-CHAP) — trust will be established through
+        ML-DSA-87 certificate chains.
     state_after:
       - actor_id: "host"
         layers:
