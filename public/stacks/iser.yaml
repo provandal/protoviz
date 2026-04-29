@@ -49,12 +49,12 @@ optional_layers:
   - id: net-virt-row
     name: Network Virtualization
     position: between-osi-l2-osi-l1
-    default_enabled: false
+    default_enabled: true
     description: "Overlay networks add encapsulation overhead and complicate PFC/ECN behavior; deploy with care."
   - id: sr-iov-row
     name: SR-IOV
     position: between-osi-l2-osi-l1
-    default_enabled: false
+    default_enabled: true
     description: "Common on RoCE-enabled NICs to expose verbs to VMs directly."
 
 scenarios:

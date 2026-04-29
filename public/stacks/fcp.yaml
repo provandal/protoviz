@@ -40,13 +40,13 @@ layers:
 optional_layers:
   - id: fc-sp-3-row
     name: FC-SP-3
-    position: between-fc-4-fc-3
-    default_enabled: false
-    description: "FC Security Protocols generation 3. AES-256-GCM authenticated encryption at FC-3."
+    position: inside-fc-2
+    default_enabled: true
+    description: "FC Security Protocols generation 3. AES-256-GCM authenticated encryption attached to FC-2 framing (ESP_Header + encrypted payload)."
   - id: npiv-row
     name: NPIV
     position: between-fc-2-fc-1
-    default_enabled: false
+    default_enabled: true
     description: "N_Port ID Virtualization. Multiple virtual N_Ports on a single physical HBA."
 
 scenarios:

@@ -18,16 +18,10 @@ export default function StacksPage() {
   const [layers, setLayers] = useState(null);
   const [components, setComponents] = useState(null);
   const [stacks, setStacks] = useState([]);
+  const [selectedStackIds, setSelectedStackIds] = useState(null);
+  const [toggles, setToggles] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-
-  // Optional layer toggles
-  const [toggles, setToggles] = useState({
-    'FC-SP-3': false,
-    'SR-IOV': false,
-    'NPIV': false,
-    'Network Virtualization': false,
-  });
 
   useEffect(() => {
     let cancelled = false;
@@ -45,10 +39,26 @@ export default function StacksPage() {
         );
         const stacksData = await Promise.all(stackPromises);
 
+        // Initial toggle state: union of all optional_layers across stacks,
+        // each defaulting to its `default_enabled` (true → user can turn OFF).
+        const initialToggles = {};
+        for (const stack of stacksData) {
+          if (!stack.optional_layers) continue;
+          for (const ol of stack.optional_layers) {
+            if (!(ol.name in initialToggles)) {
+              initialToggles[ol.name] = ol.default_enabled !== false;
+            } else if (ol.default_enabled !== false) {
+              initialToggles[ol.name] = true;
+            }
+          }
+        }
+
         if (!cancelled) {
           setLayers(layersData);
           setComponents(compData.components);
           setStacks(stacksData);
+          setSelectedStackIds(stacksData.map(s => s.id));
+          setToggles(initialToggles);
           setLoading(false);
         }
       } catch (err) {
@@ -63,10 +73,23 @@ export default function StacksPage() {
     return () => { cancelled = true; };
   }, []);
 
-  const toggleNames = useMemo(() => Object.keys(toggles), []);
+  const toggleNames = useMemo(() => (toggles ? Object.keys(toggles) : []), [toggles]);
+
+  const visibleStacks = useMemo(() => {
+    if (!selectedStackIds) return [];
+    const set = new Set(selectedStackIds);
+    return stacks.filter(s => set.has(s.id));
+  }, [stacks, selectedStackIds]);
 
   function handleToggle(name) {
     setToggles(prev => ({ ...prev, [name]: !prev[name] }));
+  }
+
+  function handleStackToggle(id) {
+    setSelectedStackIds(prev => {
+      if (!prev) return prev;
+      return prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id];
+    });
   }
 
   return (
@@ -144,7 +167,51 @@ export default function StacksPage() {
         </div>
       ) : (
         <div>
-          {/* Toggle bar */}
+          {/* Stack selector bar */}
+          <div style={{
+            padding: '12px 16px',
+            borderBottom: '1px solid #1e293b',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 16,
+            flexWrap: 'wrap',
+          }}>
+            <span style={{
+              color: '#64748b',
+              fontSize: 10,
+              textTransform: 'uppercase',
+              letterSpacing: '0.1em',
+              fontWeight: 700,
+            }}>
+              Stacks:
+            </span>
+            {stacks.map(stack => {
+              const checked = selectedStackIds?.includes(stack.id) ?? false;
+              return (
+                <label
+                  key={stack.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    cursor: 'pointer',
+                    fontSize: 11,
+                    color: checked ? '#e2e8f0' : '#475569',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => handleStackToggle(stack.id)}
+                    style={{ accentColor: '#3b82f6', width: 13, height: 13 }}
+                  />
+                  {stack.name}
+                </label>
+              );
+            })}
+          </div>
+
+          {/* Optional layer toggle bar */}
           <div style={{
             padding: '12px 16px',
             borderBottom: '1px solid #1e293b',
@@ -176,7 +243,7 @@ export default function StacksPage() {
               >
                 <input
                   type="checkbox"
-                  checked={toggles[name]}
+                  checked={!!toggles[name]}
                   onChange={() => handleToggle(name)}
                   style={{
                     accentColor: '#3b82f6',
@@ -191,12 +258,18 @@ export default function StacksPage() {
 
           {/* Stack grid */}
           <div style={{ padding: '16px 0' }}>
-            <StackGrid
-              stacks={stacks}
-              components={components}
-              layers={layers}
-              enabledToggles={toggles}
-            />
+            {visibleStacks.length === 0 ? (
+              <div style={{ textAlign: 'center', color: '#475569', padding: 48, fontSize: 12 }}>
+                No stacks selected. Pick at least one stack above.
+              </div>
+            ) : (
+              <StackGrid
+                stacks={visibleStacks}
+                components={components}
+                layers={layers}
+                enabledToggles={toggles || {}}
+              />
+            )}
           </div>
 
           {/* Footer legend */}

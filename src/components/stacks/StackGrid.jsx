@@ -206,7 +206,9 @@ const BASE_ROWS = [
   { id: 'osi-l3', osiLabel: 'L3 Network',      fc: 'fc-2-cont',  fcLabel: '' },
   { id: 'osi-l2', osiLabel: 'L2 Data Link',    fc: 'fc-2-end',   fcLabel: '' },
   // optional: between-fc-2-fc-1 / between-osi-l2-osi-l1
-  { id: 'osi-l1', osiLabel: 'L1 Physical',     fc: 'fc-phys', fcLabel: 'FC-1/FC-0 Phys' },
+  { id: 'osi-l1', osiLabel: 'L1 Physical',     fc: 'fc-1', fcLabel: 'FC-1 Encoding' },
+  // FC-0 lives on its own row (no OSI equivalent below L1)
+  { id: 'fc-0-row', osiLabel: '', fc: 'fc-0', fcLabel: 'FC-0 Physical', fcOnly: true },
 ];
 
 // Map from optional_layer position strings to where they should be inserted.
@@ -228,22 +230,27 @@ export default function StackGrid({ stacks, components, layers, enabledToggles }
   const fcStacks = useMemo(() => stacks.filter(s => s.alignment === 'fc'), [stacks]);
   const hasFc = fcStacks.length > 0;
 
-  // Collect all active optional positions
+  // Collect all active optional positions (positions that drive *row* insertion).
+  // `inside-fc-2` is special — it merges items into the FC-2 cell, no row.
   const activePositions = useMemo(() => {
     const set = new Set();
     for (const stack of stacks) {
       if (!stack.optional_layers) continue;
       for (const ol of stack.optional_layers) {
-        if (enabledToggles[ol.name]) set.add(ol.position);
+        if (enabledToggles[ol.name] && ol.position !== 'inside-fc-2') {
+          set.add(ol.position);
+        }
       }
     }
     return set;
   }, [stacks, enabledToggles]);
 
-  // Build the row plan: base rows with optional rows interleaved
+  // Build the row plan: base rows with optional rows interleaved.
+  // The fc-0-row is dropped when there are no FC stacks (it has no OSI side).
   const rowPlan = useMemo(() => {
     const plan = [];
     for (const baseRow of BASE_ROWS) {
+      if (baseRow.fcOnly && !hasFc) continue;
       plan.push({ type: 'main', ...baseRow });
 
       // Check if any optional position should be inserted after this row
@@ -262,7 +269,7 @@ export default function StackGrid({ stacks, components, layers, enabledToggles }
       }
     }
     return plan;
-  }, [activePositions]);
+  }, [activePositions, hasFc]);
 
   // Calculate FC-2 rowSpan: count all rows from fc-2-start through fc-2-end
   // plus any optional rows inserted in between
@@ -298,14 +305,24 @@ export default function StackGrid({ stacks, components, layers, enabledToggles }
       // 1. OSI label
       cells.push(<LabelCell key="ol" label={entry.osiLabel} side="left" />);
 
-      // 2. OSI stack cells
+      // 2. OSI stack cells. For fcOnly rows, render visually blank cells
+      // (no "—" placeholder) so the absence of an OSI equivalent is implicit.
       for (const stack of osiStacks) {
-        cells.push(
-          <StackCell
-            key={`${stack.id}-${entry.id}`}
-            items={resolveLayer(stack, entry.id, componentMap)}
-          />
-        );
+        if (entry.fcOnly) {
+          cells.push(
+            <td
+              key={`${stack.id}-${entry.id}-blank`}
+              style={{ border: 'none', padding: 0, height: 48, background: 'transparent' }}
+            />
+          );
+        } else {
+          cells.push(
+            <StackCell
+              key={`${stack.id}-${entry.id}`}
+              items={resolveLayer(stack, entry.id, componentMap)}
+            />
+          );
+        }
       }
 
       // 3. FC stack cells
@@ -319,23 +336,27 @@ export default function StackGrid({ stacks, components, layers, enabledToggles }
             <StackCell key={`${stack.id}-fc3`} items={resolveLayer(stack, 'fc-3', componentMap)} />
           );
         } else if (entry.fc === 'fc-2-start') {
-          // Emit FC-2 spanning cell
+          // Emit FC-2 spanning cell. Merge `inside-fc-2` optional layers as
+          // sub-components stacked inside the FC-2 cell when their toggle is on.
+          const fc2Items = resolveLayer(stack, 'fc-2', componentMap);
+          const insideItems = getOptionalAtPosition(stack, 'inside-fc-2', componentMap, enabledToggles);
           cells.push(
             <StackCell
               key={`${stack.id}-fc2`}
-              items={resolveLayer(stack, 'fc-2', componentMap)}
+              items={[...fc2Items, ...insideItems]}
               rowSpan={fc2RowSpan}
               minHeight={48 * 3}
             />
           );
         } else if (entry.fc === 'fc-2-cont' || entry.fc === 'fc-2-end') {
           // Covered by rowSpan — emit nothing for FC columns
-        } else if (entry.fc === 'fc-phys') {
-          // FC-1 + FC-0 stacked
-          const fc1 = resolveLayer(stack, 'fc-1', componentMap);
-          const fc0 = resolveLayer(stack, 'fc-0', componentMap);
+        } else if (entry.fc === 'fc-1') {
           cells.push(
-            <StackCell key={`${stack.id}-fcphys`} items={[...fc1, ...fc0]} />
+            <StackCell key={`${stack.id}-fc1`} items={resolveLayer(stack, 'fc-1', componentMap)} />
+          );
+        } else if (entry.fc === 'fc-0') {
+          cells.push(
+            <StackCell key={`${stack.id}-fc0`} items={resolveLayer(stack, 'fc-0', componentMap)} />
           );
         } else {
           // No FC equivalent (e.g. osi-l6)

@@ -45,12 +45,12 @@ optional_layers:
   - id: net-virt-row
     name: Network Virtualization
     position: between-osi-l2-osi-l1
-    default_enabled: false
+    default_enabled: true
     description: "Overlay (VXLAN/Geneve) when NVMe/TCP traffic crosses tenant networks."
   - id: sr-iov-row
     name: SR-IOV
     position: between-osi-l2-osi-l1
-    default_enabled: false
+    default_enabled: true
     description: "Common in virtualized initiator hosts to bypass the hypervisor data path."
 
 scenarios:
