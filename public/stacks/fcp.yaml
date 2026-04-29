@@ -32,7 +32,7 @@ layers:
 
   fc-1:
     component_id: fc-encode
-    notes: "8b/10b for 1/2/4/8GFC; 64b/66b for 16GFC and above."
+    notes: "8b/10b for 1/2/4/8GFC; 64b/66b for 10/16/32GFC; 256b/257b transcoding (with RS-FEC) for 64GFC and above."
 
   fc-0:
     component_id: fc-phy

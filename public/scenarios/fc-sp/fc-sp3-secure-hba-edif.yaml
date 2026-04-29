@@ -152,12 +152,12 @@ osi_layers:
           initial: false
     - layer: 1
       name: "FC-1 Encoding"
-      components: ["64b/66b encoding", "RS(544,514) FEC"]
+      components: ["256b/257b encoding", "RS(544,514) FEC"]
       state_schema:
         encoding:
           type: "string"
           description: "Line encoding scheme"
-          initial: "64b/66b"
+          initial: "256b/257b"
     - layer: 2
       name: "FC-2 Framing / Transport"
       components: ["FC frame header", "ESP_Header (when encrypted)", "CRC-32"]
@@ -202,12 +202,12 @@ osi_layers:
           initial: "UP (64GFC)"
     - layer: 1
       name: "FC-1 Encoding"
-      components: ["64b/66b encoding", "RS(544,514) FEC"]
+      components: ["256b/257b encoding", "RS(544,514) FEC"]
       state_schema:
         encoding:
           type: "string"
           description: "Line encoding scheme"
-          initial: "64b/66b"
+          initial: "256b/257b"
     - layer: 2
       name: "FC-2 Framing"
       components: ["FC header inspection (D_ID/S_ID only)", "Credit management"]
@@ -236,12 +236,12 @@ osi_layers:
           initial: false
     - layer: 1
       name: "FC-1 Encoding"
-      components: ["64b/66b encoding", "RS(544,514) FEC"]
+      components: ["256b/257b encoding", "RS(544,514) FEC"]
       state_schema:
         encoding:
           type: "string"
           description: "Line encoding scheme"
-          initial: "64b/66b"
+          initial: "256b/257b"
     - layer: 2
       name: "FC-2 Framing"
       components: ["FC frame receive", "ESP_Header processing", "AES-256-GCM decryption engine", "CRC validation post-decrypt"]
@@ -378,8 +378,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -605,8 +605,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -742,8 +742,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -898,8 +898,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -1053,8 +1053,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -1193,8 +1193,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -1363,8 +1363,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -1496,8 +1496,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -1639,8 +1639,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -1772,8 +1772,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -1951,8 +1951,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -2094,8 +2094,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -2263,8 +2263,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -2409,8 +2409,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -2557,8 +2557,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -2705,8 +2705,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -2793,8 +2793,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -2941,8 +2941,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0

@@ -202,11 +202,11 @@ osi_layers:
 
     - layer: 1
       name: "FC-1 Encoding"
-      components: ["64b/66b encoding", "word sync"]
+      components: ["256b/257b encoding", "word sync"]
       state_schema:
         encoding:
           type: "string"
-          initial: "64b/66b"
+          initial: "256b/257b"
         word_sync:
           type: "boolean"
           initial: false
@@ -269,11 +269,11 @@ osi_layers:
 
     - layer: 1
       name: "FC-1 Encoding"
-      components: ["64b/66b encoding"]
+      components: ["256b/257b encoding"]
       state_schema:
         encoding:
           type: "string"
-          initial: "64b/66b"
+          initial: "256b/257b"
 
     - layer: 0
       name: "FC-0 Physical"
@@ -496,8 +496,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC, replacing 8b/10b used in earlier FC generations"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -622,8 +622,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC, replacing 8b/10b used in earlier FC generations"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -759,8 +759,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC, replacing 8b/10b used in earlier FC generations"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -870,8 +870,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC, replacing 8b/10b used in earlier FC generations"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -1029,8 +1029,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC, replacing 8b/10b used in earlier FC generations"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -1147,8 +1147,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC, replacing 8b/10b used in earlier FC generations"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -1270,8 +1270,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC, replacing 8b/10b used in earlier FC generations"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -1391,8 +1391,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC, replacing 8b/10b used in earlier FC generations"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -1541,8 +1541,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC, replacing 8b/10b used in earlier FC generations"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -1671,8 +1671,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC, replacing 8b/10b used in earlier FC generations"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -1812,8 +1812,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC, replacing 8b/10b used in earlier FC generations"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -1934,8 +1934,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC, replacing 8b/10b used in earlier FC generations"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -2055,8 +2055,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC, replacing 8b/10b used in earlier FC generations"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -2193,8 +2193,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC, replacing 8b/10b used in earlier FC generations"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -2317,8 +2317,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC, replacing 8b/10b used in earlier FC generations"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -2431,8 +2431,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC, replacing 8b/10b used in earlier FC generations"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -2545,8 +2545,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC, replacing 8b/10b used in earlier FC generations"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -2658,8 +2658,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC, replacing 8b/10b used in earlier FC generations"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -2794,8 +2794,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC, replacing 8b/10b used in earlier FC generations"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -2908,8 +2908,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC, replacing 8b/10b used in earlier FC generations"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -3020,8 +3020,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC, replacing 8b/10b used in earlier FC generations"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -3131,8 +3131,8 @@ frames:
           - name: "Encoding"
             abbrev: "fc1.encoding"
             bits: 0
-            value: "64b/66b"
-            description: "Line encoding scheme — 64b/66b for 64GFC, replacing 8b/10b used in earlier FC generations"
+            value: "256b/257b"
+            description: "Line encoding scheme — 256b/257b for 64GFC, replacing 8b/10b used in earlier FC generations"
           - name: "FEC"
             abbrev: "fc1.fec"
             bits: 0
@@ -3209,7 +3209,7 @@ timeline:
     annotation:
       text: "Link A UP — Host ↔ Switch at 64GFC"
       detail: >
-        Speed negotiation complete: 64GFC (64.0 Gbps). 64b/66b encoding active.
+        Speed negotiation complete: 64GFC (64.0 Gbps). 256b/257b encoding active.
         FC primitives can now be exchanged. BB_Credit flow control initialized.
     state_after:
       - actor_id: "initiator"

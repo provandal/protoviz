@@ -236,10 +236,11 @@ components:
   - id: fc-encode
     name: Encode/Decode
     color: fc
-    aliases: ["FC Encoding", "8b/10b", "64b/66b"]
+    aliases: ["FC Encoding", "8b/10b", "64b/66b", "256b/257b"]
     definition: >
-      FC-1 transmission encoding. 8b/10b for legacy speeds; 64b/66b for
-      16GFC and above.
+      FC-1 transmission encoding. 8b/10b for 1/2/4/8GFC (legacy); 64b/66b for
+      10/16/32GFC; 256b/257b transcoding combined with RS-FEC for 64GFC and
+      above (Gen 7).
 
   # ── L1 / Physical ────────────────────────────────────────────────────────
   - id: gbe-phy

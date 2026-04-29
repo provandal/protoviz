@@ -55,7 +55,7 @@ fc:
   - id: fc-1
     name: Encode / Decode
     short: FC-1
-    description: 8b/10b (legacy), 64b/66b transmission encoding, ordered sets.
+    description: 8b/10b (1/2/4/8GFC), 64b/66b (10/16/32GFC), 256b/257b transcoding with RS-FEC (64GFC+), ordered sets.
   - id: fc-0
     name: Physical
     short: FC-0
