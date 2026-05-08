@@ -363,8 +363,13 @@ export default function Gallery() {
     Promise.all([
       fetch(`${base}scenarios/index.json`).then(r => r.json()).catch(() => ({ scenarios: [] })),
       fetch(`${base}netsim/index.json`).then(r => r.json()).catch(() => ({ scenarios: [] })),
-    ]).then(([scenarioData, netsimData]) => {
-      const merged = [...scenarioData.scenarios, ...(netsimData.scenarios || [])];
+      fetch(`${base}stacks-gallery/index.json`).then(r => r.json()).catch(() => ({ scenarios: [] })),
+    ]).then(([scenarioData, netsimData, stackData]) => {
+      const merged = [
+        ...scenarioData.scenarios,
+        ...(netsimData.scenarios || []),
+        ...(stackData.scenarios || []),
+      ];
       setScenarios(merged);
       setLoading(false);
     });
@@ -517,6 +522,7 @@ export default function Gallery() {
                   onClick={() => navigate(
                     s.type === 'interactive' ? `/live/${s.slug}` :
                     s.type === 'fabric' ? `/netsim/${s.slug}` :
+                    s.type === 'stack' ? `/stacks` :
                     `/${s.slug}`
                   )}
                 />
@@ -533,6 +539,7 @@ export default function Gallery() {
                 onScenarioClick={(s) => navigate(
                   s.type === 'interactive' ? `/live/${s.slug}` :
                   s.type === 'fabric' ? `/netsim/${s.slug}` :
+                  s.type === 'stack' ? `/stacks` :
                   `/${s.slug}`
                 )}
               />

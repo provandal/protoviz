@@ -66,6 +66,16 @@ export default function ScenarioCard({ scenario, onClick }) {
             ◆ FABRIC
           </span>
         )}
+        {scenario.type === 'stack' && (
+          <span style={{
+            background: '#0c2a36', color: '#22d3ee',
+            fontSize: 9, fontWeight: 700, padding: '2px 8px', borderRadius: 3,
+            border: '1px solid #22d3ee44',
+            marginInlineStart: 'auto',
+          }}>
+            ▦ STACKS
+          </span>
+        )}
       </div>
 
       {/* Title */}

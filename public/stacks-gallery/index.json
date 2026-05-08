@@ -1,0 +1,15 @@
+{
+  "scenarios": [
+    {
+      "slug": "stack-comparison",
+      "title": "Storage Protocol Stack Comparison",
+      "protocol": "Multi-Protocol",
+      "protocol_family": "Protocol Stacks",
+      "difficulty": "intermediate",
+      "description": "Side-by-side reference for storage protocol stacks: NVMe-oF (TCP, RoCEv2, iWARP, FC), iSCSI/iSER, FCP, SMB3 + SMB Direct (RoCE/iWARP/IB), NFS, S3/HTTP. Aligned 1:1 with OSI and FC layers; click any block for spec-level detail.",
+      "tags": ["stacks", "OSI", "FC", "NVMe-oF", "RDMA", "comparison", "reference"],
+      "type": "stack",
+      "path": "stacks/index.json"
+    }
+  ]
+}
