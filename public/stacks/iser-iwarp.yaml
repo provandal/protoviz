@@ -1,0 +1,64 @@
+id: iser-iwarp
+name: iSER (iWARP)
+family: block-scsi
+alignment: osi
+
+summary: >
+  iSER over iWARP. Same iSCSI control plane and SCSI command set as iSER
+  over RoCE; the underlying RDMA carrier is iWARP, which layers
+  RDMAP/DDP/MPA on TCP rather than IBTA-on-UDP.
+
+spec_refs:
+  - document: "RFC 7145"
+    title: "iSCSI Extensions for RDMA Specification"
+  - document: "RFC 5040"
+    title: "A Remote Direct Memory Access Protocol Specification"
+  - document: "RFC 5044"
+    title: "Marker PDU Aligned Framing for TCP (MPA)"
+
+layers:
+  osi-l7:
+    component_id: block-device
+
+  osi-l6:
+    component_id: scsi
+    notes: "SCSI command set; CDBs flow through iSCSI control PDUs while data moves via RDMA verbs."
+
+  osi-l5:
+    component_id: iscsi
+    notes: "iSCSI control plane: login, full-feature phase. iSER tunnels SCSI Read/Write through RDMA Read/Write."
+
+  rdma-verbs:
+    component_id: rdma-verbs
+    notes: "iWARP exposes the verbs API; under the hood RDMAP/DDP/MPA frame on top of TCP."
+
+  osi-l4:
+    component_id: tcp
+    notes: "iWARP runs over a normal TCP connection (with MPA framing). No DCB requirement."
+
+  osi-l3:
+    component_id: ip
+
+  osi-l2:
+    component_id: ethernet
+    notes: "Standard Ethernet — iWARP does not require lossless behavior."
+
+  osi-l1:
+    component_id: gbe-phy
+
+optional_layers:
+  - id: net-virt-row
+    name: Network Virtualization
+    position: between-osi-l2-osi-l1
+    description: "Overlay generally fine on iWARP — no PFC dependency to break."
+  - id: sr-iov-row
+    name: SR-IOV
+    position: between-osi-l2-osi-l1
+    description: "Supported by most iWARP-capable NICs."
+
+scenarios: []
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-08"
+  license: "CC-BY-4.0"

@@ -1,0 +1,61 @@
+id: iscsi
+name: iSCSI
+family: block-scsi
+alignment: osi
+
+summary: >
+  SCSI commands carried over TCP/IP. The original IP-SAN protocol; widely
+  deployed in 1G-25G environments. iSER replaces only the data path with
+  RDMA while keeping iSCSI's control plane.
+
+spec_refs:
+  - document: "RFC 7143"
+    title: "Internet Small Computer System Interface (iSCSI) Protocol"
+    url: "https://www.rfc-editor.org/rfc/rfc7143"
+  - document: "RFC 3720"
+    title: "iSCSI (predecessor to RFC 7143)"
+
+layers:
+  osi-l7:
+    component_id: block-device
+
+  osi-l6:
+    component_id: scsi
+    notes: "SCSI command set carried as CDBs inside iSCSI PDUs."
+
+  osi-l5:
+    component_id: iscsi
+    notes: "iSCSI session: login phase negotiates parameters; full-feature phase carries SCSI I/O."
+
+  osi-l4:
+    component_id: tcp
+    notes: "iSCSI requires reliable, in-order delivery — TCP is mandatory."
+
+  osi-l3:
+    component_id: ip
+
+  osi-l2:
+    component_id: ethernet
+    notes: "Standard Ethernet — iSCSI does not require lossless behavior, though DCB is sometimes deployed."
+
+  osi-l1:
+    component_id: gbe-phy
+
+optional_layers:
+  - id: net-virt-row
+    name: Network Virtualization
+    position: between-osi-l2-osi-l1
+    description: "Overlay (VXLAN/Geneve) when iSCSI traffic crosses tenant networks."
+  - id: sr-iov-row
+    name: SR-IOV
+    position: between-osi-l2-osi-l1
+    description: "Common in virtualized initiator hosts to bypass the hypervisor data path."
+
+scenarios:
+  - id: iscsi-login-write-read
+    label: "iSCSI Login + SCSI Read/Write"
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-07"
+  license: "CC-BY-4.0"

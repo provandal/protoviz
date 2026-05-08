@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 
 /**
  * Color token -> hex mapping (dark theme)
@@ -16,63 +16,88 @@ const COLOR_MAP = {
   smb: '#f97316',
   nfs: '#84cc16',
   'nfs-aux': '#a3e635',
-  phy: '#475569',
-  neutral: '#334155',
-  optional: '#1e293b',
+  http: '#22d3ee',
+  phy: '#94a3b8',
+  neutral: '#94a3b8',
+  optional: '#cbd5e1',
 };
 
-/**
- * Build a component lookup map from the components array.
- */
+const OPTIONAL_BG = '#0f172a';
+const OPTIONAL_BORDER = '#64748b';
+
+const STACK_COL_WIDTH = 200;
+const LABEL_COL_WIDTH = 110;
+
 function buildComponentMap(components) {
   const map = {};
   if (!components) return map;
-  for (const c of components) {
-    map[c.id] = c;
-  }
+  for (const c of components) map[c.id] = c;
   return map;
 }
 
-/**
- * Resolve what a stack has at a given layer id.
- * Returns an array of { component, notes } objects (may be empty).
- */
 function resolveLayer(stack, layerId, componentMap) {
   if (!stack?.layers?.[layerId]) return [];
   const entry = stack.layers[layerId];
   const items = Array.isArray(entry) ? entry : [entry];
-  return items.map(item => ({
-    component: componentMap[item.component_id] || { id: item.component_id, name: item.component_id, color: 'neutral' },
-    notes: item.notes || '',
-  }));
+  return items.map(item => {
+    const component = componentMap[item.component_id] || { id: item.component_id, name: item.component_id, color: 'neutral' };
+    // Per-cell `notes` take precedence; otherwise fall back to the
+    // component's vocabulary `definition` so click-expand always has
+    // something to show. Annotated components carry the pedagogical
+    // explanation in their definition.
+    return {
+      component,
+      notes: item.notes || component.definition || '',
+    };
+  });
 }
 
-/**
- * Get optional layer items for a stack at a given position.
- */
-function getOptionalAtPosition(stack, position, componentMap, enabledToggles) {
+function getOptionalsByBand(stack, anchor, band, componentMap) {
   if (!stack?.optional_layers) return [];
   return stack.optional_layers
-    .filter(ol => ol.position === position && enabledToggles[ol.name])
+    .filter(ol => {
+      const olAnchor = anchorForPosition(ol.position);
+      const olBand = ol.band || ol.name;
+      return olAnchor === anchor && olBand === band;
+    })
     .map(ol => {
       const compId = ol.name.toLowerCase().replace(/[\s/]+/g, '-');
       const component = componentMap[compId] || { id: compId, name: ol.name, color: 'optional' };
-      return { component, notes: ol.description || '' };
+      return { component, notes: ol.description || component.definition || '' };
     });
 }
 
-/** Render a single cell */
-function StackCell({ items, rowSpan, minHeight }) {
+/** Resolve a hex with a 2-char alpha suffix. */
+function withAlpha(hex, alpha) {
+  return `${hex}${alpha}`;
+}
+
+/** Render a single cell — click any sub-block to toggle its description. */
+function StackCell({ items, minHeight, isOptionalRow, isInterlayer }) {
+  const [expandedIdx, setExpandedIdx] = useState(null);
+
   if (!items || items.length === 0) {
+    // Interlayer rows: stacks without content render NOTHING (no border, no
+    // placeholder) — matches the brasstacks reference where the RDMA Verbs
+    // band only appears above the columns that use it.
+    if (isInterlayer) {
+      return (
+        <td style={{
+          border: 'none',
+          padding: 0,
+          height: minHeight || 38,
+          background: 'transparent',
+        }} />
+      );
+    }
     return (
       <td
-        rowSpan={rowSpan || 1}
         style={{
-          border: '1px solid #1e293b',
+          border: isOptionalRow ? `1px dashed ${OPTIONAL_BORDER}55` : '1px solid #1e293b',
           padding: 6,
           verticalAlign: 'middle',
           textAlign: 'center',
-          height: minHeight || 48,
+          height: minHeight || 52,
           background: 'transparent',
         }}
       >
@@ -81,40 +106,91 @@ function StackCell({ items, rowSpan, minHeight }) {
     );
   }
 
+  const cellIsOptional = isOptionalRow || (items.length === 1 && items[0].component.color === 'optional');
   const singleColor = items.length === 1
     ? (COLOR_MAP[items[0].component.color] || COLOR_MAP.neutral)
     : undefined;
-  const isOpt = items.length === 1 && items[0].component.color === 'optional';
 
   return (
     <td
-      rowSpan={rowSpan || 1}
       style={{
-        border: isOpt ? '1px dashed #475569' : '1px solid #1e293b',
+        border: cellIsOptional
+          ? `1px dashed ${OPTIONAL_BORDER}`
+          : (singleColor ? `1px solid ${withAlpha(singleColor, '88')}` : '1px solid #1e293b'),
         padding: 0,
         verticalAlign: 'middle',
         textAlign: 'center',
-        background: singleColor ? `${singleColor}22` : 'transparent',
-        height: minHeight || 48,
+        background: cellIsOptional
+          ? `${OPTIONAL_BG}cc`
+          : (singleColor ? withAlpha(singleColor, '33') : 'transparent'),
+        height: minHeight || 52,
       }}
     >
       {items.map((item, idx) => {
-        const c = COLOR_MAP[item.component.color] || COLOR_MAP.neutral;
-        const style = items.length > 1 ? {
-          background: `${c}22`,
-          borderBottom: idx < items.length - 1 ? '1px solid #1e293b' : 'none',
+        const isOpt = item.component.color === 'optional';
+        const c = isOpt ? COLOR_MAP.optional : (COLOR_MAP[item.component.color] || COLOR_MAP.neutral);
+        const wrapperStyle = items.length > 1 ? {
+          background: isOpt ? 'transparent' : withAlpha(c, '33'),
+          borderBottom: idx < items.length - 1 ? `1px solid ${withAlpha(c, '55')}` : 'none',
           padding: '6px 8px',
-        } : { padding: '6px 8px' };
+          cursor: item.notes ? 'pointer' : 'default',
+        } : { padding: '6px 8px', cursor: item.notes ? 'pointer' : 'default' };
+
+        const expanded = expandedIdx === idx;
+        const handleClick = () => {
+          if (!item.notes) return;
+          setExpandedIdx(expanded ? null : idx);
+        };
 
         return (
-          <div key={item.component.id + '-' + idx} style={style}>
-            <div style={{ color: c, fontSize: 12, fontWeight: 600, lineHeight: 1.3 }}>
-              {item.component.name}
+          <div
+            key={item.component.id + '-' + idx}
+            style={wrapperStyle}
+            onClick={handleClick}
+            title={item.notes || undefined}
+          >
+            <div style={{
+              color: isOpt ? '#e2e8f0' : c,
+              fontSize: 12,
+              fontWeight: 700,
+              lineHeight: 1.3,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 6,
+              letterSpacing: '0.01em',
+            }}>
+              <span>{item.component.name}</span>
+              {item.notes && (
+                <span style={{
+                  color: '#64748b',
+                  fontSize: 9,
+                  fontWeight: 400,
+                  border: '1px solid #475569',
+                  borderRadius: 8,
+                  width: 12,
+                  height: 12,
+                  lineHeight: '11px',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}>
+                  i
+                </span>
+              )}
             </div>
-            {item.notes && (
+            {expanded && item.notes && (
               <div style={{
-                color: '#94a3b8', fontSize: 9, lineHeight: 1.3,
-                marginTop: 2, maxWidth: 180, marginLeft: 'auto', marginRight: 'auto',
+                color: '#cbd5e1',
+                fontSize: 10,
+                lineHeight: 1.4,
+                marginTop: 4,
+                padding: '4px 6px',
+                background: '#020817cc',
+                borderRadius: 3,
+                maxWidth: STACK_COL_WIDTH - 24,
+                marginLeft: 'auto',
+                marginRight: 'auto',
               }}>
                 {item.notes}
               </div>
@@ -126,23 +202,20 @@ function StackCell({ items, rowSpan, minHeight }) {
   );
 }
 
-/** Label cell */
-function LabelCell({ label, rowSpan, side }) {
+function LabelCell({ label, side, minHeight }) {
   return (
     <td
-      rowSpan={rowSpan || 1}
       style={{
         padding: '4px 8px',
         verticalAlign: 'middle',
         textAlign: side === 'left' ? 'right' : 'left',
-        color: label ? '#64748b' : 'transparent',
+        color: label ? '#94a3b8' : 'transparent',
         fontSize: 10,
         textTransform: 'uppercase',
         letterSpacing: '0.05em',
-        fontWeight: 600,
+        fontWeight: 700,
         whiteSpace: 'nowrap',
-        minWidth: 90,
-        height: 48,
+        height: minHeight || 52,
       }}
     >
       {label || ''}
@@ -150,19 +223,19 @@ function LabelCell({ label, rowSpan, side }) {
   );
 }
 
-/** Column header above each stack */
 function ColumnHeader({ stack }) {
   const familyColors = {
     'block-nvme': '#10b981',
     'block-scsi': '#8b5cf6',
     file: '#f97316',
+    object: '#0e7490',
   };
   const tagColor = familyColors[stack.family] || '#64748b';
 
   return (
     <div style={{
       background: '#0f172a', border: '1px solid #1e293b',
-      borderRadius: 6, padding: '8px 12px', textAlign: 'center',
+      borderRadius: 6, padding: '8px 10px', textAlign: 'center',
     }}>
       <div style={{ color: '#e2e8f0', fontSize: 13, fontWeight: 700 }}>{stack.name}</div>
       <span style={{
@@ -172,11 +245,6 @@ function ColumnHeader({ stack }) {
       }}>
         {stack.family}
       </span>
-      {stack.summary && (
-        <div style={{ color: '#64748b', fontSize: 9, marginTop: 4, lineHeight: 1.3 }}>
-          {stack.summary.length > 80 ? stack.summary.slice(0, 80).trim() + '...' : stack.summary}
-        </div>
-      )}
     </div>
   );
 }
@@ -184,267 +252,227 @@ function ColumnHeader({ stack }) {
 /*
  * === Row plan ===
  *
- * We build a flat array of "row descriptors" that the renderer walks through.
- * Each descriptor says what to render in the OSI-label, each OSI-stack column,
- * each FC-stack column, and the FC-label.
+ * One row per OSI layer. FC layers align 1:1 with OSI rows:
+ *   L1 ↔ FC-0, L2 ↔ FC-1, L3 ↔ FC-2, L4 ↔ FC-3, L5 ↔ FC-4.
  *
- * The tricky part is FC-2 spanning osi-l4/l3/l2 and optional rows that can
- * appear between any two layers. We handle this by:
- *   1) Building the row plan (including optional inserts)
- *   2) Counting how many rows FC-2 must span (base 3 + any optional rows
- *      inserted within that range)
- *   3) Only emitting the FC-stack td on the first row of the span
+ * Optional layers anchor to a base row (`OPTIONAL_POSITIONS` map). Multiple
+ * optional layers at the same anchor render as separate rows unless they
+ * share a `band` — in which case they collapse onto one row, with each
+ * stack contributing its own labeled item.
+ *
+ * Example: NPIV (FCP) and Network Virtualization (NVMe/TCP, iSER) both
+ * anchor at osi-l2 with band="Network Virtualization", so they share a
+ * single horizontal row.
  */
-
-// Canonical row ordering. "fc" field indicates which FC layer aligns here.
 const BASE_ROWS = [
-  { id: 'osi-l7', osiLabel: 'L7 Application',  fc: 'fc-4', fcLabel: 'FC-4 ULP' },
-  // optional: between-fc-4-fc-3 (= between-osi-l7-osi-l6 effectively)
-  { id: 'osi-l6', osiLabel: 'L6 Presentation', fc: null,   fcLabel: '' },
-  { id: 'osi-l5', osiLabel: 'L5 Session',      fc: 'fc-3', fcLabel: 'FC-3 Common Svc' },
-  { id: 'osi-l4', osiLabel: 'L4 Transport',    fc: 'fc-2-start', fcLabel: 'FC-2 Framing' },
-  { id: 'osi-l3', osiLabel: 'L3 Network',      fc: 'fc-2-cont',  fcLabel: '' },
-  { id: 'osi-l2', osiLabel: 'L2 Data Link',    fc: 'fc-2-end',   fcLabel: '' },
-  // optional: between-fc-2-fc-1 / between-osi-l2-osi-l1
-  { id: 'osi-l1', osiLabel: 'L1 Physical',     fc: 'fc-1', fcLabel: 'FC-1 Encoding' },
-  // FC-0 lives on its own row (no OSI equivalent below L1)
-  { id: 'fc-0-row', osiLabel: '', fc: 'fc-0', fcLabel: 'FC-0 Physical', fcOnly: true },
+  { id: 'osi-l7', osiLabel: 'L7 Application',  fc: 'app',  fcLabel: '' },
+  { id: 'osi-l6', osiLabel: 'L6 Presentation', fc: 'ulp',  fcLabel: 'ULP' },
+  { id: 'osi-l5', osiLabel: 'L5 Session',      fc: 'fc-4', fcLabel: 'FC-4' },
+  // Interlayer between L5 and L4: RDMA Verbs sits here for stacks that use it
+  // (NVMe-RDMA, iSER, SMB Direct). Only rendered if at least one visible stack
+  // declares this layer key.
+  { id: 'rdma-verbs', osiLabel: '', fc: null, fcLabel: '', isInterlayer: true },
+  { id: 'osi-l4', osiLabel: 'L4 Transport',    fc: 'fc-3', fcLabel: 'FC-3 Common Svc' },
+  { id: 'osi-l3', osiLabel: 'L3 Network',      fc: 'fc-2', fcLabel: 'FC-2 Framing' },
+  { id: 'osi-l2', osiLabel: 'L2 Data Link',    fc: 'fc-1', fcLabel: 'FC-1 Encoding' },
+  { id: 'osi-l1', osiLabel: 'L1 Physical',     fc: 'fc-0', fcLabel: 'FC-0 Physical' },
 ];
 
-// Map from optional_layer position strings to where they should be inserted.
-// Key = position string from YAML, Value = { after: row-id } meaning insert
-// after that base row in the plan.
+// Map each `position` string -> the BASE_ROW id it anchors after.
 const OPTIONAL_POSITIONS = {
-  'between-fc-4-fc-3':   { after: 'osi-l7' },
-  'between-osi-l7-osi-l6': { after: 'osi-l7' },
-  'between-osi-l5-osi-l4': { after: 'osi-l5' },
-  'between-osi-l4-osi-l3': { after: 'osi-l4' },
-  'between-osi-l3-osi-l2': { after: 'osi-l3' },
-  'between-osi-l2-osi-l1': { after: 'osi-l2' },
-  'between-fc-2-fc-1':     { after: 'osi-l2' },
+  'between-osi-l7-osi-l6': 'osi-l7',
+  'between-osi-l6-osi-l5': 'osi-l6',
+  'between-osi-l5-osi-l4': 'osi-l5',
+  'between-fc-4-fc-3':     'osi-l5',
+  'between-osi-l4-osi-l3': 'osi-l4',
+  'between-fc-3-fc-2':     'osi-l4',
+  'between-osi-l3-osi-l2': 'osi-l3',
+  'between-fc-2-fc-1':     'osi-l3',
+  'between-osi-l2-osi-l1': 'osi-l2',
+  'between-fc-1-fc-0':     'osi-l2',
 };
 
-export default function StackGrid({ stacks, components, layers, enabledToggles }) {
+function anchorForPosition(position) {
+  return OPTIONAL_POSITIONS[position] || null;
+}
+
+export default function StackGrid({ stacks, components }) {
   const componentMap = useMemo(() => buildComponentMap(components), [components]);
   const osiStacks = useMemo(() => stacks.filter(s => s.alignment === 'osi'), [stacks]);
   const fcStacks = useMemo(() => stacks.filter(s => s.alignment === 'fc'), [stacks]);
   const hasFc = fcStacks.length > 0;
 
-  // Collect all active optional positions (positions that drive *row* insertion).
-  // `inside-fc-2` is special — it merges items into the FC-2 cell, no row.
-  const activePositions = useMemo(() => {
-    const set = new Set();
+  // Collect optional bands per anchor, in YAML declaration order.
+  // Result: { [anchorId]: [bandName1, bandName2, ...] }
+  const bandsByAnchor = useMemo(() => {
+    const result = {};
+    const seen = {};
     for (const stack of stacks) {
       if (!stack.optional_layers) continue;
       for (const ol of stack.optional_layers) {
-        if (enabledToggles[ol.name] && ol.position !== 'inside-fc-2') {
-          set.add(ol.position);
-        }
+        if (ol.position === 'inside-fc-2') continue;
+        const anchor = anchorForPosition(ol.position);
+        if (!anchor) continue;
+        const band = ol.band || ol.name;
+        const key = `${anchor}::${band}`;
+        if (seen[key]) continue;
+        seen[key] = true;
+        if (!result[anchor]) result[anchor] = [];
+        result[anchor].push(band);
       }
     }
-    return set;
-  }, [stacks, enabledToggles]);
+    return result;
+  }, [stacks]);
 
-  // Build the row plan: base rows with optional rows interleaved.
-  // The fc-0-row is dropped when there are no FC stacks (it has no OSI side).
+  // Filter base rows: hide interlayer rows when no visible stack contributes
+  // content for that layer key.
+  const visibleBaseRows = useMemo(() => {
+    return BASE_ROWS.filter(row => {
+      if (!row.isInterlayer) return true;
+      return stacks.some(s => s.layers && s.layers[row.id]);
+    });
+  }, [stacks]);
+
+  // Row plan: base rows with optional rows interleaved after their anchor.
   const rowPlan = useMemo(() => {
     const plan = [];
-    for (const baseRow of BASE_ROWS) {
-      if (baseRow.fcOnly && !hasFc) continue;
+    for (const baseRow of visibleBaseRows) {
       plan.push({ type: 'main', ...baseRow });
-
-      // Check if any optional position should be inserted after this row
-      for (const [pos, mapping] of Object.entries(OPTIONAL_POSITIONS)) {
-        if (mapping.after === baseRow.id && activePositions.has(pos)) {
-          // Determine if this optional row falls within the FC-2 span range
-          const inFc2Span = (
-            baseRow.id === 'osi-l4' || baseRow.id === 'osi-l3' || baseRow.id === 'osi-l2'
-          );
-          plan.push({
-            type: 'optional',
-            position: pos,
-            inFc2Span,
-          });
-        }
+      const bands = bandsByAnchor[baseRow.id] || [];
+      for (const band of bands) {
+        plan.push({ type: 'optional', anchor: baseRow.id, band });
       }
     }
     return plan;
-  }, [activePositions, hasFc]);
+  }, [bandsByAnchor, visibleBaseRows]);
 
-  // Calculate FC-2 rowSpan: count all rows from fc-2-start through fc-2-end
-  // plus any optional rows inserted in between
-  const fc2RowSpan = useMemo(() => {
-    let count = 0;
-    let inSpan = false;
-    for (const row of rowPlan) {
-      if (row.type === 'main' && row.fc === 'fc-2-start') inSpan = true;
-      if (inSpan) count++;
-      if (row.type === 'main' && row.fc === 'fc-2-end') break;
-    }
-    return count;
-  }, [rowPlan]);
-
-  // Same for FC label rowSpan
-  const fcLabelRowSpan = fc2RowSpan;
-
-  // Render rows
   const tableRows = useMemo(() => {
     const rows = [];
 
-    for (let i = 0; i < rowPlan.length; i++) {
-      const entry = rowPlan[i];
-
+    rowPlan.forEach((entry, i) => {
       if (entry.type === 'optional') {
-        rows.push(renderOptionalRow(entry, componentMap, osiStacks, fcStacks, enabledToggles, hasFc, entry.inFc2Span, i));
-        continue;
+        rows.push(renderOptionalRow(entry, componentMap, osiStacks, fcStacks, hasFc, i));
+        return;
       }
 
-      // Main row
       const cells = [];
+      const rowHeight = entry.isInterlayer ? 38 : 52;
+      cells.push(<LabelCell key="ol" label={entry.osiLabel} side="left" minHeight={rowHeight} />);
 
-      // 1. OSI label
-      cells.push(<LabelCell key="ol" label={entry.osiLabel} side="left" />);
-
-      // 2. OSI stack cells. For fcOnly rows, render visually blank cells
-      // (no "—" placeholder) so the absence of an OSI equivalent is implicit.
       for (const stack of osiStacks) {
-        if (entry.fcOnly) {
+        cells.push(
+          <StackCell
+            key={`${stack.id}-${entry.id}`}
+            items={resolveLayer(stack, entry.id, componentMap)}
+            minHeight={rowHeight}
+            isInterlayer={entry.isInterlayer}
+          />
+        );
+      }
+
+      for (const stack of fcStacks) {
+        if (entry.fc) {
+          let fcItems = resolveLayer(stack, entry.fc, componentMap);
+          if (entry.fc === 'fc-2') {
+            // Inline FC-SP-3 (and any other inside-fc-2) into the FC-2 cell.
+            const inside = (stack.optional_layers || [])
+              .filter(ol => ol.position === 'inside-fc-2')
+              .map(ol => {
+                const compId = ol.name.toLowerCase().replace(/[\s/]+/g, '-');
+                const component = componentMap[compId] || { id: compId, name: ol.name, color: 'optional' };
+                return { component, notes: ol.description || component.definition || '' };
+              });
+            fcItems = [...fcItems, ...inside];
+          }
+          cells.push(
+            <StackCell key={`${stack.id}-${entry.fc}`} items={fcItems} minHeight={rowHeight} />
+          );
+        } else {
+          // No FC equivalent at this OSI row (e.g. L7 for some FC stacks, or
+          // any interlayer row). Render a borderless blank cell.
           cells.push(
             <td
               key={`${stack.id}-${entry.id}-blank`}
-              style={{ border: 'none', padding: 0, height: 48, background: 'transparent' }}
-            />
-          );
-        } else {
-          cells.push(
-            <StackCell
-              key={`${stack.id}-${entry.id}`}
-              items={resolveLayer(stack, entry.id, componentMap)}
+              style={{ border: 'none', padding: 0, height: rowHeight, background: 'transparent' }}
             />
           );
         }
       }
 
-      // 3. FC stack cells
-      for (const stack of fcStacks) {
-        if (entry.fc === 'fc-4') {
-          cells.push(
-            <StackCell key={`${stack.id}-fc4`} items={resolveLayer(stack, 'fc-4', componentMap)} />
-          );
-        } else if (entry.fc === 'fc-3') {
-          cells.push(
-            <StackCell key={`${stack.id}-fc3`} items={resolveLayer(stack, 'fc-3', componentMap)} />
-          );
-        } else if (entry.fc === 'fc-2-start') {
-          // Emit FC-2 spanning cell. Merge `inside-fc-2` optional layers as
-          // sub-components stacked inside the FC-2 cell when their toggle is on.
-          const fc2Items = resolveLayer(stack, 'fc-2', componentMap);
-          const insideItems = getOptionalAtPosition(stack, 'inside-fc-2', componentMap, enabledToggles);
-          cells.push(
-            <StackCell
-              key={`${stack.id}-fc2`}
-              items={[...fc2Items, ...insideItems]}
-              rowSpan={fc2RowSpan}
-              minHeight={48 * 3}
-            />
-          );
-        } else if (entry.fc === 'fc-2-cont' || entry.fc === 'fc-2-end') {
-          // Covered by rowSpan — emit nothing for FC columns
-        } else if (entry.fc === 'fc-1') {
-          cells.push(
-            <StackCell key={`${stack.id}-fc1`} items={resolveLayer(stack, 'fc-1', componentMap)} />
-          );
-        } else if (entry.fc === 'fc-0') {
-          cells.push(
-            <StackCell key={`${stack.id}-fc0`} items={resolveLayer(stack, 'fc-0', componentMap)} />
-          );
-        } else {
-          // No FC equivalent (e.g. osi-l6)
-          cells.push(
-            <StackCell key={`${stack.id}-${entry.id}-empty`} items={[]} />
-          );
-        }
-      }
-
-      // 4. FC label
       if (hasFc) {
-        if (entry.fc === 'fc-2-start') {
-          cells.push(<LabelCell key="fl" label={entry.fcLabel} side="right" rowSpan={fcLabelRowSpan} />);
-        } else if (entry.fc === 'fc-2-cont' || entry.fc === 'fc-2-end') {
-          // Covered by rowSpan
-        } else {
-          cells.push(<LabelCell key={`fl-${i}`} label={entry.fcLabel} side="right" />);
-        }
+        cells.push(<LabelCell key={`fl-${i}`} label={entry.fcLabel} side="right" minHeight={rowHeight} />);
       }
 
       rows.push(<tr key={`main-${i}`}>{cells}</tr>);
-    }
+    });
 
     return rows;
-  }, [rowPlan, componentMap, osiStacks, fcStacks, hasFc, enabledToggles, fc2RowSpan, fcLabelRowSpan]);
+  }, [rowPlan, componentMap, osiStacks, fcStacks, hasFc]);
+
+  const tableWidth =
+    LABEL_COL_WIDTH +
+    (osiStacks.length + fcStacks.length) * STACK_COL_WIDTH +
+    (hasFc ? LABEL_COL_WIDTH : 0);
 
   return (
     <div style={{ overflowX: 'auto', padding: '0 16px 16px' }}>
-      {/* Column headers */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: `100px ${osiStacks.map(() => '1fr').join(' ')} ${hasFc ? fcStacks.map(() => '1fr').join(' ') : ''} ${hasFc ? '100px' : ''}`,
-        gap: 8, marginBottom: 8,
-      }}>
-        <div />
-        {osiStacks.map(s => <ColumnHeader key={s.id} stack={s} />)}
-        {fcStacks.map(s => <ColumnHeader key={s.id} stack={s} />)}
-        {hasFc && <div />}
+      <div style={{ width: tableWidth, margin: '0 auto' }}>
+        <table style={{ borderCollapse: 'collapse', tableLayout: 'fixed', width: tableWidth }}>
+          <colgroup>
+            <col style={{ width: LABEL_COL_WIDTH }} />
+            {osiStacks.map(s => <col key={s.id} style={{ width: STACK_COL_WIDTH }} />)}
+            {fcStacks.map(s => <col key={s.id} style={{ width: STACK_COL_WIDTH }} />)}
+            {hasFc && <col style={{ width: LABEL_COL_WIDTH }} />}
+          </colgroup>
+          <thead>
+            <tr>
+              <th />
+              {[...osiStacks, ...fcStacks].map(s => (
+                <th key={s.id} style={{ padding: '0 4px 8px', verticalAlign: 'bottom' }}>
+                  <ColumnHeader stack={s} />
+                </th>
+              ))}
+              {hasFc && <th />}
+            </tr>
+          </thead>
+          <tbody>{tableRows}</tbody>
+        </table>
       </div>
-
-      {/* Grid table */}
-      <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-        <colgroup>
-          <col style={{ width: 100 }} />
-          {osiStacks.map(s => <col key={s.id} style={{ minWidth: 160 }} />)}
-          {fcStacks.map(s => <col key={s.id} style={{ minWidth: 160 }} />)}
-          {hasFc && <col style={{ width: 100 }} />}
-        </colgroup>
-        <tbody>{tableRows}</tbody>
-      </table>
     </div>
   );
 }
 
-function renderOptionalRow(entry, componentMap, osiStacks, fcStacks, enabledToggles, hasFc, inFc2Span, idx) {
+function renderOptionalRow(entry, componentMap, osiStacks, fcStacks, hasFc, idx) {
   const cells = [];
 
-  // OSI label
   cells.push(
     <td key="ol" style={{
       padding: '4px 8px', verticalAlign: 'middle', textAlign: 'right',
-      color: '#475569', fontSize: 9, fontStyle: 'italic', height: 36,
+      color: '#475569', fontSize: 9, fontStyle: 'italic', height: 38,
     }}>
       optional
     </td>
   );
 
-  // OSI stacks
   for (const stack of osiStacks) {
-    const items = getOptionalAtPosition(stack, entry.position, componentMap, enabledToggles);
-    cells.push(<StackCell key={`${stack.id}-opt`} items={items} minHeight={36} />);
+    const items = getOptionalsByBand(stack, entry.anchor, entry.band, componentMap);
+    cells.push(
+      <StackCell key={`${stack.id}-opt`} items={items} minHeight={38} isOptionalRow />
+    );
   }
 
-  // FC stacks — only emit a cell if NOT inside the FC-2 span (which is already
-  // covered by the rowSpan from the fc-2-start row)
-  if (!inFc2Span) {
-    for (const stack of fcStacks) {
-      const items = getOptionalAtPosition(stack, entry.position, componentMap, enabledToggles);
-      cells.push(<StackCell key={`${stack.id}-opt`} items={items} minHeight={36} />);
-    }
+  for (const stack of fcStacks) {
+    const items = getOptionalsByBand(stack, entry.anchor, entry.band, componentMap);
+    cells.push(
+      <StackCell key={`${stack.id}-opt`} items={items} minHeight={38} isOptionalRow />
+    );
   }
 
-  // FC label — only emit if NOT inside FC-2 span
-  if (hasFc && !inFc2Span) {
+  if (hasFc) {
     cells.push(
       <td key="fl" style={{
         padding: '4px 8px', verticalAlign: 'middle', textAlign: 'left',
-        color: '#475569', fontSize: 9, fontStyle: 'italic', height: 36,
+        color: '#475569', fontSize: 9, fontStyle: 'italic', height: 38,
       }}>
         optional
       </td>
@@ -452,7 +480,7 @@ function renderOptionalRow(entry, componentMap, osiStacks, fcStacks, enabledTogg
   }
 
   return (
-    <tr key={`opt-${idx}`} style={{ background: '#0f172a33' }}>
+    <tr key={`opt-${idx}`} style={{ background: '#0f172a44' }}>
       {cells}
     </tr>
   );

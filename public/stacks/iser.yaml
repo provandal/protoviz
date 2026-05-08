@@ -1,12 +1,13 @@
 id: iser
-name: iSER
+name: iSER (RoCE)
 family: block-scsi
 alignment: osi
 
 summary: >
-  iSCSI Extensions for RDMA. Keeps the iSCSI control plane (login,
-  parameter negotiation) but replaces the data path with RDMA reads
-  and writes for zero-copy transfers. Typically deployed over RoCEv2.
+  iSCSI Extensions for RDMA over RoCEv2. Keeps the iSCSI control plane
+  (login, parameter negotiation) but tunnels SCSI CDBs and data through
+  RDMA verbs instead of TCP. Default deployment carries RDMA over
+  RoCEv2 (UDP/IP on a lossless Ethernet fabric).
 
 spec_refs:
   - document: "RFC 7145"
@@ -14,6 +15,8 @@ spec_refs:
     url: "https://www.rfc-editor.org/rfc/rfc7145"
   - document: "RFC 7143"
     title: "iSCSI Protocol (RFC 3720 successor)"
+  - document: "IBTA RoCEv2 (Annex A17)"
+    title: "InfiniBand Architecture Specification, RoCEv2"
 
 layers:
   osi-l7:
@@ -24,19 +27,20 @@ layers:
     notes: "SCSI command set; CDBs flow through iSCSI control PDUs while data moves via RDMA."
 
   osi-l5:
-    component_id: iser
-    notes: "iSER layers on top of iSCSI Login + Full Feature Phase but redirects data-transfer to RDMA verbs."
+    component_id: iscsi
+    notes: "iSER reuses iSCSI's session: login + Full Feature Phase, but data-transfer is redirected to RDMA verbs (RFC 7145)."
+
+  rdma-verbs:
+    component_id: rdma-verbs
+    notes: "iSER tunnels SCSI Read/Write through RDMA Read/Write; control PDUs ride on RDMA SEND/RECV."
 
   osi-l4:
-    # iSER itself doesn't sit on TCP for data; it sits on RDMA verbs.
-    # The control plane (iSCSI login) does use TCP, but in the
-    # canonical layering iSER's transport surface is verbs.
-    component_id: rdma-verbs
-    notes: "Verbs are the transport surface for iSER data. iSCSI login PDUs may run over TCP separately during connection setup."
+    component_id: udp
+    notes: "RoCEv2 carries verbs traffic in UDP/IP (port 4791). Routable across IP subnets."
 
   osi-l3:
     component_id: ip
-    notes: "RoCEv2 carries verbs-derived packets inside UDP/IP. (RoCEv1 uses raw Ethertype, no IP.)"
+    notes: "RoCEv2 packets are standard UDP/IP. (RoCEv1 used a raw Ethertype with no IP — out of scope here.)"
 
   osi-l2:
     component_id: dcb
@@ -49,12 +53,10 @@ optional_layers:
   - id: net-virt-row
     name: Network Virtualization
     position: between-osi-l2-osi-l1
-    default_enabled: true
     description: "Overlay networks add encapsulation overhead and complicate PFC/ECN behavior; deploy with care."
   - id: sr-iov-row
     name: SR-IOV
     position: between-osi-l2-osi-l1
-    default_enabled: true
     description: "Common on RoCE-enabled NICs to expose verbs to VMs directly."
 
 scenarios:

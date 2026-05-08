@@ -19,7 +19,6 @@ export default function StacksPage() {
   const [components, setComponents] = useState(null);
   const [stacks, setStacks] = useState([]);
   const [selectedStackIds, setSelectedStackIds] = useState(null);
-  const [toggles, setToggles] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -39,26 +38,19 @@ export default function StacksPage() {
         );
         const stacksData = await Promise.all(stackPromises);
 
-        // Initial toggle state: union of all optional_layers across stacks,
-        // each defaulting to its `default_enabled` (true → user can turn OFF).
-        const initialToggles = {};
-        for (const stack of stacksData) {
-          if (!stack.optional_layers) continue;
-          for (const ol of stack.optional_layers) {
-            if (!(ol.name in initialToggles)) {
-              initialToggles[ol.name] = ol.default_enabled !== false;
-            } else if (ol.default_enabled !== false) {
-              initialToggles[ol.name] = true;
-            }
-          }
-        }
+        // Default selection: every stack except those marked
+        // `defaultVisible: false` in the index. Less-common variants stay
+        // toggleable but unchecked at first load to keep the comparison
+        // grid readable on first paint.
+        const hiddenByDefault = new Set(
+          indexData.stacks.filter(s => s.defaultVisible === false).map(s => s.id)
+        );
 
         if (!cancelled) {
           setLayers(layersData);
           setComponents(compData.components);
           setStacks(stacksData);
-          setSelectedStackIds(stacksData.map(s => s.id));
-          setToggles(initialToggles);
+          setSelectedStackIds(stacksData.filter(s => !hiddenByDefault.has(s.id)).map(s => s.id));
           setLoading(false);
         }
       } catch (err) {
@@ -73,17 +65,11 @@ export default function StacksPage() {
     return () => { cancelled = true; };
   }, []);
 
-  const toggleNames = useMemo(() => (toggles ? Object.keys(toggles) : []), [toggles]);
-
   const visibleStacks = useMemo(() => {
     if (!selectedStackIds) return [];
     const set = new Set(selectedStackIds);
     return stacks.filter(s => set.has(s.id));
   }, [stacks, selectedStackIds]);
-
-  function handleToggle(name) {
-    setToggles(prev => ({ ...prev, [name]: !prev[name] }));
-  }
 
   function handleStackToggle(id) {
     setSelectedStackIds(prev => {
@@ -211,51 +197,6 @@ export default function StacksPage() {
             })}
           </div>
 
-          {/* Optional layer toggle bar */}
-          <div style={{
-            padding: '12px 16px',
-            borderBottom: '1px solid #1e293b',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 16,
-            flexWrap: 'wrap',
-          }}>
-            <span style={{
-              color: '#64748b',
-              fontSize: 10,
-              textTransform: 'uppercase',
-              letterSpacing: '0.1em',
-              fontWeight: 700,
-            }}>
-              Optional Layers:
-            </span>
-            {toggleNames.map(name => (
-              <label
-                key={name}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  cursor: 'pointer',
-                  fontSize: 11,
-                  color: toggles[name] ? '#e2e8f0' : '#475569',
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={!!toggles[name]}
-                  onChange={() => handleToggle(name)}
-                  style={{
-                    accentColor: '#3b82f6',
-                    width: 13,
-                    height: 13,
-                  }}
-                />
-                {name}
-              </label>
-            ))}
-          </div>
-
           {/* Stack grid */}
           <div style={{ padding: '16px 0' }}>
             {visibleStacks.length === 0 ? (
@@ -267,7 +208,6 @@ export default function StacksPage() {
                 stacks={visibleStacks}
                 components={components}
                 layers={layers}
-                enabledToggles={toggles || {}}
               />
             )}
           </div>

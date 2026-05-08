@@ -1,0 +1,63 @@
+id: nvme-iwarp
+name: NVMe/iWARP
+family: block-nvme
+alignment: osi
+
+summary: >
+  NVMe-oF binding using RDMA verbs over iWARP. RDMAP/DDP/MPA frame on TCP,
+  so the stack runs on standard Ethernet without DCB. Trades the
+  efficiency of RoCEv2 for routability and tolerance of lossy networks.
+
+spec_refs:
+  - document: "NVMe-oF 1.1"
+    section: "RDMA Transport"
+  - document: "RFC 5040"
+    title: "A Remote Direct Memory Access Protocol Specification"
+  - document: "RFC 5044"
+    title: "Marker PDU Aligned Framing for TCP (MPA)"
+
+layers:
+  osi-l7:
+    component_id: block-device
+
+  osi-l6:
+    component_id: nvme
+
+  osi-l5:
+    component_id: nvme-rdma-binding
+    notes: "Same NVMe-oF binding as the RoCE variant — Capsules, R2T, in-capsule data over verbs."
+
+  rdma-verbs:
+    component_id: rdma-verbs
+    notes: "iWARP exposes the verbs API on top of RDMAP/DDP/MPA over TCP."
+
+  osi-l4:
+    component_id: tcp
+    notes: "iWARP runs over a normal TCP connection. No DCB requirement."
+
+  osi-l3:
+    component_id: ip
+
+  osi-l2:
+    component_id: ethernet
+    notes: "Standard Ethernet — iWARP does not require lossless behavior."
+
+  osi-l1:
+    component_id: gbe-phy
+
+optional_layers:
+  - id: net-virt-row
+    name: Network Virtualization
+    position: between-osi-l2-osi-l1
+    description: "Overlay generally fine on iWARP — no PFC dependency to break."
+  - id: sr-iov-row
+    name: SR-IOV
+    position: between-osi-l2-osi-l1
+    description: "Supported by most iWARP-capable NICs."
+
+scenarios: []
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-08"
+  license: "CC-BY-4.0"

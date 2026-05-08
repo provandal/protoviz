@@ -8,11 +8,49 @@
       "path": "nvme-tcp.yaml"
     },
     {
-      "id": "iser",
-      "name": "iSER",
+      "id": "nvme-roce",
+      "name": "NVMe/RoCEv2",
+      "family": "block-nvme",
+      "alignment": "osi",
+      "path": "nvme-roce.yaml"
+    },
+    {
+      "id": "nvme-iwarp",
+      "name": "NVMe/iWARP",
+      "family": "block-nvme",
+      "alignment": "osi",
+      "path": "nvme-iwarp.yaml",
+      "defaultVisible": false
+    },
+    {
+      "id": "fc-nvme",
+      "name": "FC-NVMe",
+      "family": "block-nvme",
+      "alignment": "fc",
+      "path": "fc-nvme.yaml"
+    },
+    {
+      "id": "iscsi",
+      "name": "iSCSI",
       "family": "block-scsi",
       "alignment": "osi",
-      "path": "iser.yaml"
+      "path": "iscsi.yaml"
+    },
+    {
+      "id": "iser",
+      "name": "iSER (RoCE)",
+      "family": "block-scsi",
+      "alignment": "osi",
+      "path": "iser.yaml",
+      "defaultVisible": false
+    },
+    {
+      "id": "iser-iwarp",
+      "name": "iSER (iWARP)",
+      "family": "block-scsi",
+      "alignment": "osi",
+      "path": "iser-iwarp.yaml",
+      "defaultVisible": false
     },
     {
       "id": "fcp",
@@ -20,6 +58,51 @@
       "family": "block-scsi",
       "alignment": "fc",
       "path": "fcp.yaml"
+    },
+    {
+      "id": "smb3",
+      "name": "SMB3 (TCP)",
+      "family": "file",
+      "alignment": "osi",
+      "path": "smb3.yaml"
+    },
+    {
+      "id": "smb-direct-roce",
+      "name": "SMB Direct (RoCE)",
+      "family": "file",
+      "alignment": "osi",
+      "path": "smb-direct-roce.yaml",
+      "defaultVisible": false
+    },
+    {
+      "id": "smb-direct-iwarp",
+      "name": "SMB Direct (iWARP)",
+      "family": "file",
+      "alignment": "osi",
+      "path": "smb-direct-iwarp.yaml",
+      "defaultVisible": false
+    },
+    {
+      "id": "smb-direct-ib",
+      "name": "SMB Direct (IB)",
+      "family": "file",
+      "alignment": "osi",
+      "path": "smb-direct-ib.yaml",
+      "defaultVisible": false
+    },
+    {
+      "id": "nfs",
+      "name": "NFS over TCP",
+      "family": "file",
+      "alignment": "osi",
+      "path": "nfs.yaml"
+    },
+    {
+      "id": "http-s3",
+      "name": "S3 / HTTP Object",
+      "family": "object",
+      "alignment": "osi",
+      "path": "http-s3.yaml"
     }
   ]
 }

@@ -1,0 +1,60 @@
+id: fc-nvme
+name: FC-NVMe
+family: block-nvme
+alignment: fc
+
+summary: >
+  NVMe over Fibre Channel. FC-NVMe is the FC-4 mapping that carries NVMe
+  commands and data over an FC fabric, sharing the FC infrastructure with
+  legacy FCP/SCSI traffic.
+
+spec_refs:
+  - document: "INCITS T11 FC-NVMe-2"
+    title: "Fibre Channel - Non-Volatile Memory Express - 2"
+  - document: "NVMe Base Specification 2.0"
+    url: "https://nvmexpress.org/specifications/"
+
+layers:
+  app:
+    component_id: block-device
+
+  ulp:
+    component_id: nvme
+    notes: "NVMe command set sits at the upper-layer surface for FC-NVMe."
+
+  fc-4:
+    component_id: nvme-fc
+    notes: "FC-NVMe is the FC-4 mapping that frames NVMe Capsules into FC sequences and exchanges."
+
+  fc-3:
+    component_id: fc-discovery
+    notes: "FC-NVMe-2 defines an FC-3 Discovery service for host/subsystem identification — distinct from FC-GS-7 generic services."
+
+  fc-2:
+    component_id: fc-fs
+    notes: "Frame format, sequences, exchanges, BB_Credit flow control. FC-SP-3 may attach AES-256-GCM authenticated encryption to FC-2 frames when enabled."
+
+  fc-1:
+    component_id: fc-encode
+    notes: "8b/10b for 1/2/4/8GFC; 64b/66b for 10/16/32GFC; 256b/257b transcoding (with RS-FEC) for 64GFC and above."
+
+  fc-0:
+    component_id: fc-phy
+
+optional_layers:
+  - id: npiv-row
+    name: NPIV
+    position: between-fc-1-fc-0
+    band: Network Virtualization
+    description: "N_Port ID Virtualization. Multiple virtual N_Ports on a single physical HBA."
+  - id: sr-iov-row
+    name: SR-IOV
+    position: between-fc-1-fc-0
+    description: "PCIe Single Root I/O Virtualization. Exposes virtual functions per HBA, common for virtualized FC-NVMe initiators."
+
+scenarios: []
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-07"
+  license: "CC-BY-4.0"

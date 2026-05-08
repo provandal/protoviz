@@ -1,0 +1,56 @@
+id: http-s3
+name: S3 / HTTP Object
+family: object
+alignment: osi
+
+summary: >
+  HTTP-based object storage (S3, Swift, Azure Blob). Object operations
+  are encoded as HTTP requests; payload is opaque to the protocol. HTTPS
+  wraps HTTP in TLS at the same logical layer.
+
+spec_refs:
+  - document: "Amazon S3 REST API"
+    url: "https://docs.aws.amazon.com/AmazonS3/latest/API/"
+  - document: "RFC 9110"
+    title: "HTTP Semantics"
+  - document: "RFC 9112"
+    title: "HTTP/1.1"
+
+layers:
+  osi-l7:
+    component_id: object-api
+    notes: "S3 / Swift / Azure Blob REST surface. Object create/get/delete via HTTP verbs."
+
+  osi-l5:
+    component_id: http
+    notes: "HTTP request/response framing. HTTPS adds TLS at this same logical layer; HTTP/2 multiplexes streams over a single TCP connection."
+
+  osi-l4:
+    component_id: tcp
+    notes: "HTTP requires reliable, ordered delivery. TCP only on this stack. (HTTP/3 would replace TCP with QUIC over UDP.)"
+
+  osi-l3:
+    component_id: ip
+
+  osi-l2:
+    component_id: ethernet
+
+  osi-l1:
+    component_id: gbe-phy
+
+optional_layers:
+  - id: net-virt-row
+    name: Network Virtualization
+    position: between-osi-l2-osi-l1
+    description: "Object storage traffic frequently traverses cloud overlay networks."
+  - id: sr-iov-row
+    name: SR-IOV
+    position: between-osi-l2-osi-l1
+    description: "Common on cloud NICs serving high-throughput object workloads."
+
+scenarios: []
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-08"
+  license: "CC-BY-4.0"

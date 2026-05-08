@@ -1,0 +1,56 @@
+id: smb-direct-ib
+name: SMB Direct (IB)
+family: file
+alignment: osi
+
+summary: >
+  SMB Direct over native InfiniBand. Verbs run directly on the IBTA
+  transport with no UDP or TCP encapsulation. Highest efficiency in
+  IB-attached fabrics; common in enterprise HPC and AI clusters.
+
+spec_refs:
+  - document: "MS-SMBD"
+    title: "SMB2 Remote Direct Memory Access (RDMA) Transport Protocol"
+  - document: "IBTA Vol 1"
+    title: "InfiniBand Architecture Specification"
+
+layers:
+  osi-l7:
+    component_id: smb-app
+
+  osi-l5:
+    component_id: smb-session
+    notes: "SMB Direct over native IB: no IP/UDP/TCP underlay. The underlying carrier is the IB transport service."
+
+  rdma-verbs:
+    component_id: rdma-verbs
+    notes: "Verbs are the native programming surface for InfiniBand. SMB Direct submits work to the IB HCA via these verbs."
+
+  osi-l4:
+    component_id: ib-transport
+    notes: "Reliable Connected (RC) IB Transport service carries SMB Direct traffic. No UDP/TCP involvement."
+
+  osi-l3:
+    component_id: ib-network
+    notes: "IB Network Layer (LRH/GRH) routes packets within the IB subnet. GRH enables inter-subnet routing."
+
+  osi-l2:
+    component_id: ib-link
+    notes: "IB Link Layer: credit-based flow control, virtual lanes, link-level error detection. Lossless by design."
+
+  osi-l1:
+    component_id: ib-phy
+    notes: "Native IB physical layer: HDR (200G), NDR (400G), XDR (800G)."
+
+optional_layers:
+  - id: sr-iov-row
+    name: SR-IOV
+    position: between-osi-l2-osi-l1
+    description: "IB HCAs support SR-IOV for VF assignment to VMs."
+
+scenarios: []
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-08"
+  license: "CC-BY-4.0"

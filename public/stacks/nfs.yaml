@@ -1,0 +1,63 @@
+id: nfs
+name: NFS over TCP
+family: file
+alignment: osi
+
+summary: >
+  Network File System, the canonical UNIX file-sharing protocol. Modern
+  deployments use NFSv4.x over TCP. NFS over RDMA is an optional
+  data-path extension (not modeled here).
+
+spec_refs:
+  - document: "RFC 7530"
+    title: "Network File System (NFS) Version 4 Protocol"
+    url: "https://www.rfc-editor.org/rfc/rfc7530"
+  - document: "RFC 8881"
+    title: "Network File System (NFS) Version 4 Minor Version 1 Protocol"
+  - document: "RFC 5531"
+    title: "Remote Procedure Call Protocol Specification Version 2"
+  - document: "RFC 4506"
+    title: "XDR: External Data Representation Standard"
+
+layers:
+  osi-l7:
+    component_id: nfs-app
+    notes: "NFS protocol operations: LOOKUP, READ, WRITE, ACCESS. v4.1 introduces sessions and pNFS."
+
+  osi-l6:
+    component_id: xdr
+    notes: "External Data Representation: the wire format for NFS arguments and return values (RFC 4506)."
+
+  osi-l5:
+    component_id: rpc
+    notes: "ONC RPC framing carries NFS calls and replies (RFC 5531). Provides authentication via RPCSEC_GSS."
+
+  osi-l4:
+    component_id: tcp
+    notes: "Modern NFS uses TCP exclusively. UDP is legacy (NFSv3-only)."
+
+  osi-l3:
+    component_id: ip
+
+  osi-l2:
+    component_id: ethernet
+
+  osi-l1:
+    component_id: gbe-phy
+
+optional_layers:
+  - id: net-virt-row
+    name: Network Virtualization
+    position: between-osi-l2-osi-l1
+    description: "VXLAN/Geneve overlays when NFS traffic spans tenant networks."
+  - id: sr-iov-row
+    name: SR-IOV
+    position: between-osi-l2-osi-l1
+    description: "Bypass the hypervisor for NFS traffic in virtualized clients."
+
+scenarios: []
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-07"
+  license: "CC-BY-4.0"

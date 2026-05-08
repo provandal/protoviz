@@ -6,7 +6,8 @@
 #   - a color token (resolved by the renderer's theme)
 #   - aliases (alternate names contributors might use; validator resolves them)
 #   - default spec_refs (overridable per-cell in stack files)
-#   - a definition (shown in the cell detail panel)
+#   - a definition (shown in the cell detail panel; also used as fallback
+#     popup text when a stack cell omits per-layer notes)
 #
 # Color tokens are semantic, not hex. Themes provide the actual colors.
 # Adding a new component is a PR. Adding a new alias is also a PR but cheaper.
@@ -19,10 +20,11 @@ components:
     color: neutral
     aliases: ["Block", "Block Storage", "BlockDev"]
     definition: >
-      The OS-level block device abstraction. The kernel exposes a /dev/sd*
-      or /dev/nvme* node; filesystems and applications submit reads and
-      writes in fixed-size blocks. All block storage protocols ultimately
-      surface here on the initiator side.
+      The OS-level block device abstraction (e.g. /dev/sd*, /dev/nvme*).
+      Strictly the L7 protocol is the command set (NVMe, SCSI); "Block
+      Device" is the OS-level surface layered on top. Shown at L7 across
+      block-storage stacks as a unifying header — a pedagogical convenience,
+      not a literal protocol entity.
 
   - id: file-system
     name: File System
@@ -30,17 +32,58 @@ components:
     aliases: ["Filesystem", "FS"]
     definition: >
       The OS-level file abstraction (open, read, write, close on named
-      paths). NFS and SMB present remote file systems through this surface.
+      paths). Like Block Device, this is the consumer of the file-sharing
+      protocol (NFS, SMB), not part of the protocol itself.
 
   - id: object-api
-    name: Object API (HTTP)
+    name: Object API
     color: neutral
-    aliases: ["S3", "HTTP Object", "Object"]
+    aliases: ["S3", "HTTP Object", "Object", "Swift", "Azure Blob"]
     definition: >
-      Object storage interfaces (S3, Swift, Azure Blob) exposed over HTTP.
-      Sits at L7; uses TCP at L4 and TLS for transport security.
+      Object storage interfaces (S3, Swift, Azure Blob) exposed as REST
+      APIs over HTTP/HTTPS. Object create/get/delete is mapped onto HTTP
+      verbs; payload is opaque to the protocol.
 
-  # ── L6 / Presentation-ish ────────────────────────────────────────────────
+  # ── L7 / Application protocols (file/object) ────────────────────────────
+  - id: smb-app
+    name: SMB (v2, v3)
+    color: smb
+    aliases: ["SMB", "CIFS", "SMB3"]
+    definition: >
+      Server Message Block file-sharing protocol. SMB 3.x adds SMB Direct
+      (RDMA), SMB Multichannel, and per-share encryption. Sits at L7 in
+      the canonical OSI mapping (the OS file-system surface above is the
+      consumer, not part of SMB itself).
+
+  - id: nfs-app
+    name: NFS
+    color: nfs
+    aliases: ["NFSv3", "NFSv4", "NFSv4.1", "NFSv4.2"]
+    definition: >
+      Network File System. v3 uses RPC/XDR over UDP or TCP. v4.x integrates
+      session, state, and security; pNFS adds parallel data paths. Sits at
+      L7 — the file-system surface above is the consumer, not part of NFS.
+
+  - id: xdr
+    name: XDR
+    color: nfs-aux
+    aliases: ["External Data Representation"]
+    definition: >
+      Wire-format encoding used by NFS and Sun RPC (RFC 4506). Defines how
+      integers, strings, opaque data, and structures serialize on the wire.
+      Sits at L6 (Presentation) in the canonical NFS layering.
+
+  - id: rpc
+    name: RPC
+    color: nfs-aux
+    aliases: ["ONC RPC", "Sun RPC"]
+    definition: >
+      ONC Remote Procedure Call (RFC 5531). Carries XDR-encoded arguments
+      and replies for NFS and other Sun-RPC services. Provides
+      authentication via RPCSEC_GSS. Sits at L5 (Session) in the canonical
+      NFS layering.
+
+  # ── L6 / Presentation-ish (command sets) ─────────────────────────────────
   - id: nvme
     name: NVMe
     color: nvme
@@ -48,7 +91,8 @@ components:
     definition: >
       NVM Express command set and queueing model. In NVMe-oF, NVMe is the
       command layer; a binding (TCP, RDMA, FC) carries the commands and
-      data over a fabric.
+      data over a fabric. Pedagogically shown at L6/ULP — strict OSI would
+      put the command set at L7.
     spec_refs:
       - document: "NVMe Base Specification 2.0"
         url: "https://nvmexpress.org/specifications/"
@@ -66,41 +110,6 @@ components:
         title: "SCSI Architecture Model - 5"
       - document: "INCITS SBC-4"
         title: "SCSI Block Commands - 4"
-
-  - id: smb-app
-    name: SMB (v2, v3)
-    color: smb
-    aliases: ["SMB", "CIFS", "SMB3"]
-    definition: >
-      Server Message Block file-sharing protocol. SMB 3.x adds SMB Direct
-      (RDMA), SMB Multichannel, and per-share encryption.
-
-  - id: nfs-app
-    name: NFS
-    color: nfs
-    aliases: ["NFSv3", "NFSv4", "NFSv4.1", "NFSv4.2"]
-    definition: >
-      Network File System. v3 uses RPC/XDR over UDP or TCP. v4.x integrates
-      session, state, and security; pNFS adds parallel data paths.
-
-  - id: xdr
-    name: XDR
-    color: nfs-aux
-    aliases: ["External Data Representation"]
-    definition: >
-      Wire-format encoding used by NFS and Sun RPC. Defines how integers,
-      strings, and structures serialize on the wire.
-    spec_refs:
-      - document: "RFC 4506"
-        title: "XDR: External Data Representation Standard"
-
-  - id: rpc
-    name: RPC
-    color: nfs-aux
-    aliases: ["ONC RPC", "Sun RPC"]
-    definition: >
-      Remote Procedure Call framing used by NFS. Carries XDR-encoded
-      arguments and replies.
 
   # ── L5 / Session ─────────────────────────────────────────────────────────
   - id: nvme-tcp-binding
@@ -120,7 +129,7 @@ components:
     aliases: ["NVMe/RDMA"]
     definition: >
       The NVMe-oF binding that uses RDMA verbs (over RoCE, iWARP, or
-      InfiniBand) to carry NVMe commands and data with zero-copy transfers.
+      InfiniBand) to carry NVMe Capsules and data with zero-copy transfers.
 
   - id: smb-session
     name: SMB Session Service
@@ -128,7 +137,7 @@ components:
     aliases: ["NetBIOS Session Service"]
     definition: >
       Session-layer framing for SMB. On modern deployments runs directly
-      over TCP port 445.
+      over TCP port 445 (or over RDMA verbs in SMB Direct).
 
   - id: iscsi
     name: iSCSI
@@ -136,7 +145,8 @@ components:
     aliases: ["iSCSI Layer"]
     definition: >
       Internet SCSI. Encapsulates SCSI CDBs in PDUs over TCP. Login phase
-      negotiates session parameters; full-feature phase carries I/O.
+      negotiates session parameters; full-feature phase carries I/O. iSER
+      reuses iSCSI's control plane and tunnels data through RDMA verbs.
     spec_refs:
       - document: "RFC 7143"
         title: "Internet Small Computer System Interface (iSCSI) Protocol"
@@ -149,14 +159,40 @@ components:
       The FC-4 mapping that carries SCSI CDBs over Fibre Channel. Uses FC
       sequences and exchanges; relies on FC-2 for ordering and delivery.
 
-  # ── L4-ish / RDMA Verbs (cross-cutting) ──────────────────────────────────
+  - id: nvme-fc
+    name: NVMe-FC
+    color: nvme
+    aliases: ["NVMe over FC", "FC-NVMe"]
+    definition: >
+      The FC-4 mapping that carries NVMe Capsules over Fibre Channel.
+      Standardized in INCITS T11 FC-NVMe-2; coexists with SCSI-FCP traffic
+      on the same FC fabric.
+    spec_refs:
+      - document: "INCITS T11 FC-NVMe-2"
+
+  - id: http
+    name: HTTP
+    color: http
+    aliases: ["HTTPS", "HTTP/1.1", "HTTP/2"]
+    definition: >
+      HyperText Transfer Protocol. Stateless request/response framing for
+      object-storage APIs (S3, Swift, Azure Blob). HTTPS wraps HTTP in
+      TLS at the same logical layer; HTTP/2 multiplexes streams over a
+      single TCP connection.
+    spec_refs:
+      - document: "RFC 9110"
+        title: "HTTP Semantics"
+
+  # ── Verbs (interlayer between L5 and L4) ─────────────────────────────────
   - id: rdma-verbs
     name: RDMA Verbs
     color: rdma
     aliases: ["IB Verbs", "Verbs"]
     definition: >
-      The RDMA programming surface. Sits above the underlying transport
-      (RoCE, iWARP, IB). Stacks like SMB Direct, NFS over RDMA, NVMe over
+      The RDMA programming surface. Sits as an interlayer between L5
+      (binding/session) and L4 (transport): the transport carrier varies
+      by RDMA flavor (UDP for RoCEv2, TCP for iWARP, native IB transport
+      for InfiniBand). Stacks like SMB Direct, NFS over RDMA, NVMe over
       RDMA, and iSER all submit work via verbs.
     spec_refs:
       - document: "IBTA Vol 1"
@@ -167,8 +203,9 @@ components:
     color: iscsi
     aliases: ["iSCSI Extensions for RDMA"]
     definition: >
-      iSCSI extensions for RDMA. Replaces the iSCSI data-transfer path with
-      RDMA reads and writes while keeping the iSCSI control plane.
+      iSCSI Extensions for RDMA. Replaces the iSCSI data-transfer path with
+      RDMA reads and writes while keeping the iSCSI control plane. In our
+      diagrams "iSER" is the column identity; the L5 component is iSCSI.
     spec_refs:
       - document: "RFC 7145"
         title: "iSCSI Extensions for RDMA Specification"
@@ -180,7 +217,7 @@ components:
     aliases: ["Transmission Control Protocol"]
     definition: >
       Reliable, ordered byte stream. Used by iSCSI, NVMe/TCP, NFS/TCP,
-      SMB, and HTTP-based object protocols.
+      SMB, HTTP-based object protocols, and as the carrier for iWARP RDMA.
     spec_refs:
       - document: "RFC 9293"
         title: "Transmission Control Protocol (TCP)"
@@ -190,10 +227,21 @@ components:
     color: udp
     aliases: ["User Datagram Protocol"]
     definition: >
-      Unreliable datagram service. Used by NFSv3/UDP (legacy) and as the
-      outer carrier for iWARP-over-UDP variants in some configurations.
+      Unreliable datagram service. Used as the outer carrier for RoCEv2
+      (UDP/IP wraps the IBTA transport), and historically by NFSv3.
     spec_refs:
       - document: "RFC 768"
+
+  - id: ib-transport
+    name: IB Transport
+    color: rdma
+    aliases: ["InfiniBand Transport"]
+    definition: >
+      InfiniBand Transport Layer. Provides reliable connection (RC),
+      reliable datagram (RD), unreliable datagram (UD), and other
+      service types. The native carrier for IB-attached RDMA stacks.
+    spec_refs:
+      - document: "IBTA Vol 1, Chapter 9"
 
   # ── L3 / Network ─────────────────────────────────────────────────────────
   - id: ip
@@ -210,28 +258,65 @@ components:
     aliases: ["FC Framing and Signaling"]
     definition: >
       FC Framing and Signaling. The FC-2 layer specification covering
-      frame format, sequences, exchanges, and flow control.
+      frame format, sequences, exchanges, and flow control. Authenticated
+      encryption is defined by the FC-SP-3 standard, which attaches an
+      ESP_Header to FC-2 frames (AES-256-GCM).
     spec_refs:
       - document: "INCITS T11 FC-FS-5"
+
+  - id: fc-discovery
+    name: NVMe Discovery
+    color: fc
+    aliases: ["FC-NVMe Discovery", "Discovery Service"]
+    definition: >
+      FC-3 service used by FC-NVMe-2 for host/subsystem discovery and
+      naming. Distinct from generic FC-GS-7 services; specific to NVMe
+      hosts establishing connections to NVM subsystems on the FC fabric.
+    spec_refs:
+      - document: "INCITS T11 FC-NVMe-2"
+
+  - id: ib-network
+    name: IB Network
+    color: ip
+    aliases: ["InfiniBand Network Layer"]
+    definition: >
+      InfiniBand Network Layer (Local Routing Header / Global Routing
+      Header). Routes packets between IB subnets (analogous to IP at L3).
+    spec_refs:
+      - document: "IBTA Vol 1, Chapter 8"
 
   # ── L2 / Data Link ───────────────────────────────────────────────────────
   - id: ethernet
     name: Ethernet (DCB optional)
     color: ethernet
-    aliases: ["Ethernet", "Ethernet/DCB", "DCB Ethernet"]
+    aliases: ["Ethernet"]
     definition: >
-      Layer-2 Ethernet framing. DCB (Data Center Bridging) extensions add
-      Priority Flow Control (PFC) and Enhanced Transmission Selection
-      (ETS) to enable lossless behavior required by RoCE and FCoE.
+      Layer-2 Ethernet framing. DCB (Data Center Bridging) extensions —
+      Priority Flow Control (PFC), Enhanced Transmission Selection (ETS),
+      DCBX — are optional on this stack. NVMe/TCP, iSCSI, SMB-over-TCP,
+      and NFS-over-TCP do not require lossless behavior.
 
   - id: dcb
-    name: DCB
+    name: Ethernet + DCB
     color: ethernet
-    aliases: ["Data Center Bridging", "DCB-only"]
+    aliases: ["Data Center Bridging", "DCB Ethernet", "DCB"]
     definition: >
-      Data Center Bridging. The set of Ethernet extensions (PFC, ETS,
-      DCBX) that provide lossless lanes. Required for RoCE; required
-      for FCoE.
+      Layer-2 Ethernet with DCB (Data Center Bridging) extensions enabled
+      and required. PFC at minimum; ETS and DCBX commonly deployed; ECN
+      paired with DCQCN for congestion control. Required for RoCE; was
+      required for FCoE. The L2 frame is still Ethernet — DCB is a feature
+      set, not a separate protocol.
+
+  - id: ib-link
+    name: IB Link
+    color: ethernet
+    aliases: ["InfiniBand Link Layer"]
+    definition: >
+      InfiniBand Link Layer. Provides credit-based flow control,
+      virtual lanes, and link-level error detection. Lossless by design —
+      analogous to Ethernet+DCB but native to InfiniBand fabrics.
+    spec_refs:
+      - document: "IBTA Vol 1, Chapter 7"
 
   - id: fc-encode
     name: Encode/Decode
@@ -273,8 +358,11 @@ components:
     color: optional
     aliases: ["Overlay", "VXLAN", "Geneve"]
     definition: >
-      Optional overlay network (VXLAN, Geneve, NVGRE) decoupling tenant
-      L2/L3 from the physical underlay. Adds encapsulation overhead.
+      Optional overlay networks (VXLAN, Geneve, NVGRE) decoupling tenant
+      L2/L3 from the physical underlay. Architecturally these create a
+      virtualized L2 ABOVE an underlay L3 — pedagogically rendered between
+      L2 and L1 here for visual parallelism with the brasstacksblog
+      reference diagram, not because that placement is topologically exact.
 
   - id: sr-iov
     name: SR-IOV
@@ -283,7 +371,9 @@ components:
     definition: >
       PCIe Single Root I/O Virtualization. Lets a single physical NIC or
       HBA expose multiple Virtual Functions to VMs, bypassing the
-      hypervisor for data-plane traffic.
+      hypervisor for data-plane traffic. SR-IOV is a PCIe capability, not
+      a network protocol layer — shown band-aligned with Network
+      Virtualization for visual continuity with the reference diagram.
 
   - id: npiv
     name: NPIV
@@ -291,14 +381,8 @@ components:
     aliases: ["N_Port ID Virtualization"]
     definition: >
       N_Port ID Virtualization. Lets a single FC HBA log in as multiple
-      virtual N_Ports, enabling per-VM zoning and LUN masking.
-
-  - id: fc-sp-3
-    name: FC-SP-3
-    color: optional
-    aliases: ["FC Security Protocols"]
-    definition: >
-      FC Security Protocols generation 3. Adds AES-256-GCM authenticated
-      encryption to FC links at FC-3.
-    spec_refs:
-      - document: "INCITS T11 FC-SP-3"
+      virtual N_Ports, enabling per-VM zoning and LUN masking. Technically
+      an FC-2 addressing capability (multiple WWPNs per N_Port); shown
+      band-aligned with Network Virtualization here for cross-stack
+      pedagogical parallel, not because NPIV literally lives between
+      FC-1 and FC-0.

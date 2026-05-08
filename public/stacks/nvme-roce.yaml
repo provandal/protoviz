@@ -1,0 +1,67 @@
+id: nvme-roce
+name: NVMe/RoCEv2
+family: block-nvme
+alignment: osi
+
+summary: >
+  NVMe-oF binding that uses RDMA verbs over RoCEv2 (UDP/IP on a lossless
+  Ethernet fabric). Common in AI/HPC and high-performance storage where
+  zero-copy and low CPU overhead matter.
+
+spec_refs:
+  - document: "NVMe-oF 1.1"
+    section: "RDMA Transport"
+    url: "https://nvmexpress.org/specifications/"
+  - document: "IBTA RoCEv2 (Annex A17)"
+    title: "InfiniBand Architecture Specification, RoCEv2"
+
+layers:
+  osi-l7:
+    component_id: block-device
+    notes: "Initiator side exposes /dev/nvmeXnY; target side maps to backing namespaces."
+
+  osi-l6:
+    component_id: nvme
+    notes: "NVMe command set and queueing model. Admin and I/O queues map to RDMA QPs."
+
+  osi-l5:
+    component_id: nvme-rdma-binding
+    notes: "NVMe-RDMA binding: Capsules, R2T, in-capsule data — all delivered via RDMA verbs."
+
+  rdma-verbs:
+    component_id: rdma-verbs
+    notes: "RDMA Verbs are the access surface for the NVMe-RDMA binding. RC QPs carry NVMe queues with zero-copy semantics."
+
+  osi-l4:
+    component_id: udp
+    notes: "RoCEv2 wraps the IBTA transport in UDP/IP (port 4791). Routable across IP subnets."
+
+  osi-l3:
+    component_id: ip
+    notes: "Standard UDP/IP. (RoCEv1 used a raw Ethertype — out of scope here.)"
+
+  osi-l2:
+    component_id: dcb
+    notes: "RoCE requires a lossless fabric. PFC at minimum; ECN combined with DCQCN is the typical congestion-control recipe."
+
+  osi-l1:
+    component_id: gbe-phy
+
+optional_layers:
+  - id: net-virt-row
+    name: Network Virtualization
+    position: between-osi-l2-osi-l1
+    description: "Overlay networks add encapsulation overhead and complicate PFC/ECN behavior; deploy with care."
+  - id: sr-iov-row
+    name: SR-IOV
+    position: between-osi-l2-osi-l1
+    description: "Common on RoCE-enabled NICs to expose verbs to VMs directly."
+
+scenarios:
+  - id: nvme-roce-discovery-io
+    label: "NVMe/RoCEv2 Discovery + I/O"
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-07"
+  license: "CC-BY-4.0"

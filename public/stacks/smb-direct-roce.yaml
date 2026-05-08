@@ -1,0 +1,58 @@
+id: smb-direct-roce
+name: SMB Direct (RoCE)
+family: file
+alignment: osi
+
+summary: >
+  SMB Direct over RoCEv2. SMB session and protocol layers run over the
+  RDMA verbs interface; data transfers use RDMA Read/Write with zero-copy.
+  RoCEv2 wraps the IBTA transport in UDP/IP on a lossless Ethernet fabric.
+
+spec_refs:
+  - document: "MS-SMBD"
+    title: "SMB2 Remote Direct Memory Access (RDMA) Transport Protocol"
+  - document: "IBTA RoCEv2 (Annex A17)"
+
+layers:
+  osi-l7:
+    component_id: smb-app
+    notes: "SMB v3 message protocol; SMB Direct adds RDMA negotiate context for capability discovery."
+
+  osi-l5:
+    component_id: smb-session
+    notes: "SMB session over RDMA. Negotiate/SessionSetup PDUs ride on RDMA SEND/RECV; bulk data uses RDMA Read/Write."
+
+  rdma-verbs:
+    component_id: rdma-verbs
+    notes: "SMB Direct submits work via verbs; the binding is described in MS-SMBD."
+
+  osi-l4:
+    component_id: udp
+    notes: "RoCEv2 carries verbs traffic in UDP/IP (port 4791)."
+
+  osi-l3:
+    component_id: ip
+
+  osi-l2:
+    component_id: dcb
+    notes: "RoCE requires a lossless fabric. PFC at minimum; ECN+DCQCN for congestion control."
+
+  osi-l1:
+    component_id: gbe-phy
+
+optional_layers:
+  - id: net-virt-row
+    name: Network Virtualization
+    position: between-osi-l2-osi-l1
+    description: "Overlay encapsulation breaks PFC priority on transit; deploy with care."
+  - id: sr-iov-row
+    name: SR-IOV
+    position: between-osi-l2-osi-l1
+    description: "Common on RoCE-enabled NICs to expose verbs to VMs directly."
+
+scenarios: []
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-08"
+  license: "CC-BY-4.0"

@@ -17,18 +17,23 @@ spec_refs:
     title: "SCSI Architecture Model - 5"
 
 layers:
+  app:
+    component_id: block-device
+
+  ulp:
+    component_id: scsi
+    notes: "SCSI command set sits at the application surface for FCP."
+
   fc-4:
-    - component_id: scsi
-      notes: "SCSI command set sits at the application surface."
-    - component_id: scsi-fcp
-      notes: "FCP is the FC-4 mapping that frames SCSI CDBs into FC sequences and exchanges."
+    component_id: scsi-fcp
+    notes: "FCP is the FC-4 mapping that frames SCSI CDBs into FC sequences and exchanges."
 
   # FC-3 intentionally omitted: sparsely used in baseline FCP. FC-SP-3
   # plugs in here when enabled (see optional_layers below).
 
   fc-2:
     component_id: fc-fs
-    notes: "Frame format, sequences, exchanges, BB_Credit flow control. The heart of FC."
+    notes: "Frame format, sequences, exchanges, BB_Credit flow control. The heart of FC. Authenticated encryption is defined by the FC-SP-3 standard, which attaches an ESP_Header to FC-2 frames (AES-256-GCM)."
 
   fc-1:
     component_id: fc-encode
@@ -38,16 +43,15 @@ layers:
     component_id: fc-phy
 
 optional_layers:
-  - id: fc-sp-3-row
-    name: FC-SP-3
-    position: inside-fc-2
-    default_enabled: true
-    description: "FC Security Protocols generation 3. AES-256-GCM authenticated encryption attached to FC-2 framing (ESP_Header + encrypted payload)."
   - id: npiv-row
     name: NPIV
-    position: between-fc-2-fc-1
-    default_enabled: true
+    position: between-fc-1-fc-0
+    band: Network Virtualization
     description: "N_Port ID Virtualization. Multiple virtual N_Ports on a single physical HBA."
+  - id: sr-iov-row
+    name: SR-IOV
+    position: between-fc-1-fc-0
+    description: "Single Root I/O Virtualization. PCIe-level virtualization that exposes VFs per HBA, common for virtualized FC initiators."
 
 scenarios:
   - id: fc-flogi-plogi-prli-scsi-io

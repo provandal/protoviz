@@ -1,0 +1,53 @@
+id: smb3
+name: SMB3 (TCP)
+family: file
+alignment: osi
+
+summary: >
+  Server Message Block, version 3.x, over TCP. Microsoft's primary
+  file-sharing protocol; ubiquitous on Windows and Linux/Samba endpoints.
+  SMB Direct (RDMA) variants are modeled as separate stacks.
+
+spec_refs:
+  - document: "MS-SMB2"
+    title: "Server Message Block (SMB) Protocol Versions 2 and 3"
+    url: "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/"
+
+layers:
+  osi-l7:
+    component_id: smb-app
+    notes: "SMB v2/v3 message protocol: TREE_CONNECT, CREATE, READ, WRITE, CLOSE, etc. SMB 3.x adds per-share encryption and Multichannel."
+
+  osi-l5:
+    component_id: smb-session
+    notes: "SMB session over TCP port 445. NetBIOS Session Service (137-139) is legacy and rarely seen on modern deployments."
+
+  osi-l4:
+    component_id: tcp
+    notes: "SMB requires reliable in-order delivery. TCP only on this stack."
+
+  osi-l3:
+    component_id: ip
+
+  osi-l2:
+    component_id: ethernet
+
+  osi-l1:
+    component_id: gbe-phy
+
+optional_layers:
+  - id: net-virt-row
+    name: Network Virtualization
+    position: between-osi-l2-osi-l1
+    description: "Overlay common when SMB shares are accessed across tenant boundaries."
+  - id: sr-iov-row
+    name: SR-IOV
+    position: between-osi-l2-osi-l1
+    description: "Common on file-server hosts to bypass the hypervisor data path."
+
+scenarios: []
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-07"
+  license: "CC-BY-4.0"
