@@ -131,6 +131,7 @@ function FieldSegment({ seg, field, endianLE, mirror, expandedField, onClick, cr
   const highlighted = crcHighlight && crcHighlight.has(field.name);
 
   const byteLabels = computeByteLabels({ field, seg, endianLE, mirror });
+  const segByteCount = byteLabels?.length || 0;
 
   return (
     <div
@@ -145,58 +146,64 @@ function FieldSegment({ seg, field, endianLE, mirror, expandedField, onClick, cr
             : withAlpha(color, '33'),
         border: `1px solid ${withAlpha(color, highlighted ? 'ff' : '99')}`,
         boxShadow: highlighted ? `0 0 0 2px ${color}aa inset` : undefined,
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
         cursor: field.notes ? 'pointer' : 'default',
         position: 'relative',
         minHeight: 0,
       }}
     >
-      {byteLabels && (
+      {/* Byte sub-cells: thin dashed dividers + tiny corner labels.
+          Pointer-events: none so clicks fall through to the outer cell. */}
+      {byteLabels && segByteCount > 1 && (
         <div style={{
-          position: 'absolute', top: 2, left: 0, right: 0,
+          position: 'absolute', inset: 0,
           display: 'grid',
-          gridTemplateColumns: `repeat(${byteLabels.length}, 1fr)`,
+          gridTemplateColumns: `repeat(${segByteCount}, 1fr)`,
           pointerEvents: 'none',
         }}>
           {byteLabels.map((label, i) => (
             <div key={i} style={{
-              textAlign: 'center',
-              fontSize: 10,
-              fontWeight: 700,
-              color: '#e2e8f0',
-              background: '#020817cc',
-              borderRadius: 2,
-              padding: '0 2px',
-              margin: '0 2px',
-              fontFamily: 'monospace',
-              borderRight: i < byteLabels.length - 1 ? `1px dashed ${color}88` : 'none',
+              borderInlineEnd: i < segByteCount - 1
+                ? `1px dashed ${withAlpha(color, '66')}`
+                : 'none',
+              position: 'relative',
             }}>
-              B{label}
+              <span style={{
+                position: 'absolute', top: 2, insetInlineStart: 3,
+                fontSize: 8, color: withAlpha(color, 'dd'),
+                fontFamily: 'monospace', fontWeight: 700,
+                letterSpacing: '0.03em',
+              }}>
+                B{label}
+              </span>
             </div>
           ))}
         </div>
       )}
-      {seg.isFirstSegment ? (
-        <>
-          <div style={{
-            color: '#e2e8f0', fontSize: 11, fontWeight: 700,
-            lineHeight: 1.2, textAlign: 'center', padding: '0 4px',
-            marginTop: byteLabels ? 14 : 0,
-          }}>
-            {field.name}
-          </div>
-          <div style={{ color: withAlpha(color, 'cc'), fontSize: 8, fontFamily: 'monospace' }}>
-            {field.bits}b{field.is_crc && ' · CRC'}
-          </div>
-        </>
-      ) : (
-        <div style={{ color: '#475569', fontSize: 9, marginTop: byteLabels ? 14 : 0 }}>
-          ·&nbsp;·&nbsp;·
-        </div>
-      )}
+
+      {/* Field name + bit count centered. */}
+      <div style={{
+        position: 'relative', zIndex: 1,
+        display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center',
+        height: '100%', pointerEvents: 'none',
+      }}>
+        {seg.isFirstSegment ? (
+          <>
+            <div style={{
+              color: '#e2e8f0', fontSize: 11, fontWeight: 700,
+              lineHeight: 1.2, textAlign: 'center', padding: '0 4px',
+            }}>
+              {field.name}
+            </div>
+            <div style={{ color: withAlpha(color, 'cc'), fontSize: 8, fontFamily: 'monospace' }}>
+              {field.bits}b{field.is_crc && ' · CRC'}
+            </div>
+          </>
+        ) : (
+          <div style={{ color: '#475569', fontSize: 9 }}>·&nbsp;·&nbsp;·</div>
+        )}
+      </div>
+
       {isExpanded && field.notes && (
         <div style={{
           position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 10,
