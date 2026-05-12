@@ -1,0 +1,28 @@
+{
+  "frames": [
+    {
+      "id": "ethernet-ii",
+      "name": "Ethernet II (DIX)",
+      "short_label": "Ethernet",
+      "family": "ethernet",
+      "osi_layer": "L2",
+      "path": "ethernet-ii.yaml"
+    },
+    {
+      "id": "fc-fs",
+      "name": "Fibre Channel FC-2",
+      "short_label": "FC-2",
+      "family": "fc",
+      "osi_layer": "FC-2",
+      "path": "fc-fs.yaml"
+    },
+    {
+      "id": "esun",
+      "name": "OCP ESUN",
+      "short_label": "ESUN",
+      "family": "esun",
+      "osi_layer": "L2 + L2.5",
+      "path": "esun.yaml"
+    }
+  ]
+}

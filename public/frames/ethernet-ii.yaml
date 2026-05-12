@@ -1,0 +1,204 @@
+id: ethernet-ii
+name: "Ethernet II (DIX) Frame"
+short_label: "Ethernet"
+family: ethernet
+osi_layer: "L2"
+
+summary: >
+  Classical DIX / Ethernet II frame as used by IP, FCoE, RoCE, and most
+  modern protocols. Preamble + SFD synchronize the receiver; 14-byte
+  L2 header carries addressing and EtherType demux; payload 46-1500
+  bytes (or up to ~9000 for Jumbo); 32-bit FCS trails. Per IEEE 802.3.
+
+layers:
+  - id: preamble
+    name: "Wire sync (PHY)"
+    color: framing
+  - id: header
+    name: "L2 Header"
+    color: addressing
+  - id: payload
+    name: "Payload"
+    color: payload
+  - id: trailer
+    name: "L2 Trailer"
+    color: crc
+  - id: ifg
+    name: "Inter-Frame Gap"
+    color: framing
+
+fields:
+  - name: Preamble
+    bits: 56
+    layer: preamble
+    color: framing
+    notes: >
+      7 bytes of alternating 1s and 0s (0x55 each). Allows the receiver
+      PHY to recover bit clock. NOT covered by FCS.
+
+  - name: SFD
+    bits: 8
+    layer: preamble
+    color: framing
+    notes: >
+      Start Frame Delimiter (0xD5). Marks the end of the preamble and
+      the start of frame data. NOT covered by FCS.
+
+  - name: Destination MAC
+    bits: 48
+    layer: header
+    color: addressing
+    notes: >
+      48-bit destination MAC address. Broadcast = ff:ff:ff:ff:ff:ff;
+      multicast has bit 0 of first byte set; unicast otherwise.
+
+  - name: Source MAC
+    bits: 48
+    layer: header
+    color: addressing
+    notes: >
+      48-bit source MAC address. Always unicast (multicast/broadcast
+      bit must be 0).
+
+  - name: EtherType
+    bits: 16
+    layer: header
+    color: control
+    notes: >
+      Type/Length field. Values >= 0x0600 = EtherType (DIX);
+      values < 0x0600 = Length (IEEE 802.3 LLC). Common: 0x0800 IPv4,
+      0x86DD IPv6, 0x0806 ARP, 0x8100 802.1Q VLAN, 0x8915 RoCEv1,
+      0x8906 FCoE.
+
+  - name: Payload
+    bits: 0
+    variable: true
+    payload: true
+    layer: payload
+    color: payload
+    notes: >
+      L2 payload. Minimum 46 bytes (frames shorter than this are
+      padded). Standard maximum 1500 bytes; Jumbo Frames extend to
+      ~9000 bytes by mutual agreement (not standard in 802.3 base).
+
+  - name: FCS
+    bits: 32
+    layer: trailer
+    color: crc
+    is_crc: true
+    crc_coverage: { from: "Destination MAC", to: "Payload" }
+    notes: >
+      Frame Check Sequence. CRC-32 (polynomial 0x04C11DB7) covering
+      DA, SA, EtherType, and payload. Does NOT cover preamble or SFD.
+
+  - name: IFG
+    bits: 96
+    layer: ifg
+    color: framing
+    wire_only: true
+    notes: >
+      Inter-Frame Gap. Minimum 96 bit times (12 byte times) of idle
+      between successive frames. Required for receiver recovery and
+      counted against effective wire throughput.
+
+payload:
+  min_bytes: 46
+  max_bytes: 1500
+  default_bytes: 1500
+  jumbo_max_bytes: 9000
+
+wire_overhead:
+  before_bytes: 0  # Preamble/SFD/IFG already modeled as fields
+  notes: >
+    Preamble (7), SFD (1), and IFG (12) are modeled as explicit fields
+    so they appear in the diagram. They are NOT covered by FCS and are
+    not counted in standard frame-size limits but DO consume wire time.
+
+link_variants:
+  - id: 1gbe
+    name: "1GbE (1000BASE-X)"
+    line_rate_gbaud: 1.25
+    encoding: "8b/10b"
+    encoding_ratio: 0.8
+    fec: null
+    fec_ratio: 1.0
+    spec: "IEEE 802.3z"
+  - id: 10gbe
+    name: "10GbE (10GBASE-R)"
+    line_rate_gbaud: 10.3125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: null
+    fec_ratio: 1.0
+    spec: "IEEE 802.3ae"
+  - id: 25gbe
+    name: "25GbE (25GBASE-R)"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+    spec: "IEEE 802.3by"
+  - id: 40gbe
+    name: "40GbE (40GBASE-R)"
+    line_rate_gbaud: 10.3125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: null
+    fec_ratio: 1.0
+    spec: "IEEE 802.3ba"
+    notes: "4 × 10.3125 GBd lanes"
+  - id: 50gbe
+    name: "50GbE (50GBASE-R)"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+    spec: "IEEE 802.3cd"
+  - id: 100gbe
+    name: "100GbE (100GBASE-R, 4×25)"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+    spec: "IEEE 802.3bj"
+    notes: "4 × 25.78125 GBd NRZ"
+  - id: 200gbe
+    name: "200GbE (200GBASE-R)"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+    spec: "IEEE 802.3cd"
+    notes: "4 × 26.5625 GBd PAM4"
+  - id: 400gbe
+    name: "400GbE (400GBASE-R)"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+    spec: "IEEE 802.3bs"
+    notes: "8 × 26.5625 GBd PAM4 (or 4 × 53.125)"
+  - id: 800gbe
+    name: "800GbE"
+    line_rate_gbaud: 53.125
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514) + interleaving"
+    fec_ratio: 0.944853
+    spec: "IEEE 802.3df"
+    notes: "8 × 53.125 GBd PAM4"
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-12"
+  license: "CC-BY-4.0"
+  spec_refs:
+    - document: "IEEE 802.3-2022"
+      title: "IEEE Standard for Ethernet"
+    - document: "DIX Ethernet II"
+      title: "DEC/Intel/Xerox Ethernet II Specification"

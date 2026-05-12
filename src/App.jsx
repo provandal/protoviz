@@ -8,6 +8,7 @@ import ScenarioCreator from './components/creator/ScenarioCreator';
 import InteractiveScenarioLoader from './components/interactive/InteractiveScenarioLoader';
 import NetSimPage from './components/netsim/NetSimPage';
 import StacksPage from './components/stacks/StacksPage';
+import FramesPage from './components/frames/FramesPage';
 import useDirection from './hooks/useDirection';
 
 const DEFAULT_SCENARIO = 'roce-v2-rc-connection-rdma-write-read';
@@ -43,6 +44,7 @@ export default function App() {
           <Route path="/create" element={<ScenarioCreator />} />
           <Route path="/live/:slug" element={<InteractiveScenarioLoader />} />
           <Route path="/stacks" element={<StacksPage />} />
+          <Route path="/frames" element={<FramesPage />} />
           <Route path="/netsim/:scenarioId" element={<NetSimPage />} />
           <Route path="/:scenarioSlug/step/:stepNum" element={<ProtoVizViewer />} />
           <Route path="/:scenarioSlug" element={<ProtoVizViewer />} />

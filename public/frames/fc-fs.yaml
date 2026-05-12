@@ -1,0 +1,258 @@
+id: fc-fs
+name: "Fibre Channel FC-2 Frame"
+short_label: "FC-2"
+family: fc
+osi_layer: "FC-2"
+
+summary: >
+  Native Fibre Channel frame per INCITS T11 FC-FS-5. A 24-byte FC-2
+  header carries routing, sequence, and exchange context; the payload
+  carries up to 2112 bytes; a 32-bit CRC trails the payload; SOF/EOF
+  primitive delimiters frame the unit on the wire (they are NOT part of
+  the frame body and are NOT covered by the CRC).
+
+# Field layer groupings — the renderer paints a colored ribbon down the
+# left edge so encapsulation/structure is visible without nested boxes.
+layers:
+  - id: framing
+    name: "FC-1 Framing (primitives)"
+    color: framing
+  - id: header
+    name: "FC-2 Header"
+    color: addressing
+  - id: payload
+    name: "Payload"
+    color: payload
+  - id: trailer
+    name: "FC-2 Trailer"
+    color: crc
+
+fields:
+  - name: SOF
+    bits: 32
+    layer: framing
+    color: framing
+    notes: >
+      Start of Frame. An ordered set (four 8b/10b symbols on the wire),
+      not data bytes — but represented here as 4 bytes for diagram
+      purposes. Carries frame class (1/2/3) and connection state.
+
+  - name: R_CTL
+    bits: 8
+    layer: header
+    color: control
+    notes: >
+      Routing Control. High nibble = Routing (0=Device_Data,
+      2=Extended_Link_Services, 8=Basic_Link_Services, etc.); low
+      nibble = Information Category (Type-dependent).
+
+  - name: D_ID
+    bits: 24
+    layer: header
+    color: addressing
+    notes: >
+      Destination N_Port Address Identifier. 24-bit FC address
+      (Domain_ID, Area_ID, Port_ID) — the FC fabric's L3-equivalent.
+
+  - name: CS_CTL/Priority
+    bits: 8
+    layer: header
+    color: control
+    notes: >
+      Class-Specific Control, or Priority when F_CTL[17] (Pri/CS_CTL) is
+      set. Used for QoS in Class 1/F traffic.
+
+  - name: S_ID
+    bits: 24
+    layer: header
+    color: addressing
+    notes: >
+      Source N_Port Address Identifier (24 bits).
+
+  - name: Type
+    bits: 8
+    layer: header
+    color: control
+    notes: >
+      FC-4 protocol type. Common values: 0x08 SCSI-FCP, 0x28 FC-NVMe,
+      0x05 IPFC, 0x20 FC-AV. Enables the FC fabric to carry multiple
+      upper-layer protocols simultaneously.
+
+  - name: F_CTL
+    bits: 24
+    layer: header
+    color: control
+    notes: >
+      Frame Control bits. Exchange context (Originator/Responder),
+      sequence boundaries (First/Last_Sequence, End_Sequence), abort
+      handling, and connection management.
+
+  - name: SEQ_ID
+    bits: 8
+    layer: header
+    color: control
+    notes: >
+      Sequence Identifier. Distinguishes concurrent sequences within
+      an exchange. Wraps at 256.
+
+  - name: DF_CTL
+    bits: 8
+    layer: header
+    color: control
+    notes: >
+      Data Field Control. Indicates presence of optional headers
+      (ESP_Header for FC-SP-3, Network_Header, Association_Header,
+      Device_Header) prepended to the payload.
+
+  - name: SEQ_CNT
+    bits: 16
+    layer: header
+    color: control
+    notes: >
+      Sequence Count. Frame ordering within a sequence. Each
+      successive frame in a sequence increments SEQ_CNT.
+
+  - name: OX_ID
+    bits: 16
+    layer: header
+    color: addressing
+    notes: >
+      Originator Exchange Identifier. Assigned by the originator to
+      uniquely identify the exchange at its end.
+
+  - name: RX_ID
+    bits: 16
+    layer: header
+    color: addressing
+    notes: >
+      Responder Exchange Identifier. Assigned by the responder; pairs
+      with OX_ID to uniquely identify the exchange end-to-end.
+
+  - name: Parameter
+    bits: 32
+    layer: header
+    color: control
+    notes: >
+      Type-specific parameter. For Class 1/2/3 Data frames: relative
+      offset of the data within the sequence (used by upper layers like
+      SCSI-FCP for FCP_DATA placement).
+
+  - name: Payload
+    bits: 0
+    variable: true
+    payload: true
+    layer: payload
+    color: payload
+    notes: >
+      FC frame payload (data field). 0 to 2112 bytes per frame; 2048
+      bytes is the typical maximum for SCSI-FCP and FC-NVMe data IUs.
+      Multiple frames form a sequence; multiple sequences form an
+      exchange.
+
+  - name: CRC
+    bits: 32
+    layer: trailer
+    color: crc
+    is_crc: true
+    crc_coverage: { from: "R_CTL", to: "Payload" }
+    notes: >
+      CRC-32. Covers the FC-2 header and payload — does NOT cover SOF
+      and EOF (which are primitive ordered sets, not data). Same
+      polynomial as Ethernet FCS.
+
+  - name: EOF
+    bits: 32
+    layer: framing
+    color: framing
+    notes: >
+      End of Frame. An ordered set that terminates the frame and
+      indicates connection state (Normal/Terminate/Abort/Disconnect).
+
+payload:
+  min_bytes: 0
+  max_bytes: 2112
+  default_bytes: 2048
+
+# What sits between frames on the wire (not part of the frame body).
+wire_overhead:
+  before_bytes: 24
+  notes: >
+    Minimum 6 IDLE / R_RDY ordered sets between frames per FC-FS-5;
+    ARB(ff) primitives may also appear. ~24 bytes typical inter-frame
+    overhead.
+
+link_variants:
+  - id: 1gfc
+    name: "1GFC"
+    line_rate_gbaud: 1.0625
+    encoding: "8b/10b"
+    encoding_ratio: 0.8
+    fec: null
+    fec_ratio: 1.0
+    spec: "FC-PI-2"
+  - id: 2gfc
+    name: "2GFC"
+    line_rate_gbaud: 2.125
+    encoding: "8b/10b"
+    encoding_ratio: 0.8
+    fec: null
+    fec_ratio: 1.0
+    spec: "FC-PI-2"
+  - id: 4gfc
+    name: "4GFC"
+    line_rate_gbaud: 4.25
+    encoding: "8b/10b"
+    encoding_ratio: 0.8
+    fec: null
+    fec_ratio: 1.0
+    spec: "FC-PI-3"
+  - id: 8gfc
+    name: "8GFC"
+    line_rate_gbaud: 8.5
+    encoding: "8b/10b"
+    encoding_ratio: 0.8
+    fec: null
+    fec_ratio: 1.0
+    spec: "FC-PI-4"
+  - id: 16gfc
+    name: "16GFC"
+    line_rate_gbaud: 14.025
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: null
+    fec_ratio: 1.0
+    spec: "FC-PI-5"
+  - id: 32gfc
+    name: "32GFC"
+    line_rate_gbaud: 28.05
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514) optional"
+    fec_ratio: 1.0
+    spec: "FC-PI-6"
+  - id: 64gfc
+    name: "64GFC"
+    line_rate_gbaud: 28.9
+    encoding: "256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+    spec: "FC-PI-7"
+  - id: 128gfc
+    name: "128GFC"
+    line_rate_gbaud: 56.1
+    encoding: "256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+    spec: "FC-PI-8"
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-12"
+  license: "CC-BY-4.0"
+  spec_refs:
+    - document: "INCITS T11 FC-FS-5"
+      title: "Fibre Channel - Framing and Signaling - 5"
+    - document: "INCITS T11 FC-PI-7"
+      title: "Fibre Channel - Physical Interfaces - 7 (64GFC)"

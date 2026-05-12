@@ -1,0 +1,236 @@
+id: esun
+name: "ESUN Frame (Ethernet + ESUN Header)"
+short_label: "ESUN"
+family: esun
+osi_layer: "L2 + L2.5"
+
+summary: >
+  OCP ESUN (Ethernet for Scale-Up Networks) frame per Rev 1.0 (Feb 2026).
+  An Ethernet II frame with EtherType = EH-ET (assignment pending),
+  followed by a 4-byte ESUN Header (EH) that replaces the IP header
+  (saving 20-40B) and reintroduces ECN, CoS, TTL, and flow-label
+  capabilities for L2 scale-up GPU fabrics.
+
+layers:
+  - id: preamble
+    name: "Wire sync (PHY)"
+    color: framing
+  - id: header
+    name: "L2 Header"
+    color: addressing
+  - id: esun-header
+    name: "ESUN Header (EH)"
+    color: control
+  - id: payload
+    name: "Payload"
+    color: payload
+  - id: trailer
+    name: "L2 Trailer"
+    color: crc
+  - id: ifg
+    name: "Inter-Frame Gap"
+    color: framing
+
+fields:
+  - name: Preamble
+    bits: 56
+    layer: preamble
+    color: framing
+    notes: >
+      7 bytes of 0x55. PHY bit-clock recovery. NOT covered by FCS.
+
+  - name: SFD
+    bits: 8
+    layer: preamble
+    color: framing
+    notes: "Start Frame Delimiter (0xD5). NOT covered by FCS."
+
+  - name: Destination MAC
+    bits: 48
+    layer: header
+    color: addressing
+    notes: >
+      48-bit destination MAC. ESUN switches forward purely on
+      Ethernet DA — no IP routing, no MAC learning, no broadcast of
+      unknown destinations. Static configuration assumed in scale-up
+      domains.
+
+  - name: Source MAC
+    bits: 48
+    layer: header
+    color: addressing
+    notes: "48-bit source MAC."
+
+  - name: EtherType
+    bits: 16
+    layer: header
+    color: control
+    notes: >
+      Set to EH-ET (value pending IEEE assignment). Identifies the
+      frame as carrying an ESUN Header immediately after the L2
+      header — replaces 0x0800 IPv4 / 0x86DD IPv6.
+
+  - name: EH-ECN
+    bits: 2
+    layer: esun-header
+    color: control
+    notes: >
+      Explicit Congestion Notification. Encoded identically to ECN in
+      the IP TOS field — capability advertisement + congestion
+      experienced feedback. Switches mark this bit during persistent
+      congestion. Modifying ECN at a switch requires FCS recomputation.
+
+  - name: EH-CoS
+    bits: 3
+    layer: esun-header
+    color: control
+    notes: >
+      Class of Service. 3-bit traffic class — same width as 802.1p but
+      carried inside the EH rather than a VLAN tag, saving 4 bytes per
+      frame. Takes precedence over 802.1Q CoS or UEC CBFC Traffic Class
+      when both are present.
+
+  - name: F
+    bits: 1
+    layer: esun-header
+    color: control
+    notes: >
+      Flow Label Valid. When set, the Flow Label field contains a
+      valid value and switches must use it deterministically for load
+      balancing decisions.
+
+  - name: Flow Label
+    bits: 16
+    layer: esun-header
+    color: addressing
+    notes: >
+      Source-assigned flow identifier (16 bits). Provides hashing
+      entropy for ECMP/dynamic load balancing — typically combined
+      with {DA, SA} in the hash tuple. Only consulted when F=1.
+
+  - name: TTL
+    bits: 4
+    layer: esun-header
+    color: control
+    notes: >
+      Time To Live. Decremented at each switch hop; frame is
+      discarded when TTL reaches 0. Provides loop protection in
+      hierarchical scale-up topologies. Modifying TTL at a switch
+      requires FCS recomputation.
+
+  - name: UD
+    bits: 2
+    layer: esun-header
+    color: control
+    notes: >
+      User Defined. End-to-end opaque field for transport-layer use
+      at endpoints; switches ignore.
+
+  - name: Rev
+    bits: 2
+    layer: esun-header
+    color: control
+    notes: >
+      Revision Number. Set to 00 for ESUN Rev 1.0 (Feb 2026). Enables
+      forward-compatible header evolution.
+
+  - name: Reserved
+    bits: 2
+    layer: esun-header
+    color: reserved
+    is_reserved: true
+    notes: >
+      Reserved bits to round the EH to 32 bits total. Must be zero on
+      transmit; ignored on receive.
+
+  - name: Payload
+    bits: 0
+    variable: true
+    payload: true
+    layer: payload
+    color: payload
+    notes: >
+      ESUN payload — typically GPU collective traffic (NCCL / RCCL),
+      memory references, or compressed gradient buffers. Sized per
+      scale-up workload requirements.
+
+  - name: FCS
+    bits: 32
+    layer: trailer
+    color: crc
+    is_crc: true
+    crc_coverage: { from: "Destination MAC", to: "Payload" }
+    notes: >
+      Ethernet CRC-32 over DA, SA, EtherType, EH, and payload. Must be
+      recomputed by any switch that modifies EH-ECN or EH-TTL.
+
+  - name: IFG
+    bits: 96
+    layer: ifg
+    color: framing
+    wire_only: true
+    notes: >
+      Inter-Frame Gap. Standard Ethernet 96-bit-time idle period
+      between frames; same as classical Ethernet.
+
+payload:
+  min_bytes: 42  # 46 minimum minus 4-byte EH
+  max_bytes: 1496  # 1500 MTU minus 4-byte EH
+  default_bytes: 1496
+  jumbo_max_bytes: 8996
+  notes: >
+    ESUN saves 20 bytes (IPv4) or 40 bytes (IPv6) per frame versus
+    legacy IP-on-Ethernet, while the 4B EH reintroduces ECN/CoS/TTL/
+    flow-label. Net gain: 16-36 bytes of payload room per frame.
+
+wire_overhead:
+  before_bytes: 0
+  notes: "Preamble/SFD/IFG modeled as explicit fields."
+
+# ESUN runs on standard Ethernet PHYs — same link variants as Ethernet II.
+link_variants:
+  - id: 100gbe
+    name: "100GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+    spec: "IEEE 802.3bj"
+  - id: 200gbe
+    name: "200GbE"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+    spec: "IEEE 802.3cd"
+  - id: 400gbe
+    name: "400GbE"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+    spec: "IEEE 802.3bs"
+  - id: 800gbe
+    name: "800GbE"
+    line_rate_gbaud: 53.125
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514) + interleaving"
+    fec_ratio: 0.944853
+    spec: "IEEE 802.3df"
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-12"
+  license: "CC-BY-4.0"
+  spec_refs:
+    - document: "OCP ESUN Base Specification Rev 1.0"
+      title: "OCP ESUN - Network Operator Requirements - Base Specification"
+      date: "2026-02-09"
+    - document: "IEEE 802.3-2022"
+      title: "IEEE Standard for Ethernet"
+    - document: "Ultra Ethernet Specification v1.0.2"
+      title: "Ultra Ethernet Consortium Specification (CBFC, LLR)"

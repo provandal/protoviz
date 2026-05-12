@@ -1,0 +1,15 @@
+{
+  "scenarios": [
+    {
+      "slug": "frame-formats",
+      "title": "Frame Formats & Wire Efficiency",
+      "protocol": "FC · Ethernet · ESUN",
+      "protocol_family": "Frame Formats",
+      "difficulty": "intermediate",
+      "description": "Side-by-side frame anatomy in classic 4-byte columns for FC-2, Ethernet II, and OCP ESUN. Click any field for spec detail. Watch the overhead waterfall change as you vary payload size, message size, and link variant — see why 8GFC's 8b/10b costs 20% on the wire while 16GFC's 64b/66b costs only 3%. Endianness and wire-time views included.",
+      "tags": ["frames", "FC", "Ethernet", "ESUN", "encoding", "FEC", "goodput", "overhead", "wire-time"],
+      "type": "frame",
+      "path": "frames/index.json"
+    }
+  ]
+}

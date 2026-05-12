@@ -11,6 +11,7 @@ const FAMILY_META = {
   'Storage':      { color: '#f97316', icon: '\u{1F680}' },
   'Fabric Scenarios': { color: '#f97316', icon: '\u{1F578}' },
   'Protocol Stacks': { color: '#22d3ee', icon: '\u{1F4DA}' },
+  'Frame Formats':   { color: '#22d3ee', icon: '\u{1F9F1}' },
 };
 
 const FAMILY_I18N_KEY = {
@@ -23,12 +24,13 @@ const FAMILY_I18N_KEY = {
   'Storage': 'storage',
   'Fabric Scenarios': 'fabric',
   'Protocol Stacks': 'protocolStacks',
+  'Frame Formats': 'frameFormats',
 };
 
 export const PROTOCOL_FAMILY_ORDER = [
   'TCP/IP', 'IPv6', 'Interconnect Fundamentals',
   'RDMA', 'NVMe-oF', 'SAN', 'Storage',
-  'Fabric Scenarios', 'Protocol Stacks',
+  'Fabric Scenarios', 'Protocol Stacks', 'Frame Formats',
 ];
 
 export default function ProtocolFamilySection({ family, scenarios, expanded, onToggle, onScenarioClick }) {

@@ -364,11 +364,13 @@ export default function Gallery() {
       fetch(`${base}scenarios/index.json`).then(r => r.json()).catch(() => ({ scenarios: [] })),
       fetch(`${base}netsim/index.json`).then(r => r.json()).catch(() => ({ scenarios: [] })),
       fetch(`${base}stacks-gallery/index.json`).then(r => r.json()).catch(() => ({ scenarios: [] })),
-    ]).then(([scenarioData, netsimData, stackData]) => {
+      fetch(`${base}frames-gallery/index.json`).then(r => r.json()).catch(() => ({ scenarios: [] })),
+    ]).then(([scenarioData, netsimData, stackData, frameData]) => {
       const merged = [
         ...scenarioData.scenarios,
         ...(netsimData.scenarios || []),
         ...(stackData.scenarios || []),
+        ...(frameData.scenarios || []),
       ];
       setScenarios(merged);
       setLoading(false);
@@ -523,6 +525,7 @@ export default function Gallery() {
                     s.type === 'interactive' ? `/live/${s.slug}` :
                     s.type === 'fabric' ? `/netsim/${s.slug}` :
                     s.type === 'stack' ? `/stacks` :
+                    s.type === 'frame' ? `/frames` :
                     `/${s.slug}`
                   )}
                 />
@@ -540,6 +543,7 @@ export default function Gallery() {
                   s.type === 'interactive' ? `/live/${s.slug}` :
                   s.type === 'fabric' ? `/netsim/${s.slug}` :
                   s.type === 'stack' ? `/stacks` :
+                  s.type === 'frame' ? `/frames` :
                   `/${s.slug}`
                 )}
               />
