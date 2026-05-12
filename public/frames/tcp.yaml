@@ -1,0 +1,202 @@
+id: tcp
+name: "TCP Header (RFC 9293)"
+short_label: "TCP"
+family: tcp
+osi_layer: "L4"
+
+summary: >
+  TCP segment header per RFC 9293 (the 2022 consolidated update).
+  20 bytes fixed without options. Carries the famous SYN/ACK/FIN
+  control bits, 32-bit sequence and acknowledgment numbers, and a
+  16-bit Checksum that covers BOTH the TCP header AND payload (plus
+  a pseudo-header from the IP layer for protection across header
+  changes). Options field (variable, up to 40 bytes) is not modeled
+  here — common options include MSS, Window Scale, SACK Permitted,
+  and TCP Timestamps.
+
+layers:
+  - id: header
+    name: "TCP Header"
+    color: addressing
+  - id: payload
+    name: "Payload"
+    color: payload
+
+fields:
+  - name: Source Port
+    bits: 16
+    layer: header
+    color: addressing
+    notes: >
+      16-bit source port. Identifies the sending application/socket.
+      Ephemeral ports typically range 32768-60999 on Linux.
+
+  - name: Destination Port
+    bits: 16
+    layer: header
+    color: addressing
+    notes: >
+      16-bit destination port. Well-known services use 0-1023
+      (e.g. 22=SSH, 80=HTTP, 443=HTTPS, 445=SMB, 3260=iSCSI).
+
+  - name: Sequence Number
+    bits: 32
+    layer: header
+    color: control
+    notes: >
+      32-bit sequence number. Indicates the position in the byte
+      stream of the first data byte in this segment. On SYN
+      packets, contains the Initial Sequence Number (ISN).
+
+  - name: Acknowledgment Number
+    bits: 32
+    layer: header
+    color: control
+    notes: >
+      If the ACK control bit is set, this is the next sequence number
+      the sender of this segment expects to receive. Cumulative —
+      acknowledges all bytes up to (but not including) this number.
+
+  - name: Data Offset
+    bits: 4
+    layer: header
+    color: control
+    notes: >
+      Number of 32-bit words in the TCP header. Minimum 5 (= 20
+      bytes, no options); maximum 15 (= 60 bytes, with options).
+      Indicates where the data portion begins.
+
+  - name: Reserved
+    bits: 4
+    layer: header
+    color: reserved
+    is_reserved: true
+    notes: >
+      Reserved bits. Must be zero on transmit. Historically the
+      adjacent CWR and ECE flags were carved out of an even larger
+      Reserved field as ECN was added (RFC 3168).
+
+  - name: Flags
+    bits: 8
+    layer: header
+    color: control
+    notes: >
+      8 control bits, MSB to LSB:
+      CWR (Congestion Window Reduced),
+      ECE (ECN Echo),
+      URG (Urgent),
+      ACK (acknowledgment field is valid),
+      PSH (Push function),
+      RST (Reset),
+      SYN (Synchronize sequence numbers),
+      FIN (No more data).
+
+  - name: Window
+    bits: 16
+    layer: header
+    color: control
+    notes: >
+      Receive window size in bytes — how much data the sender of
+      this segment is willing to accept. Scaled by the Window Scale
+      option (RFC 7323) when negotiated; otherwise capped at 65535.
+
+  - name: Checksum
+    bits: 16
+    layer: header
+    color: crc
+    is_crc: true
+    crc_coverage: { from: "Source Port", to: "Payload" }
+    notes: >
+      One's-complement sum covering the TCP header + payload + an IP
+      pseudo-header (Source/Destination Address, Protocol, TCP
+      Length). The pseudo-header coverage is what makes TCP detect
+      misdelivered packets where the IP addresses got corrupted.
+
+  - name: Urgent Pointer
+    bits: 16
+    layer: header
+    color: control
+    notes: >
+      If URG flag is set, this is the offset from the sequence number
+      indicating the end of urgent data. Rarely used in modern apps.
+
+  - name: Payload
+    bits: 0
+    variable: true
+    payload: true
+    layer: payload
+    color: payload
+    notes: >
+      TCP payload — application data byte stream. Sized to fit
+      within the path MTU minus IP and TCP headers (typical: 1460
+      bytes for 1500 MTU IPv4, 1440 for IPv6).
+
+payload:
+  min_bytes: 0
+  max_bytes: 1460       # 1500 MTU - 20 IPv4 - 20 TCP
+  default_bytes: 1460
+  jumbo_max_bytes: 8960 # 9000 jumbo - 20 IPv4 - 20 TCP
+
+wire_overhead:
+  before_bytes: 0
+
+link_variants:
+  - id: 1gbe
+    name: "1GbE"
+    line_rate_gbaud: 1.25
+    encoding: "8b/10b"
+    encoding_ratio: 0.8
+    fec: null
+    fec_ratio: 1.0
+  - id: 10gbe
+    name: "10GbE"
+    line_rate_gbaud: 10.3125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: null
+    fec_ratio: 1.0
+  - id: 25gbe
+    name: "25GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 100gbe
+    name: "100GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 200gbe
+    name: "200GbE"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+  - id: 400gbe
+    name: "400GbE"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+  - id: 800gbe
+    name: "800GbE"
+    line_rate_gbaud: 53.125
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514) + interleaving"
+    fec_ratio: 0.944853
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-12"
+  license: "CC-BY-4.0"
+  spec_refs:
+    - document: "RFC 9293"
+      title: "Transmission Control Protocol (TCP)"
+    - document: "RFC 3168"
+      title: "The Addition of Explicit Congestion Notification (ECN) to IP"

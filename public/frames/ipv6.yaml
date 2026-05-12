@@ -1,0 +1,169 @@
+id: ipv6
+name: "IPv6 Header (RFC 8200)"
+short_label: "IPv6"
+family: ip
+osi_layer: "L3"
+
+summary: >
+  Fixed 40-byte IPv6 header (RFC 8200). Twice the source/destination
+  width (128b each) but a SMALLER header in field count than IPv4 —
+  no fragmentation fields (handled by extension headers), no Header
+  Checksum (delegated to L2 FCS and L4 checksums), and the new
+  20-bit Flow Label provides hashing entropy for ECMP. Compare with
+  IPv4 to see how the design simplified routing-path processing.
+
+layers:
+  - id: header
+    name: "IPv6 Header"
+    color: addressing
+  - id: payload
+    name: "L4 Payload"
+    color: payload
+
+fields:
+  - name: Version
+    bits: 4
+    layer: header
+    color: control
+    notes: "IP version. Always 6 for IPv6 (binary 0110)."
+
+  - name: Traffic Class
+    bits: 8
+    layer: header
+    color: control
+    notes: >
+      Equivalent to IPv4 ToS field. Carries 6-bit DSCP + 2-bit ECN
+      (per RFC 2474 and RFC 3168).
+
+  - name: Flow Label
+    bits: 20
+    layer: header
+    color: addressing
+    notes: >
+      20-bit flow identifier (RFC 6437). Source-assigned for the life
+      of a flow. Routers use this for consistent ECMP hashing without
+      having to inspect L4 ports. Compare with ESUN's 16-bit Flow
+      Label — same idea, smaller.
+
+  - name: Payload Length
+    bits: 16
+    layer: header
+    color: control
+    notes: >
+      Payload length in bytes — excludes the 40-byte fixed header.
+      Jumbograms (RFC 2675) can extend this via a Hop-by-Hop option
+      and a 32-bit length field.
+
+  - name: Next Header
+    bits: 8
+    layer: header
+    color: control
+    notes: >
+      Identifies the type of the immediately following header.
+      Same value space as IPv4 Protocol (6=TCP, 17=UDP, 58=ICMPv6).
+      Extension headers (Hop-by-Hop, Routing, Fragment, ESP, AH,
+      Destination Options) chain via this field.
+
+  - name: Hop Limit
+    bits: 8
+    layer: header
+    color: control
+    notes: >
+      Equivalent to IPv4 TTL. Decremented at each hop; discarded at 0.
+      Renamed to better reflect what it actually counts (hops, not
+      time).
+
+  - name: Source Address
+    bits: 128
+    layer: header
+    color: addressing
+    notes: >
+      128-bit IPv6 source address. Written in hex-colon form
+      (e.g. 2001:db8::1). 16 bytes total — 4× the width of IPv4.
+
+  - name: Destination Address
+    bits: 128
+    layer: header
+    color: addressing
+    notes: "128-bit IPv6 destination address."
+
+  - name: Payload
+    bits: 0
+    variable: true
+    payload: true
+    layer: payload
+    color: payload
+    notes: >
+      L4 payload (or first extension header). Maximum standard
+      payload 65535 bytes; jumbograms via Hop-by-Hop option extend
+      this if needed.
+
+payload:
+  min_bytes: 0
+  max_bytes: 1440       # 1500 MTU - 40 IPv6 header (typical IPv6 minimum link MTU)
+  default_bytes: 1440
+  jumbo_max_bytes: 8960 # 9000 jumbo - 40
+
+wire_overhead:
+  before_bytes: 0
+
+link_variants:
+  - id: 1gbe
+    name: "1GbE"
+    line_rate_gbaud: 1.25
+    encoding: "8b/10b"
+    encoding_ratio: 0.8
+    fec: null
+    fec_ratio: 1.0
+  - id: 10gbe
+    name: "10GbE"
+    line_rate_gbaud: 10.3125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: null
+    fec_ratio: 1.0
+  - id: 25gbe
+    name: "25GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 100gbe
+    name: "100GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 200gbe
+    name: "200GbE"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+  - id: 400gbe
+    name: "400GbE"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+  - id: 800gbe
+    name: "800GbE"
+    line_rate_gbaud: 53.125
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514) + interleaving"
+    fec_ratio: 0.944853
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-12"
+  license: "CC-BY-4.0"
+  spec_refs:
+    - document: "RFC 8200"
+      title: "Internet Protocol, Version 6 (IPv6) Specification"
+    - document: "RFC 6437"
+      title: "IPv6 Flow Label Specification"

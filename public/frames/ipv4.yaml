@@ -1,0 +1,218 @@
+id: ipv4
+name: "IPv4 Header (RFC 791)"
+short_label: "IPv4"
+family: ip
+osi_layer: "L3"
+
+summary: >
+  Classic 20-byte IPv4 header (RFC 791). Carries 32-bit source/destination
+  addresses, fragmentation control, an 8-bit protocol demux, and a
+  16-bit Header Checksum that covers ONLY the IPv4 header (not the
+  payload). Options field (variable, 0-40 bytes) is rare in modern
+  practice and is not modeled here.
+
+layers:
+  - id: header
+    name: "IPv4 Header"
+    color: addressing
+  - id: payload
+    name: "L4 Payload"
+    color: payload
+
+fields:
+  - name: Version
+    bits: 4
+    layer: header
+    color: control
+    notes: >
+      IP version number. Always 4 for IPv4 (binary 0100). The first nibble
+      lets routers distinguish IPv4 from IPv6 on a per-packet basis.
+
+  - name: IHL
+    bits: 4
+    layer: header
+    color: control
+    notes: >
+      Internet Header Length, in 32-bit words. Minimum 5 (= 20 bytes,
+      no options); maximum 15 (= 60 bytes, with options).
+
+  - name: DSCP
+    bits: 6
+    layer: header
+    color: control
+    notes: >
+      Differentiated Services Code Point (RFC 2474). Replaces the
+      original 8-bit ToS field's high 6 bits. Used for QoS / traffic
+      classification.
+
+  - name: ECN
+    bits: 2
+    layer: header
+    color: control
+    notes: >
+      Explicit Congestion Notification (RFC 3168). 00 = Not-ECT;
+      01/10 = ECT(1)/ECT(0); 11 = CE (Congestion Experienced).
+      Inspected and modified by routers in DCQCN / DCTCP deployments.
+
+  - name: Total Length
+    bits: 16
+    layer: header
+    color: control
+    notes: >
+      Total packet length in bytes including header AND payload.
+      Maximum 65535. Most Ethernet-carried IPv4 is bounded by MTU
+      (typically 1500 or 9000 jumbo).
+
+  - name: Identification
+    bits: 16
+    layer: header
+    color: control
+    notes: >
+      Used to identify fragments of the same original datagram. Set by
+      the originator; matches across all fragments of one packet.
+
+  - name: Flags
+    bits: 3
+    layer: header
+    color: control
+    notes: >
+      3 control bits: bit 0 Reserved (must be 0); bit 1 DF (Don't
+      Fragment); bit 2 MF (More Fragments). DF=1 is set on Path MTU
+      Discovery; MF=1 on all but the last fragment of a fragmented
+      datagram.
+
+  - name: Fragment Offset
+    bits: 13
+    layer: header
+    color: control
+    notes: >
+      Position of this fragment's payload within the original
+      datagram, measured in 8-byte units. 0 for the first (or
+      unfragmented) packet.
+
+  - name: TTL
+    bits: 8
+    layer: header
+    color: control
+    notes: >
+      Time To Live. Decremented at every router hop; packet discarded
+      when TTL reaches 0 (with an ICMP Time Exceeded back to the
+      source). Initial values vary by OS (Linux 64, Windows 128).
+
+  - name: Protocol
+    bits: 8
+    layer: header
+    color: control
+    notes: >
+      Next-header demultiplexer. 6 = TCP, 17 = UDP, 1 = ICMP, 50 = ESP,
+      51 = AH, 47 = GRE, 41 = IPv6 (in IPv4 tunnel).
+
+  - name: Header Checksum
+    bits: 16
+    layer: header
+    color: crc
+    is_crc: true
+    crc_coverage: { from: "Version", to: "Destination Address" }
+    notes: >
+      16-bit one's-complement sum over the IPv4 header ONLY.
+      Recomputed at every hop (because TTL changes). Does NOT cover
+      the payload — L4 layers carry their own checksums (TCP/UDP)
+      that DO cover their data.
+
+  - name: Source Address
+    bits: 32
+    layer: header
+    color: addressing
+    notes: >
+      32-bit IPv4 source address. Written in dotted-quad form
+      (e.g. 192.168.1.1). Each byte = one quad. Byte 0 is the leftmost
+      number in the dotted-quad notation.
+
+  - name: Destination Address
+    bits: 32
+    layer: header
+    color: addressing
+    notes: >
+      32-bit IPv4 destination address.
+
+  - name: Payload
+    bits: 0
+    variable: true
+    payload: true
+    layer: payload
+    color: payload
+    notes: >
+      L4 payload: TCP segment, UDP datagram, ICMP message, ESP packet,
+      etc. — selected by the Protocol field above.
+
+payload:
+  min_bytes: 0
+  max_bytes: 1480       # 1500 MTU - 20 IPv4 header
+  default_bytes: 1480
+  jumbo_max_bytes: 8980 # 9000 jumbo - 20 IPv4 header
+
+wire_overhead:
+  before_bytes: 0
+
+link_variants:
+  - id: 1gbe
+    name: "1GbE"
+    line_rate_gbaud: 1.25
+    encoding: "8b/10b"
+    encoding_ratio: 0.8
+    fec: null
+    fec_ratio: 1.0
+  - id: 10gbe
+    name: "10GbE"
+    line_rate_gbaud: 10.3125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: null
+    fec_ratio: 1.0
+  - id: 25gbe
+    name: "25GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 100gbe
+    name: "100GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 200gbe
+    name: "200GbE"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+  - id: 400gbe
+    name: "400GbE"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+  - id: 800gbe
+    name: "800GbE"
+    line_rate_gbaud: 53.125
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514) + interleaving"
+    fec_ratio: 0.944853
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-12"
+  license: "CC-BY-4.0"
+  spec_refs:
+    - document: "RFC 791"
+      title: "Internet Protocol"
+    - document: "RFC 2474"
+      title: "Definition of the Differentiated Services Field (DS Field)"
+    - document: "RFC 3168"
+      title: "The Addition of Explicit Congestion Notification (ECN) to IP"

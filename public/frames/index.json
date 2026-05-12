@@ -23,6 +23,46 @@
       "family": "esun",
       "osi_layer": "L2 + L2.5",
       "path": "esun.yaml"
+    },
+    {
+      "id": "ipv4",
+      "name": "IPv4 Header",
+      "short_label": "IPv4",
+      "family": "ip",
+      "osi_layer": "L3",
+      "path": "ipv4.yaml"
+    },
+    {
+      "id": "ipv6",
+      "name": "IPv6 Header",
+      "short_label": "IPv6",
+      "family": "ip",
+      "osi_layer": "L3",
+      "path": "ipv6.yaml"
+    },
+    {
+      "id": "tcp",
+      "name": "TCP Header",
+      "short_label": "TCP",
+      "family": "tcp",
+      "osi_layer": "L4",
+      "path": "tcp.yaml"
+    },
+    {
+      "id": "udp",
+      "name": "UDP Header",
+      "short_label": "UDP",
+      "family": "udp",
+      "osi_layer": "L4",
+      "path": "udp.yaml"
+    },
+    {
+      "id": "rocev2",
+      "name": "RoCEv2 (BTH + ICRC)",
+      "short_label": "RoCEv2",
+      "family": "rdma",
+      "osi_layer": "L5 over UDP/IP",
+      "path": "rocev2.yaml"
     }
   ]
 }

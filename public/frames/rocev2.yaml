@@ -1,0 +1,219 @@
+id: rocev2
+name: "RoCEv2 (BTH + ICRC)"
+short_label: "RoCEv2"
+family: rdma
+osi_layer: "L5 over UDP/IP"
+
+summary: >
+  RDMA over Converged Ethernet, version 2. The Base Transport Header
+  (BTH, 12 bytes) is the heart of the IBTA transport service and
+  rides inside UDP destination port 4791. A trailing 4-byte ICRC
+  validates an invariant view of the packet (BTH + payload + a
+  pseudo-header from the surrounding IP/UDP). Extension headers
+  (AETH, RETH, DETH, IETH) follow BTH depending on opcode and are
+  NOT modeled here.
+
+layers:
+  - id: header
+    name: "BTH (Base Transport Header)"
+    color: addressing
+  - id: payload
+    name: "Verbs Payload"
+    color: payload
+  - id: trailer
+    name: "ICRC"
+    color: crc
+
+fields:
+  - name: OpCode
+    bits: 8
+    layer: header
+    color: control
+    notes: >
+      Operation code. Identifies the packet type and transport
+      service (RC/UC/RD/UD). High 3 bits = service; low 5 bits =
+      opcode. Examples: 0x00 RC SEND First, 0x04 RC SEND Only,
+      0x0A RC RDMA WRITE First, 0x11 RC RDMA READ Response Only.
+
+  - name: SE
+    bits: 1
+    layer: header
+    color: control
+    notes: >
+      Solicited Event. When set, generates an event on the receiver
+      after the message completes — used to wake up the receiving
+      thread for messages that need attention.
+
+  - name: M
+    bits: 1
+    layer: header
+    color: control
+    notes: >
+      MigReq (Migration Request). Used to indicate path migration
+      for connected services that support APM (Automatic Path
+      Migration).
+
+  - name: PadCount
+    bits: 2
+    layer: header
+    color: control
+    notes: >
+      Pad bytes appended to the payload to align it to 4 bytes.
+      0-3 bytes. Required because BTH-following data must be
+      4-byte aligned.
+
+  - name: TVer
+    bits: 4
+    layer: header
+    color: control
+    notes: >
+      Transport Header Version. Always 0 for the current IBTA
+      transport.
+
+  - name: P_Key
+    bits: 16
+    layer: header
+    color: addressing
+    notes: >
+      Partition Key. Identifies the IB partition the packet belongs
+      to — a logical isolation mechanism similar to a VLAN. The
+      high bit indicates full vs. limited membership.
+
+  - name: FECN
+    bits: 1
+    layer: header
+    color: control
+    notes: >
+      Fabric Explicit Congestion Notification. Set by switches when
+      they detect congestion on this path — RoCEv2's L2/L3 ECN
+      story for use with DCQCN. (IBTA Vol 1 Annex A17.)
+
+  - name: BECN
+    bits: 1
+    layer: header
+    color: control
+    notes: >
+      Backward Explicit Congestion Notification. Set by receivers
+      to inform the sender of congestion in the reverse path.
+
+  - name: Reserved
+    bits: 6
+    layer: header
+    color: reserved
+    is_reserved: true
+    notes: "Reserved. Must be zero on transmit; ignored on receive."
+
+  - name: DestQP
+    bits: 24
+    layer: header
+    color: addressing
+    notes: >
+      Destination Queue Pair number. Identifies the receiving QP
+      on the target HCA. QPs are the verbs-level analog of TCP
+      sockets — every connection has a {SrcQP, DestQP} pair.
+
+  - name: A
+    bits: 1
+    layer: header
+    color: control
+    notes: >
+      AckReq. Set on the last packet of a message to request an
+      ACK from the receiver (Reliable Connection service).
+
+  - name: Reserved
+    bits: 7
+    layer: header
+    color: reserved
+    is_reserved: true
+    notes: "Reserved. Must be zero on transmit; ignored on receive."
+
+  - name: PSN
+    bits: 24
+    layer: header
+    color: control
+    notes: >
+      Packet Sequence Number. 24-bit sliding window per QP, used
+      for in-order delivery and lost-packet detection in the
+      Reliable Connection service.
+
+  - name: Payload
+    bits: 0
+    variable: true
+    payload: true
+    layer: payload
+    color: payload
+    notes: >
+      Verbs-level payload — RDMA Read/Write data, SEND data, or
+      whatever the OpCode indicates. Followed by any required
+      extension headers (RETH, AETH, etc.) which are not modeled
+      separately here.
+
+  - name: ICRC
+    bits: 32
+    layer: trailer
+    color: crc
+    is_crc: true
+    crc_coverage: { from: "OpCode", to: "Payload" }
+    notes: >
+      Invariant CRC. CRC-32 over an "invariant" view of the
+      packet — BTH + payload + a pseudo-header that includes the
+      Source/Destination IP, UDP source port, and a few invariant
+      bits of IP TOS. This way the CRC survives changes that hops
+      legitimately make (TTL decrement, IP checksum recompute) but
+      catches any mutation of the IBTA payload itself.
+
+payload:
+  min_bytes: 0
+  max_bytes: 1442       # 1500 MTU - 14 Eth - 20 IPv4 - 8 UDP - 12 BTH - 4 ICRC
+  default_bytes: 1442
+  jumbo_max_bytes: 8942 # 9000 jumbo - 14 - 20 - 8 - 12 - 4
+
+wire_overhead:
+  before_bytes: 0
+
+link_variants:
+  - id: 25gbe
+    name: "25GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 100gbe
+    name: "100GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 200gbe
+    name: "200GbE"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+  - id: 400gbe
+    name: "400GbE"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+  - id: 800gbe
+    name: "800GbE"
+    line_rate_gbaud: 53.125
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514) + interleaving"
+    fec_ratio: 0.944853
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-12"
+  license: "CC-BY-4.0"
+  spec_refs:
+    - document: "IBTA Vol 1"
+      title: "InfiniBand Architecture Specification"
+    - document: "IBTA Vol 1 Annex A17"
+      title: "RoCEv2"

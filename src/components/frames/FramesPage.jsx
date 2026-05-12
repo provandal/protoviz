@@ -22,21 +22,24 @@ async function fetchYaml(path) {
 // Presets carry a `families` filter listing which frame families they
 // apply to. The bulk presets (`1mb`, `256mb`) set payload=null meaning
 // "use the frame's max payload" — picked up at apply time.
+const ETH_FAMILIES = ['ethernet', 'esun', 'ip', 'tcp', 'udp', 'rdma'];
+const ALL_FAMILIES = ['ethernet', 'esun', 'fc', 'ip', 'tcp', 'udp', 'rdma'];
+
 const PRESETS = [
-  { id: '64b',      label: '64 B RPC',         payload: 64,         message: 64,
-    families: ['ethernet', 'esun', 'fc'] },
-  { id: 'mss',      label: 'TCP MSS (1460)',   payload: 1460,       message: 1460,
-    families: ['ethernet'] },
-  { id: 'jumbo',    label: 'Jumbo (9000)',     payload: 9000,       message: 9000,
-    families: ['ethernet'] },
-  { id: 'fc-data',  label: 'FC Data IU (2048)', payload: 2048,      message: 2048,
+  { id: '64b',      label: '64 B RPC',          payload: 64,    message: 64,
+    families: ALL_FAMILIES },
+  { id: 'mss',      label: 'TCP MSS (1460)',    payload: 1460,  message: 1460,
+    families: ETH_FAMILIES },
+  { id: 'jumbo',    label: 'Jumbo (9000)',      payload: 9000,  message: 9000,
+    families: ETH_FAMILIES },
+  { id: 'fc-data',  label: 'FC Data IU (2048)', payload: 2048,  message: 2048,
     families: ['fc'] },
-  { id: 'esun-max', label: 'ESUN max (1496)',  payload: 1496,       message: 1496,
+  { id: 'esun-max', label: 'ESUN max (1496)',   payload: 1496,  message: 1496,
     families: ['esun'] },
-  { id: '1mb',      label: '1 MB bulk',        payload: null,       message: 1024 * 1024,
-    families: ['ethernet', 'esun', 'fc'] },
-  { id: '256mb',    label: '256 MB tensor',    payload: null,       message: 256 * 1024 * 1024,
-    families: ['ethernet', 'esun', 'fc'] },
+  { id: '1mb',      label: '1 MB bulk',         payload: null,  message: 1024 * 1024,
+    families: ALL_FAMILIES },
+  { id: '256mb',    label: '256 MB tensor',     payload: null,  message: 256 * 1024 * 1024,
+    families: ALL_FAMILIES },
 ];
 
 function Field({ label, children }) {

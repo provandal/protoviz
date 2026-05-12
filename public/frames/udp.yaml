@@ -1,0 +1,141 @@
+id: udp
+name: "UDP Header (RFC 768)"
+short_label: "UDP"
+family: udp
+osi_layer: "L4"
+
+summary: >
+  User Datagram Protocol header. The simplest L4 in common use —
+  just 8 bytes: source/destination ports, total length, and a
+  16-bit Checksum that covers UDP header + payload + an IP
+  pseudo-header (same form as TCP). Carries DNS, QUIC, VXLAN,
+  RoCEv2, and many other "I don't need reliability" or
+  "reliability above me" protocols.
+
+layers:
+  - id: header
+    name: "UDP Header"
+    color: addressing
+  - id: payload
+    name: "Payload"
+    color: payload
+
+fields:
+  - name: Source Port
+    bits: 16
+    layer: header
+    color: addressing
+    notes: >
+      Source port. Often used by VXLAN and RoCEv2 senders to provide
+      entropy for ECMP hashing — the source port is randomized
+      per-flow so different flows hash to different paths.
+
+  - name: Destination Port
+    bits: 16
+    layer: header
+    color: addressing
+    notes: >
+      Destination port. Well-known: 53 DNS, 67/68 DHCP, 123 NTP,
+      443 QUIC/HTTP3, 4789 VXLAN, 4791 RoCEv2, 6081 Geneve.
+
+  - name: Length
+    bits: 16
+    layer: header
+    color: control
+    notes: >
+      Total UDP length in bytes — INCLUDES the 8-byte header. So a
+      datagram with no payload has Length = 8. Maximum 65535,
+      bounded in practice by IP MTU (or jumbograms in IPv6).
+
+  - name: Checksum
+    bits: 16
+    layer: header
+    color: crc
+    is_crc: true
+    crc_coverage: { from: "Source Port", to: "Payload" }
+    notes: >
+      Same one's-complement-with-pseudo-header construction as TCP.
+      Optional over IPv4 (0x0000 = no checksum); mandatory over IPv6
+      (RFC 8200) — IPv6's missing header checksum is why UDP/IPv6
+      must protect itself.
+
+  - name: Payload
+    bits: 0
+    variable: true
+    payload: true
+    layer: payload
+    color: payload
+    notes: >
+      UDP payload. The whole point of UDP is to be a thin demux
+      layer — whatever protocol is above (DNS, QUIC, RoCEv2 BTH,
+      VXLAN, etc.) goes straight in here.
+
+payload:
+  min_bytes: 0
+  max_bytes: 1472       # 1500 MTU - 20 IPv4 - 8 UDP
+  default_bytes: 1472
+  jumbo_max_bytes: 8972 # 9000 jumbo - 20 IPv4 - 8 UDP
+
+wire_overhead:
+  before_bytes: 0
+
+link_variants:
+  - id: 1gbe
+    name: "1GbE"
+    line_rate_gbaud: 1.25
+    encoding: "8b/10b"
+    encoding_ratio: 0.8
+    fec: null
+    fec_ratio: 1.0
+  - id: 10gbe
+    name: "10GbE"
+    line_rate_gbaud: 10.3125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: null
+    fec_ratio: 1.0
+  - id: 25gbe
+    name: "25GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 100gbe
+    name: "100GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 200gbe
+    name: "200GbE"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+  - id: 400gbe
+    name: "400GbE"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+  - id: 800gbe
+    name: "800GbE"
+    line_rate_gbaud: 53.125
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514) + interleaving"
+    fec_ratio: 0.944853
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-12"
+  license: "CC-BY-4.0"
+  spec_refs:
+    - document: "RFC 768"
+      title: "User Datagram Protocol"
+    - document: "RFC 8200"
+      title: "IPv6 Specification (UDP checksum mandatory over IPv6)"
