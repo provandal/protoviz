@@ -1,0 +1,163 @@
+id: esp
+name: "IPsec ESP (RFC 4303)"
+short_label: "ESP"
+family: security
+osi_layer: "L3 security (over IP)"
+
+summary: >
+  IPsec Encapsulating Security Payload (RFC 4303). The most
+  widely-deployed VPN encapsulation. Also the framing model that
+  FC-SP-3 adopts for FC frame encryption. This view models the
+  AES-GCM-128 case (the modern default): 8-byte IV at the front
+  of the payload area, 16-byte ICV at the end, padding+trailer
+  fields just before the ICV.
+
+layers:
+  - id: header
+    name: "ESP Header"
+    color: addressing
+  - id: iv
+    name: "Initialization Vector"
+    color: control
+  - id: payload
+    name: "Encrypted Payload + Padding + Trailer"
+    color: payload
+  - id: trailer
+    name: "ICV"
+    color: crc
+
+fields:
+  - name: SPI
+    bits: 32
+    layer: header
+    color: addressing
+    notes: >
+      Security Parameters Index. 32-bit identifier the receiver
+      uses to look up the Security Association (SA) — which
+      contains the keys, algorithm, sequence-window state, etc.
+      Unique per receiver per direction.
+
+  - name: Sequence Number
+    bits: 32
+    layer: header
+    color: control
+    notes: >
+      Monotonically increasing per-SA counter. Receiver uses a
+      sliding window for replay protection. With AES-GCM, the
+      Sequence Number is also part of the IV construction —
+      doubles as cryptographic nonce material. Extended (64-bit)
+      sequence numbers are common in modern deployments.
+
+  - name: IV
+    bits: 64
+    layer: iv
+    color: control
+    notes: >
+      8-byte Initialization Vector for AES-GCM. Combined with the
+      SPI and Sequence Number to form the unique GCM nonce. Sent
+      in the clear; not part of the encrypted payload. Different
+      ciphers use different IV widths (AES-CBC uses 16B).
+
+  - name: Payload
+    bits: 0
+    variable: true
+    payload: true
+    layer: payload
+    color: payload
+    notes: >
+      Encrypted payload. Contains the original IP packet (tunnel
+      mode) or upper-layer protocol data (transport mode), padded
+      to a cipher-block boundary. The next two fields (Pad Length
+      and Next Header) are appended to the cleartext BEFORE
+      encryption — so they're recovered together with the payload
+      at decrypt time.
+
+  - name: Pad Length
+    bits: 8
+    layer: payload
+    color: control
+    notes: >
+      Length of the Padding that precedes this byte, 0-255.
+      Padding bytes themselves are not modeled as a separate
+      field (variable 0-255 bytes); the receiver discards them
+      after decryption.
+
+  - name: Next Header
+    bits: 8
+    layer: payload
+    color: control
+    notes: >
+      IP protocol number for the encrypted payload type. 4 =
+      IPv4 (tunnel mode); 6 = TCP, 17 = UDP, 41 = IPv6, 50 = ESP
+      (nested SAs); etc.
+
+  - name: ICV
+    bits: 128
+    layer: trailer
+    color: crc
+    is_crc: true
+    crc_coverage: { from: "SPI", to: "Next Header" }
+    notes: >
+      Integrity Check Value. 16 bytes for AES-GCM-128 (common).
+      AES-GCM authenticates SPI, Sequence Number, and the IV +
+      encrypted payload + Pad Length + Next Header in one
+      operation — single-pass AEAD. Other ciphers use HMAC
+      separately for authentication.
+
+payload:
+  min_bytes: 0
+  max_bytes: 1400       # 1500 MTU - 20 outer IPv4 - 8 SPI/Seq - 8 IV - 2 PadLen/NextHdr - 16 ICV - 46 IP overhead margin
+  default_bytes: 1400
+  jumbo_max_bytes: 8900
+
+wire_overhead:
+  before_bytes: 0
+
+link_variants:
+  - id: 1gbe
+    name: "1GbE"
+    line_rate_gbaud: 1.25
+    encoding: "8b/10b"
+    encoding_ratio: 0.8
+    fec: null
+    fec_ratio: 1.0
+  - id: 10gbe
+    name: "10GbE"
+    line_rate_gbaud: 10.3125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: null
+    fec_ratio: 1.0
+  - id: 25gbe
+    name: "25GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 100gbe
+    name: "100GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 400gbe
+    name: "400GbE"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-12"
+  license: "CC-BY-4.0"
+  spec_refs:
+    - document: "RFC 4303"
+      title: "IP Encapsulating Security Payload (ESP)"
+    - document: "RFC 4106"
+      title: "The Use of Galois/Counter Mode (GCM) in IPsec ESP"
+    - document: "INCITS T11 FC-SP-3"
+      title: "Fibre Channel Security Protocols 3 (reuses ESP framing)"

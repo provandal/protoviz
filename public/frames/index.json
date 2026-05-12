@@ -25,6 +25,14 @@
       "path": "esun.yaml"
     },
     {
+      "id": "fcoe",
+      "name": "FCoE (FC-BB-5)",
+      "short_label": "FCoE",
+      "family": "fcoe",
+      "osi_layer": "L2 (FC over Ethernet)",
+      "path": "fcoe.yaml"
+    },
+    {
       "id": "pfc",
       "name": "PFC PAUSE (802.1Qbb)",
       "short_label": "PFC",
@@ -55,6 +63,14 @@
       "family": "ip",
       "osi_layer": "L3",
       "path": "ipv6.yaml"
+    },
+    {
+      "id": "esp",
+      "name": "IPsec ESP",
+      "short_label": "ESP",
+      "family": "security",
+      "osi_layer": "L3 security",
+      "path": "esp.yaml"
     },
     {
       "id": "tcp",
@@ -95,6 +111,22 @@
       "family": "rdma",
       "osi_layer": "L5 over UDP/IP",
       "path": "rocev2.yaml"
+    },
+    {
+      "id": "ib-native",
+      "name": "Native InfiniBand",
+      "short_label": "IB Native",
+      "family": "ib",
+      "osi_layer": "IB L1-L4",
+      "path": "ib-native.yaml"
+    },
+    {
+      "id": "http2",
+      "name": "HTTP/2 Frame",
+      "short_label": "HTTP/2",
+      "family": "application",
+      "osi_layer": "L7",
+      "path": "http2.yaml"
     }
   ]
 }

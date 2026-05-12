@@ -1,0 +1,139 @@
+id: http2
+name: "HTTP/2 Frame (RFC 9113)"
+short_label: "HTTP/2"
+family: application
+osi_layer: "L7 (over TLS/TCP)"
+
+summary: >
+  HTTP/2 frame layout per RFC 9113 (the 2022 consolidated update;
+  was RFC 7540). Every HTTP/2 frame shares a 9-byte header: a
+  24-bit Length, an 8-bit Type, 8 Flag bits, and a 31-bit Stream
+  Identifier. The Type field demuxes ~10 frame types (DATA,
+  HEADERS, SETTINGS, PING, GOAWAY, etc.); the Stream ID
+  multiplexes many concurrent request/response exchanges over a
+  single TCP (or QUIC, for HTTP/3) connection.
+
+layers:
+  - id: header
+    name: "HTTP/2 Frame Header"
+    color: addressing
+  - id: payload
+    name: "Frame Payload"
+    color: payload
+
+fields:
+  - name: Length
+    bits: 24
+    layer: header
+    color: control
+    notes: >
+      Frame payload length in bytes (does NOT include the 9-byte
+      header). Default maximum is 16384 (2^14); negotiable up to
+      16777215 (2^24-1) via SETTINGS_MAX_FRAME_SIZE.
+
+  - name: Type
+    bits: 8
+    layer: header
+    color: control
+    notes: >
+      Frame type:
+      0x00 DATA, 0x01 HEADERS, 0x02 PRIORITY, 0x03 RST_STREAM,
+      0x04 SETTINGS, 0x05 PUSH_PROMISE, 0x06 PING, 0x07 GOAWAY,
+      0x08 WINDOW_UPDATE, 0x09 CONTINUATION.
+
+  - name: Flags
+    bits: 8
+    layer: header
+    color: control
+    notes: >
+      Flags whose meaning depends on Type. Examples:
+      END_STREAM (0x01) — last frame on this stream;
+      END_HEADERS (0x04) — last frame in a HEADERS/CONTINUATION sequence;
+      ACK (0x01) — for SETTINGS/PING responses;
+      PADDED (0x08) — payload is preceded by a Pad Length byte.
+
+  - name: R
+    bits: 1
+    layer: header
+    color: reserved
+    is_reserved: true
+    notes: >
+      Reserved single bit. MUST be ignored on receive. (RFC 9113
+      reserves this for future use; sender SHOULD set to 0.)
+
+  - name: Stream Identifier
+    bits: 31
+    layer: header
+    color: addressing
+    notes: >
+      Stream ID. 0 is reserved for connection-level frames
+      (SETTINGS, PING, GOAWAY). Odd values are client-initiated;
+      even values are server-initiated. Each end-to-end
+      request/response uses one stream; many streams multiplex
+      over one TCP connection.
+
+  - name: Payload
+    bits: 0
+    variable: true
+    payload: true
+    layer: payload
+    color: payload
+    notes: >
+      Frame payload. Format depends on Type — HPACK-encoded
+      header block for HEADERS, raw bytes for DATA, key/value
+      pairs for SETTINGS, etc. Bounded by the negotiated
+      SETTINGS_MAX_FRAME_SIZE.
+
+payload:
+  min_bytes: 0
+  max_bytes: 16384       # default SETTINGS_MAX_FRAME_SIZE
+  default_bytes: 16384
+  jumbo_max_bytes: 16777215  # protocol-max via SETTINGS
+
+wire_overhead:
+  before_bytes: 0
+
+link_variants:
+  - id: 1gbe
+    name: "1GbE"
+    line_rate_gbaud: 1.25
+    encoding: "8b/10b"
+    encoding_ratio: 0.8
+    fec: null
+    fec_ratio: 1.0
+  - id: 10gbe
+    name: "10GbE"
+    line_rate_gbaud: 10.3125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: null
+    fec_ratio: 1.0
+  - id: 25gbe
+    name: "25GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 100gbe
+    name: "100GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 400gbe
+    name: "400GbE"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-12"
+  license: "CC-BY-4.0"
+  spec_refs:
+    - document: "RFC 9113"
+      title: "HTTP/2"

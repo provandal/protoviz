@@ -1,0 +1,332 @@
+id: ib-native
+name: "Native InfiniBand Packet"
+short_label: "IB Native"
+family: ib
+osi_layer: "IB L1-L4"
+
+summary: >
+  Native InfiniBand packet per IBTA Vol 1. LRH (Local Routing
+  Header, always present, 8B) handles intra-subnet L2 routing.
+  GRH (Global Routing Header, 40B, optional, present only for
+  inter-subnet traffic) handles L3 routing — the field layout
+  intentionally mirrors IPv6. BTH (Base Transport Header, 12B —
+  identical to RoCEv2's BTH) provides the transport service.
+  ICRC (32b, invariant) and VCRC (16b, variant, recomputed at
+  each hop) tail the packet. SMB Direct over IB and NVMe over IB
+  ride this stack.
+
+layers:
+  - id: lrh
+    name: "LRH (Local Routing)"
+    color: addressing
+  - id: grh
+    name: "GRH (Global Routing)"
+    color: addressing
+  - id: bth
+    name: "BTH (Base Transport)"
+    color: control
+  - id: payload
+    name: "Verbs Payload"
+    color: payload
+  - id: trailer
+    name: "ICRC + VCRC"
+    color: crc
+
+fields:
+  # ── LRH (8 bytes) ────────────────────────────────────────────────
+  - name: VL
+    bits: 4
+    layer: lrh
+    color: control
+    notes: >
+      Virtual Lane. Identifies one of up to 15 virtual lanes (VL0-VL14)
+      + the management VL (VL15). Each VL has independent flow control.
+
+  - name: LVer
+    bits: 4
+    layer: lrh
+    color: control
+    notes: "Link Version. Currently 0."
+
+  - name: SL
+    bits: 4
+    layer: lrh
+    color: control
+    notes: >
+      Service Level. 0-15. Maps to VL at egress via the SL-to-VL
+      table — provides QoS for traffic classes.
+
+  - name: Reserved
+    bits: 2
+    layer: lrh
+    color: reserved
+    is_reserved: true
+    notes: "Reserved. Must be zero."
+
+  - name: LNH
+    bits: 2
+    layer: lrh
+    color: control
+    notes: >
+      Link Next Header. 00=Raw, 01=IPv6 (raw), 10=BTH (no GRH),
+      11=GRH+BTH (inter-subnet). Determines what follows LRH.
+
+  - name: DLID
+    bits: 16
+    layer: lrh
+    color: addressing
+    notes: >
+      Destination Local Identifier. 16-bit local address within
+      the IB subnet — assigned by the Subnet Manager.
+
+  - name: Reserved
+    bits: 5
+    layer: lrh
+    color: reserved
+    is_reserved: true
+    notes: "Reserved. Must be zero."
+
+  - name: Length
+    bits: 11
+    layer: lrh
+    color: control
+    notes: >
+      Packet Length, in 4-byte words. Counts from LRH through
+      VCRC.
+
+  - name: SLID
+    bits: 16
+    layer: lrh
+    color: addressing
+    notes: "Source Local Identifier."
+
+  # ── GRH (40 bytes) — optional, mirrors IPv6 layout ──────────────
+  - name: IPVer
+    bits: 4
+    layer: grh
+    color: control
+    notes: >
+      IP Version. Set to 6 — the GRH layout deliberately mirrors
+      the IPv6 header so IB gateways can interop with IPv6 routing.
+
+  - name: TClass
+    bits: 8
+    layer: grh
+    color: control
+    notes: "Traffic Class — equivalent to IPv6 Traffic Class."
+
+  - name: FlowLabel
+    bits: 20
+    layer: grh
+    color: addressing
+    notes: >
+      Flow Label — equivalent to IPv6 Flow Label. Hashing entropy
+      for inter-subnet load balancing.
+
+  - name: PayLen
+    bits: 16
+    layer: grh
+    color: control
+    notes: "Payload Length (bytes), counted from after GRH to ICRC."
+
+  - name: NxtHdr
+    bits: 8
+    layer: grh
+    color: control
+    notes: >
+      Next Header. Identifies what follows GRH. 0x1B = IBTA
+      transport (BTH).
+
+  - name: HopLmt
+    bits: 8
+    layer: grh
+    color: control
+    notes: >
+      Hop Limit — equivalent to IPv6 Hop Limit / IPv4 TTL.
+      Decremented at each router; discarded at 0.
+
+  - name: SGID
+    bits: 128
+    layer: grh
+    color: addressing
+    notes: >
+      Source Global Identifier. 128-bit IB address — same width
+      and structure as IPv6 source address.
+
+  - name: DGID
+    bits: 128
+    layer: grh
+    color: addressing
+    notes: "Destination Global Identifier (128-bit)."
+
+  # ── BTH (12 bytes) — identical to RoCEv2 BTH ─────────────────────
+  - name: OpCode
+    bits: 8
+    layer: bth
+    color: control
+    notes: >
+      Operation code. Identifies packet type and transport service.
+      Identical encoding to RoCEv2's OpCode.
+
+  - name: SE
+    bits: 1
+    layer: bth
+    color: control
+    notes: "Solicited Event."
+
+  - name: M
+    bits: 1
+    layer: bth
+    color: control
+    notes: "MigReq (path migration request)."
+
+  - name: PadCount
+    bits: 2
+    layer: bth
+    color: control
+    notes: "Pad bytes (0-3) appended to align payload."
+
+  - name: TVer
+    bits: 4
+    layer: bth
+    color: control
+    notes: "Transport Header Version (always 0)."
+
+  - name: P_Key
+    bits: 16
+    layer: bth
+    color: addressing
+    notes: "Partition Key — IB partition isolation."
+
+  - name: FECN
+    bits: 1
+    layer: bth
+    color: control
+    notes: "Forward ECN."
+
+  - name: BECN
+    bits: 1
+    layer: bth
+    color: control
+    notes: "Backward ECN."
+
+  - name: Reserved
+    bits: 6
+    layer: bth
+    color: reserved
+    is_reserved: true
+    notes: "Reserved."
+
+  - name: DestQP
+    bits: 24
+    layer: bth
+    color: addressing
+    notes: "Destination Queue Pair number."
+
+  - name: A
+    bits: 1
+    layer: bth
+    color: control
+    notes: "AckReq."
+
+  - name: Reserved
+    bits: 7
+    layer: bth
+    color: reserved
+    is_reserved: true
+    notes: "Reserved."
+
+  - name: PSN
+    bits: 24
+    layer: bth
+    color: control
+    notes: "Packet Sequence Number."
+
+  # ── Payload ──────────────────────────────────────────────────────
+  - name: Payload
+    bits: 0
+    variable: true
+    payload: true
+    layer: payload
+    color: payload
+    notes: >
+      Verbs payload — SMB Direct data, NVMe over RDMA Capsules,
+      etc. IB MTUs are quantized: 256, 512, 1024, 2048, 4096
+      bytes. The Subnet Manager negotiates the effective MTU.
+
+  # ── Trailers ─────────────────────────────────────────────────────
+  - name: ICRC
+    bits: 32
+    layer: trailer
+    color: crc
+    is_crc: true
+    crc_coverage: { from: "OpCode", to: "Payload" }
+    notes: >
+      Invariant CRC. CRC-32 over BTH + payload + invariant fields
+      of LRH/GRH. Survives hop-by-hop changes (TTL decrement,
+      SL/VL remap) but catches payload tampering.
+
+  - name: VCRC
+    bits: 16
+    layer: trailer
+    color: crc
+    notes: >
+      Variant CRC. 16-bit CRC over the entire packet (LRH through
+      ICRC). Recomputed at every hop. Catches single-hop link
+      errors below the IBTA transport layer. RoCEv2 drops VCRC
+      and relies on the surrounding Ethernet FCS instead.
+
+payload:
+  min_bytes: 0
+  max_bytes: 4096
+  default_bytes: 4096
+  notes: >
+    IB MTUs: 256, 512, 1024, 2048, 4096 bytes (quantized; pick
+    the largest that fits the underlying fabric).
+
+wire_overhead:
+  before_bytes: 0
+
+link_variants:
+  - id: ib-edr
+    name: "IB EDR (4× 25.78125)"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+    spec: "IBTA Vol 2 (EDR)"
+  - id: ib-hdr
+    name: "IB HDR (4× 50G PAM4)"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+    spec: "IBTA Vol 2 (HDR)"
+  - id: ib-ndr
+    name: "IB NDR (4× 100G PAM4)"
+    line_rate_gbaud: 53.125
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514) + interleaving"
+    fec_ratio: 0.944853
+    spec: "IBTA Vol 2 (NDR)"
+  - id: ib-xdr
+    name: "IB XDR (4× 200G PAM4)"
+    line_rate_gbaud: 106.25
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514) + interleaving"
+    fec_ratio: 0.944853
+    spec: "IBTA Vol 2 (XDR)"
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-12"
+  license: "CC-BY-4.0"
+  spec_refs:
+    - document: "IBTA Vol 1"
+      title: "InfiniBand Architecture Specification (LRH, GRH, BTH)"
+    - document: "IBTA Vol 2"
+      title: "InfiniBand Physical Layer (EDR/HDR/NDR/XDR)"

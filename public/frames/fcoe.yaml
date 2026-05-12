@@ -1,0 +1,205 @@
+id: fcoe
+name: "FCoE Frame (FC-BB-5)"
+short_label: "FCoE"
+family: fcoe
+osi_layer: "L2 (FC inside Ethernet)"
+
+summary: >
+  Fibre Channel over Ethernet per FC-BB-5. A complete Ethernet
+  frame whose payload is an FCoE Header (14B) + a complete FC
+  frame (FC-2 header + FC payload + FC CRC) + FCoE Trailer (4B).
+  Requires a lossless Ethernet fabric (DCB) — the same
+  infrastructure that supports RoCE. Largely displaced by NVMe/TCP
+  and FC-NVMe, but still deployed in some converged data centers.
+
+layers:
+  - id: preamble
+    name: "Wire sync (PHY)"
+    color: framing
+  - id: header
+    name: "L2 Header"
+    color: addressing
+  - id: fcoe-header
+    name: "FCoE Header"
+    color: control
+  - id: payload
+    name: "Encapsulated FC Frame"
+    color: payload
+  - id: fcoe-trailer
+    name: "FCoE Trailer"
+    color: control
+  - id: trailer
+    name: "L2 Trailer"
+    color: crc
+  - id: ifg
+    name: "Inter-Frame Gap"
+    color: framing
+
+fields:
+  - name: Preamble
+    bits: 56
+    layer: preamble
+    color: framing
+    notes: "7 bytes of 0x55. NOT covered by FCS."
+
+  - name: SFD
+    bits: 8
+    layer: preamble
+    color: framing
+    notes: "Start Frame Delimiter (0xD5)."
+
+  - name: Destination MAC
+    bits: 48
+    layer: header
+    color: addressing
+    notes: >
+      FCoE forwarder (FCF) MAC, or a FIP-assigned FPMA
+      (Fabric-Provided MAC Address). The FCF acts as the FCoE
+      switch, terminating FCoE on the Ethernet side and bridging
+      to a native FC fabric (or providing the FC services
+      directly).
+
+  - name: Source MAC
+    bits: 48
+    layer: header
+    color: addressing
+    notes: >
+      Initiator/target ENode MAC — typically an FPMA derived
+      from the host's FC_ID at FLOGI time, providing per-virtual-
+      N_Port MAC uniqueness on the Ethernet segment.
+
+  - name: EtherType
+    bits: 16
+    layer: header
+    color: control
+    notes: >
+      0x8906 — FCoE. (Companion EtherType 0x8914 = FIP, used for
+      FCoE Initialization Protocol: ENode discovery, FCF
+      election, and FPMA assignment.)
+
+  - name: Version
+    bits: 4
+    layer: fcoe-header
+    color: control
+    notes: "FCoE version. Currently 0."
+
+  - name: Reserved
+    bits: 100
+    layer: fcoe-header
+    color: reserved
+    is_reserved: true
+    notes: >
+      100 bits of reserved space inside the FCoE Header. Must be
+      zero on transmit. The fixed FCoE header size (14 bytes
+      including SOF) ensures the encapsulated FC frame starts on
+      a known offset.
+
+  - name: SOF
+    bits: 8
+    layer: fcoe-header
+    color: control
+    notes: >
+      Carries the FC SOF (Start-of-Frame) primitive ordered set
+      from the encapsulated FC frame. FC's natural SOF/EOF
+      primitives are out-of-band ordered sets that can't ride
+      directly over Ethernet — FCoE encodes them in-band as
+      these dedicated bytes.
+
+  - name: Payload
+    bits: 0
+    variable: true
+    payload: true
+    layer: payload
+    color: payload
+    notes: >
+      The encapsulated FC frame body: 24-byte FC-2 header + FC
+      payload (0-2112 bytes) + 4-byte FC CRC. Acts as a passthrough
+      — the FCoE forwarder strips this and re-emits it on the
+      native FC fabric (or processes it directly if running an
+      embedded FC service).
+
+  - name: EOF
+    bits: 8
+    layer: fcoe-trailer
+    color: control
+    notes: >
+      Carries the FC EOF (End-of-Frame) primitive from the
+      encapsulated FC frame. Paired with the SOF above; together
+      they preserve FC's primitive-signal semantics over the
+      Ethernet medium.
+
+  - name: Reserved
+    bits: 24
+    layer: fcoe-trailer
+    color: reserved
+    is_reserved: true
+    notes: "Reserved. Must be zero."
+
+  - name: FCS
+    bits: 32
+    layer: trailer
+    color: crc
+    is_crc: true
+    crc_coverage: { from: "Destination MAC", to: "Reserved" }
+    notes: >
+      Outer Ethernet FCS. CRC-32 over DA through the FCoE Trailer.
+      Does NOT cover the FC CRC inside the payload — that CRC is
+      preserved end-to-end through the FCoE encapsulation, giving
+      the FC payload its OWN integrity check independent of the
+      Ethernet hop.
+
+  - name: IFG
+    bits: 96
+    layer: ifg
+    color: framing
+    wire_only: true
+    notes: "Inter-Frame Gap. 96 bit-times of idle."
+
+payload:
+  min_bytes: 28          # min FC frame = 24B FC-2 header + 0B payload + 4B FC CRC
+  max_bytes: 2140        # max FC frame = 24 + 2112 + 4
+  default_bytes: 2140
+
+wire_overhead:
+  before_bytes: 0
+
+link_variants:
+  - id: 10gbe
+    name: "10GbE (DCB)"
+    line_rate_gbaud: 10.3125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: null
+    fec_ratio: 1.0
+    notes: "Original FCoE deployment target."
+  - id: 25gbe
+    name: "25GbE (DCB)"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 40gbe
+    name: "40GbE (DCB)"
+    line_rate_gbaud: 10.3125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: null
+    fec_ratio: 1.0
+  - id: 100gbe
+    name: "100GbE (DCB)"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-12"
+  license: "CC-BY-4.0"
+  spec_refs:
+    - document: "INCITS T11 FC-BB-5"
+      title: "FC Backbone - 5 (FCoE)"
+    - document: "INCITS T11 FC-BB-6"
+      title: "FC Backbone - 6"
