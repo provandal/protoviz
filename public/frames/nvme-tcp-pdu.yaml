@@ -1,0 +1,143 @@
+id: nvme-tcp-pdu
+name: "NVMe/TCP PDU Common Header"
+short_label: "NVMe/TCP"
+family: nvme-tcp
+osi_layer: "L5 (over TCP)"
+
+summary: >
+  NVMe-over-TCP Protocol Data Unit (PDU) Common Header per NVMe-oF
+  1.1 (TCP Transport Binding). All PDU types share this 8-byte
+  preamble; PDU-Specific Header (PSH) and Data follow, with
+  optional Header and Data digests (CRC-32C) when negotiated at
+  connection setup.
+
+layers:
+  - id: header
+    name: "NVMe/TCP Common Header"
+    color: addressing
+  - id: payload
+    name: "PSH + Data + Digests"
+    color: payload
+
+fields:
+  - name: PDU Type
+    bits: 8
+    layer: header
+    color: control
+    notes: >
+      Identifies the PDU. 0x00 ICReq (Initialize Connection
+      Request), 0x01 ICResp, 0x02 H2CTermReq, 0x03 C2HTermReq,
+      0x04 CapsuleCmd (carries an NVMe SQE), 0x05 CapsuleResp
+      (carries a CQE), 0x06 H2CData (host-to-controller data),
+      0x07 C2HData (controller-to-host data), 0x09 R2T
+      (Ready-to-Transfer), 0x0A KeepAlive.
+
+  - name: Flags
+    bits: 8
+    layer: header
+    color: control
+    notes: >
+      HDGSTF (bit 0): Header digest present (CRC-32C, 4B).
+      DDGSTF (bit 1): Data digest present (CRC-32C, 4B).
+      DATA_LAST (bit 2): final data PDU of a transfer.
+      DATA_SUCCESS (bit 3): success — no separate response PDU needed.
+
+  - name: HLEN
+    bits: 8
+    layer: header
+    color: control
+    notes: >
+      Header Length in bytes — Common Header + PSH (does NOT include
+      data or digests). Always a multiple of 4.
+
+  - name: PDO
+    bits: 8
+    layer: header
+    color: control
+    notes: >
+      PDU Data Offset in bytes from the start of the PDU. Indicates
+      where the Data field begins, after Common Header + PSH +
+      optional Header Digest + any padding.
+
+  - name: PLEN
+    bits: 32
+    layer: header
+    color: control
+    notes: >
+      Total PDU Length in bytes — Common Header through final Data
+      Digest (if present). Receiver uses this to demarcate PDU
+      boundaries within the TCP byte stream.
+
+  - name: Payload
+    bits: 0
+    variable: true
+    payload: true
+    layer: payload
+    color: payload
+    notes: >
+      PDU-Specific Header (varies by PDU type — for CapsuleCmd, a
+      64-byte NVMe Submission Queue Entry), optional 4-byte Header
+      Digest (CRC-32C over Common Header + PSH), optional padding
+      to align Data, in-capsule or normal Data, optional 4-byte Data
+      Digest (CRC-32C over Data).
+
+payload:
+  min_bytes: 0
+  max_bytes: 1452       # TCP MSS (1460) - 8 NVMe/TCP common header
+  default_bytes: 1452
+  jumbo_max_bytes: 8952
+
+wire_overhead:
+  before_bytes: 0
+
+link_variants:
+  - id: 10gbe
+    name: "10GbE"
+    line_rate_gbaud: 10.3125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: null
+    fec_ratio: 1.0
+  - id: 25gbe
+    name: "25GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 100gbe
+    name: "100GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 200gbe
+    name: "200GbE"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+  - id: 400gbe
+    name: "400GbE"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+  - id: 800gbe
+    name: "800GbE"
+    line_rate_gbaud: 53.125
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514) + interleaving"
+    fec_ratio: 0.944853
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-12"
+  license: "CC-BY-4.0"
+  spec_refs:
+    - document: "NVMe-oF 1.1"
+      title: "NVM Express over Fabrics, Section: TCP Transport"

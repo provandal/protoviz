@@ -22,8 +22,16 @@ async function fetchYaml(path) {
 // Presets carry a `families` filter listing which frame families they
 // apply to. The bulk presets (`1mb`, `256mb`) set payload=null meaning
 // "use the frame's max payload" — picked up at apply time.
-const ETH_FAMILIES = ['ethernet', 'esun', 'ip', 'tcp', 'udp', 'rdma'];
-const ALL_FAMILIES = ['ethernet', 'esun', 'fc', 'ip', 'tcp', 'udp', 'rdma'];
+// 'control' is intentionally absent — fixed-size control frames don't
+// take user payload, so presets don't apply.
+const ETH_FAMILIES = [
+  'ethernet', 'esun', 'ip', 'tcp', 'udp', 'rdma', 'overlay',
+  'nvme-tcp', 'security',
+];
+const ALL_FAMILIES = [
+  'ethernet', 'esun', 'fc', 'ip', 'tcp', 'udp', 'rdma', 'overlay',
+  'nvme-tcp', 'security',
+];
 
 const PRESETS = [
   { id: '64b',      label: '64 B RPC',          payload: 64,    message: 64,
@@ -158,12 +166,20 @@ export default function FramesPage() {
                   ?? 9000;
   const payloadMin = selectedFrame?.payload?.min_bytes ?? 0;
 
+  // Fixed-size control frames (PFC etc.) have no variable payload and
+  // therefore no meaningful "message size" — hide those controls and
+  // presets, show the frame as it is.
+  const isControlFrame =
+    selectedFrame?.kind === 'control'
+    || (selectedFrame?.payload?.max_bytes ?? 0) <= 0;
+
   // Only show presets relevant to the selected frame's family.
   const visiblePresets = useMemo(() => {
+    if (isControlFrame) return [];
     const fam = selectedFrame?.family;
     if (!fam) return PRESETS;
     return PRESETS.filter(p => p.families.includes(fam));
-  }, [selectedFrame]);
+  }, [selectedFrame, isControlFrame]);
 
   return (
     <div style={{
@@ -257,33 +273,54 @@ export default function FramesPage() {
               </select>
             </Field>
 
-            <Field label={`Payload / Frame (${payloadBytes.toLocaleString()} B)`}>
-              <input
-                type="range"
-                min={payloadMin}
-                max={payloadMax}
-                value={Math.min(payloadBytes, payloadMax)}
-                onChange={(e) => setPayloadBytes(Number(e.target.value))}
-                style={{ accentColor: '#22d3ee' }}
-              />
-              <span style={{ color: '#475569', fontSize: 9, fontFamily: 'monospace' }}>
-                {payloadMin} … {payloadMax}
-              </span>
-            </Field>
+            {!isControlFrame && (
+              <Field label={`Payload / Frame (${payloadBytes.toLocaleString()} B)`}>
+                <input
+                  type="range"
+                  min={payloadMin}
+                  max={payloadMax}
+                  value={Math.min(payloadBytes, payloadMax)}
+                  onChange={(e) => setPayloadBytes(Number(e.target.value))}
+                  style={{ accentColor: '#22d3ee' }}
+                />
+                <span style={{ color: '#475569', fontSize: 9, fontFamily: 'monospace' }}>
+                  {payloadMin} … {payloadMax}
+                </span>
+              </Field>
+            )}
 
-            <Field label={`Message size (${formatBytes(messageBytes)})`}>
-              <input
-                type="range"
-                min={1}
-                max={28} // 2^28 ≈ 256 MB
-                value={Math.log2(Math.max(messageBytes, 1))}
-                onChange={(e) => setMessageBytes(Math.round(2 ** Number(e.target.value)))}
-                style={{ accentColor: '#22d3ee' }}
-              />
-              <span style={{ color: '#475569', fontSize: 9, fontFamily: 'monospace' }}>
-                log₂ slider · 1 B … 256 MB
-              </span>
-            </Field>
+            {!isControlFrame && (
+              <Field label={`Message size (${formatBytes(messageBytes)})`}>
+                <input
+                  type="range"
+                  min={1}
+                  max={28} // 2^28 ≈ 256 MB
+                  value={Math.log2(Math.max(messageBytes, 1))}
+                  onChange={(e) => setMessageBytes(Math.round(2 ** Number(e.target.value)))}
+                  style={{ accentColor: '#22d3ee' }}
+                />
+                <span style={{ color: '#475569', fontSize: 9, fontFamily: 'monospace' }}>
+                  log₂ slider · 1 B … 256 MB
+                </span>
+              </Field>
+            )}
+
+            {isControlFrame && (
+              <Field label="Frame Kind">
+                <div style={{
+                  padding: '6px 10px',
+                  background: '#1c1917', color: '#f59e0b',
+                  border: '1px solid #f59e0b44',
+                  borderRadius: 4, fontSize: 11, fontWeight: 700,
+                  fontFamily: 'monospace',
+                }}>
+                  Fixed-size control frame
+                </div>
+                <span style={{ color: '#475569', fontSize: 9 }}>
+                  No variable payload. Sliders & presets hidden.
+                </span>
+              </Field>
+            )}
 
             <Field label="View options">
               <Toggle on={endianLE} onChange={setEndianLE} label="Host (LE) byte order" />
@@ -292,6 +329,7 @@ export default function FramesPage() {
           </div>
 
           {/* Presets */}
+          {!isControlFrame && visiblePresets.length > 0 && (
           <div style={{
             display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16,
           }}>
@@ -319,6 +357,7 @@ export default function FramesPage() {
               </button>
             ))}
           </div>
+          )}
 
           {/* Frame info */}
           {selectedFrame && (

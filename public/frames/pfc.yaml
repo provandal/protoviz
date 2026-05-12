@@ -1,0 +1,221 @@
+id: pfc
+name: "PFC PAUSE Frame (IEEE 802.1Qbb)"
+short_label: "PFC"
+family: control
+osi_layer: "L2 control"
+# Fixed-size control frame — no variable payload, no message-sizing.
+kind: control
+
+summary: >
+  Priority-based Flow Control PAUSE frame. A complete Ethernet
+  control frame (always 64 bytes including FCS, padded to the
+  minimum) sent FROM a receiver TO an upstream sender to pause
+  specific traffic classes (priorities) for a specified time.
+  Required infrastructure for RoCE's lossless behavior and
+  historically required for FCoE.
+
+layers:
+  - id: preamble
+    name: "Wire sync (PHY)"
+    color: framing
+  - id: header
+    name: "L2 Header"
+    color: addressing
+  - id: control
+    name: "PFC Control"
+    color: control
+  - id: trailer
+    name: "L2 Trailer"
+    color: crc
+  - id: ifg
+    name: "Inter-Frame Gap"
+    color: framing
+
+fields:
+  - name: Preamble
+    bits: 56
+    layer: preamble
+    color: framing
+    notes: "7 bytes of 0x55. PHY bit-clock recovery. NOT covered by FCS."
+
+  - name: SFD
+    bits: 8
+    layer: preamble
+    color: framing
+    notes: "Start Frame Delimiter (0xD5)."
+
+  - name: Destination MAC
+    bits: 48
+    layer: header
+    color: addressing
+    notes: >
+      Always 01:80:C2:00:00:01 — the IEEE 802.1 reserved "MAC
+      Control" multicast address. NICs/bridges that don't
+      implement MAC Control simply drop these on receive (which
+      is the safe default).
+
+  - name: Source MAC
+    bits: 48
+    layer: header
+    color: addressing
+    notes: "Sender's unicast MAC address."
+
+  - name: EtherType
+    bits: 16
+    layer: header
+    color: control
+    notes: "0x8808 — MAC Control."
+
+  - name: Opcode
+    bits: 16
+    layer: control
+    color: control
+    notes: >
+      MAC Control opcode. 0x0001 = legacy whole-link PAUSE
+      (802.3x); 0x0101 = Priority-based PAUSE (PFC, 802.1Qbb).
+      PFC adds per-priority pause control on top of the original
+      whole-link mechanism.
+
+  - name: Priority Enable Vector
+    bits: 16
+    layer: control
+    color: addressing
+    notes: >
+      Lower 8 bits indicate which priorities (0-7) this PAUSE
+      applies to: bit N set = priority N is paused. Upper 8 bits
+      reserved.
+
+  - name: Time[0]
+    bits: 16
+    layer: control
+    color: control
+    notes: >
+      Pause duration for priority 0, in units of 512 bit-times.
+      Zero means resume immediately. Subsequent Time[1]-Time[7]
+      fields are the same for their respective priorities.
+
+  - name: Time[1]
+    bits: 16
+    layer: control
+    color: control
+    notes: "Pause duration for priority 1, in 512-bit-time units."
+
+  - name: Time[2]
+    bits: 16
+    layer: control
+    color: control
+    notes: "Pause duration for priority 2, in 512-bit-time units."
+
+  - name: Time[3]
+    bits: 16
+    layer: control
+    color: control
+    notes: "Pause duration for priority 3, in 512-bit-time units."
+
+  - name: Time[4]
+    bits: 16
+    layer: control
+    color: control
+    notes: "Pause duration for priority 4, in 512-bit-time units."
+
+  - name: Time[5]
+    bits: 16
+    layer: control
+    color: control
+    notes: "Pause duration for priority 5, in 512-bit-time units."
+
+  - name: Time[6]
+    bits: 16
+    layer: control
+    color: control
+    notes: "Pause duration for priority 6, in 512-bit-time units."
+
+  - name: Time[7]
+    bits: 16
+    layer: control
+    color: control
+    notes: "Pause duration for priority 7, in 512-bit-time units."
+
+  - name: Pad
+    bits: 208
+    layer: control
+    color: reserved
+    is_reserved: true
+    notes: >
+      26 bytes of zero padding to bring the frame to the 64-byte
+      Ethernet minimum (DA through FCS — preamble/SFD/IFG are
+      not counted toward the minimum). All control frames are
+      tiny by design and almost always need pad.
+
+  - name: FCS
+    bits: 32
+    layer: trailer
+    color: crc
+    is_crc: true
+    crc_coverage: { from: "Destination MAC", to: "Pad" }
+    notes: >
+      Ethernet FCS. CRC-32 over DA through Pad. Standard Ethernet
+      frame check sequence.
+
+  - name: IFG
+    bits: 96
+    layer: ifg
+    color: framing
+    wire_only: true
+    notes: "Inter-Frame Gap. 96 bit-times of idle between frames."
+
+# No variable payload — PFC is entirely fixed format.
+payload:
+  min_bytes: 0
+  max_bytes: 0
+  default_bytes: 0
+
+wire_overhead:
+  before_bytes: 0
+
+link_variants:
+  - id: 1gbe
+    name: "1GbE"
+    line_rate_gbaud: 1.25
+    encoding: "8b/10b"
+    encoding_ratio: 0.8
+    fec: null
+    fec_ratio: 1.0
+  - id: 10gbe
+    name: "10GbE"
+    line_rate_gbaud: 10.3125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: null
+    fec_ratio: 1.0
+  - id: 25gbe
+    name: "25GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 100gbe
+    name: "100GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 400gbe
+    name: "400GbE"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-12"
+  license: "CC-BY-4.0"
+  spec_refs:
+    - document: "IEEE 802.1Qbb"
+      title: "Priority-based Flow Control"
+    - document: "IEEE 802.3x"
+      title: "MAC Control (legacy PAUSE)"

@@ -1,0 +1,151 @@
+id: macsec
+name: "MACsec (IEEE 802.1AE)"
+short_label: "MACsec"
+family: security
+osi_layer: "L2 security"
+
+summary: >
+  MAC Security per IEEE 802.1AE. Inserts a SecTAG immediately
+  after the Ethernet Src MAC (replacing the inner EtherType) and
+  appends an ICV before the FCS. Provides authenticated
+  encryption — confidentiality + integrity — between adjacent
+  802.1AE-capable bridges. Explicitly recommended by the OCP
+  ESUN spec as the L2 confidentiality layer (since ESUN removes
+  IP, IPsec is no longer applicable).
+
+layers:
+  - id: header
+    name: "SecTAG"
+    color: addressing
+  - id: payload
+    name: "Encrypted Payload (Secure Data)"
+    color: payload
+  - id: trailer
+    name: "ICV"
+    color: crc
+
+fields:
+  - name: MACsec EtherType
+    bits: 16
+    layer: header
+    color: control
+    notes: >
+      0x88E5. Identifies the frame as carrying MACsec; takes the
+      place of the original (now-encrypted) EtherType, which is
+      moved inside the encrypted payload.
+
+  - name: TCI / AN
+    bits: 8
+    layer: header
+    color: control
+    notes: >
+      Tag Control Information (6 bits) + Association Number (2 bits).
+      TCI flags: V (Version=0), ES (End Station), SC (SCI present),
+      SCB (Single Copy Broadcast), E (Encryption), C (Changed text).
+      AN selects which of 4 keys (0-3) under the Secure Channel.
+
+  - name: SL
+    bits: 8
+    layer: header
+    color: control
+    notes: >
+      Short Length. For frames whose user data is less than 48
+      bytes, gives the actual length. Set to 0 for normal-size
+      frames; receiver derives length from FCS position.
+
+  - name: PN
+    bits: 32
+    layer: header
+    color: control
+    notes: >
+      Packet Number. 32-bit replay-protection counter assigned by
+      the transmitter for each frame under a given Secure
+      Association. Receiver rejects out-of-window PNs to prevent
+      replay attacks. Exhausting the PN space requires a re-key.
+
+  - name: Payload
+    bits: 0
+    variable: true
+    payload: true
+    layer: payload
+    color: payload
+    notes: >
+      Secure Data — the encrypted (and/or just authenticated)
+      payload. With E=1 (default), the original EtherType and
+      payload are AES-GCM encrypted. With E=0, only authenticated.
+
+  - name: ICV
+    bits: 128
+    layer: trailer
+    color: crc
+    is_crc: true
+    crc_coverage: { from: "Destination MAC (outer)", to: "Payload" }
+    notes: >
+      Integrity Check Value. 16 bytes for AES-128-GCM (most
+      common). Covers outer Destination MAC, Source MAC, SecTAG,
+      and the encrypted Payload. The FCS that follows is the
+      OUTER Ethernet FCS, unrelated to ICV — re-computed after
+      MACsec processing.
+
+payload:
+  min_bytes: 0
+  max_bytes: 1470       # 1500 outer MTU - 14 Eth - 8 SecTAG (no SCI) - 16 ICV + 2 EtherType replaced + 6 inner overhead margin
+  default_bytes: 1470
+  jumbo_max_bytes: 8970
+
+wire_overhead:
+  before_bytes: 0
+
+link_variants:
+  - id: 10gbe
+    name: "10GbE"
+    line_rate_gbaud: 10.3125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: null
+    fec_ratio: 1.0
+  - id: 25gbe
+    name: "25GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 100gbe
+    name: "100GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 200gbe
+    name: "200GbE"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+  - id: 400gbe
+    name: "400GbE"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+  - id: 800gbe
+    name: "800GbE"
+    line_rate_gbaud: 53.125
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514) + interleaving"
+    fec_ratio: 0.944853
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-12"
+  license: "CC-BY-4.0"
+  spec_refs:
+    - document: "IEEE 802.1AE"
+      title: "Media Access Control (MAC) Security"
+    - document: "IEEE 802.1AEbn-2011"
+      title: "MACsec with GCM-AES-256 cipher suite"

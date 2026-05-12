@@ -1,0 +1,132 @@
+id: vxlan
+name: "VXLAN Header (RFC 7348)"
+short_label: "VXLAN"
+family: overlay
+osi_layer: "L2 overlay (over UDP/IP)"
+
+summary: >
+  Virtual eXtensible LAN. 8-byte header carried in UDP destination
+  port 4789. Encapsulates an ENTIRE inner Ethernet frame (with its
+  own MACs, EtherType, IP header, etc.) inside the VXLAN payload —
+  creating a virtualized L2 segment over an IP underlay. The 24-bit
+  VNI scales to ~16M virtual networks vs. VLAN's 4094.
+
+layers:
+  - id: header
+    name: "VXLAN Header"
+    color: addressing
+  - id: payload
+    name: "Inner Ethernet Frame"
+    color: payload
+
+fields:
+  - name: Flags
+    bits: 8
+    layer: header
+    color: control
+    notes: >
+      Flag bits. Bit 4 (counting MSB=0) is the I bit, which MUST be 1
+      to indicate a valid VNI. The other 7 bits are Reserved and must
+      be zero. Wire value is typically 0x08.
+
+  - name: Reserved
+    bits: 24
+    layer: header
+    color: reserved
+    is_reserved: true
+    notes: "Reserved. Must be zero on transmit; ignored on receive."
+
+  - name: VNI
+    bits: 24
+    layer: header
+    color: addressing
+    notes: >
+      VXLAN Network Identifier. 24-bit field identifying the virtual
+      L2 segment — analogous to a VLAN ID but supports ~16M segments
+      (vs. VLAN's 4094). Tenants on different VNIs can overlap MAC
+      and IP address spaces.
+
+  - name: Reserved (low)
+    bits: 8
+    layer: header
+    color: reserved
+    is_reserved: true
+    notes: "Reserved. Must be zero."
+
+  - name: Payload
+    bits: 0
+    variable: true
+    payload: true
+    layer: payload
+    color: payload
+    notes: >
+      Inner Ethernet frame, including its own MACs, EtherType, and
+      whatever it carries (IP/TCP/UDP/etc.). This is what makes
+      VXLAN a tunneling protocol — a complete L2 frame fits inside,
+      allowing tenants with different MAC/IP layouts to coexist
+      on the same underlay.
+
+payload:
+  min_bytes: 64
+  max_bytes: 1450
+  default_bytes: 1450
+  jumbo_max_bytes: 8950
+  notes: >
+    Outer MTU 1500 - 14 outer Eth - 20 IPv4 - 8 UDP - 8 VXLAN = 1450
+    inner-frame bytes. Plus optional 802.1Q tag and any other
+    underlay headers reduce further.
+
+wire_overhead:
+  before_bytes: 0
+
+link_variants:
+  - id: 10gbe
+    name: "10GbE"
+    line_rate_gbaud: 10.3125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: null
+    fec_ratio: 1.0
+  - id: 25gbe
+    name: "25GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 100gbe
+    name: "100GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 200gbe
+    name: "200GbE"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+  - id: 400gbe
+    name: "400GbE"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+  - id: 800gbe
+    name: "800GbE"
+    line_rate_gbaud: 53.125
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514) + interleaving"
+    fec_ratio: 0.944853
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-12"
+  license: "CC-BY-4.0"
+  spec_refs:
+    - document: "RFC 7348"
+      title: "Virtual eXtensible Local Area Network (VXLAN)"

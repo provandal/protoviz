@@ -113,10 +113,16 @@ export function computeOverhead({
     Math.min(payloadPerFrame, maxPayload),
   );
 
-  const frameCount = Math.max(1, Math.ceil(messageBytes / payloadPF));
+  // Fixed-size control frames have no variable payload (max=0). They send
+  // exactly one frame regardless of "message size"; goodput is by
+  // definition 0 since there is no user data.
+  const isControlFrame = payloadPF <= 0 || maxPayload <= 0;
+  const frameCount = isControlFrame
+    ? 1
+    : Math.max(1, Math.ceil(messageBytes / payloadPF));
 
   // Last frame may carry less; for simplicity, sum exact bytes
-  const totalPayload = messageBytes;
+  const totalPayload = isControlFrame ? 0 : messageBytes;
   const totalBodyFixed = bodyFixed * frameCount;
   const totalWireOnly = wireOnly * frameCount;
 

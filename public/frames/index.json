@@ -25,6 +25,22 @@
       "path": "esun.yaml"
     },
     {
+      "id": "pfc",
+      "name": "PFC PAUSE (802.1Qbb)",
+      "short_label": "PFC",
+      "family": "control",
+      "osi_layer": "L2 control",
+      "path": "pfc.yaml"
+    },
+    {
+      "id": "macsec",
+      "name": "MACsec (802.1AE)",
+      "short_label": "MACsec",
+      "family": "security",
+      "osi_layer": "L2 security",
+      "path": "macsec.yaml"
+    },
+    {
       "id": "ipv4",
       "name": "IPv4 Header",
       "short_label": "IPv4",
@@ -55,6 +71,22 @@
       "family": "udp",
       "osi_layer": "L4",
       "path": "udp.yaml"
+    },
+    {
+      "id": "vxlan",
+      "name": "VXLAN",
+      "short_label": "VXLAN",
+      "family": "overlay",
+      "osi_layer": "L2 overlay",
+      "path": "vxlan.yaml"
+    },
+    {
+      "id": "nvme-tcp-pdu",
+      "name": "NVMe/TCP PDU",
+      "short_label": "NVMe/TCP",
+      "family": "nvme-tcp",
+      "osi_layer": "L5 over TCP",
+      "path": "nvme-tcp-pdu.yaml"
     },
     {
       "id": "rocev2",
