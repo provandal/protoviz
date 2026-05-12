@@ -3,6 +3,10 @@ name: "Fibre Channel FC-2 Frame"
 short_label: "FC-2"
 family: fc
 osi_layer: "FC-2"
+# FC spec convention: byte 0 is drawn on the right (bit 0 leftmost,
+# bit 31 rightmost would be the alternative). Renderer mirrors the
+# 32-bit grid horizontally when this is set.
+byte_order: "byte-0-right"
 
 summary: >
   Native Fibre Channel frame per INCITS T11 FC-FS-5. A 24-byte FC-2

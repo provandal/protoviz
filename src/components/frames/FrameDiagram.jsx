@@ -12,12 +12,15 @@ const COLOR_MAP = {
 
 const BITS_PER_ROW = 32;
 const ROW_WIDTH_PX = 720;
-const BIT_WIDTH_PX = ROW_WIDTH_PX / BITS_PER_ROW;
-const ROW_HEIGHT_PX = 48;
-const PAYLOAD_ROW_HEIGHT_PX = 60;
+const ROW_HEIGHT_PX = 52;
+const PAYLOAD_ROW_HEIGHT_PX = 64;
 
 function withAlpha(hex, a) { return `${hex}${a}`; }
 
+/**
+ * Walk fields sequentially and split each into per-row segments.
+ * Returns { rows: [{ segments }], finalBitPos }.
+ */
 function layoutFields(fields) {
   let bitPos = 0;
   const segments = [];
@@ -37,12 +40,13 @@ function layoutFields(fields) {
         startCol: segStart % BITS_PER_ROW,
         endCol: segEnd % BITS_PER_ROW,
         isFirstSegment: r === startRow,
-        startByteIndex: Math.floor((segStart - startBit) / 8),
+        // Bit offset within this segment relative to field start (for byte
+        // numbering across multi-segment fields).
+        fieldOffsetStartBit: segStart - startBit,
       });
     }
     bitPos = endBit + 1;
   }
-  // Group segments by row
   const rowsMap = {};
   for (const seg of segments) {
     if (!rowsMap[seg.row]) rowsMap[seg.row] = [];
@@ -51,82 +55,128 @@ function layoutFields(fields) {
   const maxRow = Object.keys(rowsMap).reduce((a, b) => Math.max(a, Number(b)), -1);
   const rows = [];
   for (let i = 0; i <= maxRow; i++) rows.push({ segments: rowsMap[i] || [] });
-  return rows;
+  return { rows, finalBitPos: bitPos };
 }
 
-function BitRuler() {
+/** Apply byte-0-right mirroring to a segment's column range. */
+function mirrorCols(seg, mirror) {
+  if (!mirror) return seg;
+  return {
+    ...seg,
+    startCol: BITS_PER_ROW - 1 - seg.endCol,
+    endCol: BITS_PER_ROW - 1 - seg.startCol,
+    _mirrored: true,
+  };
+}
+
+function BitRuler({ mirror }) {
   return (
     <div style={{
       display: 'grid',
       gridTemplateColumns: `repeat(${BITS_PER_ROW}, 1fr)`,
       width: ROW_WIDTH_PX,
       height: 18,
-      color: '#475569',
-      fontSize: 8,
+      color: '#94a3b8',
+      fontSize: 9,
       fontFamily: 'monospace',
       borderBottom: '1px solid #1e293b',
+      fontWeight: 600,
     }}>
-      {Array.from({ length: BITS_PER_ROW }, (_, i) => (
-        <div key={i} style={{
-          textAlign: 'center',
-          borderRight: (i + 1) % 8 === 0 ? '1px solid #334155' : 'none',
-          lineHeight: '18px',
-        }}>
-          {i % 4 === 0 ? i : ''}
-        </div>
-      ))}
+      {Array.from({ length: BITS_PER_ROW }, (_, i) => {
+        const bit = mirror ? (BITS_PER_ROW - 1 - i) : i;
+        return (
+          <div key={i} style={{
+            textAlign: 'center',
+            borderRight: (i + 1) % 8 === 0 ? '1px solid #334155' : 'none',
+            lineHeight: '18px',
+          }}>
+            {bit % 4 === 0 ? bit : ''}
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-function FieldSegment({ seg, totalFieldBytes, endianLE, expandedField, onClick, crcHighlight }) {
-  const f = seg.field;
-  const color = COLOR_MAP[f.color] || '#64748b';
-  const isExpanded = expandedField === f.name;
-  const isReserved = f.is_reserved;
-  const highlighted = crcHighlight && crcHighlight.has(f.name);
-
-  // Byte labels inside multi-byte segments: helps the endianness story.
+/**
+ * For a multi-byte-aligned field, return the byte labels appearing in this
+ * segment, with optional endian (LE) and FC-spec (mirror) flips.
+ */
+function computeByteLabels({ field, seg, endianLE, mirror }) {
+  const totalBytes = Math.floor((field.bits || 0) / 8);
+  if (totalBytes < 1) return null;
+  if ((field.bits || 0) % 8 !== 0) return null;
   const widthBits = seg.endCol - seg.startCol + 1;
-  const showByteLabels = totalFieldBytes >= 2 && widthBits >= 8;
-  const byteLabels = showByteLabels
-    ? Array.from({ length: Math.floor(widthBits / 8) }, (_, i) => {
-        const seqByte = seg.startByteIndex + i;
-        const labelIndex = endianLE ? (totalFieldBytes - 1 - seqByte) : seqByte;
-        return `B${labelIndex}`;
-      })
-    : null;
+  if (widthBits < 8) return null;
+  // Bytes in this segment in physical left-to-right order.
+  const segByteCount = Math.floor(widthBits / 8);
+  const startByteInField = Math.floor(seg.fieldOffsetStartBit / 8);
+  // Logical byte index (under current view) for each physical position L->R.
+  // Without any flips: physical[i] = startByteInField + i (counting from MSB)
+  // With mirror only: spec convention flips direction within a word; for
+  // multi-row fields, we reverse byte index within the segment so the
+  // rightmost byte gets the lowest label.
+  // With LE only: reverse labels across the WHOLE field.
+  // With both: combine.
+  let labels = Array.from({ length: segByteCount }, (_, i) => startByteInField + i);
+  if (mirror) labels = labels.slice().reverse();
+  if (endianLE) labels = labels.map(b => totalBytes - 1 - b);
+  return labels;
+}
+
+function FieldSegment({ seg, field, endianLE, mirror, expandedField, onClick, crcHighlight }) {
+  const color = COLOR_MAP[field.color] || '#64748b';
+  const isExpanded = expandedField === field.name;
+  const isReserved = field.is_reserved;
+  const highlighted = crcHighlight && crcHighlight.has(field.name);
+
+  const byteLabels = computeByteLabels({ field, seg, endianLE, mirror });
 
   return (
     <div
-      onClick={() => f.notes && onClick(f.name)}
-      title={f.notes || undefined}
+      onClick={() => field.notes && onClick(field.name)}
+      title={field.notes || undefined}
       style={{
         gridColumn: `${seg.startCol + 1} / ${seg.endCol + 2}`,
         background: highlighted
           ? withAlpha(color, '55')
           : isReserved
-            ? `repeating-linear-gradient(45deg, ${color}44, ${color}44 4px, transparent 4px, transparent 8px)`
+            ? `repeating-linear-gradient(45deg, ${color}55, ${color}55 4px, transparent 4px, transparent 8px)`
             : withAlpha(color, '33'),
-        border: `1px solid ${withAlpha(color, highlighted ? 'ff' : '88')}`,
+        border: `1px solid ${withAlpha(color, highlighted ? 'ff' : '99')}`,
         boxShadow: highlighted ? `0 0 0 2px ${color}aa inset` : undefined,
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        cursor: f.notes ? 'pointer' : 'default',
+        cursor: field.notes ? 'pointer' : 'default',
         position: 'relative',
         minHeight: 0,
       }}
     >
-      {showByteLabels && (
+      {byteLabels && (
         <div style={{
-          position: 'absolute', top: 1, left: 2, right: 2,
-          display: 'flex', justifyContent: 'space-around',
-          fontSize: 7, color: withAlpha(color, 'aa'),
-          fontFamily: 'monospace', pointerEvents: 'none',
+          position: 'absolute', top: 2, left: 0, right: 0,
+          display: 'grid',
+          gridTemplateColumns: `repeat(${byteLabels.length}, 1fr)`,
+          pointerEvents: 'none',
         }}>
-          {byteLabels.map((l, i) => <span key={i}>{l}</span>)}
+          {byteLabels.map((label, i) => (
+            <div key={i} style={{
+              textAlign: 'center',
+              fontSize: 10,
+              fontWeight: 700,
+              color: '#e2e8f0',
+              background: '#020817cc',
+              borderRadius: 2,
+              padding: '0 2px',
+              margin: '0 2px',
+              fontFamily: 'monospace',
+              borderRight: i < byteLabels.length - 1 ? `1px dashed ${color}88` : 'none',
+            }}>
+              B{label}
+            </div>
+          ))}
         </div>
       )}
       {seg.isFirstSegment ? (
@@ -134,18 +184,20 @@ function FieldSegment({ seg, totalFieldBytes, endianLE, expandedField, onClick, 
           <div style={{
             color: '#e2e8f0', fontSize: 11, fontWeight: 700,
             lineHeight: 1.2, textAlign: 'center', padding: '0 4px',
+            marginTop: byteLabels ? 14 : 0,
           }}>
-            {f.name}
+            {field.name}
           </div>
           <div style={{ color: withAlpha(color, 'cc'), fontSize: 8, fontFamily: 'monospace' }}>
-            {f.bits}b
-            {f.is_crc && ' · CRC'}
+            {field.bits}b{field.is_crc && ' · CRC'}
           </div>
         </>
       ) : (
-        <div style={{ color: '#475569', fontSize: 9 }}>·&nbsp;·&nbsp;·</div>
+        <div style={{ color: '#475569', fontSize: 9, marginTop: byteLabels ? 14 : 0 }}>
+          ·&nbsp;·&nbsp;·
+        </div>
       )}
-      {isExpanded && f.notes && (
+      {isExpanded && field.notes && (
         <div style={{
           position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 10,
           marginTop: 4, padding: '6px 8px',
@@ -154,30 +206,31 @@ function FieldSegment({ seg, totalFieldBytes, endianLE, expandedField, onClick, 
           maxWidth: 360, textAlign: 'left',
           boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
         }}>
-          {f.notes}
+          {field.notes}
         </div>
       )}
     </div>
   );
 }
 
-function FrameRow({ row, fieldsByName, endianLE, expandedField, onFieldClick, crcHighlight }) {
+function FrameRow({ row, endianLE, mirror, expandedField, onFieldClick, crcHighlight, height = ROW_HEIGHT_PX }) {
   return (
     <div style={{
       display: 'grid',
       gridTemplateColumns: `repeat(${BITS_PER_ROW}, 1fr)`,
       width: ROW_WIDTH_PX,
-      height: ROW_HEIGHT_PX,
+      height,
       position: 'relative',
     }}>
       {row.segments.map((seg, i) => {
-        const totalFieldBytes = Math.floor(seg.field.bits / 8);
+        const drawSeg = mirrorCols(seg, mirror);
         return (
           <FieldSegment
             key={i}
-            seg={seg}
-            totalFieldBytes={totalFieldBytes}
+            seg={drawSeg}
+            field={seg.field}
             endianLE={endianLE}
+            mirror={mirror}
             expandedField={expandedField}
             onClick={onFieldClick}
             crcHighlight={crcHighlight}
@@ -200,7 +253,7 @@ function PayloadRow({ field, bytes, expandedField, onFieldClick, crcHighlight })
         width: ROW_WIDTH_PX,
         height: PAYLOAD_ROW_HEIGHT_PX,
         background: highlighted ? withAlpha(color, '55') : withAlpha(color, '22'),
-        border: `1px solid ${withAlpha(color, highlighted ? 'ff' : '88')}`,
+        border: `1px solid ${withAlpha(color, highlighted ? 'ff' : '99')}`,
         borderLeft: `4px solid ${color}`,
         borderRight: `4px solid ${color}`,
         boxShadow: highlighted ? `0 0 0 2px ${color}aa inset` : undefined,
@@ -214,7 +267,7 @@ function PayloadRow({ field, bytes, expandedField, onFieldClick, crcHighlight })
     >
       <div style={{
         position: 'absolute', top: 4, left: 0, right: 0,
-        textAlign: 'center', fontSize: 8, color: withAlpha(color, 'aa'),
+        textAlign: 'center', fontSize: 8, color: withAlpha(color, 'cc'),
         fontFamily: 'monospace',
       }}>
         — variable — {formatBytes(bytes)} —
@@ -238,30 +291,12 @@ function PayloadRow({ field, bytes, expandedField, onFieldClick, crcHighlight })
   );
 }
 
-function LayerRibbon({ rowCount, color, label }) {
-  return (
-    <div style={{
-      position: 'absolute', left: -28, top: 0, bottom: 0, width: 24,
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      writingMode: 'vertical-rl', transform: 'rotate(180deg)',
-      fontSize: 9, color, fontWeight: 700,
-      letterSpacing: '0.05em', textTransform: 'uppercase',
-      borderInlineStart: `3px solid ${color}`,
-      paddingInlineStart: 6,
-    }}>
-      {label}
-    </div>
-  );
-}
-
 /**
- * Compute which fields are covered by which CRC field's coverage range.
- * Returns a Map { crcFieldName → Set<coveredFieldName> }.
+ * Compute which fields each CRC field covers. Map { crcName → Set<fieldName> }.
  */
 function computeCrcCoverage(fields) {
   const result = new Map();
-  for (let i = 0; i < fields.length; i++) {
-    const f = fields[i];
+  for (const f of fields) {
     if (!f.is_crc || !f.crc_coverage) continue;
     const fromIdx = fields.findIndex(x => x.name === f.crc_coverage.from);
     const toIdx = fields.findIndex(x => x.name === f.crc_coverage.to);
@@ -273,11 +308,9 @@ function computeCrcCoverage(fields) {
   return result;
 }
 
-/** Wire-time strip — proportional widths by ns at selected link rate. */
 function WireTimeStrip({ frame, variant, payloadBytes }) {
-  const laneBps = laneLineRateGbps(variant) * 1e9; // bits per second
+  const laneBps = laneLineRateGbps(variant) * 1e9;
   const fields = frame.fields || [];
-  // Compute total time
   const fieldsWithTime = fields.map(f => {
     const bits = f.payload ? payloadBytes * 8 : (f.bits || 0);
     return { f, bits };
@@ -285,9 +318,8 @@ function WireTimeStrip({ frame, variant, payloadBytes }) {
   const totalBits = fieldsWithTime.reduce((s, x) => s + x.bits, 0);
   const totalTimeSec = totalBits / laneBps;
   const totalTimeNs = totalTimeSec * 1e9;
-
   return (
-    <div style={{ width: ROW_WIDTH_PX, marginTop: 8 }}>
+    <div style={{ width: ROW_WIDTH_PX, marginTop: 12 }}>
       <div style={{
         color: '#94a3b8', fontSize: 9, marginBottom: 4,
         textTransform: 'uppercase', letterSpacing: '0.05em',
@@ -305,7 +337,7 @@ function WireTimeStrip({ frame, variant, payloadBytes }) {
           return (
             <div key={i} title={`${f.name}: ${(bits / laneBps * 1e9).toFixed(2)} ns`} style={{
               width: `${widthPct}%`,
-              background: withAlpha(c, '88'),
+              background: withAlpha(c, '99'),
               borderRight: i < fieldsWithTime.length - 1 ? '1px solid #020817' : 'none',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               color: '#020817', fontSize: 8, fontWeight: 700,
@@ -338,7 +370,10 @@ export default function FrameDiagram({
   }, [fields]);
   const crcCoverageMap = useMemo(() => computeCrcCoverage(fields), [fields]);
 
-  // Split: pre-payload, payload (single special row), post-payload
+  // FC draws byte 0 on the right; renderer mirrors horizontal column layout.
+  const mirror = frame.byte_order === 'byte-0-right';
+
+  // Split into pre-payload, payload, post-payload
   const payloadIdx = fields.findIndex(f => f.payload || f.variable);
   const preFields = payloadIdx >= 0 ? fields.slice(0, payloadIdx) : fields;
   const payloadField = payloadIdx >= 0 ? fields[payloadIdx] : null;
@@ -347,28 +382,57 @@ export default function FrameDiagram({
   const preLayout = useMemo(() => layoutFields(preFields), [preFields]);
   const postLayout = useMemo(() => layoutFields(postFields), [postFields]);
 
+  // Lead-in: if pre-fields end mid-row, payload fills the remaining columns
+  // of that row instead of starting a fresh row below (which creates a
+  // visible gap — e.g., after EtherType for Ethernet/ESUN).
+  const lastPreBit = preLayout.finalBitPos; // bit pos just after last pre field
+  const leadInStartBit = lastPreBit % BITS_PER_ROW;
+  const hasLeadIn = leadInStartBit !== 0 && payloadField;
+
+  // Mutate (locally) the last pre-row to include the lead-in segment.
+  const preRowsWithLeadIn = useMemo(() => {
+    if (!hasLeadIn) return preLayout.rows;
+    const rows = preLayout.rows.map(r => ({ segments: [...r.segments] }));
+    const lastIdx = rows.length - 1;
+    if (lastIdx < 0) return rows;
+    rows[lastIdx].segments.push({
+      field: payloadField,
+      row: lastIdx,
+      startCol: leadInStartBit,
+      endCol: BITS_PER_ROW - 1,
+      isFirstSegment: false, // not the "header" segment — payload's main row carries the label
+      fieldOffsetStartBit: 0,
+      isLeadIn: true,
+    });
+    return rows;
+  }, [preLayout, hasLeadIn, leadInStartBit, payloadField]);
+
   const handleFieldClick = (name) => {
     setExpandedField(prev => (prev === name ? null : name));
     const f = fieldsByName[name];
-    if (f && f.is_crc) {
-      setActiveCrc(prev => (prev === name ? null : name));
-    } else {
-      // Clicking a non-CRC field clears CRC highlight
-      setActiveCrc(null);
-    }
+    if (f && f.is_crc) setActiveCrc(prev => (prev === name ? null : name));
+    else setActiveCrc(null);
   };
 
   const crcHighlight = activeCrc ? crcCoverageMap.get(activeCrc) : null;
 
   return (
     <div style={{ display: 'inline-block', position: 'relative' }}>
-      <BitRuler />
-      {preLayout.map((row, i) => (
+      <div style={{
+        color: '#475569', fontSize: 9, fontFamily: 'monospace',
+        marginBottom: 2, letterSpacing: '0.05em',
+      }}>
+        {mirror
+          ? 'bit 31 ←——— bit position ———→ bit 0   (byte 0 on the right, per FC spec)'
+          : 'bit 0 ←——— bit position ———→ bit 31   (byte 0 on the left, per IETF)'}
+      </div>
+      <BitRuler mirror={mirror} />
+      {preRowsWithLeadIn.map((row, i) => (
         <FrameRow
           key={`pre-${i}`}
           row={row}
-          fieldsByName={fieldsByName}
           endianLE={endianLE}
+          mirror={mirror}
           expandedField={expandedField}
           onFieldClick={handleFieldClick}
           crcHighlight={crcHighlight}
@@ -383,12 +447,12 @@ export default function FrameDiagram({
           crcHighlight={crcHighlight}
         />
       )}
-      {postLayout.map((row, i) => (
+      {postLayout.rows.map((row, i) => (
         <FrameRow
           key={`post-${i}`}
           row={row}
-          fieldsByName={fieldsByName}
           endianLE={endianLE}
+          mirror={mirror}
           expandedField={expandedField}
           onFieldClick={handleFieldClick}
           crcHighlight={crcHighlight}
@@ -399,13 +463,30 @@ export default function FrameDiagram({
       )}
       {endianLE && (
         <div style={{
-          marginTop: 6, padding: '4px 8px',
+          marginTop: 8, padding: '6px 10px',
           background: '#0c2a36', border: '1px solid #22d3ee44',
-          borderRadius: 3, fontSize: 10, color: '#22d3ee',
+          borderRadius: 3, fontSize: 10, color: '#22d3ee', lineHeight: 1.5,
           maxWidth: ROW_WIDTH_PX,
         }}>
-          ⚠ Viewing as little-endian host memory — byte numbers within each
-          multi-byte field are reversed vs. their wire (big-endian) order.
+          <strong>Host (LE) byte order.</strong>{' '}
+          On the wire, bytes transmit in network byte order — byte 0
+          (MSB) first. On a little-endian host (x86/ARM), the same
+          multi-byte integer in memory has its bytes byte-swapped:
+          byte 0 ends up at the lowest address being the LSB. Byte
+          labels reflect this LE memory-order numbering.
+        </div>
+      )}
+      {!endianLE && (
+        <div style={{
+          marginTop: 8, padding: '6px 10px',
+          background: '#0a0f1a', border: '1px solid #1e293b',
+          borderRadius: 3, fontSize: 10, color: '#64748b', lineHeight: 1.5,
+          maxWidth: ROW_WIDTH_PX,
+        }}>
+          <strong>Network (wire) byte order.</strong>{' '}
+          Bytes are labeled in transmission order. Byte 0 is the first
+          byte to leave the transmitter and the first byte to arrive at
+          the receiver.
         </div>
       )}
     </div>

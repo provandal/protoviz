@@ -19,12 +19,24 @@ async function fetchYaml(path) {
   return yaml.load(text);
 }
 
+// Presets carry a `families` filter listing which frame families they
+// apply to. The bulk presets (`1mb`, `256mb`) set payload=null meaning
+// "use the frame's max payload" — picked up at apply time.
 const PRESETS = [
-  { id: '64b',    label: '64 B RPC',      payload: 64,         message: 64 },
-  { id: 'mss',    label: 'TCP MSS (1460)', payload: 1460,      message: 1460 },
-  { id: 'jumbo',  label: 'Jumbo (9000)',  payload: 9000,       message: 9000 },
-  { id: '1mb',    label: '1 MB bulk',     payload: 1500,       message: 1024 * 1024 },
-  { id: '256mb',  label: '256 MB tensor', payload: 1500,       message: 256 * 1024 * 1024 },
+  { id: '64b',      label: '64 B RPC',         payload: 64,         message: 64,
+    families: ['ethernet', 'esun', 'fc'] },
+  { id: 'mss',      label: 'TCP MSS (1460)',   payload: 1460,       message: 1460,
+    families: ['ethernet'] },
+  { id: 'jumbo',    label: 'Jumbo (9000)',     payload: 9000,       message: 9000,
+    families: ['ethernet'] },
+  { id: 'fc-data',  label: 'FC Data IU (2048)', payload: 2048,      message: 2048,
+    families: ['fc'] },
+  { id: 'esun-max', label: 'ESUN max (1496)',  payload: 1496,       message: 1496,
+    families: ['esun'] },
+  { id: '1mb',      label: '1 MB bulk',        payload: null,       message: 1024 * 1024,
+    families: ['ethernet', 'esun', 'fc'] },
+  { id: '256mb',    label: '256 MB tensor',    payload: null,       message: 256 * 1024 * 1024,
+    families: ['ethernet', 'esun', 'fc'] },
 ];
 
 function Field({ label, children }) {
@@ -101,12 +113,21 @@ export default function FramesPage() {
     [selectedFrame, variantId],
   );
 
-  // When switching frames, reset the variant to the new frame's default.
+  // When switching frames, reset the variant to the new frame's default
+  // and snap payload/frame to the new frame's max (or default_bytes if
+  // declared). Users typically want to start at "fully loaded" and slide
+  // down toward minimum, not stay stranded at the previous frame's value.
   useEffect(() => {
-    if (selectedFrame && !selectedFrame.link_variants?.find(v => v.id === variantId)) {
+    if (!selectedFrame) return;
+    if (!selectedFrame.link_variants?.find(v => v.id === variantId)) {
       setVariantId(selectedFrame.link_variants?.[0]?.id || null);
     }
-  }, [selectedFrame, variantId]);
+    const target =
+      selectedFrame.payload?.default_bytes
+      ?? selectedFrame.payload?.max_bytes
+      ?? 1500;
+    setPayloadBytes(target);
+  }, [selectedFrame]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const overhead = useMemo(() => {
     if (!selectedFrame || !selectedVariant) return null;
@@ -123,8 +144,9 @@ export default function FramesPage() {
   function applyPreset(p) {
     const max = selectedFrame?.payload?.jumbo_max_bytes
               ?? selectedFrame?.payload?.max_bytes
-              ?? p.payload;
-    setPayloadBytes(Math.min(p.payload, max));
+              ?? 9000;
+    const payload = p.payload === null ? max : Math.min(p.payload, max);
+    setPayloadBytes(payload);
     setMessageBytes(p.message);
   }
 
@@ -132,6 +154,13 @@ export default function FramesPage() {
                   ?? selectedFrame?.payload?.max_bytes
                   ?? 9000;
   const payloadMin = selectedFrame?.payload?.min_bytes ?? 0;
+
+  // Only show presets relevant to the selected frame's family.
+  const visiblePresets = useMemo(() => {
+    const fam = selectedFrame?.family;
+    if (!fam) return PRESETS;
+    return PRESETS.filter(p => p.families.includes(fam));
+  }, [selectedFrame]);
 
   return (
     <div style={{
@@ -254,7 +283,7 @@ export default function FramesPage() {
             </Field>
 
             <Field label="View options">
-              <Toggle on={endianLE} onChange={setEndianLE} label="Little-endian view" />
+              <Toggle on={endianLE} onChange={setEndianLE} label="Host (LE) byte order" />
               <Toggle on={wireTime} onChange={setWireTime} label="Show wire time" />
             </Field>
           </div>
@@ -270,7 +299,7 @@ export default function FramesPage() {
             }}>
               Presets:
             </span>
-            {PRESETS.map(p => (
+            {visiblePresets.map(p => (
               <button
                 key={p.id}
                 onClick={() => applyPreset(p)}
