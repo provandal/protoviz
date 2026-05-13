@@ -58,18 +58,7 @@ function layoutFields(fields) {
   return { rows, finalBitPos: bitPos };
 }
 
-/** Apply byte-0-right mirroring to a segment's column range. */
-function mirrorCols(seg, mirror) {
-  if (!mirror) return seg;
-  return {
-    ...seg,
-    startCol: BITS_PER_ROW - 1 - seg.endCol,
-    endCol: BITS_PER_ROW - 1 - seg.startCol,
-    _mirrored: true,
-  };
-}
-
-function BitRuler({ mirror }) {
+function BitRuler({ msbOnLeft }) {
   return (
     <div style={{
       display: 'grid',
@@ -83,7 +72,7 @@ function BitRuler({ mirror }) {
       fontWeight: 600,
     }}>
       {Array.from({ length: BITS_PER_ROW }, (_, i) => {
-        const bit = mirror ? (BITS_PER_ROW - 1 - i) : i;
+        const bit = msbOnLeft ? (BITS_PER_ROW - 1 - i) : i;
         return (
           <div key={i} style={{
             textAlign: 'center',
@@ -100,37 +89,30 @@ function BitRuler({ mirror }) {
 
 /**
  * For a multi-byte-aligned field, return the byte labels appearing in this
- * segment, with optional endian (LE) and FC-spec (mirror) flips.
+ * segment in left-to-right order. Wire/network view labels byte 0 first
+ * (leftmost). Host (LE) view reverses the labels within the field to show
+ * how the same integer reads from low to high memory address.
  */
-function computeByteLabels({ field, seg, endianLE, mirror }) {
+function computeByteLabels({ field, seg, endianLE }) {
   const totalBytes = Math.floor((field.bits || 0) / 8);
   if (totalBytes < 1) return null;
   if ((field.bits || 0) % 8 !== 0) return null;
   const widthBits = seg.endCol - seg.startCol + 1;
   if (widthBits < 8) return null;
-  // Bytes in this segment in physical left-to-right order.
   const segByteCount = Math.floor(widthBits / 8);
   const startByteInField = Math.floor(seg.fieldOffsetStartBit / 8);
-  // Logical byte index (under current view) for each physical position L->R.
-  // Without any flips: physical[i] = startByteInField + i (counting from MSB)
-  // With mirror only: spec convention flips direction within a word; for
-  // multi-row fields, we reverse byte index within the segment so the
-  // rightmost byte gets the lowest label.
-  // With LE only: reverse labels across the WHOLE field.
-  // With both: combine.
   let labels = Array.from({ length: segByteCount }, (_, i) => startByteInField + i);
-  if (mirror) labels = labels.slice().reverse();
   if (endianLE) labels = labels.map(b => totalBytes - 1 - b);
   return labels;
 }
 
-function FieldSegment({ seg, field, endianLE, mirror, expandedField, onClick, crcHighlight }) {
+function FieldSegment({ seg, field, endianLE, expandedField, onClick, crcHighlight }) {
   const color = COLOR_MAP[field.color] || '#64748b';
   const isExpanded = expandedField === field.name;
   const isReserved = field.is_reserved;
   const highlighted = crcHighlight && crcHighlight.has(field.name);
 
-  const byteLabels = computeByteLabels({ field, seg, endianLE, mirror });
+  const byteLabels = computeByteLabels({ field, seg, endianLE });
   const segByteCount = byteLabels?.length || 0;
 
   return (
@@ -220,35 +202,27 @@ function FieldSegment({ seg, field, endianLE, mirror, expandedField, onClick, cr
   );
 }
 
-function FrameRow({ row, endianLE, mirror, expandedField, onFieldClick, crcHighlight, height = ROW_HEIGHT_PX }) {
+function FrameRow({ row, endianLE, expandedField, onFieldClick, crcHighlight, height = ROW_HEIGHT_PX }) {
   return (
     <div style={{
       display: 'grid',
       gridTemplateColumns: `repeat(${BITS_PER_ROW}, 1fr)`,
       gridTemplateRows: '1fr',
-      // dense + explicit single row prevents CSS Grid auto-placement from
-      // advancing the cursor past mirrored right-side items (FC byte-0-right)
-      // and dropping subsequent items into a fresh implicit row.
-      gridAutoFlow: 'dense',
       width: ROW_WIDTH_PX,
       height,
       position: 'relative',
     }}>
-      {row.segments.map((seg, i) => {
-        const drawSeg = mirrorCols(seg, mirror);
-        return (
-          <FieldSegment
-            key={i}
-            seg={drawSeg}
-            field={seg.field}
-            endianLE={endianLE}
-            mirror={mirror}
-            expandedField={expandedField}
-            onClick={onFieldClick}
-            crcHighlight={crcHighlight}
-          />
-        );
-      })}
+      {row.segments.map((seg, i) => (
+        <FieldSegment
+          key={i}
+          seg={seg}
+          field={seg.field}
+          endianLE={endianLE}
+          expandedField={expandedField}
+          onClick={onFieldClick}
+          crcHighlight={crcHighlight}
+        />
+      ))}
     </div>
   );
 }
@@ -382,8 +356,11 @@ export default function FrameDiagram({
   }, [fields]);
   const crcCoverageMap = useMemo(() => computeCrcCoverage(fields), [fields]);
 
-  // FC draws byte 0 on the right; renderer mirrors horizontal column layout.
-  const mirror = frame.byte_order === 'byte-0-right';
+  // FC numbers bits MSB-first within a word (bit 31 leftmost, bit 0
+  // rightmost). This flag ONLY affects the bit ruler labels and the
+  // description banner — column placement of fields is always left-to-right
+  // in YAML order, the same as IETF.
+  const msbOnLeft = frame.bit_numbering === 'msb-on-left';
 
   // Split into pre-payload, payload, post-payload
   const payloadIdx = fields.findIndex(f => f.payload || f.variable);
@@ -434,17 +411,16 @@ export default function FrameDiagram({
         color: '#475569', fontSize: 9, fontFamily: 'monospace',
         marginBottom: 2, letterSpacing: '0.05em',
       }}>
-        {mirror
-          ? 'bit 31 ←——— bit position ———→ bit 0   (byte 0 on the right, per FC spec)'
-          : 'bit 0 ←——— bit position ———→ bit 31   (byte 0 on the left, per IETF)'}
+        {msbOnLeft
+          ? 'bit 31 ←——— bit position ———→ bit 0   (FC: bit 31 = MSB on the left; byte 0 occupies bits 31–24)'
+          : 'bit 0 ←——— bit position ———→ bit 31   (IETF: bit 0 on the left, byte 0 on the left)'}
       </div>
-      <BitRuler mirror={mirror} />
+      <BitRuler msbOnLeft={msbOnLeft} />
       {preRowsWithLeadIn.map((row, i) => (
         <FrameRow
           key={`pre-${i}`}
           row={row}
           endianLE={endianLE}
-          mirror={mirror}
           expandedField={expandedField}
           onFieldClick={handleFieldClick}
           crcHighlight={crcHighlight}
@@ -464,7 +440,6 @@ export default function FrameDiagram({
           key={`post-${i}`}
           row={row}
           endianLE={endianLE}
-          mirror={mirror}
           expandedField={expandedField}
           onFieldClick={handleFieldClick}
           crcHighlight={crcHighlight}

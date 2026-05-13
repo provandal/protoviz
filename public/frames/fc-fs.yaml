@@ -3,10 +3,12 @@ name: "Fibre Channel FC-2 Frame"
 short_label: "FC-2"
 family: fc
 osi_layer: "FC-2"
-# FC spec convention: byte 0 is drawn on the right (bit 0 leftmost,
-# bit 31 rightmost would be the alternative). Renderer mirrors the
-# 32-bit grid horizontally when this is set.
-byte_order: "byte-0-right"
+# FC-FS bit-numbering convention: within a 32-bit word, bit 31 is the
+# MSB (leftmost in spec diagrams) and bit 0 is the LSB (rightmost).
+# Byte 0 = bits 31-24 (the leftmost byte). Renderer only re-labels the
+# bit ruler — column placement of fields stays left-to-right in YAML
+# order, which is the same as IETF.
+bit_numbering: "msb-on-left"
 
 summary: >
   Native Fibre Channel frame per INCITS T11 FC-FS-5. A 24-byte FC-2
