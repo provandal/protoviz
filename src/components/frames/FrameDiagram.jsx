@@ -225,6 +225,11 @@ function FrameRow({ row, endianLE, mirror, expandedField, onFieldClick, crcHighl
     <div style={{
       display: 'grid',
       gridTemplateColumns: `repeat(${BITS_PER_ROW}, 1fr)`,
+      gridTemplateRows: '1fr',
+      // dense + explicit single row prevents CSS Grid auto-placement from
+      // advancing the cursor past mirrored right-side items (FC byte-0-right)
+      // and dropping subsequent items into a fresh implicit row.
+      gridAutoFlow: 'dense',
       width: ROW_WIDTH_PX,
       height,
       position: 'relative',
