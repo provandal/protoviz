@@ -77,6 +77,8 @@ export default function EventDetail({ event, phaseColor }) {
         <div style={{
           color: '#94a3b8', fontSize: 12, lineHeight: 1.7,
           maxWidth: 700, marginBottom: 16,
+          whiteSpace: 'pre-wrap',
+          fontFamily: 'inherit',
         }}>
           {event.detail}
         </div>
