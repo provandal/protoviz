@@ -1,0 +1,271 @@
+meta:
+  id: srt-tsbpd-latency-tradeoff
+  title: "SRT: TSBPD Latency Trade-off — 50ms vs 200ms on the Same Lossy Link"
+  protocol: SRT
+  protocol_family: "Media Streaming"
+  version: "1.0"
+  difficulty: intermediate
+  description: >
+    The same loss event played out at two different TSBPD latency
+    settings on the same network conditions. With a 50ms latency
+    budget, the NAK + retransmit can't complete in time and TLPKTDROP
+    fires — the receiver hands the decoder a permanent gap. With a
+    200ms latency budget, the same retransmit arrives with margin to
+    spare and the stream plays cleanly. This is the dial every SRT
+    operator tunes: lower latency = lower glass-to-glass delay but
+    less loss tolerance; higher latency = more recovery but more delay.
+  learning_objectives:
+    - Understand how TSBPD computes packet delivery deadlines (sender_timestamp + latency)
+    - Recognize the recovery budget = TSBPD latency − network RTT − processing overhead
+    - See TLPKTDROP fire when the budget is too tight
+    - Trade-off intuition - common defaults (120ms live default, 1000ms+ for trans-continental contribution)
+  authors:
+    - name: "Erik Smith"
+      org: "Dell Technologies"
+  created: "2026-05-15"
+  tags:
+    - SRT
+    - TSBPD
+    - latency
+    - TLPKTDROP
+    - media streaming
+    - intermediate
+    - education
+
+topology:
+  actors:
+    - id: sender
+      type: host
+      label: "Sender (Live Encoder)"
+      ip: "203.0.113.10"
+      position: left
+    - id: receiver
+      type: host
+      label: "Receiver"
+      description: "Same physical path — only the configured TSBPD latency changes"
+      ip: "198.51.100.20"
+      position: right
+  links:
+    - { id: link, from: sender, to: receiver, speed_gbps: 0.1, media: fiber_sr }
+
+frames:
+  - id: data_a
+    name: "Data seq=200 (original)"
+    from: sender
+    to: receiver
+    total_bytes: 1316
+    headers:
+      - name: "SRT Data Header"
+        layer: 5
+        fields:
+          - { name: "F | Seq", bits: 32, value: "0 | 200", description: "" }
+          - { name: "Timestamp", bits: 32, value: "t=0", description: "Sender-relative timestamp" }
+
+  - id: data_b_dropped
+    name: "Data seq=201 (dropped)"
+    from: sender
+    to: receiver
+    total_bytes: 1316
+    headers:
+      - name: "SRT Data Header"
+        layer: 5
+        fields:
+          - { name: "F | Seq", bits: 32, value: "0 | 201", description: "Lost in transit" }
+          - { name: "Timestamp", bits: 32, value: "t=3ms", description: "" }
+
+  - id: data_c
+    name: "Data seq=202 (exposes gap)"
+    from: sender
+    to: receiver
+    total_bytes: 1316
+    headers:
+      - name: "SRT Data Header"
+        layer: 5
+        fields:
+          - { name: "F | Seq", bits: 32, value: "0 | 202", description: "Arrives — receiver sees gap at 201" }
+          - { name: "Timestamp", bits: 32, value: "t=6ms", description: "" }
+
+  - id: nak
+    name: "NAK seq=201"
+    from: receiver
+    to: sender
+    total_bytes: 24
+    headers:
+      - name: "SRT NAK"
+        layer: 5
+        fields:
+          - { name: "F | Type", bits: 32, value: "1 | NAK", description: "Negative ACK" }
+          - { name: "Lost seq", bits: 32, value: "201", description: "Single loss" }
+
+  - id: retx
+    name: "Data seq=201 (R=1, retransmit)"
+    from: sender
+    to: receiver
+    total_bytes: 1316
+    headers:
+      - name: "SRT Data Header"
+        layer: 5
+        fields:
+          - { name: "F | Seq | R", bits: 32, value: "0 | 201 | R=1", description: "Retransmission" }
+          - { name: "Timestamp", bits: 32, value: "t=3ms (ORIGINAL)", description: "Preserved for TSBPD scheduling" }
+
+timeline:
+  - id: evt_setup
+    type: note
+    annotation:
+      text: "How TSBPD computes delivery deadlines"
+      detail: >
+        At handshake time, the receiver records the sender's clock as
+        an offset from its own. For every data packet, the TSBPD engine
+        computes:
+
+          delivery_time = sender_timestamp + offset + tsbpd_latency
+
+        Packets sit in the receive buffer until that wall-clock time
+        arrives. This smooths jitter and gives a fixed, predictable
+        end-to-end delay. It also creates a HARD DEADLINE: any
+        retransmit that hasn't arrived by then is too late.
+    from: sender
+    to: receiver
+
+  # ─── Case A: 50ms latency, ~120ms one-way path ───
+  - id: evt_a_header
+    type: note
+    annotation:
+      text: "Case A — tsbpd_latency = 50 ms (low-delay configuration)"
+      detail: "Operator chose a tight 50ms budget for sports / low-latency contribution. The path is the same."
+    from: sender
+    to: receiver
+
+  - id: evt_a_seq200
+    type: frame_tx
+    t_ns: 0
+    frame_id: data_a
+    annotation:
+      text: "seq=200 arrives, TSBPD deadline = sender_ts + 50ms"
+
+  - id: evt_a_drop
+    type: frame_tx
+    t_ns: 3000000
+    frame_id: data_b_dropped
+    annotation:
+      text: "seq=201 dropped — receiver doesn't know yet"
+
+  - id: evt_a_gap
+    type: frame_tx
+    t_ns: 6000000
+    frame_id: data_c
+    annotation:
+      text: "seq=202 arrives → gap detected → NAK fires"
+
+  - id: evt_a_nak
+    type: frame_tx
+    t_ns: 6500000
+    frame_id: nak
+    annotation:
+      text: "NAK in flight (~40ms one-way)"
+
+  - id: evt_a_retx
+    type: frame_tx
+    t_ns: 46500000
+    frame_id: retx
+    annotation:
+      text: "Sender retransmits seq=201 — but it won't arrive until t ≈ 86ms"
+      detail: >
+        The retransmit needs another ~40ms one-way. It will arrive at
+        the receiver around t = 86ms. The TSBPD deadline for seq=201
+        was: sender_timestamp(3ms) + 50ms = 53ms. The retransmit is
+        ~33ms LATE.
+
+  - id: evt_a_drop_too_late
+    type: error
+    t_ns: 53000000
+    annotation:
+      text: "TLPKTDROP fires — seq=201 dropped permanently"
+      detail: >
+        At t=53ms (the TSBPD deadline for seq=201), the receiver
+        marks the seqnum as PERMANENTLY LOST and removes it from the
+        retransmit watchlist. The retransmit, when it arrives at t=86ms,
+        is discarded. The decoder is handed a 'gap' marker for that
+        frame slot. Better than blocking the playout — a single
+        frame glitch beats audio/video stall.
+
+  # ─── Case B: 200ms latency, same path ───
+  - id: evt_b_header
+    type: note
+    annotation:
+      text: "Case B — tsbpd_latency = 200 ms (contribution / OTT)"
+      detail: "Same loss event. Same network. Only the operator's latency setting changed."
+    from: sender
+    to: receiver
+
+  - id: evt_b_seq200
+    type: frame_tx
+    t_ns: 100000000
+    frame_id: data_a
+    annotation:
+      text: "seq=200 arrives — deadline now = sender_ts + 200ms"
+
+  - id: evt_b_drop
+    type: frame_tx
+    t_ns: 103000000
+    frame_id: data_b_dropped
+    annotation:
+      text: "seq=201 dropped (same drop, same path)"
+
+  - id: evt_b_gap
+    type: frame_tx
+    t_ns: 106000000
+    frame_id: data_c
+    annotation:
+      text: "seq=202 arrives → gap detected → NAK"
+
+  - id: evt_b_nak
+    type: frame_tx
+    t_ns: 106500000
+    frame_id: nak
+
+  - id: evt_b_retx
+    type: frame_tx
+    t_ns: 146500000
+    frame_id: retx
+    annotation:
+      text: "Retransmit arrives at t ≈ 86ms relative to packet start"
+
+  - id: evt_b_delivered
+    type: note
+    t_ns: 203000000
+    annotation:
+      text: "seq=201 delivered on time at t = 203ms"
+      detail: >
+        TSBPD deadline was sender_timestamp(3ms) + 200ms = 203ms.
+        Retransmit arrived around 86ms — well within budget. The
+        TSBPD engine slotted seq=201 into the buffer at its scheduled
+        position. Decoder receives seq=200, 201, 202 in clean order.
+        The viewer never sees the drop.
+    from: receiver
+    to: receiver
+
+  - id: evt_summary
+    type: note
+    annotation:
+      text: "Rule of thumb"
+      detail: >
+        Set TSBPD latency to at least 3×RTT — 4×RTT is comfortable.
+        Live sports / call-of-duty-style low-delay scenarios push the
+        envelope at 50-80ms but accept occasional glitches. OTT
+        contribution feeds and trans-continental paths run 500-1500ms
+        without users noticing the added delay. The right answer is
+        always 'what does the application tolerate' × 'what does the
+        link actually look like'.
+    from: sender
+    to: receiver
+
+glossary:
+  - term: "TSBPD deadline"
+    definition: "For each packet: sender_timestamp + clock_offset + tsbpd_latency. The wall-clock instant at which the receiver MUST deliver this packet (or declare it lost)."
+  - term: "Recovery budget"
+    definition: "TSBPD latency minus end-to-end path delay minus processing overhead. The window inside which an ARQ retransmit must complete to be usable."
+  - term: "TLPKTDROP"
+    abbrev: "Too-Late Packet Drop"
+    definition: "Receiver permanently abandons a packet that will miss its TSBPD deadline. Prevents the playout queue from blocking on a lost frame."

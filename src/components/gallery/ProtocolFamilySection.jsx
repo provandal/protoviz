@@ -9,6 +9,7 @@ const FAMILY_META = {
   'NVMe-oF':      { color: '#10b981', icon: '\u{1F4BE}' },
   'SAN':          { color: '#ec4899', icon: '\u{1F5A7}' },
   'Storage':      { color: '#f97316', icon: '\u{1F680}' },
+  'Media Streaming': { color: '#a855f7', icon: '\u{1F4FA}' },
   'Fabric Scenarios': { color: '#f97316', icon: '\u{1F578}' },
   'Protocol Stacks': { color: '#22d3ee', icon: '\u{1F4DA}' },
   'Frame Formats':   { color: '#22d3ee', icon: '\u{1F9F1}' },
@@ -25,11 +26,12 @@ const FAMILY_I18N_KEY = {
   'Fabric Scenarios': 'fabric',
   'Protocol Stacks': 'protocolStacks',
   'Frame Formats': 'frameFormats',
+  'Media Streaming': 'mediaStreaming',
 };
 
 export const PROTOCOL_FAMILY_ORDER = [
   'TCP/IP', 'IPv6', 'Interconnect Fundamentals',
-  'RDMA', 'NVMe-oF', 'SAN', 'Storage',
+  'RDMA', 'NVMe-oF', 'SAN', 'Storage', 'Media Streaming',
   'Fabric Scenarios', 'Protocol Stacks', 'Frame Formats',
 ];
 

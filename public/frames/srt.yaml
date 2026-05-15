@@ -1,0 +1,188 @@
+id: srt
+name: "SRT Packet Header"
+short_label: "SRT"
+family: media
+osi_layer: "L5+ over UDP"
+
+summary: >
+  Secure Reliable Transport (SRT) packet header. Common 16-byte structure
+  shared by data and control packets — distinguished by the F (packet
+  type) bit. Carries sequence number, message metadata, encryption key
+  indicator, and a timestamp used by TSBPD (Time-Stamp Based Packet
+  Delivery) at the receiver. Per the SRT open-source spec at
+  github.com/Haivision/srt.
+
+layers:
+  - id: header
+    name: "SRT Common Header"
+    color: addressing
+  - id: payload
+    name: "Media Payload (or Control body)"
+    color: payload
+
+fields:
+  - name: F
+    bits: 1
+    layer: header
+    color: control
+    notes: >
+      Packet Type Flag. 0 = Data packet (the rest of the header is
+      sequence/PP/O/KK/R/MsgNo); 1 = Control packet (the remaining
+      30 bits of word 0 become Message Type + Message Extended Type
+      and word 1 becomes type-specific additional data).
+
+  - name: Sequence Number
+    bits: 31
+    layer: header
+    color: addressing
+    notes: >
+      31-bit packet sequence number (when F=0). Each data packet
+      increments by 1; wraps at 2^31. The receiver uses this to
+      detect loss (gaps) and order packets within the TSBPD window.
+
+  - name: PP
+    bits: 2
+    layer: header
+    color: control
+    notes: >
+      Packet Position flag (Live mode partial reassembly):
+      11 = solo (this packet is a complete message),
+      10 = first packet of a multi-packet message,
+      00 = middle packet,
+      01 = last packet of a multi-packet message.
+
+  - name: O
+    bits: 1
+    layer: header
+    color: control
+    notes: >
+      In-Order Delivery flag. 1 = deliver in sequence (typical for
+      MPEG-TS contribution feeds); 0 = out-of-order delivery allowed.
+
+  - name: KK
+    bits: 2
+    layer: header
+    color: control
+    notes: >
+      Encryption Key indicator:
+      00 = unencrypted,
+      01 = even key (SEK_even),
+      10 = odd key (SEK_odd),
+      11 = reserved. SRT pre-announces the next key, then flips this
+      bit to swap encryption keys mid-stream without packet loss
+      (DVB-style rekey).
+
+  - name: R
+    bits: 1
+    layer: header
+    color: control
+    notes: >
+      Retransmitted flag. 0 = original transmission; 1 = this packet
+      is a retransmission triggered by NAK. Receiver stats track
+      original vs retransmitted to compute effective loss rate.
+
+  - name: Message Number
+    bits: 26
+    layer: header
+    color: addressing
+    notes: >
+      26-bit message number. All packets belonging to the same
+      application-level message share this number, even when split
+      across multiple sequence numbers (see PP). Wraps at 2^26.
+
+  - name: Timestamp
+    bits: 32
+    layer: header
+    color: control
+    notes: >
+      32-bit timestamp in microseconds, relative to the connection
+      start. Captured at the sender when the packet is handed to SRT
+      for transmission. The receiver's TSBPD engine adds the
+      negotiated latency to this timestamp to compute the packet's
+      scheduled delivery time.
+
+  - name: Destination Socket ID
+    bits: 32
+    layer: header
+    color: addressing
+    notes: >
+      Destination SRT socket ID. Identifies the target socket on the
+      receiver — multiple SRT sockets can multiplex over a single
+      UDP 4-tuple. Set to 0 during the very first induction-phase
+      handshake packet, before socket IDs have been exchanged.
+
+  - name: Payload
+    bits: 0
+    variable: true
+    payload: true
+    layer: payload
+    color: payload
+    notes: >
+      Media payload (when F=0) or control-message body (when F=1).
+      Default maximum 1316 bytes — chosen so a complete SRT packet
+      (16B SRT header + payload) fits in a single 1500-byte
+      Ethernet MTU after IPv4 (20B) + UDP (8B) overhead.
+
+payload:
+  min_bytes: 0
+  max_bytes: 1316
+  default_bytes: 1316
+  jumbo_max_bytes: 8956
+  notes: >
+    1500 MTU - 20 IPv4 - 8 UDP - 16 SRT = 1456 bytes max, but the
+    de facto SRT live-mode default is 1316 bytes for MPEG-TS-friendly
+    7×188 alignment. Jumbo links can extend this proportionally.
+
+wire_overhead:
+  before_bytes: 0
+
+# Control packet variant — same 16-byte common header, but word-0
+# splits differently when F=1. Modeled inline via the F-bit notes.
+
+link_variants:
+  - id: 1gbe
+    name: "1GbE"
+    line_rate_gbaud: 1.25
+    encoding: "8b/10b"
+    encoding_ratio: 0.8
+    fec: null
+    fec_ratio: 1.0
+  - id: 10gbe
+    name: "10GbE"
+    line_rate_gbaud: 10.3125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: null
+    fec_ratio: 1.0
+  - id: 25gbe
+    name: "25GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 100gbe
+    name: "100GbE"
+    line_rate_gbaud: 25.78125
+    encoding: "64b/66b"
+    encoding_ratio: 0.969697
+    fec: "RS-FEC(528,514)"
+    fec_ratio: 0.973485
+  - id: 400gbe
+    name: "400GbE"
+    line_rate_gbaud: 26.5625
+    encoding: "PAM4 + 256b/257b"
+    encoding_ratio: 0.996109
+    fec: "RS-FEC(544,514)"
+    fec_ratio: 0.944853
+
+metadata:
+  authors: ["Erik Smith"]
+  created: "2026-05-15"
+  license: "CC-BY-4.0"
+  spec_refs:
+    - document: "Haivision/srt GitHub"
+      title: "SRT Protocol — open-source reference"
+      url: "https://github.com/Haivision/srt"
+    - document: "SRT Alliance"
+      title: "Secure Reliable Transport — Technical Overview"

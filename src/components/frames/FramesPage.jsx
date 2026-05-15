@@ -26,11 +26,11 @@ async function fetchYaml(path) {
 // take user payload, so presets don't apply.
 const ETH_FAMILIES = [
   'ethernet', 'esun', 'ip', 'tcp', 'udp', 'rdma', 'overlay',
-  'nvme-tcp', 'security', 'application', 'fcoe',
+  'nvme-tcp', 'security', 'application', 'fcoe', 'media',
 ];
 const ALL_FAMILIES = [
   'ethernet', 'esun', 'fc', 'ip', 'tcp', 'udp', 'rdma', 'overlay',
-  'nvme-tcp', 'security', 'application', 'fcoe', 'ib',
+  'nvme-tcp', 'security', 'application', 'fcoe', 'ib', 'media',
 ];
 
 const PRESETS = [

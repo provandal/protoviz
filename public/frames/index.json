@@ -127,6 +127,14 @@
       "family": "application",
       "osi_layer": "L7",
       "path": "http2.yaml"
+    },
+    {
+      "id": "srt",
+      "name": "SRT Packet Header",
+      "short_label": "SRT",
+      "family": "media",
+      "osi_layer": "L5+ over UDP",
+      "path": "srt.yaml"
     }
   ]
 }

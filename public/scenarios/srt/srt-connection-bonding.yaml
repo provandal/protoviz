@@ -1,0 +1,269 @@
+meta:
+  id: srt-connection-bonding
+  title: "SRT: Connection Bonding — Broadcast Backup over Two Paths"
+  protocol: SRT
+  protocol_family: "Media Streaming"
+  version: "1.0"
+  difficulty: advanced
+  description: >
+    SRT socket groups in Broadcast (live redundancy) mode. The sender
+    duplicates every packet across two members of a socket group —
+    here a primary fiber path and a secondary LTE/5G path. The
+    receiver's group reads from BOTH members and forwards the first
+    arrival of each sequence number to the application, suppressing
+    the duplicate. If the primary link drops, packets continue flowing
+    through the secondary with no glitch; recovery happens link-by-link
+    without involving the receiver state machine. Distinct from the
+    Main/Backup mode (only one member active, switch on failure) and
+    Balancing (load split across members).
+  learning_objectives:
+    - Understand SRT socket groups and the three modes — Broadcast, Main/Backup, Balancing
+    - Trace duplicate-suppression at the receiver (first-arrival wins, by sequence number)
+    - See how each member is its own SRT connection with its own handshake, ACK, NAK, and statistics
+    - Recognize the trade-offs: Broadcast doubles bandwidth but tolerates any single-path failure with zero glitch
+    - Distinguish bonded packet duplication from FEC packet filtering (different mechanism, same goal)
+  authors:
+    - name: "Erik Smith"
+      org: "Dell Technologies"
+  created: "2026-05-15"
+  tags:
+    - SRT
+    - bonding
+    - socket groups
+    - REMI
+    - redundancy
+    - media streaming
+    - advanced
+    - education
+  primary_specs:
+    - document: "Haivision/srt"
+      section: "docs/features/bonding-intro.md, socket-groups.md, bonding-main-backup.md"
+      url: "https://github.com/Haivision/srt/tree/master/docs/features"
+
+topology:
+  actors:
+    - id: encoder
+      type: host
+      label: "Encoder (Field Truck)"
+      description: "REMI contribution encoder at a sports venue. Holds an SRT socket group in Broadcast mode."
+      ip: "198.51.100.30"
+      position: left
+    - id: fiber
+      type: switch
+      label: "Primary path: Fiber MPLS"
+      description: "Dedicated low-latency link"
+      position: center
+    - id: lte
+      type: switch
+      label: "Secondary path: LTE/5G"
+      description: "Commercial cellular, higher latency and variability"
+      position: center
+    - id: ingest
+      type: host
+      label: "Cloud Ingest"
+      description: "Receiver-side SRT socket group, hands de-duplicated stream to the production switcher"
+      ip: "203.0.113.40"
+      position: right
+  links:
+    - { id: enc_fiber, from: encoder, to: fiber, speed_gbps: 1.0, media: fiber_sr }
+    - { id: enc_lte, from: encoder, to: lte, speed_gbps: 0.1 }
+    - { id: fiber_ingest, from: fiber, to: ingest, speed_gbps: 10.0, media: fiber_sr }
+    - { id: lte_ingest, from: lte, to: ingest, speed_gbps: 10.0, media: fiber_sr }
+
+frames:
+  - id: data_via_fiber
+    name: "seq=500 over Fiber (member 1)"
+    from: encoder
+    to: ingest
+    via: [fiber]
+    total_bytes: 1316
+    headers:
+      - name: "SRT Data Header (member 1 socket)"
+        layer: 5
+        fields:
+          - { name: "F | Seq", bits: 32, value: "0 | 500", description: "Same seq used across both members in Broadcast mode" }
+          - { name: "Timestamp", bits: 32, value: "1500000 µs", description: "Sender-relative — both copies share the timestamp" }
+          - { name: "Destination Socket ID", bits: 32, value: "0xINGEST_MEMBER_1", description: "Member-1 socket ID at the receiver" }
+
+  - id: data_via_lte
+    name: "seq=500 over LTE (member 2) — DUPLICATE"
+    from: encoder
+    to: ingest
+    via: [lte]
+    total_bytes: 1316
+    headers:
+      - name: "SRT Data Header (member 2 socket)"
+        layer: 5
+        fields:
+          - { name: "F | Seq", bits: 32, value: "0 | 500", description: "Identical sequence number" }
+          - { name: "Timestamp", bits: 32, value: "1500000 µs", description: "Identical timestamp" }
+          - { name: "Destination Socket ID", bits: 32, value: "0xINGEST_MEMBER_2", description: "DIFFERENT socket ID — member 2's socket" }
+
+  - id: data_501_fiber
+    name: "seq=501 over Fiber"
+    from: encoder
+    to: ingest
+    via: [fiber]
+    total_bytes: 1316
+    headers:
+      - name: "SRT Data Header"
+        layer: 5
+        fields:
+          - { name: "F | Seq", bits: 32, value: "0 | 501", description: "Next packet — also duplicated, but fiber link FAILS before its second copy reaches LTE" }
+
+  - id: data_501_lte
+    name: "seq=501 over LTE (sole arrival after fiber drop)"
+    from: encoder
+    to: ingest
+    via: [lte]
+    total_bytes: 1316
+    headers:
+      - name: "SRT Data Header"
+        layer: 5
+        fields:
+          - { name: "F | Seq", bits: 32, value: "0 | 501", description: "Only path that delivered seq=501. Receiver doesn't need ARQ — duplicate already filled the slot." }
+
+timeline:
+  - id: evt_intro
+    type: note
+    annotation:
+      text: "Socket group setup — Broadcast mode"
+      detail: >
+        Both peers create a socket group via srt_create_group(). The
+        encoder's group holds two MEMBER sockets, each a complete SRT
+        connection with its own handshake, ACK/NAK loop, ISN, and
+        statistics. The receiver mirrors this: its group reads from
+        both members and merges by sequence number.
+
+        Broadcast mode = every packet duplicated across all active
+        members. Tradeoff: 2x bandwidth, zero failover gap.
+
+        (Main/Backup mode: only the Main member transmits; Backup
+        members run keepalive handshakes only. On Main's failure,
+        the group promotes a Backup member to active. Failover
+        budget = a few RTTs.
+
+        Balancing mode: alternates packets across members to aggregate
+        bandwidth. Most complex; receiver re-orders by sequence.)
+    from: encoder
+    to: ingest
+
+  - id: evt_handshakes
+    type: note
+    annotation:
+      text: "Two independent SRT connections come up"
+      detail: >
+        Before any data flows, member 1 (over fiber) and member 2
+        (over LTE) each complete their own caller-listener handshake.
+        Each handshake produces its own socket ID pair, its own
+        cookie, its own TSBPD latency negotiation. The group layer
+        sits ABOVE these — it doesn't change the per-member protocol
+        at all.
+    from: encoder
+    to: ingest
+
+  - id: evt_fiber_500
+    type: frame_tx
+    t_ns: 0
+    frame_id: data_via_fiber
+    annotation:
+      text: "seq=500 over fiber — arrives at ingest member 1 socket"
+
+  - id: evt_lte_500
+    type: frame_tx
+    t_ns: 25000000
+    frame_id: data_via_lte
+    annotation:
+      text: "seq=500 over LTE — arrives 25ms later, dropped as duplicate"
+      detail: >
+        The receiver's group layer sees seq=500 has already been
+        forwarded to the application via member 1. The LTE copy
+        contains exactly the same payload bytes, so the group
+        silently drops it. From the application's perspective:
+        delivered ONCE, on time.
+
+  - id: evt_fiber_fail
+    type: error
+    t_ns: 30000000
+    annotation:
+      text: "Fiber link drops — switch reports loss-of-signal"
+      detail: >
+        At t=30ms, a backhoe cuts the fiber. The encoder's member-1
+        socket doesn't know yet — it'll discover via missed ACKs and
+        eventual connection timeout. Member 2 (LTE) is unaffected.
+
+  - id: evt_lte_501
+    type: frame_tx
+    t_ns: 35000000
+    frame_id: data_501_fiber
+    annotation:
+      text: "seq=501 — fiber TX queued, LTE TX leaves immediately"
+      detail: >
+        The encoder duplicates seq=501 toward both members. The fiber
+        side queues it but the link is down. The LTE side transmits
+        normally.
+
+  - id: evt_lte_501_arrives
+    type: frame_tx
+    t_ns: 80000000
+    frame_id: data_501_lte
+    annotation:
+      text: "seq=501 arrives via LTE — group layer delivers, no duplicate to dedupe"
+      detail: >
+        The fiber copy never arrived (and never will). The LTE copy
+        is the FIRST and ONLY arrival of seq=501. The group layer
+        forwards it to the application. From the application's
+        perspective: still on time, still in order. The viewer sees
+        no glitch.
+
+  - id: evt_member_loss
+    type: note
+    t_ns: 5000000000
+    annotation:
+      text: "Member 1 socket eventually times out and is reported"
+      detail: >
+        After several RTTs of no ACKs, member 1's SRT connection
+        detects loss-of-link and reports member-down to the group
+        layer. The group continues operating on member 2 alone.
+        Application sees a member-status event but no data
+        interruption.
+    from: encoder
+    to: encoder
+
+  - id: evt_compare
+    type: note
+    annotation:
+      text: "Broadcast vs Main/Backup vs Balancing"
+      detail: >
+        BROADCAST (this scenario):
+        - 2× bandwidth always
+        - Zero failover gap
+        - Best for live sports / unmissable contribution
+
+        MAIN/BACKUP:
+        - 1× bandwidth in steady state
+        - Failover gap = a few RTTs while group promotes backup
+        - Best when cost matters and brief glitches are acceptable
+
+        BALANCING:
+        - Aggregate bandwidth = sum of member capacities
+        - No redundancy — loss of one member = loss of its share
+        - Best for high-bitrate flows over multiple mediocre links
+
+        All three modes use the same socket-group API; the mode is
+        a configuration option.
+    from: encoder
+    to: ingest
+
+glossary:
+  - term: "Socket group"
+    definition: "SRT API construct that aggregates multiple member sockets into one logical stream. Application reads/writes the group; the group layer fans out to members."
+  - term: "Broadcast mode"
+    definition: "Group mode where every packet duplicates across all active members. Receiver deduplicates by sequence number. Highest bandwidth, zero-gap failover."
+  - term: "Main/Backup mode"
+    definition: "Group mode where only one member is active at a time. Backup members run keepalive. On main failure, group promotes backup."
+  - term: "Balancing mode"
+    definition: "Group mode where packets are distributed across members (round-robin or weighted). Aggregates bandwidth but offers no redundancy."
+  - term: "REMI"
+    abbrev: "Remote Integration Model"
+    definition: "Broadcast workflow where talent and cameras are at the venue but production crew is in a remote control room. Heavily uses SRT bonding for resilient contribution feeds."

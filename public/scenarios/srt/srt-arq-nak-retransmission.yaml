@@ -1,0 +1,278 @@
+meta:
+  id: srt-arq-nak-retransmission
+  title: "SRT: ARQ Recovery — NAK + Retransmit Inside the Latency Window"
+  protocol: SRT
+  protocol_family: "Media Streaming"
+  version: "1.0"
+  difficulty: intermediate
+  description: >
+    SRT's marquee feature: per-packet loss recovery over a lossy
+    Internet path, completed inside a fixed latency budget. A single
+    packet is dropped on the wire; the receiver detects the gap, emits
+    a NAK loss-list, and the sender retransmits the missing packet with
+    the R (retransmit) bit set — all before the receiver's TSBPD
+    deadline expires. Demonstrates why SRT can carry live video
+    contribution feeds over best-effort Internet links that would
+    otherwise glitch under raw UDP.
+  learning_objectives:
+    - See the NAK packet structure: loss list with single seq vs range encoding (high bit marks ranges)
+    - Trace the sender's retransmit path — the R bit distinguishes retransmits from originals in stats
+    - Understand the latency budget: NAK + RTT + retransmit + jitter must all fit before TSBPD deadline
+    - Recognize the trade-off — small latency = tight budget = recovers less; large latency = more recovery but more glass-to-glass delay
+    - See where TLPKTDROP kicks in (Too-Late Packet Drop) when a packet is going to miss its deadline anyway
+  authors:
+    - name: "Erik Smith"
+      org: "Dell Technologies"
+  created: "2026-05-15"
+  tags:
+    - SRT
+    - ARQ
+    - NAK
+    - retransmission
+    - TSBPD
+    - loss recovery
+    - media streaming
+    - intermediate
+    - education
+  primary_specs:
+    - document: "Haivision/srt"
+      title: "SRT open-source reference"
+      url: "https://github.com/Haivision/srt"
+
+topology:
+  actors:
+    - id: sender
+      type: host
+      label: "Sender (Live Encoder)"
+      description: "Contribution encoder sending an MPEG-TS stream at ~5 Mbps"
+      ip: "203.0.113.10"
+      position: left
+    - id: net
+      type: switch
+      label: "Internet"
+      description: "Lossy Internet path — ~0.3% packet loss, ~40ms RTT"
+      position: center
+    - id: receiver
+      type: host
+      label: "Receiver (Cloud Ingest)"
+      description: "Cloud ingest with 120ms TSBPD latency configured"
+      ip: "198.51.100.20"
+      position: right
+  links:
+    - { id: link_up, from: sender, to: net, speed_gbps: 0.1, media: fiber_sr }
+    - { id: link_down, from: net, to: receiver, speed_gbps: 1.0, media: fiber_sr }
+
+frames:
+  - id: data_100
+    name: "Data packet seq=100 (original)"
+    from: sender
+    to: receiver
+    total_bytes: 1316
+    headers:
+      - name: "SRT Data Header"
+        layer: 5
+        fields:
+          - { name: "F", bits: 1, value: 0, description: "Data packet" }
+          - { name: "Sequence Number", bits: 31, value: 100, description: "First data packet of the burst we're tracing" }
+          - { name: "PP", bits: 2, value: "11 (solo)", description: "Single-packet message" }
+          - { name: "O", bits: 1, value: 1, description: "In-order delivery requested" }
+          - { name: "KK", bits: 2, value: "00 (none)", description: "Unencrypted" }
+          - { name: "R", bits: 1, value: 0, description: "Original transmission" }
+          - { name: "Message Number", bits: 26, value: 50, description: "MPEG-TS frame number" }
+          - { name: "Timestamp", bits: 32, value: "1000000 µs", description: "Sender-relative timestamp" }
+          - { name: "Destination Socket ID", bits: 32, value: "0xDEF00002", description: "Receiver socket ID" }
+
+  - id: data_101
+    name: "Data packet seq=101 (original)"
+    from: sender
+    to: receiver
+    total_bytes: 1316
+    headers:
+      - name: "SRT Data Header"
+        layer: 5
+        fields:
+          - { name: "F | Seq", bits: 32, value: "0 | 101", description: "Next data packet" }
+          - { name: "R", bits: 1, value: 0, description: "Original" }
+          - { name: "Timestamp", bits: 32, value: "1003000 µs", description: "~3ms after seq 100" }
+
+  - id: data_102_dropped
+    name: "Data packet seq=102 (DROPPED on the wire)"
+    from: sender
+    to: net
+    total_bytes: 1316
+    headers:
+      - name: "SRT Data Header"
+        layer: 5
+        fields:
+          - { name: "F | Seq", bits: 32, value: "0 | 102", description: "Drops at the lossy link — never reaches the receiver" }
+          - { name: "Timestamp", bits: 32, value: "1006000 µs", description: "Sender-side timestamp at transmission" }
+
+  - id: data_103
+    name: "Data packet seq=103 (original) — arrives, exposes gap"
+    from: sender
+    to: receiver
+    total_bytes: 1316
+    headers:
+      - name: "SRT Data Header"
+        layer: 5
+        fields:
+          - { name: "F | Seq", bits: 32, value: "0 | 103", description: "Arrival of 103 — receiver now sees gap [102 missing]" }
+          - { name: "Timestamp", bits: 32, value: "1009000 µs", description: "" }
+
+  - id: nak_102
+    name: "NAK loss-list = [102]"
+    description: "Receiver detected the gap immediately and reports loss"
+    from: receiver
+    to: sender
+    total_bytes: 24
+    headers:
+      - name: "SRT Control Header (NAK)"
+        layer: 5
+        fields:
+          - { name: "F", bits: 1, value: 1, description: "Control packet" }
+          - { name: "Message Type", bits: 15, value: "0x0003 (NAK)", description: "Negative Acknowledgment" }
+          - { name: "Message Extended Type", bits: 16, value: 0, description: "Unused for NAK" }
+          - { name: "Additional Data", bits: 32, value: 0, description: "Reserved" }
+          - { name: "Timestamp", bits: 32, value: "1011500 µs (receiver-side)", description: "" }
+          - { name: "Destination Socket ID", bits: 32, value: "0xABCD0001", description: "Sender socket ID" }
+      - name: "NAK Loss List"
+        layer: 5
+        fields:
+          - { name: "Lost seq", bits: 32, value: "102 (high bit=0 → single)", description: "Single-packet loss entry. If high bit were set, this would mark the start of a range and the next 32-bit entry would mark the end." }
+
+  - id: data_102_retx
+    name: "Data packet seq=102 (RETRANSMIT, R=1)"
+    description: "Sender's retransmit path picks 102 from the send buffer and re-emits it"
+    from: sender
+    to: receiver
+    total_bytes: 1316
+    headers:
+      - name: "SRT Data Header"
+        layer: 5
+        fields:
+          - { name: "F", bits: 1, value: 0, description: "Data packet" }
+          - { name: "Sequence Number", bits: 31, value: 102, description: "Same sequence number as the original" }
+          - { name: "R", bits: 1, value: 1, description: "RETRANSMIT — stats counter increments retx, not loss" }
+          - { name: "Timestamp", bits: 32, value: "1006000 µs", description: "ORIGINAL timestamp preserved — TSBPD must deliver at the original time, not the retransmit time" }
+
+timeline:
+  - id: evt_intro
+    type: note
+    annotation:
+      text: "Setup: 120ms TSBPD latency, ~40ms RTT, lossy link"
+      detail: >
+        The sender and receiver negotiated 120ms TSBPD latency during
+        the handshake. Round-trip time on the path is ~40ms. The
+        receiver's clock has been smoothed and aligned to the sender's
+        via the handshake's timestamp exchange. We're going to drop a
+        single packet on the wire and watch SRT recover it before the
+        receiver's TSBPD deadline.
+    from: sender
+    to: receiver
+
+  - id: evt_seq100
+    type: frame_tx
+    t_ns: 0
+    frame_id: data_100
+    annotation:
+      text: "seq=100 arrives normally"
+
+  - id: evt_seq101
+    type: frame_tx
+    t_ns: 3000000
+    frame_id: data_101
+    annotation:
+      text: "seq=101 arrives normally"
+
+  - id: evt_seq102_drop
+    type: frame_tx
+    t_ns: 6000000
+    frame_id: data_102_dropped
+    annotation:
+      text: "seq=102 — DROPPED on the wire"
+      detail: >
+        A single packet drop. At the receiver side, no notification
+        arrives. The receiver doesn't even know yet that 102 was lost —
+        it'll find out via the gap, not via a timeout.
+
+  - id: evt_seq103_gap
+    type: frame_tx
+    t_ns: 9000000
+    frame_id: data_103
+    annotation:
+      text: "seq=103 arrives → receiver detects gap [seq 102 missing]"
+      detail: >
+        The instant 103 arrives, the receiver's loss-detection logic
+        sees that 102 is missing from its receive buffer. In immediate-
+        NAK mode (default in live config), it doesn't wait for periodic
+        NAK reports — it fires a NAK right now.
+
+  - id: evt_nak
+    type: frame_tx
+    t_ns: 11500000
+    frame_id: nak_102
+    annotation:
+      text: "Receiver sends NAK with loss-list = [102]"
+      detail: >
+        The NAK loss list uses a compact encoding: each 32-bit entry is
+        either (a) a single lost seq with the high bit cleared, or
+        (b) when the high bit is set, the start of a contiguous range
+        followed by a 32-bit end-seq entry. Here it's a single value,
+        so just one 32-bit word: 0x00000066.
+
+  - id: evt_retx
+    type: frame_tx
+    t_ns: 31500000
+    frame_id: data_102_retx
+    annotation:
+      text: "Sender retransmits seq=102 with R=1"
+      detail: >
+        On receiving the NAK, the sender's retransmit loop pulls seq=102
+        from its send buffer (which retains every packet until ACKed
+        beyond it) and re-emits it with the R bit set to 1. CRITICAL:
+        the timestamp stays as the ORIGINAL 1006000 µs — TSBPD must
+        play this packet at the slot it was originally scheduled for,
+        not the slot it arrived in.
+
+  - id: evt_retx_arrival
+    type: note
+    t_ns: 51500000
+    annotation:
+      text: "seq=102 arrives at receiver — ~51ms after the drop"
+      detail: >
+        Total recovery time: 9ms (drop → gap detected) + ~2.5ms
+        (gap → NAK queued) + ~20ms (NAK in flight) + ~20ms (retransmit
+        in flight) = ~51ms. Comfortably inside the 120ms TSBPD budget.
+        The TSBPD engine queues seq=102 into the buffer at its slot;
+        playback hands seq=100, 101, 102, 103 to the application in
+        perfect order, on schedule.
+    from: receiver
+    to: receiver
+
+  - id: evt_tlpktdrop_note
+    type: note
+    annotation:
+      text: "What if 120ms wasn't enough?"
+      detail: >
+        Imagine the link RTT were 200ms instead of 40ms. The retransmit
+        couldn't possibly arrive before the TSBPD deadline. SRT's
+        TLPKTDROP feature kicks in: the receiver marks the packet as
+        permanently lost, hands the decoder a "frame gap" signal, and
+        moves on. Better than blocking the playout queue. The next
+        scenario (TSBPD Latency Trade-off) shows this directly.
+    from: receiver
+    to: receiver
+
+glossary:
+  - term: "NAK"
+    abbrev: "Negative Acknowledgment"
+    definition: "Control message (type 0x0003) sent by the receiver listing missing sequence numbers. Triggers retransmission at the sender."
+  - term: "Loss list encoding"
+    definition: "Each 32-bit entry. High bit 0 = single missing seq. High bit 1 = start of a contiguous loss range, followed by a 32-bit end-seq entry. Compact form for bursty drops."
+  - term: "R bit"
+    definition: "Bit in the SRT data header indicating retransmission. Receivers use this to track effective loss rate (originals vs retx) and to keep stats honest."
+  - term: "Immediate NAK vs Periodic NAK"
+    definition: "Default live config fires a NAK the moment a gap is detected. If NAKREPORT is also enabled, the receiver re-emits NAKs for still-missing seqs on a timer (RTT-based) — covers cases where the first NAK or its retransmit also gets lost."
+  - term: "TLPKTDROP"
+    abbrev: "Too-Late Packet Drop"
+    definition: "Receiver-side feature: rather than block the playout buffer waiting for a packet that's going to miss its TSBPD deadline anyway, mark it as permanently lost and continue. Keeps live streams flowing under adverse conditions."

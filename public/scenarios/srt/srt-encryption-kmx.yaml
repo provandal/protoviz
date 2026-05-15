@@ -1,0 +1,272 @@
+meta:
+  id: srt-encryption-kmx
+  title: "SRT: Encryption — Passphrase → KEK → SEK → AES-CTR Data"
+  protocol: SRT
+  protocol_family: "Media Streaming"
+  version: "1.0"
+  difficulty: advanced
+  description: >
+    SRT's encryption flow end-to-end. Both peers derive a Key Encrypting
+    Key (KEK) from a shared passphrase via PBKDF2. The sender generates
+    a random Stream Encrypting Key (SEK), wraps it with the KEK using
+    AES Key Wrap (RFC 3394), and transmits it inside a KMREQ extension
+    block in the conclusion handshake. Receiver returns KMRSP. After
+    handshake, data packets carry the KK bits (01 = even key, 10 = odd
+    key) and are encrypted with AES-CTR using the SEK. Pre-announced
+    key rotation enables seamless rekeying every ~2^25 packets.
+  learning_objectives:
+    - Trace passphrase → KEK derivation with PBKDF2 + per-connection salt
+    - Understand the wrapped SEK structure inside KMREQ (RFC 3394 AES Key Wrap)
+    - See AES-CTR mode with the 128-bit counter = IV (112 bits) + packet_index (32 bits) + block_counter (16 bits)
+    - Recognize the KK bits in the data header and the odd/even key rotation pattern
+    - Know the key refresh trigger (~2^25 packets, ~6 hours typical) and the pre-announce window
+  authors:
+    - name: "Erik Smith"
+      org: "Dell Technologies"
+  created: "2026-05-15"
+  tags:
+    - SRT
+    - encryption
+    - AES-CTR
+    - AES Key Wrap
+    - PBKDF2
+    - KMREQ
+    - KMRSP
+    - media streaming
+    - advanced
+    - education
+  primary_specs:
+    - document: "Haivision/srt"
+      section: "docs/features/encryption.md"
+      url: "https://github.com/Haivision/srt/blob/master/docs/features/encryption.md"
+    - document: "RFC 3394"
+      title: "AES Key Wrap Algorithm"
+    - document: "RFC 2898 / PKCS#5"
+      title: "PBKDF2"
+
+topology:
+  actors:
+    - id: sender
+      type: host
+      label: "Sender"
+      description: "Holds passphrase 'broadcastsecret123' configured via srt_setsockopt SRTO_PASSPHRASE"
+      ip: "203.0.113.10"
+      position: left
+    - id: receiver
+      type: host
+      label: "Receiver"
+      description: "Holds the SAME passphrase — out-of-band shared"
+      ip: "198.51.100.20"
+      position: right
+
+frames:
+  - id: kmreq
+    name: "Conclusion + KMREQ extension"
+    description: "Sender's HSv5 conclusion carrying both HSREQ and KMREQ extension blocks"
+    from: sender
+    to: receiver
+    total_bytes: 144
+    headers:
+      - name: "SRT Handshake (Conclusion)"
+        layer: 5
+        fields:
+          - { name: "Version", bits: 32, value: 5, description: "HSv5" }
+          - { name: "Type/Flags", bits: 32, value: "Enc=PBKEYLEN(16) · Ext=HS_EXT_HSREQ | HS_EXT_KMREQ", description: "Upper 16 bits advertise the key length (16/24/32 bytes = AES-128/192/256); lower 16 bits flag HSREQ AND KMREQ present" }
+          - { name: "ReqType", bits: 32, value: "URQ_CONCLUSION", description: "" }
+          - { name: "ID / Cookie", bits: 64, value: "...", description: "Caller socket ID, echoed listener cookie" }
+      - name: "Ext Block: HSREQ"
+        layer: 5
+        fields:
+          - { name: "Cmd | Size", bits: 32, value: "SRT_CMD_HSREQ (1) | 3", description: "" }
+          - { name: "SRT Version + Flags + Latency", bits: 96, value: "v1.4.3 · TSBPDSND|TSBPDRCV|HAICRYPT|REXMITFLG · 120ms/120ms", description: "Standard HSREQ as in the basic handshake scenario" }
+      - name: "Ext Block: KMREQ"
+        layer: 5
+        fields:
+          - { name: "Cmd | Size", bits: 32, value: "SRT_CMD_KMREQ (3) | 15 (variable)", description: "Size depends on Klen + Slen" }
+          - { name: "V | PT | Sign(0x2029) | Resv | KK", bits: 32, value: "V=1 PT=0 Sign=0x2029 KK=01 (even)", description: "KK=01 indicates the wrapped key is for the EVEN slot. Sign=0x2029 is the keying-material magic." }
+          - { name: "KEKI", bits: 32, value: 0, description: "Key Encryption Key Index — typically 0; reserved for multi-KEK setups" }
+          - { name: "Cipher | Auth | SE | Resv1", bits: 32, value: "Cipher=AES-128 (2) · Auth=0 · SE=2 (Selective Encryption: Live mode)", description: "" }
+          - { name: "Resv2 | Slen | Klen", bits: 32, value: "Slen=8 (32-bit words) · Klen=4 (32-bit words)", description: "Salt: 8 words = 32 bytes; wrapped key: 4 words = 16 bytes (AES-128 SEK + 8-byte AES Key Wrap overhead)" }
+          - { name: "Salt", bits: 128, value: "0xA5C3F1E9 47B82D6A 1F4E8B07 90C5D213", description: "Per-connection 16-byte salt (Slen×4 = 32 bytes shown, padded). Combined with passphrase in PBKDF2 to derive KEK." }
+          - { name: "Wrap", bits: 192, value: "[24 bytes = 8-byte RFC3394 wrap IV + 16-byte wrapped SEK]", description: "AES Key Wrap output. Receiver runs RFC 3394 unwrap with KEK to recover the SEK." }
+
+  - id: kmrsp
+    name: "Conclusion Response + KMRSP"
+    from: receiver
+    to: sender
+    total_bytes: 112
+    headers:
+      - name: "SRT Handshake (Conclusion Rsp)"
+        layer: 5
+        fields:
+          - { name: "Version | Type/Flags | ReqType", bits: 96, value: "5 | Ext=HSREQ|KMREQ | URQ_CONCLUSION", description: "Mirrors KMREQ in HSRSP form" }
+      - name: "Ext Block: KMRSP"
+        layer: 5
+        fields:
+          - { name: "Cmd | Size", bits: 32, value: "SRT_CMD_KMRSP (4) | 1", description: "Successful unwrap → just an acknowledgment" }
+          - { name: "Error Code", bits: 32, value: "0 (success)", description: "Non-zero values indicate bad passphrase or wrong PBKEYLEN" }
+
+  - id: data_kk_even
+    name: "Encrypted data packet (KK=01, even key)"
+    from: sender
+    to: receiver
+    total_bytes: 1316
+    headers:
+      - name: "SRT Data Header"
+        layer: 5
+        fields:
+          - { name: "F | Seq", bits: 32, value: "0 | 500", description: "Mid-stream data" }
+          - { name: "PP | O | KK | R", bits: 6, value: "PP=11 (solo) · O=1 · KK=01 (EVEN) · R=0", description: "KK=01 → encrypted with SEK_even" }
+          - { name: "Message Number", bits: 26, value: 240, description: "" }
+          - { name: "Timestamp", bits: 32, value: "1500000 µs", description: "" }
+          - { name: "Destination Socket ID", bits: 32, value: "0xDEF00002", description: "" }
+      - name: "AES-CTR Counter (computed, not on the wire)"
+        layer: 5
+        fields:
+          - { name: "IV", bits: 112, value: "MSB(112, Salt) — top 112 bits of the per-connection salt", description: "Fixed for the life of the SEK" }
+          - { name: "Packet index", bits: 32, value: 500, description: "Packet's 32-bit sequence number" }
+          - { name: "Block counter", bits: 16, value: "0..N", description: "Increments per 16-byte AES block within the packet" }
+
+  - id: data_kk_odd
+    name: "Encrypted data packet AFTER rotation (KK=10, odd key)"
+    from: sender
+    to: receiver
+    total_bytes: 1316
+    headers:
+      - name: "SRT Data Header"
+        layer: 5
+        fields:
+          - { name: "F | Seq | KK", bits: 34, value: "0 | 33554432 | KK=10 (ODD)", description: "After 2^25 packets the sender flipped to the pre-announced odd key. Decryption seamlessly switches because the receiver already unwrapped SEK_odd via a prior KMREQ Pre-Announce." }
+
+timeline:
+  - id: evt_setup
+    type: note
+    annotation:
+      text: "Pre-handshake — both peers compute the KEK from the passphrase"
+      detail: >
+        Before any packets fly, the sender (via SRTO_PASSPHRASE) and
+        receiver are loaded with the SAME passphrase out-of-band. SRT
+        does NOT do passphrase exchange. Both also share PBKEYLEN
+        (16, 24, or 32 bytes for AES-128/192/256). When the sender
+        prepares its KMREQ, it generates a random per-connection salt
+        and computes:
+
+          KEK = PBKDF2(passphrase, salt, iterations=2048, len=PBKEYLEN)
+
+        The receiver will re-derive the SAME KEK when it sees the
+        salt arrive in the KMREQ.
+    from: sender
+    to: receiver
+
+  - id: evt_gen_sek
+    type: note
+    annotation:
+      text: "Sender generates SEK and wraps it"
+      detail: >
+        SEK = random bytes of length PBKEYLEN. The sender uses RFC 3394
+        AES Key Wrap to encrypt SEK with KEK, producing a wrapped
+        ciphertext of PBKEYLEN + 8 bytes. This wrap value travels in
+        the KMREQ extension.
+    from: sender
+    to: sender
+
+  - id: evt_kmreq
+    type: frame_tx
+    t_ns: 0
+    frame_id: kmreq
+    annotation:
+      text: "KMREQ extension carries the wrapped SEK alongside HSREQ"
+      detail: >
+        The KMREQ block contains: a 32-byte salt (so the receiver can
+        derive the same KEK), the AES Key Wrap output (24 bytes for
+        AES-128: 8-byte wrap-IV + 16-byte wrapped SEK), and metadata
+        (Cipher = AES-128, KK = 01 indicating this is the even-slot
+        key). The KEK itself never travels on the wire — only the
+        salt, which is useless without the passphrase.
+
+  - id: evt_unwrap
+    type: note
+    t_ns: 20000000
+    annotation:
+      text: "Receiver re-derives KEK and unwraps SEK"
+      detail: >
+        Receiver: KEK = PBKDF2(its_local_passphrase, salt_from_kmreq,
+        2048, PBKEYLEN). Then RFC 3394 unwrap with KEK → SEK. If the
+        passphrase doesn't match, the wrap-IV check in RFC 3394 will
+        fail and KMRSP returns an error code. Otherwise, the
+        receiver loads SEK into its decryption context and KMRSP
+        signals success.
+    from: receiver
+    to: receiver
+
+  - id: evt_kmrsp
+    type: frame_tx
+    t_ns: 25000000
+    frame_id: kmrsp
+    annotation:
+      text: "KMRSP — success (error code 0)"
+
+  - id: evt_data
+    type: frame_tx
+    t_ns: 30000000
+    frame_id: data_kk_even
+    annotation:
+      text: "Data packets flow encrypted under SEK_even (KK=01)"
+      detail: >
+        AES-CTR is a stream cipher. For each 16-byte block within the
+        SRT payload, the counter is:
+
+          counter = (IV_top112bits || packet_index_32bits ||
+                     block_counter_16bits)
+
+        Encrypt the counter under SEK → 16-byte keystream. XOR with
+        plaintext. CTR mode means packet loss / reorder doesn't break
+        decryption — every packet decrypts independently using its own
+        sequence-number-derived counter.
+
+  - id: evt_rotate
+    type: note
+    t_ns: 600000000
+    annotation:
+      text: "Key rotation triggers at ~2^25 packets"
+      detail: >
+        At 2^25 packets sent (~33 million; ~6 hours at typical live
+        bitrate), the sender pre-announces the next SEK via a fresh
+        KMREQ block with KK=10. The receiver unwraps and stores the
+        new SEK_odd alongside the active SEK_even. Then at a
+        precisely chosen sequence boundary, the sender flips the KK
+        bit on outgoing data packets from 01 → 10. The receiver,
+        already holding SEK_odd, decrypts seamlessly with no glitch.
+
+        This mirrors how DVB cable systems rotate scrambling keys.
+    from: sender
+    to: sender
+
+  - id: evt_data_odd
+    type: frame_tx
+    t_ns: 605000000
+    frame_id: data_kk_odd
+    annotation:
+      text: "First packet after the switch — KK=10 (odd)"
+      detail: >
+        The receiver's decryption logic reads KK=10 and selects
+        SEK_odd from its key store. The transition is invisible to
+        the application. SEK_even is retained briefly in case
+        in-flight packets with KK=01 arrive out of order, then
+        discarded.
+
+glossary:
+  - term: "KEK"
+    abbrev: "Key Encrypting Key"
+    definition: "Derived from passphrase + salt via PBKDF2. Used to wrap the SEK. Never transmitted; both peers derive locally."
+  - term: "SEK"
+    abbrev: "Stream Encrypting Key"
+    definition: "Randomly generated per-connection key. Encrypts actual media payload via AES-CTR. Transmitted wrapped under KEK in KMREQ."
+  - term: "AES Key Wrap (RFC 3394)"
+    definition: "Standard symmetric key-wrapping construction. Wraps an n-byte key with a wrap-IV check, producing n+8 bytes of output. Integrity-checks on unwrap — wrong KEK = decryption fails."
+  - term: "AES-CTR"
+    definition: "AES in Counter Mode. Stream cipher operation: encrypt a counter block to get keystream, XOR with plaintext. SRT counter = 112-bit IV + 32-bit packet_index + 16-bit block_counter."
+  - term: "KK bits (key indicator)"
+    definition: "2 bits in the SRT data header. 01 = even SEK, 10 = odd SEK, 00 = unencrypted. Enables seamless key rotation by flipping the bit at a defined boundary."
+  - term: "Pre-Announce"
+    definition: "Mechanism by which a newly generated SEK is exchanged via KMREQ BEFORE it goes live. Gives the receiver time to unwrap and load the key, then the sender flips KK with zero loss."

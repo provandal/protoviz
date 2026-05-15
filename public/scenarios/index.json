@@ -341,6 +341,66 @@
       "description": "Every other ProtoViz scenario follows packets horizontally — initiator to target across the wire. This scenario goes vertical: one TCP connection establishment and one 4 KB NVMe WRITE command, traced from user-space syscall down through every kernel layer, across the wire, and back up the target stack to completion.",
       "tags": ["NVMe-oF", "NVMe/TCP", "kernel", "io_uring", "TCP", "vertical-stack", "expert", "sk_buff", "DMA", "deep-dive", "Linux", "storage", "education"],
       "path": "nvme-tcp-vertical/nvme-tcp-vertical-stack-connect-write.yaml"
+    },
+    {
+      "slug": "srt-caller-listener-handshake",
+      "title": "SRT: Caller–Listener Handshake (HSv5)",
+      "protocol": "SRT",
+      "protocol_family": "Media Streaming",
+      "difficulty": "intermediate",
+      "description": "The 4-message SRT HSv5 handshake: induction request → SYN-cookie response with SRT magic 0x4A17 → conclusion request carrying HSREQ extension (SRT version, capability flags, TSBPD latency) → HSRSP. Cookie-based mitigation against SYN-flood attacks.",
+      "tags": ["SRT", "handshake", "induction", "conclusion", "HSv5", "SYN cookie", "media streaming", "education"],
+      "path": "srt/srt-caller-listener-handshake.yaml"
+    },
+    {
+      "slug": "srt-arq-nak-retransmission",
+      "title": "SRT: ARQ Recovery — NAK + Retransmit Inside the Latency Window",
+      "protocol": "SRT",
+      "protocol_family": "Media Streaming",
+      "difficulty": "intermediate",
+      "description": "SRT's marquee feature: per-packet loss recovery over a lossy Internet path inside a fixed latency budget. Receiver detects gap, sends NAK loss-list, sender retransmits with R=1 — all before the TSBPD deadline. The reason SRT carries live video over best-effort Internet.",
+      "tags": ["SRT", "ARQ", "NAK", "retransmission", "TSBPD", "loss recovery", "media streaming", "education"],
+      "path": "srt/srt-arq-nak-retransmission.yaml"
+    },
+    {
+      "slug": "srt-tsbpd-latency-tradeoff",
+      "title": "SRT: TSBPD Latency Trade-off — 50ms vs 200ms",
+      "protocol": "SRT",
+      "protocol_family": "Media Streaming",
+      "difficulty": "intermediate",
+      "description": "Same loss, same network path, two different TSBPD latency settings. At 50ms the NAK+retransmit can't beat the deadline and TLPKTDROP fires; at 200ms the retransmit arrives with margin and the stream plays cleanly. The dial every SRT operator tunes.",
+      "tags": ["SRT", "TSBPD", "latency", "TLPKTDROP", "media streaming", "education"],
+      "path": "srt/srt-tsbpd-latency-tradeoff.yaml"
+    },
+    {
+      "slug": "srt-encryption-kmx",
+      "title": "SRT: Encryption — Passphrase → KEK → SEK → AES-CTR Data",
+      "protocol": "SRT",
+      "protocol_family": "Media Streaming",
+      "difficulty": "advanced",
+      "description": "End-to-end SRT encryption: PBKDF2 derives KEK from a shared passphrase; sender wraps a random SEK with KEK (RFC 3394 AES Key Wrap) and ships it in a KMREQ extension; data packets carry KK bits and use AES-CTR. Includes pre-announced key rotation at ~2^25 packets.",
+      "tags": ["SRT", "encryption", "AES-CTR", "AES Key Wrap", "PBKDF2", "KMREQ", "KMRSP", "media streaming", "education"],
+      "path": "srt/srt-encryption-kmx.yaml"
+    },
+    {
+      "slug": "srt-rendezvous-handshake",
+      "title": "SRT: Rendezvous Mode — Symmetric Handshake for NAT Traversal",
+      "protocol": "SRT",
+      "protocol_family": "Media Streaming",
+      "difficulty": "advanced",
+      "description": "Both peers behind NAT dial simultaneously. URQ_WAVEAHAND opens NAT pinholes; the cookie contest deterministically assigns Initiator/Responder roles; conclusion + agreement complete the connection. The pattern that makes peer-to-peer SRT work without a TURN-style relay.",
+      "tags": ["SRT", "rendezvous", "NAT traversal", "handshake", "cookie contest", "media streaming", "education"],
+      "path": "srt/srt-rendezvous-handshake.yaml"
+    },
+    {
+      "slug": "srt-connection-bonding",
+      "title": "SRT: Connection Bonding — Broadcast Backup over Two Paths",
+      "protocol": "SRT",
+      "protocol_family": "Media Streaming",
+      "difficulty": "advanced",
+      "description": "SRT socket groups in Broadcast mode: every packet duplicated across primary fiber + secondary LTE/5G, receiver deduplicates by sequence number. When fiber drops, the LTE copy of subsequent packets becomes the sole arrival — zero failover gap. Standard REMI redundancy.",
+      "tags": ["SRT", "bonding", "socket groups", "REMI", "redundancy", "media streaming", "education"],
+      "path": "srt/srt-connection-bonding.yaml"
     }
   ]
 }
