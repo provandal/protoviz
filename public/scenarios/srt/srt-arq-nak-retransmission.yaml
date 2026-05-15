@@ -600,12 +600,30 @@ timeline:
               snd_next_seq: 101
               snd_buf_packets: 1
               bytes_sent: 1316
+          - layer: 3
+            state_fields:
+              src_ip: "203.0.113.10"
+              dst_ip: "198.51.100.20"
+              ttl: 64
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:01"
+              dst_mac: "02:00:00:00:00:11"
       - actor_id: "listener"
         layers:
           - layer: 5
             state_fields:
               rcv_next_expected: 101
               rcv_buf_highest: 100
+          - layer: 3
+            state_fields:
+              src_ip: "203.0.113.10"
+              dst_ip: "198.51.100.20"
+              ttl: 56
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:22 (listener-side gw)"
+              dst_mac: "02:00:00:00:00:02"
 
   - id: "evt_data_101"
     type: "frame_tx"
@@ -623,12 +641,30 @@ timeline:
             state_fields:
               snd_next_seq: 102
               snd_buf_packets: 2
+          - layer: 3
+            state_fields:
+              src_ip: "203.0.113.10"
+              dst_ip: "198.51.100.20"
+              ttl: 64
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:01"
+              dst_mac: "02:00:00:00:00:11"
       - actor_id: "listener"
         layers:
           - layer: 5
             state_fields:
               rcv_next_expected: 102
               rcv_buf_highest: 101
+          - layer: 3
+            state_fields:
+              src_ip: "203.0.113.10"
+              dst_ip: "198.51.100.20"
+              ttl: 56
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:22 (listener-side gw)"
+              dst_mac: "02:00:00:00:00:02"
 
   - id: "evt_data_102_drop"
     type: "error"
@@ -652,6 +688,15 @@ timeline:
             state_fields:
               snd_next_seq: 103
               snd_buf_packets: 3
+          - layer: 3
+            state_fields:
+              src_ip: "203.0.113.10"
+              dst_ip: "198.51.100.20"
+              ttl: 64
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:01"
+              dst_mac: "02:00:00:00:00:11"
 
   - id: "evt_data_103"
     type: "frame_tx"
@@ -669,6 +714,17 @@ timeline:
         rcv_buf_highest advances to 103; rcv_next_expected stays at
         102 (the lowest gap).
     state_after:
+      - actor_id: "caller"
+        layers:
+          - layer: 3
+            state_fields:
+              src_ip: "203.0.113.10"
+              dst_ip: "198.51.100.20"
+              ttl: 64
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:01"
+              dst_mac: "02:00:00:00:00:11"
       - actor_id: "listener"
         layers:
           - layer: 5
@@ -676,6 +732,15 @@ timeline:
               rcv_buf_highest: 103
               rcv_next_expected: 102
               loss_list: "[102]"
+          - layer: 3
+            state_fields:
+              src_ip: "203.0.113.10"
+              dst_ip: "198.51.100.20"
+              ttl: 56
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:22 (listener-side gw)"
+              dst_mac: "02:00:00:00:00:02"
 
   - id: "evt_nak"
     type: "frame_tx"
@@ -703,6 +768,26 @@ timeline:
           - layer: 5
             state_fields:
               nak_count: 1
+          - layer: 3
+            state_fields:
+              src_ip: "198.51.100.20"
+              dst_ip: "203.0.113.10"
+              ttl: 64
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:02"
+              dst_mac: "02:00:00:00:00:22 (listener-side gw)"
+      - actor_id: "caller"
+        layers:
+          - layer: 3
+            state_fields:
+              src_ip: "198.51.100.20"
+              dst_ip: "203.0.113.10"
+              ttl: 56
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:11"
+              dst_mac: "02:00:00:00:00:01"
 
   - id: "evt_nak_arrival"
     type: "annotation"
@@ -745,6 +830,26 @@ timeline:
           - layer: 5
             state_fields:
               retransmits: 1
+          - layer: 3
+            state_fields:
+              src_ip: "203.0.113.10"
+              dst_ip: "198.51.100.20"
+              ttl: 64
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:01"
+              dst_mac: "02:00:00:00:00:11"
+      - actor_id: "listener"
+        layers:
+          - layer: 3
+            state_fields:
+              src_ip: "203.0.113.10"
+              dst_ip: "198.51.100.20"
+              ttl: 56
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:22 (listener-side gw)"
+              dst_mac: "02:00:00:00:00:02"
 
   - id: "evt_retx_arrival"
     type: "annotation"
@@ -803,6 +908,17 @@ timeline:
         anyway, or it's already past its TSBPD deadline and is
         irrelevant.
     state_after:
+      - actor_id: "listener"
+        layers:
+          - layer: 3
+            state_fields:
+              src_ip: "198.51.100.20"
+              dst_ip: "203.0.113.10"
+              ttl: 64
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:02"
+              dst_mac: "02:00:00:00:00:22 (listener-side gw)"
       - actor_id: "caller"
         layers:
           - layer: 5
@@ -810,6 +926,15 @@ timeline:
               last_ack_seq: 104
               snd_buf_packets: 0
               rtt_ms: 40.0
+          - layer: 3
+            state_fields:
+              src_ip: "198.51.100.20"
+              dst_ip: "203.0.113.10"
+              ttl: 56
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:11"
+              dst_mac: "02:00:00:00:00:01"
 
   - id: "evt_summary"
     type: "annotation"

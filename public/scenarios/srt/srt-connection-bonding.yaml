@@ -492,6 +492,27 @@ timeline:
           - layer: 7
             state_fields:
               bytes_handed_to_libsrt: 1316
+          # Outbound via fiber NIC
+          - layer: 3
+            state_fields:
+              src_ip: "10.0.1.50 (fiber NIC)"
+              dst_ip: "198.51.100.20"
+              ttl: 64
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:01 (fiber)"
+              dst_mac: "[fiber gateway MAC]"
+      - actor_id: "listener"
+        layers:
+          - layer: 3
+            state_fields:
+              src_ip: "10.0.1.50 (or post-NAT public)"
+              dst_ip: "198.51.100.20"
+              ttl: 56
+          - layer: 2
+            state_fields:
+              src_mac: "[listener-side gw MAC]"
+              dst_mac: "02:00:00:00:00:02"
 
   - id: "evt_seq500_lte"
     type: "frame_tx"
@@ -514,6 +535,18 @@ timeline:
           duplicates_dropped increments per second-arrival packet.
           fiber-first vs LTE-first ratio is a useful health metric.
     state_after:
+      - actor_id: "caller"
+        layers:
+          # Outbound via LTE NIC
+          - layer: 3
+            state_fields:
+              src_ip: "100.64.0.10 (LTE NIC, carrier CGNAT range)"
+              dst_ip: "198.51.100.20"
+              ttl: 64
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:01-lte (LTE bearer)"
+              dst_mac: "[LTE PDP context endpoint]"
       - actor_id: "listener"
         layers:
           - layer: 5
@@ -523,6 +556,15 @@ timeline:
           - layer: 7
             state_fields:
               bytes_delivered: 1316
+          - layer: 3
+            state_fields:
+              src_ip: "100.64.0.10 (LTE post-NAT)"
+              dst_ip: "198.51.100.20"
+              ttl: 56
+          - layer: 2
+            state_fields:
+              src_mac: "[listener-side gw MAC]"
+              dst_mac: "02:00:00:00:00:02"
 
   - id: "evt_fiber_fail"
     type: "error"
@@ -591,6 +633,18 @@ timeline:
         slower than fiber would have been, but the 120 ms TSBPD
         budget absorbs the variance without missing playout.
     state_after:
+      - actor_id: "caller"
+        layers:
+          # Outbound via LTE NIC (sole surviving path)
+          - layer: 3
+            state_fields:
+              src_ip: "100.64.0.10 (LTE NIC)"
+              dst_ip: "198.51.100.20"
+              ttl: 64
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:01-lte"
+              dst_mac: "[LTE PDP context endpoint]"
       - actor_id: "listener"
         layers:
           - layer: 5
@@ -599,6 +653,15 @@ timeline:
           - layer: 7
             state_fields:
               bytes_delivered: 2632
+          - layer: 3
+            state_fields:
+              src_ip: "100.64.0.10 (LTE post-NAT)"
+              dst_ip: "198.51.100.20"
+              ttl: 56
+          - layer: 2
+            state_fields:
+              src_mac: "[listener-side gw MAC]"
+              dst_mac: "02:00:00:00:00:02"
 
   - id: "evt_member1_timeout"
     type: "annotation"

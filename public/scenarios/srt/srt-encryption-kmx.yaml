@@ -555,6 +555,19 @@ timeline:
 
         The wrap-IV (0xA6A6A6A6A6A6A6A6) is the spec-defined integrity
         check — receiver verifies it after unwrap.
+    state_after:
+      - actor_id: "caller"
+        layers:
+          - layer: 3
+            state_fields: { src_ip: "203.0.113.10", dst_ip: "198.51.100.20", ttl: 64 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:01", dst_mac: "02:00:00:00:00:11" }
+      - actor_id: "listener"
+        layers:
+          - layer: 3
+            state_fields: { src_ip: "203.0.113.10", dst_ip: "198.51.100.20", ttl: 56 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:22 (listener-side gw)", dst_mac: "02:00:00:00:00:02" }
 
   - id: "evt_listener_unwrap"
     type: "annotation"
@@ -599,6 +612,19 @@ timeline:
         succeeded.' Non-zero values surface to the caller as an
         encryption-related connection failure (caller's srt_connect()
         returns an error to the application).
+    state_after:
+      - actor_id: "listener"
+        layers:
+          - layer: 3
+            state_fields: { src_ip: "198.51.100.20", dst_ip: "203.0.113.10", ttl: 64 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:02", dst_mac: "02:00:00:00:00:22 (listener-side gw)" }
+      - actor_id: "caller"
+        layers:
+          - layer: 3
+            state_fields: { src_ip: "198.51.100.20", dst_ip: "203.0.113.10", ttl: 56 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:11", dst_mac: "02:00:00:00:00:01" }
 
   - id: "evt_data_even"
     type: "frame_tx"
@@ -634,11 +660,19 @@ timeline:
             state_fields:
               active_kk: "01"
               packets_encrypted: 1
+          - layer: 3
+            state_fields: { src_ip: "203.0.113.10", dst_ip: "198.51.100.20", ttl: 64 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:01", dst_mac: "02:00:00:00:00:11" }
       - actor_id: "listener"
         layers:
           - layer: 5
             state_fields:
               active_kk: "01"
+          - layer: 3
+            state_fields: { src_ip: "203.0.113.10", dst_ip: "198.51.100.20", ttl: 56 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:22 (listener-side gw)", dst_mac: "02:00:00:00:00:02" }
 
   - id: "evt_approaching_limit"
     type: "annotation"
@@ -690,11 +724,21 @@ timeline:
         on the wire is still even (KK=01 on data). The receiver now
         holds BOTH keys.
     state_after:
+      - actor_id: "caller"
+        layers:
+          - layer: 3
+            state_fields: { src_ip: "203.0.113.10", dst_ip: "198.51.100.20", ttl: 64 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:01", dst_mac: "02:00:00:00:00:11" }
       - actor_id: "listener"
         layers:
           - layer: 5
             state_fields:
               sek_odd: "[16 bytes — matches caller's SEK_odd]"
+          - layer: 3
+            state_fields: { src_ip: "203.0.113.10", dst_ip: "198.51.100.20", ttl: 56 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:22 (listener-side gw)", dst_mac: "02:00:00:00:00:02" }
 
   - id: "evt_rotation_point"
     type: "annotation"
@@ -739,11 +783,19 @@ timeline:
             state_fields:
               active_kk: "10"
               packets_encrypted: 33554433
+          - layer: 3
+            state_fields: { src_ip: "203.0.113.10", dst_ip: "198.51.100.20", ttl: 64 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:01", dst_mac: "02:00:00:00:00:11" }
       - actor_id: "listener"
         layers:
           - layer: 5
             state_fields:
               active_kk: "10"
+          - layer: 3
+            state_fields: { src_ip: "203.0.113.10", dst_ip: "198.51.100.20", ttl: 56 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:22 (listener-side gw)", dst_mac: "02:00:00:00:00:02" }
 
   - id: "evt_summary"
     type: "annotation"

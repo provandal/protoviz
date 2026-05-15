@@ -433,12 +433,22 @@ timeline:
     annotation:
       text: "Case A: seq=200 arrives. Deadline for any seq=N = sender_ts(N) + 50 ms."
     state_after:
+      - actor_id: "caller"
+        layers:
+          - layer: 3
+            state_fields: { src_ip: "203.0.113.10", dst_ip: "198.51.100.20", ttl: 64 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:01", dst_mac: "02:00:00:00:00:11" }
       - actor_id: "listener"
         layers:
           - layer: 5
             state_fields:
               rcv_next_expected: 201
               rcv_buf_highest: 200
+          - layer: 3
+            state_fields: { src_ip: "203.0.113.10", dst_ip: "198.51.100.20", ttl: 56 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:22 (listener-side gw)", dst_mac: "02:00:00:00:00:02" }
 
   - id: "evt_a_drop"
     type: "error"
@@ -447,6 +457,13 @@ timeline:
     annotation:
       text: "Case A: seq=201 dropped on the Internet path"
       detail: "Receiver does not know yet."
+    state_after:
+      - actor_id: "caller"
+        layers:
+          - layer: 3
+            state_fields: { src_ip: "203.0.113.10", dst_ip: "198.51.100.20", ttl: 64 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:01", dst_mac: "02:00:00:00:00:11" }
 
   - id: "evt_a_gap"
     type: "frame_tx"
@@ -455,12 +472,22 @@ timeline:
     annotation:
       text: "Case A: seq=202 arrives → gap detected → immediate NAK"
     state_after:
+      - actor_id: "caller"
+        layers:
+          - layer: 3
+            state_fields: { src_ip: "203.0.113.10", dst_ip: "198.51.100.20", ttl: 64 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:01", dst_mac: "02:00:00:00:00:11" }
       - actor_id: "listener"
         layers:
           - layer: 5
             state_fields:
               rcv_buf_highest: 202
               loss_list: "[201]"
+          - layer: 3
+            state_fields: { src_ip: "203.0.113.10", dst_ip: "198.51.100.20", ttl: 56 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:22 (listener-side gw)", dst_mac: "02:00:00:00:00:02" }
 
   - id: "evt_a_nak"
     type: "frame_tx"
@@ -468,6 +495,19 @@ timeline:
     frame_id: "nak_201"
     annotation:
       text: "Case A: NAK in flight (~20 ms one-way RTT/2)"
+    state_after:
+      - actor_id: "listener"
+        layers:
+          - layer: 3
+            state_fields: { src_ip: "198.51.100.20", dst_ip: "203.0.113.10", ttl: 64 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:02", dst_mac: "02:00:00:00:00:22 (listener-side gw)" }
+      - actor_id: "caller"
+        layers:
+          - layer: 3
+            state_fields: { src_ip: "198.51.100.20", dst_ip: "203.0.113.10", ttl: 56 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:11", dst_mac: "02:00:00:00:00:01" }
 
   - id: "evt_a_retx_starts"
     type: "annotation"
@@ -498,6 +538,19 @@ timeline:
         tsbpd_latency(50 ms) = 53 ms. The retransmit at 46.5 ms is
         cutting it VERY close. With any added jitter or
         kernel-scheduling delay it tips past the deadline.
+    state_after:
+      - actor_id: "caller"
+        layers:
+          - layer: 3
+            state_fields: { src_ip: "203.0.113.10", dst_ip: "198.51.100.20", ttl: 64 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:01", dst_mac: "02:00:00:00:00:11" }
+      - actor_id: "listener"
+        layers:
+          - layer: 3
+            state_fields: { src_ip: "203.0.113.10", dst_ip: "198.51.100.20", ttl: 56 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:22 (listener-side gw)", dst_mac: "02:00:00:00:00:02" }
 
   - id: "evt_a_tlpktdrop"
     type: "error"
@@ -585,6 +638,19 @@ timeline:
     frame_id: "data_seq_200"
     annotation:
       text: "Case B: seq=200 arrives. Deadline for any seq=N now sender_ts(N) + 200 ms."
+    state_after:
+      - actor_id: "caller"
+        layers:
+          - layer: 3
+            state_fields: { src_ip: "203.0.113.10", dst_ip: "198.51.100.20", ttl: 64 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:01", dst_mac: "02:00:00:00:00:11" }
+      - actor_id: "listener"
+        layers:
+          - layer: 3
+            state_fields: { src_ip: "203.0.113.10", dst_ip: "198.51.100.20", ttl: 56 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:22 (listener-side gw)", dst_mac: "02:00:00:00:00:02" }
 
   - id: "evt_b_drop"
     type: "error"
@@ -592,6 +658,13 @@ timeline:
     frame_id: "data_seq_201_dropped"
     annotation:
       text: "Case B: seq=201 dropped (same drop, same path, same time relative to start of run)"
+    state_after:
+      - actor_id: "caller"
+        layers:
+          - layer: 3
+            state_fields: { src_ip: "203.0.113.10", dst_ip: "198.51.100.20", ttl: 64 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:01", dst_mac: "02:00:00:00:00:11" }
 
   - id: "evt_b_gap"
     type: "frame_tx"
@@ -600,11 +673,21 @@ timeline:
     annotation:
       text: "Case B: seq=202 arrives → gap detected → immediate NAK"
     state_after:
+      - actor_id: "caller"
+        layers:
+          - layer: 3
+            state_fields: { src_ip: "203.0.113.10", dst_ip: "198.51.100.20", ttl: 64 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:01", dst_mac: "02:00:00:00:00:11" }
       - actor_id: "listener"
         layers:
           - layer: 5
             state_fields:
               loss_list: "[201]"
+          - layer: 3
+            state_fields: { src_ip: "203.0.113.10", dst_ip: "198.51.100.20", ttl: 56 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:22 (listener-side gw)", dst_mac: "02:00:00:00:00:02" }
 
   - id: "evt_b_nak"
     type: "frame_tx"
@@ -612,6 +695,19 @@ timeline:
     frame_id: "nak_201"
     annotation:
       text: "Case B: NAK in flight"
+    state_after:
+      - actor_id: "listener"
+        layers:
+          - layer: 3
+            state_fields: { src_ip: "198.51.100.20", dst_ip: "203.0.113.10", ttl: 64 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:02", dst_mac: "02:00:00:00:00:22 (listener-side gw)" }
+      - actor_id: "caller"
+        layers:
+          - layer: 3
+            state_fields: { src_ip: "198.51.100.20", dst_ip: "203.0.113.10", ttl: 56 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:11", dst_mac: "02:00:00:00:00:01" }
 
   - id: "evt_b_retx"
     type: "frame_tx"
@@ -619,6 +715,19 @@ timeline:
     frame_id: "data_seq_201_retx"
     annotation:
       text: "Case B: retransmit arrives at t ≈ 146.5 ms (relative to run start)"
+    state_after:
+      - actor_id: "caller"
+        layers:
+          - layer: 3
+            state_fields: { src_ip: "203.0.113.10", dst_ip: "198.51.100.20", ttl: 64 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:01", dst_mac: "02:00:00:00:00:11" }
+      - actor_id: "listener"
+        layers:
+          - layer: 3
+            state_fields: { src_ip: "203.0.113.10", dst_ip: "198.51.100.20", ttl: 56 }
+          - layer: 2
+            state_fields: { src_mac: "02:00:00:00:00:22 (listener-side gw)", dst_mac: "02:00:00:00:00:02" }
 
   - id: "evt_b_delivered"
     type: "annotation"
