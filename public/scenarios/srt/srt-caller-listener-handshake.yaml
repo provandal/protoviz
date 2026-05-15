@@ -3,272 +3,1030 @@ meta:
   title: "SRT: Caller–Listener Handshake (HSv5)"
   protocol: SRT
   protocol_family: "Media Streaming"
-  version: "1.0"
-  difficulty: intermediate
+  version: "1.0.0"
   description: >
-    The SRT 4-message caller-listener handshake (HSv5). Phase 1: caller
-    sends an induction request. Phase 2: listener replies with a SYN
-    cookie and the SRT magic code that confirms HSv5 support. Phase 3:
-    caller returns the cookie inside a conclusion request that carries
-    SRT extension blocks (HSREQ at minimum, optionally KMREQ/SID/
-    CONGESTION). Phase 4: listener responds with HSRSP and any matching
-    extensions, completing connection setup.
+    Complete SRT HSv5 caller-listener handshake over 1 GbE. Physical
+    link establishment, ARP resolution for the listener's MAC, then
+    the four-message SRT handshake: induction request → induction
+    response (SYN cookie + SRT magic) → conclusion request with HSREQ
+    extension (SRT version, capability flags, TSBPD latency) →
+    conclusion response with HSRSP. Every SRT control-packet field is
+    annotated against the open-source reference at github.com/
+    Haivision/srt. Both peers' OSI stacks evolve from CLOSED through
+    CONNECTING to CONNECTED, with explicit socket-ID, cookie, and
+    latency negotiation visible at the SRT layer.
+
   learning_objectives:
-    - Understand the induction → conclusion two-pass handshake (mitigates SYN flood via cookies)
-    - Recognize how the listener advertises HSv5 support via the SRT_MAGIC_CODE (0x4A17)
-    - Trace how the cookie binds caller and listener to a specific exchange
-    - See the HSREQ extension block carrying SRT version + flags + latency (RcvTsbPdDelay, SndTsbPdDelay)
-    - Distinguish HSv4 (legacy UDT-derived, unidirectional) from HSv5 (bidirectional, extensions in conclusion)
+    - "Understand how SRT's two-pass handshake (induction + conclusion) mitigates SYN-flood-style state exhaustion at the listener"
+    - "Trace the SYN cookie: how the listener computes it stateless, and how the caller proves return-path ownership by echoing it"
+    - "Recognize the SRT_MAGIC_CODE (0x4A17) and how it signals HSv5 capability inside the legacy UDT-shaped induction-response message"
+    - "See the HSREQ extension block — SRT version, capability flag bitmap, RcvTsbPdDelay and SndTsbPdDelay — and how it converts a UDT handshake into an SRT one"
+    - "Observe TSBPD latency negotiation: each side proposes a value; the effective latency is the maximum of both peers' RcvTsbPdDelay requests"
+    - "Distinguish HSv4 (legacy UDT-derived, unidirectional) from HSv5 (bidirectional, extensions integrated in conclusion phase)"
+    - "Watch each peer's L5 SRT state machine: CLOSED → CONNECTING → CONNECTED, plus the socket-ID pair and cookie state evolution"
+
+  difficulty: "intermediate"
+
   authors:
     - name: "Erik Smith"
       org: "Dell Technologies"
+      github: "provandal"
+
   created: "2026-05-15"
+  updated: "2026-05-15"
+
   tags:
-    - SRT
-    - handshake
-    - induction
-    - conclusion
-    - HSv5
-    - SYN cookie
-    - media streaming
-    - intermediate
-    - education
+    - "SRT"
+    - "handshake"
+    - "induction"
+    - "conclusion"
+    - "HSv5"
+    - "HSv4"
+    - "SYN cookie"
+    - "HSREQ"
+    - "HSRSP"
+    - "TSBPD"
+    - "UDT"
+    - "media streaming"
+    - "live streaming"
+    - "MPEG-TS"
+    - "intermediate"
+    - "education"
+
   primary_specs:
     - document: "Haivision/srt"
       section: "docs/features/handshake.md"
       title: "SRT Handshake — open-source reference"
       url: "https://github.com/Haivision/srt/blob/master/docs/features/handshake.md"
+    - document: "Haivision/srt"
+      section: "docs/features/live-streaming.md"
+      title: "SRT Live Streaming — TSBPD timing model"
+      url: "https://github.com/Haivision/srt/blob/master/docs/features/live-streaming.md"
+    - document: "RFC 793 / 9293"
+      section: "3.5"
+      title: "TCP connection setup (analogue for SRT induction/conclusion)"
+      url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5"
+    - document: "RFC 768"
+      title: "User Datagram Protocol"
+      url: "https://datatracker.ietf.org/doc/html/rfc768"
+    - document: "IEEE 802.3"
+      title: "Ethernet Frame Format"
+      url: "https://standards.ieee.org/ieee/802.3/10422/"
 
+  content_disclaimer: >
+    Protocol descriptions in this scenario are based on the open-source
+    SRT reference implementation (github.com/Haivision/srt) and its
+    public documentation. The IETF Internet-Draft draft-sharabayko-srt
+    is intentionally NOT used as the primary source — per current
+    project guidance it has fallen behind the open-source code base.
+    Numeric values (cookies, ISNs, socket IDs) are illustrative.
+
+  source_references:
+    - repo: "Haivision/srt"
+      path: "srtcore/handshake.cpp"
+      description: "HSv4 and HSv5 handshake state machine, ReqType handling, cookie generation"
+    - repo: "Haivision/srt"
+      path: "srtcore/core.cpp"
+      description: "Top-level connect()/accept(), induction → conclusion dispatching"
+    - repo: "Haivision/srt"
+      path: "srtcore/api.cpp"
+      description: "srt_connect(), srt_accept() public API entry points"
+
+# ─────────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────────
 topology:
   actors:
     - id: caller
       type: host
-      label: "Caller (Sender)"
-      description: "Contribution encoder originating an SRT stream toward a known listener"
+      label: "Caller (Live Encoder)"
+      description: "Contribution encoder; runs srt_connect() to reach the listener at known IP+port"
+      hardware: "x86_64, 1 GbE NIC"
+      os: "Linux 6.x"
       ip: "203.0.113.10"
       mac: "02:00:00:00:00:01"
       position: left
+
+    - id: switch
+      type: switch
+      label: "L2 switch"
+      description: "Pass-through 1 GbE switch on the venue LAN"
+      hardware: "Top-of-rack 1 GbE"
+      position: center
+
     - id: listener
       type: host
-      label: "Listener (Receiver)"
-      description: "Cloud ingest endpoint waiting on UDP port 9000"
+      label: "Listener (Cloud Ingest)"
+      description: "Always-on ingest socket bound to UDP port 9000 awaiting connections"
+      hardware: "x86_64, 10 GbE NIC"
+      os: "Linux 6.x"
       ip: "198.51.100.20"
       mac: "02:00:00:00:00:02"
       position: right
+
   links:
-    - id: internet
+    - id: link_caller
       from: caller
-      to: listener
+      to: switch
       speed_gbps: 1.0
       media: fiber_sr
       autoneg: true
 
+    - id: link_listener
+      from: switch
+      to: listener
+      speed_gbps: 10.0
+      media: fiber_sr
+      autoneg: true
+
+# ─────────────────────────────────────────────────────────────────────
+# OSI LAYERS (per actor) — what each layer tracks during SRT handshake
+# ─────────────────────────────────────────────────────────────────────
+osi_layers:
+  caller:
+    - layer: 7
+      name: "Application (Live Encoder)"
+      components: ["FFmpeg / GStreamer / OBS", "libsrt API"]
+      state_schema:
+        app_state:
+          type: "string"
+          description: "Streaming application state"
+          initial: "idle"
+        srt_uri:
+          type: "string"
+          description: "srt://host:port URI passed to srt_connect()"
+          initial: "—"
+        bytes_sent:
+          type: "integer"
+          description: "Total media bytes handed to libsrt (data phase)"
+          initial: 0
+
+    - layer: 5
+      name: "SRT (Session + Presentation)"
+      components: ["srtcore/core.cpp", "srtcore/handshake.cpp", "srtcore/buffer_snd.cpp", "srtcore/buffer_rcv.cpp"]
+      state_schema:
+        srt_state:
+          type: "string"
+          description: "SRT socket state machine"
+          initial: "CLOSED"
+        hs_version:
+          type: "string"
+          description: "Negotiated handshake version (HSv4 or HSv5)"
+          initial: "—"
+        local_socket_id:
+          type: "string"
+          description: "32-bit caller-side socket identifier"
+          initial: "—"
+        peer_socket_id:
+          type: "string"
+          description: "32-bit listener-side socket identifier (learned in Phase 2)"
+          initial: "—"
+        cookie:
+          type: "string"
+          description: "Listener-issued SYN cookie (received in Phase 2, echoed in Phase 3)"
+          initial: "—"
+        isn:
+          type: "string"
+          description: "Caller's Initial Sequence Number"
+          initial: "—"
+        rcv_tsbpd_delay_ms:
+          type: "integer"
+          description: "Receive-side TSBPD latency proposed/agreed"
+          initial: 0
+        snd_tsbpd_delay_ms:
+          type: "integer"
+          description: "Send-side TSBPD latency proposed/agreed"
+          initial: 0
+        srt_flags:
+          type: "string"
+          description: "Capability bitmap negotiated during handshake"
+          initial: "—"
+
+    - layer: 4
+      name: "UDP"
+      components: ["net/ipv4/udp.c", "BSD socket API"]
+      state_schema:
+        local_port:
+          type: "integer"
+          description: "Caller-side UDP source port (ephemeral)"
+          initial: 0
+        remote_port:
+          type: "integer"
+          description: "Listener-side UDP destination port"
+          initial: 0
+        udp_socket_state:
+          type: "string"
+          description: "Underlying UDP socket lifecycle"
+          initial: "CLOSED"
+
+    - layer: 3
+      name: "IP / Routing"
+      components: ["net/ipv4/ip_output.c", "net/ipv4/route.c"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "203.0.113.10"
+        dst_ip:
+          type: "string"
+          initial: "null"
+        ttl:
+          type: "integer"
+          initial: 64
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver", "IEEE 802.3"]
+      state_schema:
+        src_mac:
+          type: "string"
+          initial: "02:00:00:00:00:01"
+        dst_mac:
+          type: "string"
+          initial: "unresolved"
+        mtu:
+          type: "integer"
+          initial: 1500
+        arp_state:
+          type: "string"
+          initial: "unresolved"
+
+    - layer: 1
+      name: "Physical (1 GbE)"
+      components: ["SFP", "1000BASE-X"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "down"
+        speed_gbps:
+          type: "number"
+          initial: 0
+        encoding:
+          type: "string"
+          initial: "—"
+
+  listener:
+    - layer: 7
+      name: "Application (Cloud Ingest)"
+      components: ["receiver application", "libsrt API"]
+      state_schema:
+        app_state:
+          type: "string"
+          description: "Ingest application state"
+          initial: "listening"
+        bytes_received:
+          type: "integer"
+          description: "Total media bytes delivered by libsrt"
+          initial: 0
+
+    - layer: 5
+      name: "SRT (Session + Presentation)"
+      components: ["srtcore/core.cpp", "srtcore/handshake.cpp"]
+      state_schema:
+        srt_state:
+          type: "string"
+          description: "SRT socket state"
+          initial: "LISTENING"
+        hs_version:
+          type: "string"
+          initial: "—"
+        local_socket_id:
+          type: "string"
+          initial: "—"
+        peer_socket_id:
+          type: "string"
+          initial: "—"
+        cookie_window:
+          type: "string"
+          description: "Cookie HMAC key generation (rotates each minute)"
+          initial: "active"
+        isn:
+          type: "string"
+          initial: "—"
+        rcv_tsbpd_delay_ms:
+          type: "integer"
+          initial: 0
+        snd_tsbpd_delay_ms:
+          type: "integer"
+          initial: 0
+        srt_flags:
+          type: "string"
+          initial: "—"
+        pending_inductions:
+          type: "integer"
+          description: "Cookies issued but not yet returned — stateless on listener"
+          initial: 0
+
+    - layer: 4
+      name: "UDP"
+      components: ["net/ipv4/udp.c"]
+      state_schema:
+        local_port:
+          type: "integer"
+          initial: 9000
+        remote_port:
+          type: "integer"
+          initial: 0
+        udp_socket_state:
+          type: "string"
+          initial: "BOUND"
+
+    - layer: 3
+      name: "IP / Routing"
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "198.51.100.20"
+        dst_ip:
+          type: "string"
+          initial: "null"
+        ttl:
+          type: "integer"
+          initial: 64
+
+    - layer: 2
+      name: "Ethernet"
+      state_schema:
+        src_mac:
+          type: "string"
+          initial: "02:00:00:00:00:02"
+        dst_mac:
+          type: "string"
+          initial: "unresolved"
+        mtu:
+          type: "integer"
+          initial: 1500
+
+    - layer: 1
+      name: "Physical (10 GbE)"
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+        speed_gbps:
+          type: "number"
+          initial: 10.0
+        encoding:
+          type: "string"
+          initial: "64b/66b"
+
+# ─────────────────────────────────────────────────────────────────────
+# FRAMES — library of every frame the timeline references
+# ─────────────────────────────────────────────────────────────────────
 frames:
-  # ─── Phase 1: Induction Request ───
-  - id: hs_induction_req
-    name: "Induction Request"
-    description: "Caller probes the listener — proposes HSv4 to discover what the peer supports."
-    from: caller
-    to: listener
-    total_bytes: 64
+  # ─── ARP resolution ────────────────────────────────────────────────
+  - id: "arp_request"
+    name: "ARP Request — Who has 198.51.100.20?"
+    description: "Caller broadcasts to discover listener's MAC before any SRT traffic can flow."
+    from: "caller"
+    to: "broadcast"
+    via: ["switch"]
+    timestamp_ns: 100000000
+    total_bytes: 42
+    color: "#475569"
     headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - { name: "Destination MAC", abbrev: "eth.dst", bits: 48, value: "ff:ff:ff:ff:ff:ff", description: "Broadcast — every host on the segment sees this" }
+          - { name: "Source MAC",      abbrev: "eth.src", bits: 48, value: "02:00:00:00:00:01", description: "Caller's MAC" }
+          - { name: "EtherType",       abbrev: "eth.type", bits: 16, value: "0x0806", description: "ARP" }
+      - name: "ARP"
+        abbrev: "arp"
+        layer: 2
+        total_bytes: 28
+        fields:
+          - { name: "Hardware Type",     abbrev: "arp.hw.type",    bits: 16, value: 1, description: "Ethernet" }
+          - { name: "Protocol Type",     abbrev: "arp.proto.type", bits: 16, value: "0x0800", description: "IPv4" }
+          - { name: "Hardware Size",     abbrev: "arp.hw.size",    bits: 8,  value: 6, description: "MAC length" }
+          - { name: "Protocol Size",     abbrev: "arp.proto.size", bits: 8,  value: 4, description: "IPv4 length" }
+          - { name: "Opcode",            abbrev: "arp.opcode",     bits: 16, value: 1, description: "Request" }
+          - { name: "Sender MAC",        abbrev: "arp.src.hw_mac",  bits: 48, value: "02:00:00:00:00:01", description: "Caller MAC" }
+          - { name: "Sender IP",         abbrev: "arp.src.proto_ipv4", bits: 32, value: "203.0.113.10", description: "Caller IP" }
+          - { name: "Target MAC",        abbrev: "arp.dst.hw_mac",  bits: 48, value: "00:00:00:00:00:00", description: "Unknown — what we're asking for" }
+          - { name: "Target IP",         abbrev: "arp.dst.proto_ipv4", bits: 32, value: "198.51.100.20", description: "Listener IP" }
+
+  - id: "arp_reply"
+    name: "ARP Reply — 198.51.100.20 is at 02:00:00:00:00:02"
+    description: "Listener responds with its MAC."
+    from: "listener"
+    to: "caller"
+    via: ["switch"]
+    timestamp_ns: 100500000
+    total_bytes: 42
+    color: "#475569"
+    headers:
+      - name: "Ethernet II"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - { name: "Destination MAC", bits: 48, value: "02:00:00:00:00:01", description: "Reply unicast to caller" }
+          - { name: "Source MAC",      bits: 48, value: "02:00:00:00:00:02", description: "Listener MAC" }
+          - { name: "EtherType",       bits: 16, value: "0x0806", description: "ARP" }
+      - name: "ARP"
+        layer: 2
+        total_bytes: 28
+        fields:
+          - { name: "Opcode",     bits: 16, value: 2, description: "Reply" }
+          - { name: "Sender MAC", bits: 48, value: "02:00:00:00:00:02", description: "Listener MAC (the answer)" }
+          - { name: "Sender IP",  bits: 32, value: "198.51.100.20", description: "Listener IP" }
+          - { name: "Target MAC", bits: 48, value: "02:00:00:00:00:01", description: "Caller MAC" }
+          - { name: "Target IP",  bits: 32, value: "203.0.113.10", description: "Caller IP" }
+
+  # ─── Phase 1: Induction Request ────────────────────────────────────
+  - id: "srt_induction_req"
+    name: "SRT Induction Request (Phase 1)"
+    description: "Caller probes the listener — proposes Version=4 to discover what the listener supports."
+    from: "caller"
+    to: "listener"
+    via: ["switch"]
+    timestamp_ns: 101000000
+    total_bytes: 106
+    color: "#a855f7"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - { name: "Destination MAC", abbrev: "eth.dst", bits: 48, value: "02:00:00:00:00:02", description: "Listener MAC (from ARP)" }
+          - { name: "Source MAC",      abbrev: "eth.src", bits: 48, value: "02:00:00:00:00:01", description: "Caller MAC" }
+          - { name: "EtherType",       abbrev: "eth.type", bits: 16, value: "0x0800", description: "IPv4" }
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - { name: "Version",           abbrev: "ip.version", bits: 4,  value: 4,  description: "IPv4" }
+          - { name: "Header Length",     abbrev: "ip.hdr_len", bits: 4,  value: 5,  description: "5 × 4 = 20 bytes, no options" }
+          - { name: "DSCP",              abbrev: "ip.dsfield.dscp", bits: 6,  value: 0,  description: "Default" }
+          - { name: "ECN",               abbrev: "ip.dsfield.ecn",  bits: 2,  value: 0,  description: "Not-ECT" }
+          - { name: "Total Length",      abbrev: "ip.len",     bits: 16, value: 92, description: "20 IP + 8 UDP + 64 SRT control" }
+          - { name: "Identification",    abbrev: "ip.id",      bits: 16, value: "0x4d01", description: "Per-datagram unique" }
+          - { name: "Flags",             abbrev: "ip.flags",   bits: 3,  value: "0x2", description: "Don't Fragment" }
+          - { name: "TTL",               abbrev: "ip.ttl",     bits: 8,  value: 64, description: "Time To Live" }
+          - { name: "Protocol",          abbrev: "ip.proto",   bits: 8,  value: 17, description: "UDP" }
+          - { name: "Header Checksum",   abbrev: "ip.checksum", bits: 16, value: "0xa1f3", description: "IP header checksum" }
+          - { name: "Source IP",         abbrev: "ip.src",     bits: 32, value: "203.0.113.10", description: "Caller IP" }
+          - { name: "Destination IP",    abbrev: "ip.dst",     bits: 32, value: "198.51.100.20", description: "Listener IP" }
+
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - { name: "Source Port",      abbrev: "udp.srcport", bits: 16, value: 49152, description: "Caller-chosen ephemeral port" }
+          - { name: "Destination Port", abbrev: "udp.dstport", bits: 16, value: 9000,  description: "Listener-advertised SRT port" }
+          - { name: "Length",           abbrev: "udp.len",     bits: 16, value: 72,    description: "8 UDP header + 64 SRT control" }
+          - { name: "Checksum",         abbrev: "udp.checksum", bits: 16, value: "0x...", description: "UDP/IP pseudo-header checksum" }
+
+      - name: "SRT Control"
+        abbrev: "srt"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - { name: "F (Packet Type)", abbrev: "srt.f", bits: 1, value: 1, description: "Control packet (F=1)" }
+          - { name: "Message Type",    abbrev: "srt.msg_type", bits: 15, value: "0x0000", description: "HANDSHAKE — see Haivision/srt srtcore/packet.h SRT_CMD enum" }
+          - { name: "Message Extended Type", abbrev: "srt.msg_ext_type", bits: 16, value: 0, description: "Unused for HANDSHAKE" }
+          - { name: "Additional Data", abbrev: "srt.adddata", bits: 32, value: 0, description: "Reserved for HANDSHAKE" }
+          - { name: "Timestamp",       abbrev: "srt.timestamp", bits: 32, value: 0, description: "Connection-relative; 0 on first packet" }
+          - { name: "Destination Socket ID", abbrev: "srt.dst_socket_id", bits: 32, value: "0x00000000", description: "Unknown — caller doesn't yet know listener's socket ID" }
+
+      - name: "SRT Handshake Payload"
+        abbrev: "srt.hs"
+        layer: 5
+        total_bytes: 48
+        fields:
+          - { name: "Version",        abbrev: "srt.hs.version", bits: 32, value: 4, description: "Caller proposes legacy version 4. Listener answers with 5 if HSv5 capable. This is the standard induction-time probe." }
+          - { name: "Type/Flags",     abbrev: "srt.hs.type",    bits: 32, value: "0x00000002 (UDT_DGRAM)", description: "Legacy socket type (HSv4 semantics)" }
+          - { name: "ISN",            abbrev: "srt.hs.isn",     bits: 32, value: 1729384756, description: "Caller's initial sequence number" }
+          - { name: "MSS",            abbrev: "srt.hs.mss",     bits: 32, value: 1500, description: "Max segment size proposal — matches Ethernet MTU" }
+          - { name: "Flight Flag Size", abbrev: "srt.hs.flight_size", bits: 32, value: 8192, description: "Max in-flight packets buffer" }
+          - { name: "ReqType",        abbrev: "srt.hs.reqtype", bits: 32, value: "URQ_INDUCTION (1)", description: "Phase 1 — induction request", spec_refs: [{ document: "Haivision/srt", section: "srtcore/handshake.h URQ_*", title: "Handshake ReqType enum", url: "https://github.com/Haivision/srt/blob/master/srtcore/handshake.h" }] }
+          - { name: "ID",             abbrev: "srt.hs.id",      bits: 32, value: "0xABCD0001", description: "Caller's local socket ID" }
+          - { name: "Cookie",         abbrev: "srt.hs.cookie",  bits: 32, value: 0, description: "Empty — caller does not yet have a listener cookie" }
+          - { name: "PeerIP",         abbrev: "srt.hs.peer_ip", bits: 128, value: "203.0.113.10 (in 128-bit field)", description: "Caller's own IP — listener will verify against UDP source IP" }
+
+  # ─── Phase 2: Induction Response ───────────────────────────────────
+  - id: "srt_induction_rsp"
+    name: "SRT Induction Response (HSv5 magic + cookie)"
+    description: "Listener accepts the probe, replies with Version=5 + SRT magic 0x4A17 + a SYN cookie."
+    from: "listener"
+    to: "caller"
+    via: ["switch"]
+    timestamp_ns: 102000000
+    total_bytes: 106
+    color: "#a855f7"
+    headers:
+      - name: "Ethernet II"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - { name: "Destination MAC", bits: 48, value: "02:00:00:00:00:01", description: "Caller MAC" }
+          - { name: "Source MAC",      bits: 48, value: "02:00:00:00:00:02", description: "Listener MAC" }
+          - { name: "EtherType",       bits: 16, value: "0x0800", description: "IPv4" }
+      - name: "IPv4"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - { name: "Version | IHL",   bits: 8,  value: "0x45", description: "IPv4, 20-byte header" }
+          - { name: "Total Length",    bits: 16, value: 92, description: "20 IP + 8 UDP + 64 SRT" }
+          - { name: "Protocol",        bits: 8,  value: 17, description: "UDP" }
+          - { name: "Source IP",       bits: 32, value: "198.51.100.20", description: "Listener IP" }
+          - { name: "Destination IP",  bits: 32, value: "203.0.113.10", description: "Caller IP" }
       - name: "UDP"
         layer: 4
+        total_bytes: 8
         fields:
-          - { name: "Source Port", bits: 16, value: 5000, description: "Ephemeral caller port" }
-          - { name: "Destination Port", bits: 16, value: 9000, description: "Listener-advertised SRT port" }
-          - { name: "Length", bits: 16, value: 56, description: "8 UDP + 48 SRT control packet" }
-          - { name: "Checksum", bits: 16, value: "0x..", description: "UDP/IP pseudo-header checksum" }
+          - { name: "Source Port",      bits: 16, value: 9000,  description: "Listener SRT port" }
+          - { name: "Destination Port", bits: 16, value: 49152, description: "Caller ephemeral port" }
+          - { name: "Length",           bits: 16, value: 72,    description: "8 + 64" }
+          - { name: "Checksum",         bits: 16, value: "0x...", description: "" }
+      - name: "SRT Control"
+        abbrev: "srt"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - { name: "F",            bits: 1,  value: 1, description: "Control packet" }
+          - { name: "Message Type", bits: 15, value: "0x0000", description: "HANDSHAKE" }
+          - { name: "Timestamp",    bits: 32, value: 50, description: "Listener's relative timestamp (50 µs)" }
+          - { name: "Destination Socket ID", bits: 32, value: "0xABCD0001", description: "Caller socket ID — listener echoed it back so caller knows this reply is for its induction" }
+      - name: "SRT Handshake Payload"
+        abbrev: "srt.hs"
+        layer: 5
+        total_bytes: 48
+        fields:
+          - { name: "Version",        bits: 32, value: 5, description: "HSv5 — listener is HSv5 capable and overrides caller's proposed 4" }
+          - { name: "Type/Flags",     bits: 32, value: "Enc(upper 16)=0 · Ext(lower 16)=0x4A17 (SRT_MAGIC_CODE)", description: "Magic value 0x4A17 in the lower 16 bits is the unambiguous 'HSv5 spoken here' signal. Without it the caller treats this as HSv4." }
+          - { name: "ISN",            bits: 32, value: 982341765, description: "Listener's own initial sequence number" }
+          - { name: "MSS",            bits: 32, value: 1500, description: "MSS confirmation" }
+          - { name: "Flight Flag Size", bits: 32, value: 8192, description: "Confirmed buffer size" }
+          - { name: "ReqType",        bits: 32, value: "URQ_INDUCTION (1)", description: "Still in induction phase" }
+          - { name: "ID",             bits: 32, value: "0xDEF00002", description: "Listener's local socket ID — caller stores this and uses it as Destination Socket ID from Phase 3 onward" }
+          - { name: "Cookie",         bits: 32, value: "0x7F3A12B4", description: "Stateless SYN-cookie. Listener computed = HMAC(secret, caller_IP || caller_port || floor(now/60s)). Listener allocates NO state here." }
+          - { name: "PeerIP",         bits: 128, value: "203.0.113.10", description: "Listener echoes caller's IP — caller verifies for routing correctness" }
+
+  # ─── Phase 3: Conclusion Request (with HSREQ extension) ───────────
+  - id: "srt_conclusion_req"
+    name: "SRT Conclusion Request + HSREQ (Phase 3)"
+    description: "Caller commits to HSv5, echoes cookie back, attaches HSREQ extension block."
+    from: "caller"
+    to: "listener"
+    via: ["switch"]
+    timestamp_ns: 103000000
+    total_bytes: 122
+    color: "#a855f7"
+    headers:
+      - name: "Ethernet II"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - { name: "Destination MAC", bits: 48, value: "02:00:00:00:00:02", description: "Listener MAC" }
+          - { name: "Source MAC",      bits: 48, value: "02:00:00:00:00:01", description: "Caller MAC" }
+          - { name: "EtherType",       bits: 16, value: "0x0800", description: "IPv4" }
+      - name: "IPv4"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - { name: "Total Length",    bits: 16, value: 108, description: "20 IP + 8 UDP + 80 SRT (16 ctrl + 48 hs + 16 HSREQ)" }
+          - { name: "Protocol",        bits: 8,  value: 17,  description: "UDP" }
+          - { name: "Source IP",       bits: 32, value: "203.0.113.10", description: "" }
+          - { name: "Destination IP",  bits: 32, value: "198.51.100.20", description: "" }
+      - name: "UDP"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - { name: "Source Port",      bits: 16, value: 49152, description: "Same ephemeral port" }
+          - { name: "Destination Port", bits: 16, value: 9000,  description: "" }
+          - { name: "Length",           bits: 16, value: 88,    description: "8 + 80" }
       - name: "SRT Control"
         layer: 5
+        total_bytes: 16
         fields:
-          - { name: "F", bits: 1, value: 1, description: "Control packet" }
-          - { name: "Message Type", bits: 15, value: "0x0000 (HANDSHAKE)", description: "HANDSHAKE control type" }
-          - { name: "Message Extended Type", bits: 16, value: 0, description: "Not used for HANDSHAKE" }
-          - { name: "Additional Data", bits: 32, value: 0, description: "Reserved for HANDSHAKE" }
-          - { name: "Timestamp", bits: 32, value: 0, description: "Connection-relative timestamp (0 at start)" }
-          - { name: "Destination Socket ID", bits: 32, value: "0x00000000", description: "Unknown — set to zero on the very first packet" }
+          - { name: "F | Message Type",      bits: 16, value: "1 | 0x0000 (HANDSHAKE)", description: "Control packet" }
+          - { name: "Timestamp",             bits: 32, value: 1000, description: "Caller's relative timestamp" }
+          - { name: "Destination Socket ID", bits: 32, value: "0xDEF00002", description: "Listener socket ID from Phase 2" }
       - name: "SRT Handshake Payload"
         layer: 5
+        total_bytes: 48
         fields:
-          - { name: "Version", bits: 32, value: 4, description: "Proposed handshake version — start at 4 to probe peer capability" }
-          - { name: "Type/Flags", bits: 32, value: "0x00000002 (UDT_DGRAM)", description: "Legacy socket type field (HSv4 semantics)" }
-          - { name: "ISN", bits: 32, value: 1729384756, description: "Initial sequence number — caller's random seed" }
-          - { name: "MSS", bits: 32, value: 1500, description: "Maximum Segment Size proposal" }
-          - { name: "FlightFlagSize", bits: 32, value: 8192, description: "Max in-flight packet buffers" }
-          - { name: "ReqType", bits: 32, value: "URQ_INDUCTION (1)", description: "Induction request — Phase 1" }
-          - { name: "ID", bits: 32, value: "0xABCD0001", description: "Caller's source socket ID" }
-          - { name: "Cookie", bits: 32, value: 0, description: "Zero — caller does not yet have a listener cookie" }
-          - { name: "PeerIP", bits: 128, value: "203.0.113.10", description: "Caller's own IP, IPv4 expressed as 128-bit field" }
+          - { name: "Version",      bits: 32, value: 5, description: "HSv5 confirmed" }
+          - { name: "Type/Flags",   bits: 32, value: "Enc=0 · Ext(lower 16)=HS_EXT_HSREQ (1)", description: "Lower 16 bits announce which extension blocks follow — here just HSREQ" }
+          - { name: "ISN",          bits: 32, value: 1729384756, description: "Caller ISN (unchanged from Phase 1)" }
+          - { name: "ReqType",      bits: 32, value: "URQ_CONCLUSION (-1 / 0xFFFFFFFF)", description: "Phase 3 — conclusion request" }
+          - { name: "ID",           bits: 32, value: "0xABCD0001", description: "Caller socket ID" }
+          - { name: "Cookie",       bits: 32, value: "0x7F3A12B4", description: "Echoed from Phase 2 — proves caller can receive at the source IP it claims" }
+          - { name: "PeerIP",       bits: 128, value: "203.0.113.10", description: "Caller IP" }
+      - name: "SRT Extension: HSREQ"
+        abbrev: "srt.hs.hsreq"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - { name: "Cmd",   abbrev: "srt.ext.cmd",  bits: 16, value: "SRT_CMD_HSREQ (1)", description: "Handshake-request extension command" }
+          - { name: "Size",  abbrev: "srt.ext.size", bits: 16, value: 3, description: "Body size = 3 × 32-bit words = 12 bytes" }
+          - { name: "SRT Version", abbrev: "srt.ext.srt_version", bits: 32, value: "0x010403 (v1.4.3)", description: "Caller's libsrt version (8 bits major, 8 minor, 16 patch)" }
+          - { name: "SRT Flags",   abbrev: "srt.ext.srt_flags",   bits: 32, value: "TSBPDSND | TSBPDRCV | TLPKTDROP | NAKREPORT | REXMITFLG | HAICRYPT", description: "Capability bitmap. Both sides set REXMITFLG and HAICRYPT in modern releases (legacy flags retained for compatibility)." }
+          - { name: "RcvTsbPdDelay", abbrev: "srt.ext.rcv_delay", bits: 16, value: 120, description: "Receive-side TSBPD latency in ms — what the caller wants applied to traffic it RECEIVES" }
+          - { name: "SndTsbPdDelay", abbrev: "srt.ext.snd_delay", bits: 16, value: 120, description: "Send-side TSBPD latency in ms — what the caller proposes for traffic it SENDS" }
 
-  # ─── Phase 2: Induction Response ───
-  - id: hs_induction_rsp
-    name: "Induction Response (HSv5 advertisement)"
-    description: "Listener accepts the probe, returns a SYN cookie, and signals HSv5 via the magic code."
-    from: listener
-    to: caller
-    total_bytes: 64
+  # ─── Phase 4: Conclusion Response (HSRSP) ─────────────────────────
+  - id: "srt_conclusion_rsp"
+    name: "SRT Conclusion Response + HSRSP (Phase 4)"
+    description: "Listener allocates the socket, confirms negotiation, returns HSRSP with negotiated TSBPD latency (max of both sides)."
+    from: "listener"
+    to: "caller"
+    via: ["switch"]
+    timestamp_ns: 104000000
+    total_bytes: 122
+    color: "#a855f7"
     headers:
+      - name: "Ethernet II"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - { name: "Destination MAC", bits: 48, value: "02:00:00:00:00:01", description: "" }
+          - { name: "Source MAC",      bits: 48, value: "02:00:00:00:00:02", description: "" }
+          - { name: "EtherType",       bits: 16, value: "0x0800", description: "IPv4" }
+      - name: "IPv4"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - { name: "Source IP",      bits: 32, value: "198.51.100.20", description: "" }
+          - { name: "Destination IP", bits: 32, value: "203.0.113.10", description: "" }
+      - name: "UDP"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - { name: "Source Port",      bits: 16, value: 9000,  description: "" }
+          - { name: "Destination Port", bits: 16, value: 49152, description: "" }
+      - name: "SRT Control"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - { name: "F | Message Type",      bits: 16, value: "1 | 0x0000 (HANDSHAKE)", description: "" }
+          - { name: "Destination Socket ID", bits: 32, value: "0xABCD0001", description: "Caller socket ID" }
       - name: "SRT Handshake Payload"
         layer: 5
+        total_bytes: 48
         fields:
-          - { name: "Version", bits: 32, value: 5, description: "HSv5 capable — listener overrides the caller's proposed 4" }
-          - { name: "Type/Flags", bits: 32, value: "Ext=0x4A17 (SRT_MAGIC_CODE) · Enc=0", description: "Lower 16 bits = SRT magic, upper 16 = advertised PBKEYLEN (0 = no encryption advertised)" }
-          - { name: "ISN", bits: 32, value: 982341765, description: "Listener's own ISN" }
-          - { name: "MSS", bits: 32, value: 1500, description: "Confirmed MSS" }
-          - { name: "FlightFlagSize", bits: 32, value: 8192, description: "Confirmed buffer size" }
-          - { name: "ReqType", bits: 32, value: "URQ_INDUCTION (1)", description: "Still induction phase" }
-          - { name: "ID", bits: 32, value: "0xDEF00002", description: "Listener's socket ID" }
-          - { name: "Cookie", bits: 32, value: "0x7F3A12B4", description: "Listener-generated cookie: hash of (caller IP, port, current minute). Required in Phase 3 — proves caller could receive at the IP it claims." }
-          - { name: "PeerIP", bits: 128, value: "203.0.113.10", description: "Listener echoes the caller's IP for verification" }
-
-  # ─── Phase 3: Conclusion Request (with HSREQ extension) ───
-  - id: hs_conclusion_req
-    name: "Conclusion Request (HSv5 + HSREQ)"
-    description: "Caller commits to HSv5, returns the cookie, and attaches SRT-specific extension blocks."
-    from: caller
-    to: listener
-    total_bytes: 96
-    headers:
-      - name: "SRT Handshake Payload"
+          - { name: "Version",      bits: 32, value: 5, description: "" }
+          - { name: "Type/Flags",   bits: 32, value: "Ext=HS_EXT_HSREQ", description: "HSRSP carried in following block" }
+          - { name: "ReqType",      bits: 32, value: "URQ_CONCLUSION", description: "Conclusion phase — final" }
+          - { name: "ID",           bits: 32, value: "0xDEF00002", description: "Listener socket ID" }
+          - { name: "Cookie",       bits: 32, value: "0x7F3A12B4", description: "Same cookie — last echo" }
+      - name: "SRT Extension: HSRSP"
         layer: 5
+        total_bytes: 16
         fields:
-          - { name: "Version", bits: 32, value: 5, description: "HSv5 confirmed" }
-          - { name: "Type/Flags", bits: 32, value: "Enc=0 · Ext=HS_EXT_HSREQ", description: "Upper 16 = encryption flags; lower 16 = extension flags bitmap" }
-          - { name: "ISN", bits: 32, value: 1729384756, description: "Caller ISN (same as Phase 1)" }
-          - { name: "MSS", bits: 32, value: 1500, description: "MSS" }
-          - { name: "FlightFlagSize", bits: 32, value: 8192, description: "Flight buffer" }
-          - { name: "ReqType", bits: 32, value: "URQ_CONCLUSION (-1 / 0xFFFFFFFF)", description: "Conclusion phase request" }
-          - { name: "ID", bits: 32, value: "0xABCD0001", description: "Caller socket ID" }
-          - { name: "Cookie", bits: 32, value: "0x7F3A12B4", description: "Echoed cookie from Phase 2 — proves return path" }
-          - { name: "PeerIP", bits: 128, value: "203.0.113.10", description: "Caller IP" }
-      - name: "SRT Extension Block: HSREQ"
-        layer: 5
-        fields:
-          - { name: "Cmd", bits: 16, value: "SRT_CMD_HSREQ (1)", description: "HS request extension command" }
-          - { name: "Size", bits: 16, value: 3, description: "Length of extension body in 32-bit words" }
-          - { name: "SRT Version", bits: 32, value: "0x010403 (v1.4.3)", description: "Caller's SRT library version" }
-          - { name: "SRT Flags", bits: 32, value: "TSBPDSND | TSBPDRCV | TLPKTDROP | NAKREPORT | REXMITFLG | HAICRYPT", description: "Capability bitmap (Section 5.2 of handshake.md)" }
-          - { name: "RcvTsbPdDelay", bits: 16, value: "120 (ms)", description: "Latency the caller wants applied to incoming packets" }
-          - { name: "SndTsbPdDelay", bits: 16, value: "120 (ms)", description: "Latency the caller is committing on outgoing packets" }
-
-  # ─── Phase 4: Conclusion Response ───
-  - id: hs_conclusion_rsp
-    name: "Conclusion Response (HSRSP)"
-    description: "Listener confirms the connection, echoes back its own SRT flags and the negotiated latency (max of both peers' values)."
-    from: listener
-    to: caller
-    total_bytes: 96
-    headers:
-      - name: "SRT Handshake Payload"
-        layer: 5
-        fields:
-          - { name: "Version", bits: 32, value: 5, description: "Same HSv5" }
-          - { name: "Type/Flags", bits: 32, value: "Enc=0 · Ext=HS_EXT_HSREQ", description: "HSRSP carried in extension block below" }
-          - { name: "ReqType", bits: 32, value: "URQ_CONCLUSION", description: "Conclusion phase — final" }
-          - { name: "ID", bits: 32, value: "0xDEF00002", description: "Listener socket ID" }
-          - { name: "Cookie", bits: 32, value: "0x7F3A12B4", description: "Same cookie — final exchange" }
-      - name: "SRT Extension Block: HSRSP"
-        layer: 5
-        fields:
-          - { name: "Cmd", bits: 16, value: "SRT_CMD_HSRSP (2)", description: "Handshake response extension" }
+          - { name: "Cmd",  bits: 16, value: "SRT_CMD_HSRSP (2)", description: "Handshake-response extension command" }
           - { name: "Size", bits: 16, value: 3, description: "3 × 32-bit words" }
-          - { name: "SRT Version", bits: 32, value: "0x010402 (v1.4.2)", description: "Listener's SRT library version" }
-          - { name: "SRT Flags", bits: 32, value: "TSBPDSND | TSBPDRCV | TLPKTDROP | NAKREPORT | REXMITFLG | HAICRYPT", description: "Negotiated capability bitmap (intersection of both sides)" }
-          - { name: "RcvTsbPdDelay", bits: 16, value: "150 (ms)", description: "Listener-requested receive latency (its preferred value)" }
-          - { name: "SndTsbPdDelay", bits: 16, value: "120 (ms)", description: "Listener echoes caller's send latency back" }
+          - { name: "SRT Version", bits: 32, value: "0x010402 (v1.4.2)", description: "Listener's libsrt version" }
+          - { name: "SRT Flags",   bits: 32, value: "TSBPDSND | TSBPDRCV | TLPKTDROP | NAKREPORT | REXMITFLG | HAICRYPT", description: "Negotiated capability bitmap = AND of both peers' requested flags" }
+          - { name: "RcvTsbPdDelay", bits: 16, value: 150, description: "Listener wanted 150ms receive latency — its preferred value" }
+          - { name: "SndTsbPdDelay", bits: 16, value: 120, description: "Listener echoes caller's send latency" }
 
+# ─────────────────────────────────────────────────────────────────────
+# TIMELINE — every event, with per-actor state evolution
+# ─────────────────────────────────────────────────────────────────────
 timeline:
-  - id: evt_intro
-    type: note
-    annotation:
-      text: "Why SRT uses two handshake phases"
-      detail: >
-        SRT borrows the induction/conclusion pattern from UDT to mitigate
-        SYN-flood-style attacks. Phase 1 (induction) costs the listener
-        ZERO state: it just hashes the caller's IP/port/minute into a
-        cookie and returns it. Phase 3 (conclusion) requires the caller
-        to echo that cookie back, proving it can receive at the source
-        IP it claimed. Only after the cookie is verified does the
-        listener allocate a real socket.
-    from: caller
-    to: listener
-
-  - id: evt_phase1
-    type: frame_tx
+  # ─── Pre-flight: link & socket bring-up ──────────────────────────
+  - id: "evt_phy_link"
+    type: "annotation"
     t_ns: 0
-    frame_id: hs_induction_req
     annotation:
-      text: "Phase 1 — Induction Request"
-      detail: "Caller sends Version=4 in the SRT handshake payload. This is intentional: it asks 'do you understand v4 or do you want to talk v5?' The Destination Socket ID in the SRT control header is 0 because the caller hasn't yet learned the listener's socket ID."
-
-  - id: evt_phase2
-    type: frame_tx
-    t_ns: 25000000
-    frame_id: hs_induction_rsp
-    annotation:
-      text: "Phase 2 — Induction Response (HSv5 magic)"
+      text: "1 GbE link comes up — both NICs auto-negotiate"
       detail: >
-        The listener replies with Version=5 AND the lower 16 bits of the
-        Type field set to 0x4A17 (SRT_MAGIC_CODE). This is the unambiguous
-        signal that the listener speaks HSv5. The listener also returns
-        a Cookie computed from (caller IP, caller port, current UTC
-        minute). At this point the listener has spent zero memory — no
-        socket has been allocated yet.
+        Before any IP traffic can flow, the caller's NIC trains its 1 GbE
+        SerDes against the switch and the switch trains against the
+        listener's 10 GbE port (auto-negotiating down to common 1 GbE if
+        applicable). 1000BASE-X uses 8b/10b encoding at 1.25 GBaud line
+        rate for ~1.0 Gb/s of user data.
+    state_after:
+      - actor_id: "caller"
+        layers:
+          - layer: 1
+            state_fields:
+              link_state: "up"
+              speed_gbps: 1.0
+              encoding: "8b/10b"
+      - actor_id: "listener"
+        layers:
+          - layer: 1
+            state_fields:
+              link_state: "up"
+              speed_gbps: 10.0
+              encoding: "64b/66b"
 
-  - id: evt_phase3
-    type: frame_tx
+  - id: "evt_srt_socket_open"
+    type: "annotation"
     t_ns: 50000000
-    frame_id: hs_conclusion_req
     annotation:
-      text: "Phase 3 — Conclusion Request (HSREQ extension attached)"
+      text: "Caller: srt_create_socket() + srt_connect('srt://198.51.100.20:9000')"
       detail: >
-        The caller's conclusion message echoes the cookie back, switches
-        to URQ_CONCLUSION, and appends an HSREQ extension block carrying
-        the caller's SRT library version, its capability flags
-        (TSBPDSND/TSBPDRCV/TLPKTDROP/NAKREPORT…), and its latency
-        proposal (RcvTsbPdDelay=120ms, SndTsbPdDelay=120ms). When the
-        listener verifies the cookie, it allocates a socket and processes
-        the extension.
+        libsrt's srt_create_socket() allocates an SRT socket structure
+        (initially in CLOSED state), assigns it a 32-bit socket ID
+        (0xABCD0001), and underneath it creates a Linux UDP socket
+        bound to an ephemeral port (49152). srt_connect() transitions
+        the SRT state machine to INIT/CONNECTING and queues the first
+        induction request.
+    state_after:
+      - actor_id: "caller"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "connecting"
+              srt_uri: "srt://198.51.100.20:9000"
+          - layer: 5
+            state_fields:
+              srt_state: "CONNECTING"
+              local_socket_id: "0xABCD0001"
+              isn: "1729384756"
+              rcv_tsbpd_delay_ms: 120
+              snd_tsbpd_delay_ms: 120
+          - layer: 4
+            state_fields:
+              udp_socket_state: "BOUND"
+              local_port: 49152
+              remote_port: 9000
 
-  - id: evt_phase4
-    type: frame_tx
-    t_ns: 75000000
-    frame_id: hs_conclusion_rsp
+  # ─── ARP resolution ───────────────────────────────────────────────
+  - id: "evt_arp_request"
+    type: "frame_tx"
+    t_ns: 100000000
+    frame_id: "arp_request"
     annotation:
-      text: "Phase 4 — Conclusion Response (HSRSP)"
+      text: "Caller broadcasts ARP — needs listener's MAC before any IP traffic can flow"
       detail: >
-        The listener acknowledges the conclusion with HSRSP. Crucially,
-        the negotiated TSBPD latency is the MAXIMUM of both sides'
-        requests — here the listener wanted 150ms receive latency, so
-        the effective latency becomes 150ms in both directions. This is
-        the latency budget within which the receiver's TSBPD engine has
-        to recover any lost packets via NAK + retransmission.
+        The caller's kernel routes 198.51.100.20 — finds it's on the same
+        L2 subnet, looks up the ARP cache, finds no entry, and broadcasts
+        an ARP request. All hosts on the segment see the broadcast; only
+        the listener (whose IP matches the Target IP field) will reply.
+    state_after:
+      - actor_id: "caller"
+        layers:
+          - layer: 2
+            state_fields:
+              arp_state: "request_sent"
+              dst_mac: "unresolved"
 
-  - id: evt_complete
-    type: note
+  - id: "evt_arp_reply"
+    type: "frame_tx"
+    t_ns: 100500000
+    frame_id: "arp_reply"
     annotation:
-      text: "Connection established — data flow can begin"
+      text: "Listener replies with its MAC — caller's ARP cache now has the mapping"
       detail: >
-        Both sides now hold each other's socket IDs, agree on HSv5,
-        agree on a TSBPD latency, and have negotiated a capability set.
-        The first data packet (F=0) will use Sequence Number=ISN and
-        Destination Socket ID=peer's socket ID. The KK bits stay at 00
-        unless the conclusion also included a KMREQ extension — see the
-        SRT encryption scenario for that flow.
-    from: listener
-    to: caller
+        The listener answers unicast to the caller's MAC. Caller installs
+        198.51.100.20 → 02:00:00:00:00:02 in its ARP table (default Linux
+        timeout 60s, refresh on use). UDP datagrams can now flow.
+    state_after:
+      - actor_id: "caller"
+        layers:
+          - layer: 2
+            state_fields:
+              arp_state: "resolved"
+              dst_mac: "02:00:00:00:00:02"
+      - actor_id: "listener"
+        layers:
+          - layer: 2
+            state_fields:
+              dst_mac: "02:00:00:00:00:01"
 
+  # ─── Phase 1 ──────────────────────────────────────────────────────
+  - id: "evt_srt_induction_req"
+    type: "frame_tx"
+    t_ns: 101000000
+    frame_id: "srt_induction_req"
+    annotation:
+      text: "Phase 1: Caller sends induction request (Version=4, no cookie)"
+      detail: >
+        The caller proposes Version=4 — not because it speaks v4, but
+        because that's the standard probing approach. If the listener
+        also only speaks v4, this stays a UDT-style handshake. If the
+        listener speaks v5, it'll override the version in Phase 2 and
+        signal HSv5 via the SRT_MAGIC_CODE.
+
+        The Destination Socket ID in the SRT control header is 0 (the
+        caller hasn't yet learned the listener's socket ID).
+
+        The Cookie field is 0 — the caller has no cookie to echo yet.
+
+        ReqType is URQ_INDUCTION (1) — Phase 1 marker.
+      spec_refs:
+        - document: "Haivision/srt"
+          section: "docs/features/handshake.md"
+          title: "Caller-Listener Handshake — Induction"
+          url: "https://github.com/Haivision/srt/blob/master/docs/features/handshake.md"
+    state_after:
+      - actor_id: "caller"
+        layers:
+          - layer: 5
+            state_fields:
+              srt_state: "INDUCTION_SENT"
+              hs_version: "proposing v4"
+          - layer: 4
+            state_fields:
+              udp_socket_state: "ESTABLISHED-ephemeral"
+
+  # ─── Phase 2 ──────────────────────────────────────────────────────
+  - id: "evt_srt_induction_rsp"
+    type: "frame_tx"
+    t_ns: 102000000
+    frame_id: "srt_induction_rsp"
+    annotation:
+      text: "Phase 2: Listener replies with Version=5, SRT_MAGIC_CODE, and a SYN cookie"
+      detail: >
+        The listener sees the induction request, but does NOT yet
+        allocate a per-connection socket. Instead it:
+
+          1. Sets Version = 5 (overriding caller's proposed 4).
+          2. Sets the lower 16 bits of Type/Flags = 0x4A17
+             (SRT_MAGIC_CODE) — the unambiguous 'HSv5 spoken here' marker.
+          3. Generates a stateless Cookie = HMAC(secret_key,
+             caller_IP ‖ caller_UDP_port ‖ floor(now/60s)). This couples
+             the cookie to the caller's apparent source IP and to the
+             current minute so it can't be replayed or reused.
+          4. Returns its own socket ID (0xDEF00002) for the caller to
+             use as Destination Socket ID from Phase 3 onward.
+
+        Cost on the listener: ZERO state. The listener doesn't track
+        "pending inductions" — it can ignore retries entirely. If the
+        caller is lying about its IP, it'll never receive this packet.
+      spec_refs:
+        - document: "Haivision/srt"
+          section: "srtcore/handshake.cpp"
+          title: "Cookie generation: CHandShake::createCookie()"
+          url: "https://github.com/Haivision/srt/blob/master/srtcore/handshake.cpp"
+    state_after:
+      - actor_id: "listener"
+        layers:
+          - layer: 5
+            state_fields:
+              local_socket_id: "0xDEF00002"
+              peer_socket_id: "0xABCD0001 (provisional)"
+              pending_inductions: 0
+              isn: "982341765"
+      - actor_id: "caller"
+        layers:
+          - layer: 5
+            state_fields:
+              srt_state: "INDUCTION_RCVD"
+              hs_version: "HSv5 (listener signaled magic)"
+              peer_socket_id: "0xDEF00002"
+              cookie: "0x7F3A12B4"
+
+  # ─── Phase 3 ──────────────────────────────────────────────────────
+  - id: "evt_srt_conclusion_req"
+    type: "frame_tx"
+    t_ns: 103000000
+    frame_id: "srt_conclusion_req"
+    annotation:
+      text: "Phase 3: Caller sends conclusion request — echoes cookie, attaches HSREQ extension"
+      detail: >
+        The caller transitions to URQ_CONCLUSION and crucially echoes
+        the cookie (0x7F3A12B4) back. This is what proves to the
+        listener that the caller could receive at the IP it claimed in
+        Phase 1 — i.e., it's not a spoofed source address.
+
+        Attached to the conclusion is an HSREQ extension block (command
+        SRT_CMD_HSREQ = 1, size 3 words = 12 bytes). The HSREQ carries:
+
+          • SRT Version (0x010403 = v1.4.3)
+          • SRT Flags bitmap: TSBPDSND, TSBPDRCV, TLPKTDROP, NAKREPORT,
+            REXMITFLG, HAICRYPT — the modern-libsrt baseline.
+          • RcvTsbPdDelay = 120 ms (latency the caller wants on inbound)
+          • SndTsbPdDelay = 120 ms (latency the caller proposes for outbound)
+
+        The conclusion message uses the listener's socket ID
+        (0xDEF00002) as Destination Socket ID — first time the caller
+        is addressing the listener-side socket directly.
+      spec_refs:
+        - document: "Haivision/srt"
+          section: "srtcore/handshake.h SRT_CMD_HSREQ"
+          title: "HSREQ command structure"
+          url: "https://github.com/Haivision/srt/blob/master/srtcore/handshake.h"
+    state_after:
+      - actor_id: "caller"
+        layers:
+          - layer: 5
+            state_fields:
+              srt_state: "CONCLUSION_SENT"
+              hs_version: "HSv5"
+              srt_flags: "TSBPDSND|TSBPDRCV|TLPKTDROP|NAKREPORT|REXMITFLG|HAICRYPT"
+
+  # ─── Phase 4 ──────────────────────────────────────────────────────
+  - id: "evt_srt_conclusion_rsp"
+    type: "frame_tx"
+    t_ns: 104000000
+    frame_id: "srt_conclusion_rsp"
+    annotation:
+      text: "Phase 4: Listener verifies cookie, allocates the socket, returns HSRSP"
+      detail: >
+        The listener:
+
+          1. Recomputes the expected cookie for the caller's source IP
+             at the current minute and the previous minute (clock skew
+             tolerance). If neither matches the echoed cookie, the
+             packet is silently dropped.
+          2. With the cookie validated, the listener ALLOCATES a real
+             SRT socket (state CONNECTED, peer_socket_id = 0xABCD0001),
+             attaches the HSREQ-negotiated parameters, and returns
+             HSRSP.
+          3. The negotiated TSBPD latency is the MAX of both peers'
+             RcvTsbPdDelay: caller proposed 120ms, listener wanted
+             150ms. Effective latency = 150ms in both directions.
+
+        After this message, both sides are CONNECTED. The next packet
+        flow will be data packets (F=0) using the negotiated Sequence
+        Number = ISN.
+      spec_refs:
+        - document: "Haivision/srt"
+          section: "docs/features/handshake.md (TSBPD Latency Negotiation)"
+          url: "https://github.com/Haivision/srt/blob/master/docs/features/handshake.md"
+    state_after:
+      - actor_id: "listener"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "accepted"
+          - layer: 5
+            state_fields:
+              srt_state: "CONNECTED"
+              peer_socket_id: "0xABCD0001"
+              srt_flags: "TSBPDSND|TSBPDRCV|TLPKTDROP|NAKREPORT|REXMITFLG|HAICRYPT"
+              rcv_tsbpd_delay_ms: 150
+              snd_tsbpd_delay_ms: 120
+      - actor_id: "caller"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "connected"
+          - layer: 5
+            state_fields:
+              srt_state: "CONNECTED"
+              rcv_tsbpd_delay_ms: 150
+              snd_tsbpd_delay_ms: 120
+
+  # ─── Summary ──────────────────────────────────────────────────────
+  - id: "evt_summary"
+    type: "annotation"
+    t_ns: 105000000
+    annotation:
+      text: "Handshake complete — both sides CONNECTED, data flow can begin"
+      detail: >
+        Final negotiated state:
+
+          • Both peers in SRT state CONNECTED, holding each other's
+            32-bit socket IDs.
+          • HSv5 confirmed via SRT_MAGIC_CODE in Phase 2.
+          • TSBPD latency = 150 ms (max of caller's 120 and listener's
+            150 RcvTsbPdDelay). This is the budget within which loss
+            recovery via NAK + retransmit must complete.
+          • Capability flags: TSBPDSND, TSBPDRCV, TLPKTDROP,
+            NAKREPORT, REXMITFLG, HAICRYPT — the live-streaming
+            baseline.
+          • UDP 4-tuple = (203.0.113.10:49152, 198.51.100.20:9000) —
+            stable for the life of the connection.
+
+        Next steps in a real session: data packets (F=0) flow from
+        the caller, ACKs (control type 0x0002) and NAKs
+        (control type 0x0003) flow back. See the
+        'SRT: ARQ Recovery' scenario for that loop. If encryption
+        was requested, an additional KMREQ/KMRSP exchange would have
+        ridden inside Phase 3/4 conclusion messages — see the
+        'SRT: Encryption' scenario.
+
+# ─────────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────────
 glossary:
-  - term: "Induction Phase"
-    definition: "The first SRT handshake round. The listener returns a stateless SYN-cookie that the caller must echo in Phase 3. Costs the listener no state."
-  - term: "Conclusion Phase"
-    definition: "The second SRT handshake round. The caller proves cookie ownership and (in HSv5) carries SRT-specific extension blocks. Triggers socket allocation on the listener."
+  - term: "Induction phase"
+    definition: "First SRT handshake round. The listener returns a stateless SYN cookie that the caller must echo in Phase 3. Costs the listener no state — important for SYN-flood resistance."
+
+  - term: "Conclusion phase"
+    definition: "Second SRT handshake round. The caller proves cookie ownership and (in HSv5) carries SRT-specific extension blocks. This is the message that causes the listener to actually allocate a socket."
+
   - term: "SRT_MAGIC_CODE"
     abbrev: "0x4A17"
-    definition: "Value placed in the lower 16 bits of the HSv5 Type field during the induction response to signal HSv5 capability."
+    definition: "16-bit value placed in the lower half of the HSv5 Type field during the induction response. Unambiguously signals 'HSv5 spoken here.' Without it, the caller treats the connection as HSv4."
+
   - term: "HSREQ / HSRSP"
-    definition: "SRT handshake extension blocks (commands 1 and 2). Carry SRT version, capability flags, and TSBPD delays. Their absence means the peer is talking legacy UDT, not SRT."
+    definition: "SRT handshake extension blocks (commands SRT_CMD_HSREQ=1 and SRT_CMD_HSRSP=2). Carry SRT version, capability flags, and the negotiated TSBPD delays. Absence means the peer is speaking legacy UDT, not SRT."
+
   - term: "TSBPD"
     abbrev: "Time-Stamp Based Packet Delivery"
-    definition: "Receiver's clocked-out delivery: each packet leaves the receive buffer at (sender_timestamp + negotiated latency) — not when it arrives. Smooths jitter and is the deadline NAK/retransmit must beat."
+    definition: "Receiver-side clocked-out delivery: each packet leaves the receive buffer at (sender_timestamp + clock_offset + negotiated_latency) — not when it arrives. Smooths jitter and is the deadline NAK/retransmit must beat. The 'TSBPD latency' is negotiated during handshake as max(both peers' RcvTsbPdDelay)."
+
+  - term: "ReqType / URQ_*"
+    definition: "Handshake request-type enum from Haivision/srt srtcore/handshake.h. URQ_INDUCTION=1, URQ_CONCLUSION=-1 (0xFFFFFFFF), URQ_WAVEAHAND=0 (rendezvous), URQ_AGREEMENT=-2 (rendezvous final)."
+
+  - term: "Stateless cookie"
+    definition: "Listener-side anti-SYN-flood mechanism. Listener computes cookie = HMAC(secret, caller_IP ‖ port ‖ minute_bucket) and returns it without allocating any state. Cookie is bound to the caller's source IP (and port and time-bucket), so spoofed-source-IP callers can't echo it back."
+
+  - term: "Socket ID"
+    definition: "32-bit identifier for an SRT socket within a host. Independent of UDP port — many SRT sockets can multiplex over the same UDP 4-tuple. Caller learns the listener's socket ID in Phase 2 and uses it as Destination Socket ID from Phase 3 onward."
+
+  - term: "Flight Flag Size"
+    definition: "Max number of in-flight packet buffers the peer is willing to allocate. Sets an upper bound on the receive buffer and the send window. 8192 packets is the libsrt default."
