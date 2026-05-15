@@ -930,11 +930,29 @@ timeline:
           - layer: 4
             state_fields:
               udp_socket_state: "ESTABLISHED-ephemeral"
-      - actor_id: "listener"
-        layers:
+          # L3/L2 reflect the current frame at the caller's NIC (outbound)
           - layer: 3
             state_fields:
-              dst_ip: "203.0.113.10"
+              src_ip: "203.0.113.10"
+              dst_ip: "198.51.100.20"
+              next_hop_ip: "203.0.113.1 (via default route)"
+              ttl: 64
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:01"
+              dst_mac: "02:00:00:00:00:11"
+      - actor_id: "listener"
+        layers:
+          # L3/L2 reflect the current frame at the listener's NIC (inbound)
+          - layer: 3
+            state_fields:
+              src_ip: "203.0.113.10"
+              dst_ip: "198.51.100.20"
+              ttl: 56
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:22 (listener-side gw, last hop)"
+              dst_mac: "02:00:00:00:00:02"
           - layer: 4
             state_fields:
               remote_port: 49152
@@ -977,6 +995,16 @@ timeline:
               peer_socket_id: "0xABCD0001 (provisional)"
               pending_inductions: 0
               isn: "982341765"
+          # L3/L2 reflect the current frame at the listener's NIC (outbound)
+          - layer: 3
+            state_fields:
+              src_ip: "198.51.100.20"
+              dst_ip: "203.0.113.10"
+              ttl: 64
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:02"
+              dst_mac: "02:00:00:00:00:22 (listener-side gw)"
       - actor_id: "caller"
         layers:
           - layer: 5
@@ -985,6 +1013,16 @@ timeline:
               hs_version: "HSv5 (listener signaled magic)"
               peer_socket_id: "0xDEF00002"
               cookie: "0x7F3A12B4"
+          # L3/L2 reflect the current frame at the caller's NIC (inbound) — src/dst swap vs Phase 1
+          - layer: 3
+            state_fields:
+              src_ip: "198.51.100.20"
+              dst_ip: "203.0.113.10"
+              ttl: 56
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:11"
+              dst_mac: "02:00:00:00:00:01"
 
   # ─── Phase 3 ──────────────────────────────────────────────────────
   - id: "evt_srt_conclusion_req"
@@ -1024,6 +1062,28 @@ timeline:
               srt_state: "CONCLUSION_SENT"
               hs_version: "HSv5"
               srt_flags: "TSBPDSND|TSBPDRCV|TLPKTDROP|NAKREPORT|REXMITFLG|HAICRYPT"
+          # Outbound again — back to caller-as-sender values
+          - layer: 3
+            state_fields:
+              src_ip: "203.0.113.10"
+              dst_ip: "198.51.100.20"
+              ttl: 64
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:01"
+              dst_mac: "02:00:00:00:00:11"
+      - actor_id: "listener"
+        layers:
+          # Inbound at the listener
+          - layer: 3
+            state_fields:
+              src_ip: "203.0.113.10"
+              dst_ip: "198.51.100.20"
+              ttl: 56
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:22 (listener-side gw, last hop)"
+              dst_mac: "02:00:00:00:00:02"
 
   # ─── Phase 4 ──────────────────────────────────────────────────────
   - id: "evt_srt_conclusion_rsp"
@@ -1067,6 +1127,16 @@ timeline:
               srt_flags: "TSBPDSND|TSBPDRCV|TLPKTDROP|NAKREPORT|REXMITFLG|HAICRYPT"
               rcv_tsbpd_delay_ms: 150
               snd_tsbpd_delay_ms: 120
+          # Outbound at listener (sending HSRSP back to caller)
+          - layer: 3
+            state_fields:
+              src_ip: "198.51.100.20"
+              dst_ip: "203.0.113.10"
+              ttl: 64
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:02"
+              dst_mac: "02:00:00:00:00:22 (listener-side gw)"
       - actor_id: "caller"
         layers:
           - layer: 7
@@ -1077,6 +1147,16 @@ timeline:
               srt_state: "CONNECTED"
               rcv_tsbpd_delay_ms: 150
               snd_tsbpd_delay_ms: 120
+          # Inbound at caller — src/dst swap matches the inbound packet's wire header
+          - layer: 3
+            state_fields:
+              src_ip: "198.51.100.20"
+              dst_ip: "203.0.113.10"
+              ttl: 56
+          - layer: 2
+            state_fields:
+              src_mac: "02:00:00:00:00:11"
+              dst_mac: "02:00:00:00:00:01"
 
   # ─── Summary ──────────────────────────────────────────────────────
   - id: "evt_summary"
