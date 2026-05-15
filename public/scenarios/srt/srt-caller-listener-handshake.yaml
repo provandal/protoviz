@@ -100,19 +100,28 @@ topology:
     - id: caller
       type: host
       label: "Caller (Live Encoder)"
-      description: "Contribution encoder; runs srt_connect() to reach the listener at known IP+port"
+      description: "Contribution encoder; runs srt_connect() to reach the listener over the public Internet"
       hardware: "x86_64, 1 GbE NIC"
       os: "Linux 6.x"
       ip: "203.0.113.10"
       mac: "02:00:00:00:00:01"
       position: left
 
-    - id: switch
-      type: switch
-      label: "L2 switch"
-      description: "Pass-through 1 GbE switch on the venue LAN"
-      hardware: "Top-of-rack 1 GbE"
-      position: center
+    - id: caller_gw
+      type: router
+      label: "Caller default gateway"
+      description: "Edge router on the caller's LAN — terminates the caller's L2 segment, routes packets onto the WAN"
+      ip: "203.0.113.1"
+      mac: "02:00:00:00:00:11"
+      position: left
+
+    - id: listener_gw
+      type: router
+      label: "Listener default gateway"
+      description: "Edge router on the listener's LAN — receives Internet traffic destined for 198.51.100.0/24 and delivers locally"
+      ip: "198.51.100.1"
+      mac: "02:00:00:00:00:22"
+      position: right
 
     - id: listener
       type: host
@@ -125,15 +134,24 @@ topology:
       position: right
 
   links:
-    - id: link_caller
+    # Caller-side LAN segment
+    - id: link_caller_lan
       from: caller
-      to: switch
+      to: caller_gw
       speed_gbps: 1.0
       media: fiber_sr
       autoneg: true
 
-    - id: link_listener
-      from: switch
+    # Internet path between gateways (multiple router hops abstracted)
+    - id: link_internet
+      from: caller_gw
+      to: listener_gw
+      speed_gbps: 10.0
+      media: fiber_lr
+
+    # Listener-side LAN segment
+    - id: link_listener_lan
+      from: listener_gw
       to: listener
       speed_gbps: 10.0
       media: fiber_sr
@@ -221,14 +239,23 @@ osi_layers:
 
     - layer: 3
       name: "IP / Routing"
-      components: ["net/ipv4/ip_output.c", "net/ipv4/route.c"]
+      components: ["net/ipv4/ip_output.c", "net/ipv4/route.c", "net/ipv4/fib_*"]
       state_schema:
         src_ip:
           type: "string"
           initial: "203.0.113.10"
         dst_ip:
           type: "string"
+          description: "Final L3 destination of the SRT connection"
           initial: "null"
+        default_gateway:
+          type: "string"
+          description: "Next-hop router for off-subnet destinations (where ARP resolution actually targets)"
+          initial: "203.0.113.1"
+        next_hop_ip:
+          type: "string"
+          description: "Result of FIB lookup for current destination — 'on-link' if same subnet, otherwise gateway IP"
+          initial: "—"
         ttl:
           type: "integer"
           initial: 64
@@ -242,20 +269,23 @@ osi_layers:
           initial: "02:00:00:00:00:01"
         dst_mac:
           type: "string"
+          description: "L2 destination = MAC of the next-hop on this link, NOT the final destination's MAC"
           initial: "unresolved"
         mtu:
           type: "integer"
           initial: 1500
         arp_state:
           type: "string"
+          description: "ARP cache state for next_hop_ip"
           initial: "unresolved"
 
     - layer: 1
-      name: "Physical (1 GbE)"
+      name: "Physical (1 GbE LAN segment)"
       components: ["SFP", "1000BASE-X"]
       state_schema:
         link_state:
           type: "string"
+          description: "Local link to default gateway (point-to-point)"
           initial: "down"
         speed_gbps:
           type: "number"
@@ -373,13 +403,16 @@ osi_layers:
 # FRAMES — library of every frame the timeline references
 # ─────────────────────────────────────────────────────────────────────
 frames:
-  # ─── ARP resolution ────────────────────────────────────────────────
+  # ─── ARP resolution — for the GATEWAY, not the listener ───────────
+  # Caller (203.0.113.10/24) and listener (198.51.100.20/24) are on
+  # DIFFERENT L3 subnets — they cannot ARP each other directly. After
+  # the kernel's FIB lookup determines the next hop is the default
+  # gateway (203.0.113.1), the caller ARPs for the gateway's MAC.
   - id: "arp_request"
-    name: "ARP Request — Who has 198.51.100.20?"
-    description: "Caller broadcasts to discover listener's MAC before any SRT traffic can flow."
+    name: "ARP Request — Who has 203.0.113.1 (the default gateway)?"
+    description: "Caller broadcasts on its LAN segment asking for the gateway's MAC. ARP only crosses a single L2 broadcast domain — never the WAN."
     from: "caller"
     to: "broadcast"
-    via: ["switch"]
     timestamp_ns: 100000000
     total_bytes: 42
     color: "#475569"
@@ -389,7 +422,7 @@ frames:
         layer: 2
         total_bytes: 14
         fields:
-          - { name: "Destination MAC", abbrev: "eth.dst", bits: 48, value: "ff:ff:ff:ff:ff:ff", description: "Broadcast — every host on the segment sees this" }
+          - { name: "Destination MAC", abbrev: "eth.dst", bits: 48, value: "ff:ff:ff:ff:ff:ff", description: "Broadcast — every host on the caller's local segment sees this" }
           - { name: "Source MAC",      abbrev: "eth.src", bits: 48, value: "02:00:00:00:00:01", description: "Caller's MAC" }
           - { name: "EtherType",       abbrev: "eth.type", bits: 16, value: "0x0806", description: "ARP" }
       - name: "ARP"
@@ -405,14 +438,13 @@ frames:
           - { name: "Sender MAC",        abbrev: "arp.src.hw_mac",  bits: 48, value: "02:00:00:00:00:01", description: "Caller MAC" }
           - { name: "Sender IP",         abbrev: "arp.src.proto_ipv4", bits: 32, value: "203.0.113.10", description: "Caller IP" }
           - { name: "Target MAC",        abbrev: "arp.dst.hw_mac",  bits: 48, value: "00:00:00:00:00:00", description: "Unknown — what we're asking for" }
-          - { name: "Target IP",         abbrev: "arp.dst.proto_ipv4", bits: 32, value: "198.51.100.20", description: "Listener IP" }
+          - { name: "Target IP",         abbrev: "arp.dst.proto_ipv4", bits: 32, value: "203.0.113.1", description: "GATEWAY IP — NOT the listener's IP. The listener (198.51.100.20) is on a different subnet, reachable only via L3 routing." }
 
   - id: "arp_reply"
-    name: "ARP Reply — 198.51.100.20 is at 02:00:00:00:00:02"
-    description: "Listener responds with its MAC."
-    from: "listener"
+    name: "ARP Reply — 203.0.113.1 is at 02:00:00:00:00:11"
+    description: "Caller's gateway responds with its LAN-side MAC. Caller installs this in its ARP cache against the gateway IP."
+    from: "caller_gw"
     to: "caller"
-    via: ["switch"]
     timestamp_ns: 100500000
     total_bytes: 42
     color: "#475569"
@@ -422,15 +454,15 @@ frames:
         total_bytes: 14
         fields:
           - { name: "Destination MAC", bits: 48, value: "02:00:00:00:00:01", description: "Reply unicast to caller" }
-          - { name: "Source MAC",      bits: 48, value: "02:00:00:00:00:02", description: "Listener MAC" }
+          - { name: "Source MAC",      bits: 48, value: "02:00:00:00:00:11", description: "Gateway's LAN-side MAC" }
           - { name: "EtherType",       bits: 16, value: "0x0806", description: "ARP" }
       - name: "ARP"
         layer: 2
         total_bytes: 28
         fields:
           - { name: "Opcode",     bits: 16, value: 2, description: "Reply" }
-          - { name: "Sender MAC", bits: 48, value: "02:00:00:00:00:02", description: "Listener MAC (the answer)" }
-          - { name: "Sender IP",  bits: 32, value: "198.51.100.20", description: "Listener IP" }
+          - { name: "Sender MAC", bits: 48, value: "02:00:00:00:00:11", description: "Gateway's MAC — the answer" }
+          - { name: "Sender IP",  bits: 32, value: "203.0.113.1", description: "Gateway IP" }
           - { name: "Target MAC", bits: 48, value: "02:00:00:00:00:01", description: "Caller MAC" }
           - { name: "Target IP",  bits: 32, value: "203.0.113.10", description: "Caller IP" }
 
@@ -440,18 +472,18 @@ frames:
     description: "Caller probes the listener — proposes Version=4 to discover what the listener supports."
     from: "caller"
     to: "listener"
-    via: ["switch"]
+    via: ["caller_gw", "listener_gw"]
     timestamp_ns: 101000000
     total_bytes: 106
     color: "#a855f7"
     headers:
-      - name: "Ethernet II"
+      - name: "Ethernet II (caller LAN segment — values rewritten at each L3 hop)"
         abbrev: "eth"
         layer: 2
         total_bytes: 14
         fields:
-          - { name: "Destination MAC", abbrev: "eth.dst", bits: 48, value: "02:00:00:00:00:02", description: "Listener MAC (from ARP)" }
-          - { name: "Source MAC",      abbrev: "eth.src", bits: 48, value: "02:00:00:00:00:01", description: "Caller MAC" }
+          - { name: "Destination MAC", abbrev: "eth.dst", bits: 48, value: "02:00:00:00:00:11", description: "Caller's default GATEWAY MAC (from ARP). NOT the listener's MAC — that's never resolved by the caller. The gateway will rewrite this header when it forwards the packet onto its WAN-side link." }
+          - { name: "Source MAC",      abbrev: "eth.src", bits: 48, value: "02:00:00:00:00:01", description: "Caller's MAC" }
           - { name: "EtherType",       abbrev: "eth.type", bits: 16, value: "0x0800", description: "IPv4" }
 
       - name: "IPv4"
@@ -515,16 +547,16 @@ frames:
     description: "Listener accepts the probe, replies with Version=5 + SRT magic 0x4A17 + a SYN cookie."
     from: "listener"
     to: "caller"
-    via: ["switch"]
+    via: ["listener_gw", "caller_gw"]
     timestamp_ns: 102000000
     total_bytes: 106
     color: "#a855f7"
     headers:
-      - name: "Ethernet II"
+      - name: "Ethernet II (listener LAN segment — values rewritten at each L3 hop on the return path)"
         layer: 2
         total_bytes: 14
         fields:
-          - { name: "Destination MAC", bits: 48, value: "02:00:00:00:00:01", description: "Caller MAC" }
+          - { name: "Destination MAC", bits: 48, value: "02:00:00:00:00:22", description: "Listener's default GATEWAY MAC (resolved via the listener's own ARP for 198.51.100.1)" }
           - { name: "Source MAC",      bits: 48, value: "02:00:00:00:00:02", description: "Listener MAC" }
           - { name: "EtherType",       bits: 16, value: "0x0800", description: "IPv4" }
       - name: "IPv4"
@@ -574,16 +606,16 @@ frames:
     description: "Caller commits to HSv5, echoes cookie back, attaches HSREQ extension block."
     from: "caller"
     to: "listener"
-    via: ["switch"]
+    via: ["caller_gw", "listener_gw"]
     timestamp_ns: 103000000
     total_bytes: 122
     color: "#a855f7"
     headers:
-      - name: "Ethernet II"
+      - name: "Ethernet II (caller LAN segment)"
         layer: 2
         total_bytes: 14
         fields:
-          - { name: "Destination MAC", bits: 48, value: "02:00:00:00:00:02", description: "Listener MAC" }
+          - { name: "Destination MAC", bits: 48, value: "02:00:00:00:00:11", description: "Caller's default gateway MAC (cached from earlier ARP)" }
           - { name: "Source MAC",      bits: 48, value: "02:00:00:00:00:01", description: "Caller MAC" }
           - { name: "EtherType",       bits: 16, value: "0x0800", description: "IPv4" }
       - name: "IPv4"
@@ -637,17 +669,17 @@ frames:
     description: "Listener allocates the socket, confirms negotiation, returns HSRSP with negotiated TSBPD latency (max of both sides)."
     from: "listener"
     to: "caller"
-    via: ["switch"]
+    via: ["listener_gw", "caller_gw"]
     timestamp_ns: 104000000
     total_bytes: 122
     color: "#a855f7"
     headers:
-      - name: "Ethernet II"
+      - name: "Ethernet II (listener LAN segment)"
         layer: 2
         total_bytes: 14
         fields:
-          - { name: "Destination MAC", bits: 48, value: "02:00:00:00:00:01", description: "" }
-          - { name: "Source MAC",      bits: 48, value: "02:00:00:00:00:02", description: "" }
+          - { name: "Destination MAC", bits: 48, value: "02:00:00:00:00:22", description: "Listener's default gateway MAC (next hop on the return path)" }
+          - { name: "Source MAC",      bits: 48, value: "02:00:00:00:00:02", description: "Listener MAC" }
           - { name: "EtherType",       bits: 16, value: "0x0800", description: "IPv4" }
       - name: "IPv4"
         layer: 3
@@ -691,31 +723,48 @@ frames:
 # TIMELINE — every event, with per-actor state evolution
 # ─────────────────────────────────────────────────────────────────────
 timeline:
-  # ─── Pre-flight: link & socket bring-up ──────────────────────────
-  - id: "evt_phy_link"
+  # ─── Pre-flight: physical link bring-up (point-to-point) ──────────
+  - id: "evt_phy_link_caller_side"
     type: "annotation"
     t_ns: 0
     annotation:
-      text: "1 GbE link comes up — both NICs auto-negotiate"
+      text: "Caller-side LAN link comes up (1 GbE, caller ↔ caller_gw)"
       detail: >
-        Before any IP traffic can flow, the caller's NIC trains its 1 GbE
-        SerDes against the switch and the switch trains against the
-        listener's 10 GbE port (auto-negotiating down to common 1 GbE if
-        applicable). 1000BASE-X uses 8b/10b encoding at 1.25 GBaud line
-        rate for ~1.0 Gb/s of user data.
+        Link training is strictly point-to-point — between the caller's
+        NIC and its directly-attached switch/router port on the caller's
+        LAN segment (the default gateway). The 1000BASE-X SerDes
+        auto-negotiates speed and duplex, then synchronizes at 1.25
+        GBaud with 8b/10b encoding for ~1.0 Gb/s of user data.
+
+        This link comes up INDEPENDENTLY of the listener's link, which
+        is on a different L1 medium thousands of kilometers away. The
+        listener's local link likely came up days or months earlier.
     state_after:
       - actor_id: "caller"
         layers:
           - layer: 1
             state_fields:
-              link_state: "up"
+              link_state: "up (to caller_gw)"
               speed_gbps: 1.0
               encoding: "8b/10b"
+
+  - id: "evt_phy_link_listener_side"
+    type: "annotation"
+    t_ns: 1000000
+    annotation:
+      text: "Listener-side LAN link is already up (10 GbE, listener ↔ listener_gw)"
+      detail: >
+        The listener is a long-running cloud ingest service. Its
+        10 GbE link to listener_gw has been up since the host
+        booted — completely independent of the caller's link. Shown
+        here for completeness, but it has no causal relationship to
+        the caller's link-up event above.
+    state_after:
       - actor_id: "listener"
         layers:
           - layer: 1
             state_fields:
-              link_state: "up"
+              link_state: "up (to listener_gw)"
               speed_gbps: 10.0
               encoding: "64b/66b"
 
@@ -723,14 +772,31 @@ timeline:
     type: "annotation"
     t_ns: 50000000
     annotation:
-      text: "Caller: srt_create_socket() + srt_connect('srt://198.51.100.20:9000')"
+      text: "Operator invokes the encoder with an srt:// URI"
       detail: >
-        libsrt's srt_create_socket() allocates an SRT socket structure
-        (initially in CLOSED state), assigns it a 32-bit socket ID
-        (0xABCD0001), and underneath it creates a Linux UDP socket
-        bound to an ephemeral port (49152). srt_connect() transitions
-        the SRT state machine to INIT/CONNECTING and queues the first
-        induction request.
+        The operator (a human running the contribution-encoder process,
+        or a control plane orchestrating it) provides the connection
+        target — most commonly as a command-line argument or
+        configuration file entry:
+
+          ffmpeg -re -i input.ts -c copy -f mpegts \\
+                 srt://198.51.100.20:9000?streamid=event1&latency=120
+
+        The encoder parses the URI:
+          • host = 198.51.100.20    → resolved to an IPv4 address
+            (literal here; otherwise via DNS A/AAAA lookup)
+          • port = 9000             → the listener's UDP destination port
+          • streamid = event1       → opaque string for downstream
+                                      routing (carried in the SID
+                                      extension during conclusion)
+          • latency = 120           → TSBPD latency proposal (ms)
+
+        Then libsrt's srt_create_socket() allocates an SRT socket
+        structure (initially in CLOSED state), assigns it a 32-bit
+        socket ID (0xABCD0001), and underneath it creates a Linux UDP
+        socket bound to an ephemeral port (49152). srt_connect()
+        transitions the SRT state machine to CONNECTING and queues
+        the first induction request.
     state_after:
       - actor_id: "caller"
         layers:
@@ -751,24 +817,72 @@ timeline:
               local_port: 49152
               remote_port: 9000
 
+  # ─── Routing decision: where does the first packet go? ────────────
+  - id: "evt_route_lookup"
+    type: "annotation"
+    t_ns: 80000000
+    annotation:
+      text: "Caller kernel FIB lookup → next hop = default gateway, not the listener"
+      detail: >
+        When the caller's UDP stack tries to send the first SRT
+        induction packet, the kernel does a Forwarding Information
+        Base (FIB) lookup on the destination IP 198.51.100.20:
+
+          • Is 198.51.100.20 on a directly-connected subnet?
+            No — caller's only subnet is 203.0.113.0/24.
+          • Is there a more-specific route?
+            No.
+          • Default route (0.0.0.0/0)?
+            Yes — next hop = 203.0.113.1 (default gateway).
+
+        So the L3 next-hop is the gateway, NOT the listener. ARP
+        resolution therefore targets 203.0.113.1, not 198.51.100.20.
+        This is the key thing that beginners get wrong: 'ARP for the
+        destination' only works when the destination is on the same
+        L2 broadcast domain.
+      spec_refs:
+        - document: "RFC 1812"
+          section: "5.2.4"
+          title: "IP Router Forwarding"
+          url: "https://datatracker.ietf.org/doc/html/rfc1812#section-5.2.4"
+    state_after:
+      - actor_id: "caller"
+        layers:
+          - layer: 3
+            state_fields:
+              dst_ip: "198.51.100.20"
+              next_hop_ip: "203.0.113.1 (via default route)"
+
   # ─── ARP resolution ───────────────────────────────────────────────
   - id: "evt_arp_request"
     type: "frame_tx"
     t_ns: 100000000
     frame_id: "arp_request"
     annotation:
-      text: "Caller broadcasts ARP — needs listener's MAC before any IP traffic can flow"
+      text: "Caller broadcasts ARP for the GATEWAY (203.0.113.1) — not for the listener"
       detail: >
-        The caller's kernel routes 198.51.100.20 — finds it's on the same
-        L2 subnet, looks up the ARP cache, finds no entry, and broadcasts
-        an ARP request. All hosts on the segment see the broadcast; only
-        the listener (whose IP matches the Target IP field) will reply.
+        Following the route lookup, the caller needs the MAC of the
+        next L3 hop, which is 203.0.113.1 (the default gateway). ARP
+        cache miss → broadcast ARP request on the local LAN segment.
+
+        Common misconception: 'ARP for the destination.' Wrong when
+        the destination is off-subnet. ARP cannot cross routers (it's
+        an L2 protocol, broadcast scope ends at the L2 boundary). The
+        listener at 198.51.100.20 will never see this ARP request.
+
+        All hosts on the caller's local segment receive the broadcast;
+        only the gateway (whose IP matches the Target IP field) will
+        reply.
+      spec_refs:
+        - document: "RFC 826"
+          title: "An Ethernet Address Resolution Protocol"
+          url: "https://datatracker.ietf.org/doc/html/rfc826"
     state_after:
       - actor_id: "caller"
         layers:
           - layer: 2
             state_fields:
-              arp_state: "request_sent"
+              arp_state: "request_sent for 203.0.113.1"
               dst_mac: "unresolved"
 
   - id: "evt_arp_reply"
@@ -776,23 +890,28 @@ timeline:
     t_ns: 100500000
     frame_id: "arp_reply"
     annotation:
-      text: "Listener replies with its MAC — caller's ARP cache now has the mapping"
+      text: "Gateway replies with its MAC — caller's ARP cache populated for 203.0.113.1"
       detail: >
-        The listener answers unicast to the caller's MAC. Caller installs
-        198.51.100.20 → 02:00:00:00:00:02 in its ARP table (default Linux
-        timeout 60s, refresh on use). UDP datagrams can now flow.
+        The gateway router answers unicast to the caller's MAC. Caller
+        installs 203.0.113.1 → 02:00:00:00:00:11 in its ARP table
+        (default Linux gc_stale_time / arp_cache timer; refresh on
+        use). The caller's Ethernet frames destined for ANY off-subnet
+        IP will now use this gateway MAC as the L2 destination — until
+        the route or ARP entry changes.
+
+        From the caller's perspective, the listener's MAC
+        (02:00:00:00:00:02) is never resolved and never appears in the
+        caller's ARP table. The listener's own gateway (listener_gw)
+        is what eventually resolves the listener's MAC when the packet
+        arrives on the listener-side LAN — that ARP exchange happens
+        out of scope of this scenario.
     state_after:
       - actor_id: "caller"
         layers:
           - layer: 2
             state_fields:
-              arp_state: "resolved"
-              dst_mac: "02:00:00:00:00:02"
-      - actor_id: "listener"
-        layers:
-          - layer: 2
-            state_fields:
-              dst_mac: "02:00:00:00:00:01"
+              arp_state: "resolved (203.0.113.1 → 02:00:00:00:00:11)"
+              dst_mac: "02:00:00:00:00:11"
 
   # ─── Phase 1 ──────────────────────────────────────────────────────
   - id: "evt_srt_induction_req"
