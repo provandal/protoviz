@@ -96,6 +96,11 @@ meta:
 # TOPOLOGY
 # ─────────────────────────────────────────────────────────────────────
 topology:
+  # The viewer renders three actor columns (left / center / right). The
+  # caller's local default gateway sits in the center column to make the
+  # cross-subnet ARP visible. The listener's own default gateway is part
+  # of real Internet routing too, but is described in annotations rather
+  # than rendered as a fourth column.
   actors:
     - id: caller
       type: host
@@ -110,23 +115,15 @@ topology:
     - id: caller_gw
       type: router
       label: "Caller default gateway"
-      description: "Edge router on the caller's LAN — terminates the caller's L2 segment, routes packets onto the WAN"
+      description: "Edge router on the caller's LAN segment — terminates the caller's L2 broadcast domain, routes packets onto the WAN, and is the visible end of the Internet path from the caller's perspective."
       ip: "203.0.113.1"
       mac: "02:00:00:00:00:11"
-      position: left
-
-    - id: listener_gw
-      type: router
-      label: "Listener default gateway"
-      description: "Edge router on the listener's LAN — receives Internet traffic destined for 198.51.100.0/24 and delivers locally"
-      ip: "198.51.100.1"
-      mac: "02:00:00:00:00:22"
-      position: right
+      position: center
 
     - id: listener
       type: host
       label: "Listener (Cloud Ingest)"
-      description: "Always-on ingest socket bound to UDP port 9000 awaiting connections"
+      description: "Always-on ingest socket bound to UDP port 9000 awaiting connections. Sits behind its own default gateway (198.51.100.1) — that gateway is not rendered, but is the actor that ARPs for the listener's MAC and re-emits packets onto the listener's LAN."
       hardware: "x86_64, 10 GbE NIC"
       os: "Linux 6.x"
       ip: "198.51.100.20"
@@ -134,7 +131,7 @@ topology:
       position: right
 
   links:
-    # Caller-side LAN segment
+    # Caller-side LAN segment (point-to-point, single broadcast domain)
     - id: link_caller_lan
       from: caller
       to: caller_gw
@@ -142,20 +139,14 @@ topology:
       media: fiber_sr
       autoneg: true
 
-    # Internet path between gateways (multiple router hops abstracted)
+    # Internet path from caller's gateway to the listener. In reality
+    # this traverses many router hops + the listener's own gateway;
+    # rendered here as one logical link.
     - id: link_internet
       from: caller_gw
-      to: listener_gw
-      speed_gbps: 10.0
-      media: fiber_lr
-
-    # Listener-side LAN segment
-    - id: link_listener_lan
-      from: listener_gw
       to: listener
       speed_gbps: 10.0
-      media: fiber_sr
-      autoneg: true
+      media: fiber_lr
 
 # ─────────────────────────────────────────────────────────────────────
 # OSI LAYERS (per actor) — what each layer tracks during SRT handshake
@@ -472,7 +463,7 @@ frames:
     description: "Caller probes the listener — proposes Version=4 to discover what the listener supports."
     from: "caller"
     to: "listener"
-    via: ["caller_gw", "listener_gw"]
+    via: ["caller_gw"]
     timestamp_ns: 101000000
     total_bytes: 106
     color: "#a855f7"
@@ -547,7 +538,7 @@ frames:
     description: "Listener accepts the probe, replies with Version=5 + SRT magic 0x4A17 + a SYN cookie."
     from: "listener"
     to: "caller"
-    via: ["listener_gw", "caller_gw"]
+    via: ["caller_gw"]
     timestamp_ns: 102000000
     total_bytes: 106
     color: "#a855f7"
@@ -606,7 +597,7 @@ frames:
     description: "Caller commits to HSv5, echoes cookie back, attaches HSREQ extension block."
     from: "caller"
     to: "listener"
-    via: ["caller_gw", "listener_gw"]
+    via: ["caller_gw"]
     timestamp_ns: 103000000
     total_bytes: 122
     color: "#a855f7"
@@ -669,7 +660,7 @@ frames:
     description: "Listener allocates the socket, confirms negotiation, returns HSRSP with negotiated TSBPD latency (max of both sides)."
     from: "listener"
     to: "caller"
-    via: ["listener_gw", "caller_gw"]
+    via: ["caller_gw"]
     timestamp_ns: 104000000
     total_bytes: 122
     color: "#a855f7"
@@ -727,18 +718,21 @@ timeline:
   - id: "evt_phy_link_caller_side"
     type: "annotation"
     t_ns: 0
+    from: "caller"
+    to: "caller_gw"
     annotation:
       text: "Caller-side LAN link comes up (1 GbE, caller ↔ caller_gw)"
       detail: >
         Link training is strictly point-to-point — between the caller's
-        NIC and its directly-attached switch/router port on the caller's
-        LAN segment (the default gateway). The 1000BASE-X SerDes
-        auto-negotiates speed and duplex, then synchronizes at 1.25
-        GBaud with 8b/10b encoding for ~1.0 Gb/s of user data.
+        NIC and its directly-attached gateway port on the caller's LAN
+        segment. The 1000BASE-X SerDes auto-negotiates speed and
+        duplex, then synchronizes at 1.25 GBaud with 8b/10b encoding
+        for ~1.0 Gb/s of user data.
 
-        This link comes up INDEPENDENTLY of the listener's link, which
-        is on a different L1 medium thousands of kilometers away. The
-        listener's local link likely came up days or months earlier.
+        The listener's own LAN link (to its gateway, off-diagram) is
+        independent — likely up for days/months before this session
+        starts. Internet links between caller_gw and the listener-side
+        ISP are also independent and remain up across many sessions.
     state_after:
       - actor_id: "caller"
         layers:
@@ -748,29 +742,11 @@ timeline:
               speed_gbps: 1.0
               encoding: "8b/10b"
 
-  - id: "evt_phy_link_listener_side"
-    type: "annotation"
-    t_ns: 1000000
-    annotation:
-      text: "Listener-side LAN link is already up (10 GbE, listener ↔ listener_gw)"
-      detail: >
-        The listener is a long-running cloud ingest service. Its
-        10 GbE link to listener_gw has been up since the host
-        booted — completely independent of the caller's link. Shown
-        here for completeness, but it has no causal relationship to
-        the caller's link-up event above.
-    state_after:
-      - actor_id: "listener"
-        layers:
-          - layer: 1
-            state_fields:
-              link_state: "up (to listener_gw)"
-              speed_gbps: 10.0
-              encoding: "64b/66b"
-
   - id: "evt_srt_socket_open"
     type: "annotation"
     t_ns: 50000000
+    from: "caller"
+    to: "caller"
     annotation:
       text: "Operator invokes the encoder with an srt:// URI"
       detail: >
@@ -821,6 +797,8 @@ timeline:
   - id: "evt_route_lookup"
     type: "annotation"
     t_ns: 80000000
+    from: "caller"
+    to: "caller"
     annotation:
       text: "Caller kernel FIB lookup → next hop = default gateway, not the listener"
       detail: >
@@ -1092,6 +1070,8 @@ timeline:
   - id: "evt_summary"
     type: "annotation"
     t_ns: 105000000
+    from: "caller"
+    to: "listener"
     annotation:
       text: "Handshake complete — both sides CONNECTED, data flow can begin"
       detail: >
