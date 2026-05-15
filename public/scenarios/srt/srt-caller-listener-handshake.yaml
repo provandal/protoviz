@@ -372,7 +372,8 @@ osi_layers:
           initial: "02:00:00:00:00:02"
         dst_mac:
           type: "string"
-          initial: "unresolved"
+          description: "Listener-side gateway MAC (off-diagram). Listener has cached this from prior ARP; not exchanged in this scenario."
+          initial: "02:00:00:00:00:22 (listener-side gw)"
         mtu:
           type: "integer"
           initial: 1500
@@ -792,6 +793,9 @@ timeline:
               udp_socket_state: "BOUND"
               local_port: 49152
               remote_port: 9000
+          - layer: 3
+            state_fields:
+              dst_ip: "198.51.100.20"
 
   # ─── Routing decision: where does the first packet go? ────────────
   - id: "evt_route_lookup"
@@ -926,6 +930,14 @@ timeline:
           - layer: 4
             state_fields:
               udp_socket_state: "ESTABLISHED-ephemeral"
+      - actor_id: "listener"
+        layers:
+          - layer: 3
+            state_fields:
+              dst_ip: "203.0.113.10"
+          - layer: 4
+            state_fields:
+              remote_port: 49152
 
   # ─── Phase 2 ──────────────────────────────────────────────────────
   - id: "evt_srt_induction_rsp"
