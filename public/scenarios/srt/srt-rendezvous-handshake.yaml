@@ -1,268 +1,702 @@
 meta:
   id: srt-rendezvous-handshake
-  title: "SRT: Rendezvous Mode — Symmetric Handshake for NAT Traversal"
+  title: "SRT: Rendezvous Mode — Symmetric Handshake for NAT-to-NAT Traversal"
   protocol: SRT
   protocol_family: "Media Streaming"
-  version: "1.0"
-  difficulty: advanced
+  version: "1.0.0"
   description: >
-    Rendezvous mode for peers behind NAT. Both endpoints know each
-    other's public IP+port and dial at the same time. There is no
-    caller/listener role at the protocol level — both sides start in
-    'waving' state and converge through the HSv5 state machine.
-    The cookie contest (whichever peer's cookie compares higher
-    becomes the Initiator) deterministically assigns roles so the
-    HSREQ-bearing extension flows in one direction. NAT pinholes
-    open on both sides as each peer's first UDP datagram passes
-    through its outbound NAT.
+    Both peers are behind symmetric NATs — neither has a publicly-
+    reachable port until it sends outbound traffic. Caller/Listener
+    cannot work here. Rendezvous mode solves it: BOTH peers dial at
+    coordinated wall-clock moments. Each peer's outbound UDP punches
+    its own NAT pinhole; once both pinholes are open, the inbound
+    replies flow through. The handshake itself is symmetric (no
+    pre-assigned caller/listener role); HSv5 uses a deterministic
+    cookie contest to assign Initiator vs Responder, then runs through
+    a state machine of WAVING → ATTENTION → INITIATED → CONNECTED on
+    both sides. Final URQ_AGREEMENT confirms the negotiated state.
+
   learning_objectives:
-    - Understand why caller-listener doesn't work behind double-NAT and why rendezvous does
-    - See the HSv5 rendezvous state machine: waving → attention → initiated → connected
-    - Recognize the cookie contest as the deterministic tie-breaker for Initiator vs Responder
-    - Trace serial (one peer first) vs parallel (simultaneous wave) flows
-    - Observe how the first outbound UDP datagram from each side opens its NAT pinhole
+    - "Understand why caller-listener can't work behind symmetric NAT and why rendezvous can"
+    - "See URQ_WAVEAHAND — the rendezvous opening message that punches the local NAT pinhole"
+    - "Trace the cookie contest: each peer compares cookies modulo 2^32; larger cookie = Initiator role"
+    - "Watch the HSv5 rendezvous state machine: WAVING → ATTENTION → INITIATED → CONNECTED"
+    - "See URQ_CONCLUSION with HSREQ (Initiator) and HSRSP (Responder) extension blocks"
+    - "Recognize URQ_AGREEMENT as the final-confirmation message that locks in negotiated state"
+    - "Distinguish serial flow (one peer arrives first) from parallel flow (truly simultaneous waves)"
+
+  difficulty: "advanced"
+
   authors:
     - name: "Erik Smith"
       org: "Dell Technologies"
+      github: "provandal"
+
   created: "2026-05-15"
+  updated: "2026-05-15"
+
   tags:
-    - SRT
-    - rendezvous
-    - NAT traversal
-    - handshake
-    - cookie contest
-    - media streaming
-    - advanced
-    - education
+    - "SRT"
+    - "rendezvous"
+    - "NAT traversal"
+    - "handshake"
+    - "cookie contest"
+    - "URQ_WAVEAHAND"
+    - "URQ_AGREEMENT"
+    - "media streaming"
+    - "advanced"
+    - "education"
+
   primary_specs:
     - document: "Haivision/srt"
-      section: "docs/features/handshake.md (Rendezvous)"
+      section: "docs/features/handshake.md (Rendezvous section)"
+      title: "SRT handshake — rendezvous reference"
       url: "https://github.com/Haivision/srt/blob/master/docs/features/handshake.md"
+    - document: "Haivision/srt"
+      section: "srtcore/handshake.cpp (CHandShake state machine, URQ_* enum)"
+      url: "https://github.com/Haivision/srt/blob/master/srtcore/handshake.cpp"
+    - document: "RFC 4787"
+      title: "NAT Behavioral Requirements for Unicast UDP"
+      url: "https://datatracker.ietf.org/doc/html/rfc4787"
 
+  source_references:
+    - repo: "Haivision/srt"
+      path: "srtcore/handshake.cpp"
+      description: "Rendezvous state machine, cookie contest, URQ handling"
+    - repo: "Haivision/srt"
+      path: "srtcore/handshake.h"
+      description: "URQ_* enum (URQ_WAVEAHAND=0, URQ_CONCLUSION=-1, URQ_AGREEMENT=-2, URQ_INDUCTION=1)"
+
+# ─────────────────────────────────────────────────────────────────────
+# TOPOLOGY — peer_a and peer_b, with the Internet (including both NATs) in the center
+# ─────────────────────────────────────────────────────────────────────
 topology:
   actors:
     - id: peer_a
       type: host
-      label: "Peer A (behind NAT-A)"
-      ip: "10.0.1.100 (private) → 203.0.113.10:5000 (public)"
+      label: "Peer A (Operator side)"
+      description: "Behind symmetric NAT_A. Private IP 10.0.1.100; public IP+port assigned by NAT_A on outbound UDP."
+      hardware: "x86_64, 1 GbE NIC"
+      ip: "10.0.1.100 (private) ↔ 203.0.113.10:5000 (public mapping after NAT punch)"
+      mac: "02:00:00:00:00:01"
       position: left
-    - id: nat_a
+
+    - id: internet
       type: router
-      label: "NAT A (operator)"
-      description: "Symmetric NAT translates peer A's outbound UDP"
+      label: "Internet (with NAT_A + NAT_B)"
+      description: "Composite path: NAT_A on the peer_a side, transit Internet routers, NAT_B on the peer_b side. Both NATs only permit inbound UDP for tuples their inside hosts have already sent outbound to."
       position: center
-    - id: nat_b
-      type: router
-      label: "NAT B (broadcaster)"
-      position: center
+
     - id: peer_b
       type: host
-      label: "Peer B (behind NAT-B)"
-      ip: "10.0.2.200 (private) → 198.51.100.20:5000 (public)"
+      label: "Peer B (Broadcaster side)"
+      description: "Behind symmetric NAT_B. Private IP 10.0.2.200; public IP+port assigned by NAT_B on outbound UDP."
+      hardware: "x86_64, 1 GbE NIC"
+      ip: "10.0.2.200 (private) ↔ 198.51.100.20:5000 (public mapping after NAT punch)"
+      mac: "02:00:00:00:00:02"
       position: right
+
   links:
-    - { id: a_to_nat, from: peer_a, to: nat_a, speed_gbps: 1.0 }
-    - { id: nat_to_internet_a, from: nat_a, to: nat_b, speed_gbps: 1.0 }
-    - { id: nat_to_b, from: nat_b, to: peer_b, speed_gbps: 1.0 }
+    - id: link_a_to_internet
+      from: peer_a
+      to: internet
+      speed_gbps: 0.1
+    - id: link_internet_to_b
+      from: internet
+      to: peer_b
+      speed_gbps: 0.1
 
+# ─────────────────────────────────────────────────────────────────────
+# OSI LAYERS — both peers run a SYMMETRIC SRT state machine
+# ─────────────────────────────────────────────────────────────────────
+osi_layers:
+  peer_a:
+    - layer: 7
+      name: "Application"
+      state_schema:
+        app_state:
+          type: "string"
+          initial: "configuring"
+        rendezvous_target:
+          type: "string"
+          description: "Public IP+port of the OTHER peer (peer_b), obtained via out-of-band signaling"
+          initial: "—"
+        start_time:
+          type: "string"
+          description: "Wall-clock moment at which both peers were instructed to dial"
+          initial: "—"
+
+    - layer: 5
+      name: "SRT (Session)"
+      components: ["srtcore/handshake.cpp", "srtcore/core.cpp"]
+      state_schema:
+        srt_state:
+          type: "string"
+          description: "Rendezvous state machine: CLOSED → WAVING → ATTENTION → INITIATED → CONNECTED"
+          initial: "CLOSED"
+        local_socket_id:
+          type: "string"
+          initial: "—"
+        peer_socket_id:
+          type: "string"
+          initial: "—"
+        local_cookie:
+          type: "string"
+          description: "Local cookie = hash(own_public_IP, own_public_port, current_minute)"
+          initial: "—"
+        peer_cookie:
+          type: "string"
+          description: "Peer's cookie (learned from incoming URQ_WAVEAHAND)"
+          initial: "—"
+        rendezvous_role:
+          type: "string"
+          description: "Resolved by cookie contest: INITIATOR (larger cookie) or RESPONDER"
+          initial: "—"
+
+    - layer: 4
+      name: "UDP"
+      state_schema:
+        local_port:
+          type: "integer"
+          description: "Bound port — same on both peers since both dial out simultaneously"
+          initial: 5000
+        nat_mapping_state:
+          type: "string"
+          description: "Whether NAT_A has an outbound mapping toward peer_b"
+          initial: "no mapping (NAT closed)"
+
+    - layer: 3
+      name: "IP (private inside NAT_A)"
+      state_schema:
+        private_ip:
+          type: "string"
+          initial: "10.0.1.100"
+        public_ip:
+          type: "string"
+          description: "Assigned by NAT_A on outbound; visible only after first send"
+          initial: "—"
+
+    - layer: 2
+      name: "Ethernet"
+      state_schema:
+        src_mac:
+          type: "string"
+          initial: "02:00:00:00:00:01"
+
+    - layer: 1
+      name: "Physical (1 GbE)"
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+
+  peer_b:
+    - layer: 7
+      name: "Application"
+      state_schema:
+        app_state:
+          type: "string"
+          initial: "configuring"
+        rendezvous_target:
+          type: "string"
+          description: "Public IP+port of peer_a"
+          initial: "—"
+
+    - layer: 5
+      name: "SRT (Session)"
+      state_schema:
+        srt_state:
+          type: "string"
+          initial: "CLOSED"
+        local_socket_id:
+          type: "string"
+          initial: "—"
+        peer_socket_id:
+          type: "string"
+          initial: "—"
+        local_cookie:
+          type: "string"
+          initial: "—"
+        peer_cookie:
+          type: "string"
+          initial: "—"
+        rendezvous_role:
+          type: "string"
+          initial: "—"
+
+    - layer: 4
+      name: "UDP"
+      state_schema:
+        local_port:
+          type: "integer"
+          initial: 5000
+        nat_mapping_state:
+          type: "string"
+          initial: "no mapping (NAT closed)"
+
+    - layer: 3
+      name: "IP (private inside NAT_B)"
+      state_schema:
+        private_ip:
+          type: "string"
+          initial: "10.0.2.200"
+        public_ip:
+          type: "string"
+          initial: "—"
+
+    - layer: 2
+      name: "Ethernet"
+      state_schema:
+        src_mac:
+          type: "string"
+          initial: "02:00:00:00:00:02"
+
+    - layer: 1
+      name: "Physical (1 GbE)"
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+
+# ─────────────────────────────────────────────────────────────────────
+# FRAMES
+# ─────────────────────────────────────────────────────────────────────
 frames:
-  - id: waveahand_a
-    name: "Wave Hand from A"
-    from: peer_a
-    to: peer_b
-    total_bytes: 64
+  - id: "wave_a"
+    name: "URQ_WAVEAHAND from Peer A (NAT_A pinhole punch)"
+    description: "Peer A's first outbound UDP, which creates the NAT_A outbound mapping toward 198.51.100.20:5000."
+    from: "peer_a"
+    to: "peer_b"
+    via: ["internet"]
+    timestamp_ns: 0
+    total_bytes: 106
+    color: "#a855f7"
     headers:
-      - name: "SRT Handshake (Waving)"
-        layer: 5
+      - name: "IPv4 (inside NAT_A — pre-translation values)"
+        layer: 3
+        total_bytes: 20
         fields:
-          - { name: "Version", bits: 32, value: 5, description: "HSv5 capable" }
-          - { name: "Type/Flags", bits: 32, value: "Ext=0 · Enc=0", description: "No SRT magic yet (waving)" }
-          - { name: "ReqType", bits: 32, value: "URQ_WAVEAHAND (0)", description: "Rendezvous opening — 'I'm here, anyone home?'" }
-          - { name: "ID", bits: 32, value: "0xA000A001", description: "Peer A's socket ID" }
-          - { name: "Cookie", bits: 32, value: "0xC0A8_017B", description: "Peer A's cookie: hash(public IP, public port, current minute)" }
-          - { name: "PeerIP", bits: 128, value: "203.0.113.10 (own public IP)", description: "" }
+          - { name: "Source IP",      bits: 32, value: "10.0.1.100", description: "Pre-NAT private source. NAT_A rewrites this to 203.0.113.10 on egress." }
+          - { name: "Destination IP", bits: 32, value: "198.51.100.20", description: "Peer B's public IP (known from signaling)" }
+          - { name: "Protocol",       bits: 8,  value: 17, description: "UDP" }
+      - name: "UDP (pre-NAT)"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - { name: "Source Port",      bits: 16, value: 5000, description: "Both peers use port 5000 — pre-coordinated; NAT_A may rewrite the port on egress depending on NAT type" }
+          - { name: "Destination Port", bits: 16, value: 5000, description: "Peer B's signaled port" }
+      - name: "SRT Control + Handshake (URQ_WAVEAHAND)"
+        abbrev: "srt"
+        layer: 5
+        total_bytes: 64
+        fields:
+          - { name: "F | Message Type", bits: 16, value: "1 | 0x0000 (HANDSHAKE)", description: "Control packet" }
+          - { name: "Destination Socket ID", bits: 32, value: "0x00000000", description: "Zero — peer A doesn't know peer B's socket ID yet" }
+          - { name: "Version", bits: 32, value: 5, description: "HSv5" }
+          - { name: "Type/Flags", bits: 32, value: "Ext=0 · Enc=0", description: "No SRT magic during waving — magic comes later (or implied by Version=5 in rendezvous)" }
+          - { name: "ReqType", abbrev: "srt.hs.reqtype", bits: 32, value: "URQ_WAVEAHAND (0)", description: "Rendezvous opener" }
+          - { name: "ID", abbrev: "srt.hs.id", bits: 32, value: "0xA000A001", description: "Peer A's socket ID" }
+          - { name: "Cookie (peer A's local)", abbrev: "srt.hs.cookie", bits: 32, value: "0xC0A8017B", description: "Hash of (peer_a_public_IP, peer_a_public_port, current_minute_bucket)" }
+          - { name: "PeerIP", bits: 128, value: "10.0.1.100 (private — but public-IP-aware impls may put public IP)", description: "Carries the sender's view of its own IP. NAT_A and routing decisions interact here." }
 
-  - id: waveahand_b
-    name: "Wave Hand from B"
-    from: peer_b
-    to: peer_a
-    total_bytes: 64
+  - id: "wave_b"
+    name: "URQ_WAVEAHAND from Peer B (NAT_B pinhole punch)"
+    description: "Peer B's first outbound UDP, traversing NAT_B → Internet → NAT_A → peer_a."
+    from: "peer_b"
+    to: "peer_a"
+    via: ["internet"]
+    timestamp_ns: 5000000
+    total_bytes: 106
+    color: "#a855f7"
     headers:
-      - name: "SRT Handshake (Waving)"
+      - name: "SRT Handshake (URQ_WAVEAHAND)"
+        abbrev: "srt"
         layer: 5
+        total_bytes: 64
         fields:
-          - { name: "Version", bits: 32, value: 5, description: "HSv5 capable" }
-          - { name: "ReqType", bits: 32, value: "URQ_WAVEAHAND", description: "" }
+          - { name: "Version", bits: 32, value: 5, description: "HSv5" }
+          - { name: "ReqType", bits: 32, value: "URQ_WAVEAHAND (0)", description: "Rendezvous opener" }
           - { name: "ID", bits: 32, value: "0xB000B002", description: "Peer B's socket ID" }
-          - { name: "Cookie", bits: 32, value: "0x7F3A_12B4", description: "Peer B's cookie. Cookie contest: A's 0xC0A8017B > B's 0x7F3A12B4 → Peer A becomes INITIATOR" }
-          - { name: "PeerIP", bits: 128, value: "198.51.100.20", description: "" }
+          - { name: "Cookie (peer B's local)", abbrev: "srt.hs.cookie", bits: 32, value: "0x7F3A12B4", description: "Hash of (peer_b_public_IP, peer_b_public_port, current_minute_bucket). Cookie contest: 0xC0A8017B > 0x7F3A12B4 → Peer A wins → INITIATOR." }
 
-  - id: conclusion_a_initiator
-    name: "Conclusion from A (Initiator) + HSREQ"
-    from: peer_a
-    to: peer_b
+  - id: "conclusion_a_initiator"
+    name: "URQ_CONCLUSION from Peer A (Initiator) + HSREQ"
+    description: "Peer A, having won the cookie contest, sends conclusion with HSREQ extension."
+    from: "peer_a"
+    to: "peer_b"
+    via: ["internet"]
+    timestamp_ns: 30000000
+    total_bytes: 122
+    color: "#a855f7"
+    headers:
+      - name: "SRT Handshake (URQ_CONCLUSION)"
+        abbrev: "srt"
+        layer: 5
+        total_bytes: 64
+        fields:
+          - { name: "Version | Type/Flags", bits: 64, value: "5 | Ext=HS_EXT_HSREQ", description: "HSREQ extension follows" }
+          - { name: "ReqType", bits: 32, value: "URQ_CONCLUSION (-1 / 0xFFFFFFFF)", description: "Conclusion request from Initiator" }
+          - { name: "ID", bits: 32, value: "0xA000A001", description: "Peer A socket ID" }
+          - { name: "Cookie (echoed B's cookie)", bits: 32, value: "0x7F3A12B4", description: "Initiator echoes RESPONDER's cookie — proves it received B's wave" }
+      - name: "Extension Block: HSREQ"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - { name: "Cmd | Size", bits: 32, value: "SRT_CMD_HSREQ (1) | 3", description: "" }
+          - { name: "SRT Version + Flags + Latency", bits: 96, value: "v1.4.3 · standard live flags · 120/120 ms", description: "" }
+
+  - id: "conclusion_b_responder"
+    name: "URQ_CONCLUSION from Peer B (Responder) + HSRSP"
+    description: "Peer B responds with HSRSP carrying its version + negotiated latency."
+    from: "peer_b"
+    to: "peer_a"
+    via: ["internet"]
+    timestamp_ns: 55000000
+    total_bytes: 122
+    color: "#a855f7"
+    headers:
+      - name: "SRT Handshake (URQ_CONCLUSION)"
+        abbrev: "srt"
+        layer: 5
+        total_bytes: 64
+        fields:
+          - { name: "ReqType", bits: 32, value: "URQ_CONCLUSION", description: "Conclusion from Responder" }
+          - { name: "ID", bits: 32, value: "0xB000B002", description: "Peer B socket ID" }
+          - { name: "Cookie (echoed A's cookie)", bits: 32, value: "0xC0A8017B", description: "Responder echoes Initiator's cookie" }
+      - name: "Extension Block: HSRSP"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - { name: "SRT Version + Flags + Latency", bits: 96, value: "v1.4.2 · standard flags · 150/120 ms", description: "Negotiated latency: max(both Rcv) = 150 ms" }
+
+  - id: "agreement"
+    name: "URQ_AGREEMENT — connection finalized"
+    description: "Final rendezvous message confirming both sides agree on negotiated state. Either peer may emit; typically the Initiator."
+    from: "peer_a"
+    to: "peer_b"
+    via: ["internet"]
+    timestamp_ns: 80000000
     total_bytes: 96
+    color: "#a855f7"
     headers:
-      - name: "SRT Handshake"
+      - name: "SRT Handshake (URQ_AGREEMENT)"
+        abbrev: "srt"
         layer: 5
+        total_bytes: 48
         fields:
-          - { name: "ReqType", bits: 32, value: "URQ_CONCLUSION", description: "" }
-          - { name: "Cookie (echoed B's)", bits: 32, value: "0x7F3A_12B4", description: "Initiator echoes the Responder's cookie" }
-          - { name: "Ext Flags", bits: 16, value: "HS_EXT_HSREQ", description: "Initiator carries HSREQ" }
-      - name: "Ext Block: HSREQ"
-        layer: 5
-        fields:
-          - { name: "SRT Version + Flags + Latency", bits: 96, value: "v1.4.3 · capability bitmap · 120/120 ms", description: "Same payload as caller-listener HSREQ" }
+          - { name: "ReqType", abbrev: "srt.hs.reqtype", bits: 32, value: "URQ_AGREEMENT (-2 / 0xFFFFFFFE)", description: "Final agreement marker — completes the rendezvous state machine. After this, both peers are CONNECTED." }
 
-  - id: conclusion_b_responder
-    name: "Conclusion from B (Responder) + HSRSP"
-    from: peer_b
-    to: peer_a
-    total_bytes: 96
-    headers:
-      - name: "SRT Handshake"
-        layer: 5
-        fields:
-          - { name: "ReqType", bits: 32, value: "URQ_CONCLUSION", description: "" }
-          - { name: "Cookie (echoed A's)", bits: 32, value: "0xC0A8_017B", description: "Responder echoes Initiator's cookie" }
-      - name: "Ext Block: HSRSP"
-        layer: 5
-        fields:
-          - { name: "SRT Version + Flags + Latency", bits: 96, value: "v1.4.3 · capability bitmap · 150/120 ms", description: "Negotiated latency = max of both sides → 150ms" }
-
-  - id: agreement
-    name: "URQ_AGREEMENT — both sides confirm"
-    from: peer_a
-    to: peer_b
-    total_bytes: 64
-    headers:
-      - name: "SRT Handshake"
-        layer: 5
-        fields:
-          - { name: "ReqType", bits: 32, value: "URQ_AGREEMENT (-2)", description: "Final acknowledgment of the negotiated state" }
-
+# ─────────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────────
 timeline:
-  - id: evt_setup
-    type: note
-    annotation:
-      text: "The double-NAT problem and why rendezvous solves it"
-      detail: >
-        Symmetric NAT only allows inbound UDP from a public endpoint
-        that the inside host already sent OUTBOUND traffic to. If A
-        and B are both behind symmetric NAT, neither can be the
-        listener — neither has a publicly-reachable port until it
-        sends first. Rendezvous solves this: BOTH peers dial at the
-        same wall-clock moment. Each peer's outbound UDP punches its
-        own NAT pinhole. Now each NAT has an outbound mapping for
-        the other peer's public IP+port, so each NAT will accept the
-        inbound replies. Out-of-band coordination (signaling server)
-        gives both peers the other's public IP+port and a start time.
-    from: peer_a
-    to: peer_b
-
-  - id: evt_wave_a
-    type: frame_tx
+  - id: "evt_problem"
+    type: "annotation"
     t_ns: 0
-    frame_id: waveahand_a
+    from: "peer_a"
+    to: "peer_b"
     annotation:
-      text: "A dials → punches NAT-A pinhole, packet traverses NAT-A→NAT-B"
+      text: "Why caller-listener fails here"
       detail: >
-        Peer A sends URQ_WAVEAHAND. Crucially, this packet leaves
-        NAT-A first, creating an outbound mapping for (NAT-A:5000,
-        NAT-B:5000). If NAT-B happens to have already opened a
-        mapping for A (because of B's parallel wave), this packet
-        gets in. If not, NAT-B drops it and B's eventual wave will
-        open the mapping for the next attempt.
+        Both peer_a and peer_b are behind SYMMETRIC NAT. A symmetric
+        NAT only forwards inbound UDP to an inside host AFTER that
+        inside host has sent OUTBOUND UDP to the same {public_IP,
+        public_port} pair.
 
-  - id: evt_wave_b
-    type: frame_tx
+        If we tried caller-listener:
+          • peer_b becomes listener, binds UDP:5000 inside NAT_B.
+          • peer_a becomes caller, sends induction request to
+            peer_b's public IP. NAT_B has no mapping yet → drops.
+          • Caller-listener handshake never completes.
+
+        Rendezvous fixes this by having BOTH peers send outbound
+        simultaneously. Each peer's first packet creates its own
+        NAT pinhole; once both pinholes are open, replies flow.
+
+        Required out-of-band signaling: each peer must know the
+        other's public IP+port AND a coordinated start time
+        (typically within a few hundred milliseconds).
+
+  - id: "evt_setup"
+    type: "annotation"
+    t_ns: 1000000
+    from: "peer_a"
+    to: "peer_b"
+    annotation:
+      text: "Out-of-band signaling delivers (peer_target, start_time) to both peers"
+      detail: >
+        A control plane (XMPP, REST API, signaling server, manual
+        config) tells each peer:
+          • Target = (other_peer_public_ip, other_peer_public_port)
+          • Local UDP port to bind (often the same on both sides)
+          • Coordinated start_time
+
+        Both peers call srt_rendezvous(local_port, target_addr) at
+        the start_time. Each peer's UDP socket is BOUND locally but
+        has NO outbound NAT mapping yet.
+    state_after:
+      - actor_id: "peer_a"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "ready_to_dial"
+              rendezvous_target: "198.51.100.20:5000"
+              start_time: "2026-05-15T16:42:00.000Z"
+          - layer: 5
+            state_fields:
+              srt_state: "CLOSED → WAVING (pending)"
+              local_socket_id: "0xA000A001"
+              local_cookie: "0xC0A8017B"
+      - actor_id: "peer_b"
+        layers:
+          - layer: 7
+            state_fields:
+              app_state: "ready_to_dial"
+              rendezvous_target: "203.0.113.10:5000"
+              start_time: "2026-05-15T16:42:00.000Z"
+          - layer: 5
+            state_fields:
+              srt_state: "CLOSED → WAVING (pending)"
+              local_socket_id: "0xB000B002"
+              local_cookie: "0x7F3A12B4"
+
+  - id: "evt_wave_a"
+    type: "frame_tx"
+    t_ns: 0
+    frame_id: "wave_a"
+    annotation:
+      text: "Peer A dials → URQ_WAVEAHAND egress punches NAT_A pinhole"
+      detail: >
+        Peer A's URQ_WAVEAHAND is the first outbound UDP from
+        10.0.1.100:5000. NAT_A:
+          1. Picks a public mapping (203.0.113.10:5000 — same port
+             since the NAT may preserve port; symmetric NATs may
+             not, but we model the optimistic case).
+          2. Rewrites source = 203.0.113.10:5000.
+          3. Forwards toward 198.51.100.20:5000.
+          4. Installs an inbound mapping: future packets FROM
+             198.51.100.20:5000 TO 203.0.113.10:5000 will be
+             rewritten back to 10.0.1.100:5000 for ~60 seconds.
+
+        Whether peer_b's NAT_B has an inbound mapping yet depends on
+        whether peer_b has waved. If not, NAT_B drops this packet —
+        and peer_b will eventually wave on its own retry.
+
+        Peer A transitions: CLOSED → WAVING.
+    state_after:
+      - actor_id: "peer_a"
+        layers:
+          - layer: 5
+            state_fields:
+              srt_state: "WAVING"
+          - layer: 4
+            state_fields:
+              nat_mapping_state: "outbound mapping open: NAT_A → 198.51.100.20:5000"
+          - layer: 3
+            state_fields:
+              public_ip: "203.0.113.10 (NAT_A-assigned)"
+
+  - id: "evt_wave_b"
+    type: "frame_tx"
     t_ns: 5000000
-    frame_id: waveahand_b
+    frame_id: "wave_b"
     annotation:
-      text: "B dials → punches NAT-B pinhole, packet arrives at A"
+      text: "Peer B dials 5 ms later → NAT_B pinhole opens; arrives at peer_a"
       detail: >
-        Peer B's URQ_WAVEAHAND traverses NAT-B (creating outbound
-        mapping for B → A) and arrives at NAT-A. NAT-A has an
-        existing mapping from A's earlier wave, so the packet
-        threads through and reaches Peer A.
+        Peer B's wave traverses NAT_B (creating outbound mapping for
+        peer_a's public IP), then Internet, then NAT_A. NAT_A has
+        the inbound mapping from peer_a's earlier wave → forwards
+        the packet to peer_a:5000.
 
-  - id: evt_cookie_contest
-    type: note
-    t_ns: 6000000
-    annotation:
-      text: "Cookie contest: A.cookie (0xC0A8017B) > B.cookie (0x7F3A12B4)"
-      detail: >
-        Both peers run the same comparison: compute (their_cookie −
-        peer_cookie) modulo 2^32 and check the sign bit. Whichever
-        peer has the larger cookie becomes the INITIATOR (sends
-        HSREQ); the other is the RESPONDER (sends HSRSP). Here Peer A
-        wins. Why deterministic? Because both peers MUST reach the
-        same conclusion independently — no negotiation step is
-        possible at this point.
-    from: peer_a
-    to: peer_b
+        Peer A receives it. Cookie comparison time.
+    state_after:
+      - actor_id: "peer_b"
+        layers:
+          - layer: 5
+            state_fields:
+              srt_state: "WAVING"
+          - layer: 4
+            state_fields:
+              nat_mapping_state: "outbound mapping open: NAT_B → 203.0.113.10:5000"
 
-  - id: evt_conclusion_initiator
-    type: frame_tx
+  - id: "evt_cookie_contest_a"
+    type: "annotation"
     t_ns: 10000000
-    frame_id: conclusion_a_initiator
+    from: "peer_a"
+    to: "peer_a"
     annotation:
-      text: "Initiator (A) sends conclusion with HSREQ"
+      text: "Peer A: cookie contest → A.cookie > B.cookie → I'm the INITIATOR"
       detail: >
-        Peer A transitions waving → attention → initiated and emits
-        URQ_CONCLUSION with the HSREQ extension. The cookie it
-        echoes is Peer B's cookie (0x7F3A12B4), demonstrating to B
-        that A received B's wave.
+        Compute (local_cookie - peer_cookie) modulo 2^32 = signed
+        diff. A's cookie (0xC0A8_017B) minus B's (0x7F3A_12B4) is
+        positive → A wins → INITIATOR.
 
-  - id: evt_conclusion_responder
-    type: frame_tx
-    t_ns: 15000000
-    frame_id: conclusion_b_responder
+        Both peers run the SAME comparison independently and reach
+        the SAME conclusion — that's why the contest must be
+        deterministic. (If both peers thought they were the
+        Initiator, they'd both send HSREQ and the connection would
+        be ambiguous.)
+
+        Peer A transitions: WAVING → ATTENTION.
+    state_after:
+      - actor_id: "peer_a"
+        layers:
+          - layer: 5
+            state_fields:
+              srt_state: "ATTENTION"
+              peer_socket_id: "0xB000B002"
+              peer_cookie: "0x7F3A12B4"
+              rendezvous_role: "INITIATOR"
+
+  - id: "evt_cookie_contest_b"
+    type: "annotation"
+    t_ns: 11000000
+    from: "peer_b"
+    to: "peer_b"
     annotation:
-      text: "Responder (B) replies with conclusion + HSRSP"
+      text: "Peer B: same comparison → B.cookie < A.cookie → I'm the RESPONDER"
       detail: >
-        On receiving A's conclusion, B transitions to initiated as
-        Responder. It generates HSRSP with its own SRT version and
-        the negotiated TSBPD latency (max of both sides). B echoes
-        A's cookie back.
+        Peer B receives peer_a's wave and runs the same calculation.
+        Same input pairs produce the same output. Peer B becomes
+        RESPONDER.
 
-  - id: evt_agreement
-    type: frame_tx
-    t_ns: 20000000
-    frame_id: agreement
+        Peer B transitions: WAVING → ATTENTION.
+    state_after:
+      - actor_id: "peer_b"
+        layers:
+          - layer: 5
+            state_fields:
+              srt_state: "ATTENTION"
+              peer_socket_id: "0xA000A001"
+              peer_cookie: "0xC0A8017B"
+              rendezvous_role: "RESPONDER"
+
+  - id: "evt_conclusion_initiator"
+    type: "frame_tx"
+    t_ns: 30000000
+    frame_id: "conclusion_a_initiator"
     annotation:
-      text: "URQ_AGREEMENT — connection live"
+      text: "Initiator (A) sends URQ_CONCLUSION + HSREQ"
       detail: >
-        Either peer (typically the Initiator) sends URQ_AGREEMENT.
-        Both sides mark the connection as ESTABLISHED. NAT pinholes
-        are open in both directions. Data packets can now flow.
+        Peer A, the Initiator, transitions ATTENTION → INITIATED and
+        emits the conclusion message carrying HSREQ. The cookie it
+        echoes is peer_b's (0x7F3A12B4) — that's the proof to peer_b
+        that this conclusion is in response to peer_b's wave (not a
+        spoofed message from a third party).
 
-  - id: evt_parallel_note
-    type: note
+        HSREQ carries SRT version, capability flags, and latency
+        proposal — identical to the caller-listener variant.
+    state_after:
+      - actor_id: "peer_a"
+        layers:
+          - layer: 5
+            state_fields:
+              srt_state: "INITIATED"
+
+  - id: "evt_conclusion_responder"
+    type: "frame_tx"
+    t_ns: 55000000
+    frame_id: "conclusion_b_responder"
     annotation:
-      text: "Parallel vs Serial flows"
+      text: "Responder (B) replies with URQ_CONCLUSION + HSRSP"
       detail: >
-        Above is the "serial" flow — one peer waves before the other.
-        If both wave SIMULTANEOUSLY (e.g., NTP-aligned start times),
-        both run the state machine asynchronously based on what they
-        receive. The cookie contest still decides Initiator role;
-        both sides converge on the same outcome.
+        On receiving the Initiator's conclusion, peer_b transitions
+        ATTENTION → INITIATED and emits HSRSP. It echoes peer_a's
+        cookie (0xC0A8017B), and includes its preferred TSBPD
+        latency (150 ms here, > peer_a's 120 ms, so 150 ms becomes
+        the effective negotiated value).
 
-        The state machine handles arbitrary message ordering — both
-        sides can be in 'attention' state simultaneously, then
-        'initiated', then 'connected'. The RFC-style state diagram is
-        in the haivision/srt handshake.md doc.
-    from: peer_a
-    to: peer_b
+        At this point both peers have everything they need to be
+        CONNECTED — they're just waiting for the final agreement
+        confirmation.
+    state_after:
+      - actor_id: "peer_b"
+        layers:
+          - layer: 5
+            state_fields:
+              srt_state: "INITIATED"
 
+  - id: "evt_agreement"
+    type: "frame_tx"
+    t_ns: 80000000
+    frame_id: "agreement"
+    annotation:
+      text: "URQ_AGREEMENT — both sides CONNECTED"
+      detail: >
+        Either peer may emit URQ_AGREEMENT; typically the Initiator
+        does, after receiving the Responder's conclusion. This is
+        the last protocol-level handshake message. On receipt, both
+        peers transition INITIATED → CONNECTED. Data flow can begin
+        in either direction (HSv5 is bidirectional).
+    state_after:
+      - actor_id: "peer_a"
+        layers:
+          - layer: 5
+            state_fields:
+              srt_state: "CONNECTED"
+      - actor_id: "peer_b"
+        layers:
+          - layer: 5
+            state_fields:
+              srt_state: "CONNECTED"
+
+  - id: "evt_parallel_note"
+    type: "annotation"
+    t_ns: 90000000
+    from: "peer_a"
+    to: "peer_b"
+    annotation:
+      text: "Parallel vs serial flows"
+      detail: >
+        This scenario showed the SERIAL flow: peer_a waved 5 ms
+        before peer_b. The state machine handles either ordering
+        deterministically because of the cookie contest.
+
+        TRUE PARALLEL flow: both peers send URQ_WAVEAHAND at
+        identical wall-clock moments. Both transition independently
+        through WAVING → ATTENTION → INITIATED. Both run the cookie
+        contest with the same input → same outcome (A=Initiator,
+        B=Responder). Both reach CONNECTED at essentially the same
+        time. Same final state, slightly different micro-timing.
+
+        Edge cases the state machine handles:
+          • One peer's wave arrives twice (NAT duplicates or peer
+            retries because no response yet): receiver compares
+            cookies; if it already has the peer in ATTENTION, it
+            re-emits its own conclusion rather than restarting.
+          • Cookies collide (extremely unlikely with 32-bit space):
+            implementation regenerates locally.
+          • One peer's HSREQ-bearing conclusion is lost: the other
+            peer keeps emitting URQ_WAVEAHAND on a timer; the
+            sender retransmits the conclusion.
+
+# ─────────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────────
 glossary:
-  - term: "Rendezvous"
-    definition: "SRT connection mode where both peers dial simultaneously, used for NAT-to-NAT traversal. Roles (Initiator/Responder) are assigned by cookie contest, not configuration."
-  - term: "Cookie contest"
-    definition: "Each peer's cookie is a hash of (its public IP, port, current minute). The peer with the higher cookie value becomes Initiator. Deterministic because both peers compute the same comparison."
+  - term: "Rendezvous mode"
+    definition: "SRT connection mode where both peers dial simultaneously, used for NAT-to-NAT traversal. No pre-assigned caller/listener role — roles are resolved by deterministic cookie contest."
+
   - term: "URQ_WAVEAHAND"
-    definition: "Rendezvous opening message. 'I'm here trying to reach you.' Carries the sender's cookie and socket ID. ReqType value = 0."
+    definition: "Rendezvous opening message (ReqType = 0). 'I'm here trying to reach you.' Carries the sender's cookie and socket ID. Its primary effect is to punch the sender's local NAT pinhole."
+
+  - term: "URQ_CONCLUSION (rendezvous)"
+    definition: "Rendezvous conclusion message (ReqType = -1). Sent by both peers after the cookie contest decides roles. Initiator's variant carries HSREQ; Responder's carries HSRSP."
+
   - term: "URQ_AGREEMENT"
-    definition: "Final rendezvous message confirming the negotiated handshake state. ReqType value = -2 (0xFFFFFFFE)."
+    definition: "Final rendezvous message (ReqType = -2). Confirms negotiated state and transitions both peers to CONNECTED. Either side may emit; typically the Initiator does."
+
+  - term: "Cookie contest"
+    definition: "Deterministic role-assignment mechanism: both peers compare their local_cookie against peer_cookie modulo 2^32. Peer with the larger cookie becomes Initiator (sends HSREQ); the other becomes Responder (sends HSRSP). Same comparison on both sides produces the same outcome — no need for negotiation."
+
   - term: "NAT pinhole"
-    definition: "Outbound UDP traffic from inside a NAT creates a temporary mapping that permits inbound traffic from the destination IP+port back. Rendezvous works by having both peers create their pinholes simultaneously."
+    definition: "Outbound UDP from inside a NAT creates a temporary inbound mapping permitting return traffic from the destination IP+port. Lifetime is typically 30-60 seconds; SRT's data flow keeps it refreshed automatically."
+
+  - term: "Symmetric NAT"
+    definition: "NAT type that creates a unique outbound mapping per destination — i.e., the same inside (IP:port) connecting to two different outside hosts gets two different public ports. The hardest NAT type for traversal; rendezvous mode is specifically the workaround."
+
+  - term: "WAVING / ATTENTION / INITIATED / CONNECTED"
+    definition: "States in the HSv5 rendezvous state machine. CLOSED is the initial; WAVING after first URQ_WAVEAHAND send; ATTENTION on receiving peer's wave + cookie contest; INITIATED after sending URQ_CONCLUSION; CONNECTED after URQ_AGREEMENT."
+
+  - term: "Out-of-band signaling"
+    definition: "Channel by which each peer learns the other's public IP+port and the coordinated start time. Not part of SRT — typically XMPP, WebSocket, REST, or even manual config."

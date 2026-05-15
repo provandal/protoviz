@@ -3,276 +3,877 @@ meta:
   title: "SRT: ARQ Recovery — NAK + Retransmit Inside the Latency Window"
   protocol: SRT
   protocol_family: "Media Streaming"
-  version: "1.0"
-  difficulty: intermediate
+  version: "1.0.0"
   description: >
-    SRT's marquee feature: per-packet loss recovery over a lossy
-    Internet path, completed inside a fixed latency budget. A single
-    packet is dropped on the wire; the receiver detects the gap, emits
-    a NAK loss-list, and the sender retransmits the missing packet with
-    the R (retransmit) bit set — all before the receiver's TSBPD
-    deadline expires. Demonstrates why SRT can carry live video
-    contribution feeds over best-effort Internet links that would
-    otherwise glitch under raw UDP.
+    SRT's marquee feature played end-to-end: single-packet loss on the
+    Internet path, recovered by NAK + retransmit before the TSBPD
+    delivery deadline. The connection is already established (HSv5 done,
+    TSBPD latency negotiated at 120 ms). Sender emits data packets seq
+    100, 101, 102, 103 over UDP/IP across the WAN; seq 102 is dropped
+    in the Internet path. The receiver detects the gap when seq 103
+    arrives, immediately sends a NAK control packet whose loss list
+    contains [102], the sender pulls 102 out of its send buffer and
+    retransmits it with the R bit set and the ORIGINAL timestamp
+    preserved. Receiver's TSBPD engine slots the retransmit into its
+    scheduled playout position. From the application's perspective:
+    delivered on time, in order, no glitch.
+
   learning_objectives:
-    - See the NAK packet structure: loss list with single seq vs range encoding (high bit marks ranges)
-    - Trace the sender's retransmit path — the R bit distinguishes retransmits from originals in stats
-    - Understand the latency budget: NAK + RTT + retransmit + jitter must all fit before TSBPD deadline
-    - Recognize the trade-off — small latency = tight budget = recovers less; large latency = more recovery but more glass-to-glass delay
-    - See where TLPKTDROP kicks in (Too-Late Packet Drop) when a packet is going to miss its deadline anyway
+    - "Trace the SRT data-packet header: F=0, 31-bit sequence number, PP/O/KK/R control bits, 26-bit message number, 32-bit microsecond timestamp"
+    - "Understand the receive-side loss detection: SRT uses sequence-gap detection, not timeout — loss is discovered the moment the next-higher seq arrives"
+    - "See the NAK control packet (type 0x0003) loss-list encoding: high bit clear = single seq, high bit set = start of range followed by end-seq"
+    - "Recognize the R bit on retransmits: lets the receiver and stats counters distinguish original vs retransmitted packets"
+    - "Understand why the retransmit's timestamp = ORIGINAL transmit timestamp (not retransmit time): TSBPD must place the packet at its scheduled playout slot, not its arrival slot"
+    - "Observe the TSBPD recovery budget: end-to-end RTT + jitter + processing must complete before sender_ts + tsbpd_latency"
+    - "See the sender's send buffer (RexmitQueue) — packets stay buffered until ACK advances past them, enabling retransmit on demand"
+
+  difficulty: "intermediate"
+
   authors:
     - name: "Erik Smith"
       org: "Dell Technologies"
+      github: "provandal"
+
   created: "2026-05-15"
+  updated: "2026-05-15"
+
   tags:
-    - SRT
-    - ARQ
-    - NAK
-    - retransmission
-    - TSBPD
-    - loss recovery
-    - media streaming
-    - intermediate
-    - education
+    - "SRT"
+    - "ARQ"
+    - "NAK"
+    - "retransmission"
+    - "TSBPD"
+    - "loss recovery"
+    - "live streaming"
+    - "media streaming"
+    - "MPEG-TS"
+    - "intermediate"
+    - "education"
+
   primary_specs:
     - document: "Haivision/srt"
-      title: "SRT open-source reference"
-      url: "https://github.com/Haivision/srt"
+      section: "srtcore/core.cpp (CUDT::sendCtrlAck, sendCtrlNak)"
+      title: "SRT ACK/NAK transmit paths"
+      url: "https://github.com/Haivision/srt/blob/master/srtcore/core.cpp"
+    - document: "Haivision/srt"
+      section: "srtcore/buffer_snd.cpp"
+      title: "Sender packet buffer / RexmitQueue"
+      url: "https://github.com/Haivision/srt/blob/master/srtcore/buffer_snd.cpp"
+    - document: "Haivision/srt"
+      section: "srtcore/buffer_rcv.cpp"
+      title: "Receiver buffer with TSBPD scheduling"
+      url: "https://github.com/Haivision/srt/blob/master/srtcore/buffer_rcv.cpp"
+    - document: "RFC 768"
+      title: "User Datagram Protocol"
+      url: "https://datatracker.ietf.org/doc/html/rfc768"
 
+  content_disclaimer: >
+    Protocol descriptions are based on the open-source SRT reference
+    implementation (github.com/Haivision/srt) and its public docs.
+    The IETF Internet-Draft draft-sharabayko-srt is not used as
+    primary source per current project guidance.
+
+  source_references:
+    - repo: "Haivision/srt"
+      path: "srtcore/core.cpp"
+      description: "Top-level send/receive, ACK/NAK timers, retransmit dispatch"
+    - repo: "Haivision/srt"
+      path: "srtcore/buffer_snd.cpp"
+      description: "Sender's packet buffer — keeps packets until ACK clears them"
+    - repo: "Haivision/srt"
+      path: "srtcore/buffer_rcv.cpp"
+      description: "Receiver buffer with TSBPD ordered delivery and loss list"
+    - repo: "Haivision/srt"
+      path: "srtcore/packet.h"
+      description: "Packet header layouts: PH_TIMESTAMP, PH_MSGNO, PH_ID, control message types"
+
+# ─────────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────────
 topology:
   actors:
-    - id: sender
+    - id: caller
       type: host
-      label: "Sender (Live Encoder)"
-      description: "Contribution encoder sending an MPEG-TS stream at ~5 Mbps"
+      label: "Caller (Live Encoder)"
+      description: "Already-connected SRT sender. Streams MPEG-TS at ~5 Mbps. TSBPD latency negotiated at 120 ms; sender ISN = 1729384700."
+      hardware: "x86_64, 1 GbE NIC"
+      os: "Linux 6.x"
       ip: "203.0.113.10"
+      mac: "02:00:00:00:00:01"
       position: left
-    - id: net
-      type: switch
-      label: "Internet"
-      description: "Lossy Internet path — ~0.3% packet loss, ~40ms RTT"
+
+    - id: caller_gw
+      type: router
+      label: "Caller default gateway"
+      description: "Edge router on the caller's LAN. Forwards SRT packets onto the WAN. The Internet path beyond this gateway is where the single-packet drop occurs in this scenario."
+      ip: "203.0.113.1"
+      mac: "02:00:00:00:00:11"
       position: center
-    - id: receiver
+
+    - id: listener
       type: host
-      label: "Receiver (Cloud Ingest)"
-      description: "Cloud ingest with 120ms TSBPD latency configured"
+      label: "Listener (Cloud Ingest)"
+      description: "Already-connected SRT receiver. 120 ms TSBPD latency. Receives packets, orders by sequence, and delivers each at its scheduled playout time."
+      hardware: "x86_64, 10 GbE NIC"
+      os: "Linux 6.x"
       ip: "198.51.100.20"
+      mac: "02:00:00:00:00:02"
       position: right
+
   links:
-    - { id: link_up, from: sender, to: net, speed_gbps: 0.1, media: fiber_sr }
-    - { id: link_down, from: net, to: receiver, speed_gbps: 1.0, media: fiber_sr }
+    - id: link_caller_lan
+      from: caller
+      to: caller_gw
+      speed_gbps: 1.0
+      media: fiber_sr
+      autoneg: true
 
+    - id: link_internet
+      from: caller_gw
+      to: listener
+      speed_gbps: 10.0
+      media: fiber_lr
+
+# ─────────────────────────────────────────────────────────────────────
+# OSI LAYERS — focused on the data-plane / ARQ state
+# ─────────────────────────────────────────────────────────────────────
+osi_layers:
+  caller:
+    - layer: 7
+      name: "Application (Live Encoder)"
+      components: ["FFmpeg / GStreamer", "libsrt API"]
+      state_schema:
+        app_state:
+          type: "string"
+          initial: "streaming"
+        bytes_sent:
+          type: "integer"
+          description: "Cumulative media bytes handed to libsrt"
+          initial: 0
+
+    - layer: 5
+      name: "SRT (Session + Presentation)"
+      components: ["srtcore/core.cpp", "srtcore/buffer_snd.cpp"]
+      state_schema:
+        srt_state:
+          type: "string"
+          initial: "CONNECTED"
+        local_socket_id:
+          type: "string"
+          initial: "0xABCD0001"
+        peer_socket_id:
+          type: "string"
+          initial: "0xDEF00002"
+        snd_next_seq:
+          type: "integer"
+          description: "Next sequence number the sender will assign"
+          initial: 100
+        snd_buf_packets:
+          type: "integer"
+          description: "Packets currently held in sender's RexmitQueue (until ACKed past)"
+          initial: 0
+        last_ack_seq:
+          type: "integer"
+          description: "Highest sequence number acknowledged by the receiver"
+          initial: 99
+        rtt_ms:
+          type: "number"
+          description: "Smoothed RTT estimate from prior ACK/ACKACK exchanges"
+          initial: 40.0
+        retransmits:
+          type: "integer"
+          description: "Count of retransmissions triggered by NAK"
+          initial: 0
+        tsbpd_latency_ms:
+          type: "integer"
+          initial: 120
+
+    - layer: 4
+      name: "UDP"
+      components: ["net/ipv4/udp.c"]
+      state_schema:
+        local_port:
+          type: "integer"
+          initial: 49152
+        remote_port:
+          type: "integer"
+          initial: 9000
+
+    - layer: 3
+      name: "IP / Routing"
+      components: ["net/ipv4/ip_output.c"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "203.0.113.10"
+        dst_ip:
+          type: "string"
+          initial: "198.51.100.20"
+        next_hop_ip:
+          type: "string"
+          initial: "203.0.113.1"
+        ttl:
+          type: "integer"
+          initial: 64
+
+    - layer: 2
+      name: "Ethernet"
+      state_schema:
+        src_mac:
+          type: "string"
+          initial: "02:00:00:00:00:01"
+        dst_mac:
+          type: "string"
+          description: "Default gateway MAC (cached)"
+          initial: "02:00:00:00:00:11"
+        mtu:
+          type: "integer"
+          initial: 1500
+
+    - layer: 1
+      name: "Physical (1 GbE LAN)"
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+        speed_gbps:
+          type: "number"
+          initial: 1.0
+
+  listener:
+    - layer: 7
+      name: "Application (Cloud Ingest)"
+      components: ["ingest application", "libsrt API"]
+      state_schema:
+        app_state:
+          type: "string"
+          initial: "consuming"
+        bytes_received:
+          type: "integer"
+          description: "Cumulative media bytes delivered by libsrt"
+          initial: 0
+
+    - layer: 5
+      name: "SRT (Session + Presentation)"
+      components: ["srtcore/core.cpp", "srtcore/buffer_rcv.cpp"]
+      state_schema:
+        srt_state:
+          type: "string"
+          initial: "CONNECTED"
+        local_socket_id:
+          type: "string"
+          initial: "0xDEF00002"
+        peer_socket_id:
+          type: "string"
+          initial: "0xABCD0001"
+        rcv_next_expected:
+          type: "integer"
+          description: "Lowest sequence number not yet received in-order"
+          initial: 100
+        rcv_buf_highest:
+          type: "integer"
+          description: "Highest sequence number received (may be ahead of rcv_next_expected if there are gaps)"
+          initial: 99
+        loss_list:
+          type: "string"
+          description: "Sorted set of missing sequence numbers in the receive window"
+          initial: "[]"
+        nak_count:
+          type: "integer"
+          description: "Total NAK control packets sent in this connection"
+          initial: 0
+        tsbpd_latency_ms:
+          type: "integer"
+          initial: 120
+
+    - layer: 4
+      name: "UDP"
+      state_schema:
+        local_port:
+          type: "integer"
+          initial: 9000
+        remote_port:
+          type: "integer"
+          initial: 49152
+
+    - layer: 3
+      name: "IP / Routing"
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "198.51.100.20"
+        dst_ip:
+          type: "string"
+          initial: "203.0.113.10"
+        ttl:
+          type: "integer"
+          initial: 64
+
+    - layer: 2
+      name: "Ethernet"
+      state_schema:
+        src_mac:
+          type: "string"
+          initial: "02:00:00:00:00:02"
+        dst_mac:
+          type: "string"
+          description: "Listener-side gateway MAC (resolved by listener_gw, off-diagram)"
+          initial: "02:00:00:00:00:22"
+        mtu:
+          type: "integer"
+          initial: 1500
+
+    - layer: 1
+      name: "Physical (10 GbE LAN)"
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+        speed_gbps:
+          type: "number"
+          initial: 10.0
+
+# ─────────────────────────────────────────────────────────────────────
+# FRAMES — data packets + NAK + retransmit
+# ─────────────────────────────────────────────────────────────────────
 frames:
-  - id: data_100
-    name: "Data packet seq=100 (original)"
-    from: sender
-    to: receiver
-    total_bytes: 1316
+  - id: "data_seq_100"
+    name: "Data seq=100 (original)"
+    description: "First data packet of the burst we're tracing. Fully formed SRT data packet over UDP/IP/Ethernet."
+    from: "caller"
+    to: "listener"
+    via: ["caller_gw"]
+    timestamp_ns: 1000000
+    total_bytes: 1370
+    color: "#10b981"
     headers:
-      - name: "SRT Data Header"
-        layer: 5
+      - name: "Ethernet II (caller-side LAN segment)"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
         fields:
-          - { name: "F", bits: 1, value: 0, description: "Data packet" }
-          - { name: "Sequence Number", bits: 31, value: 100, description: "First data packet of the burst we're tracing" }
-          - { name: "PP", bits: 2, value: "11 (solo)", description: "Single-packet message" }
-          - { name: "O", bits: 1, value: 1, description: "In-order delivery requested" }
-          - { name: "KK", bits: 2, value: "00 (none)", description: "Unencrypted" }
-          - { name: "R", bits: 1, value: 0, description: "Original transmission" }
-          - { name: "Message Number", bits: 26, value: 50, description: "MPEG-TS frame number" }
-          - { name: "Timestamp", bits: 32, value: "1000000 µs", description: "Sender-relative timestamp" }
-          - { name: "Destination Socket ID", bits: 32, value: "0xDEF00002", description: "Receiver socket ID" }
+          - { name: "Destination MAC", abbrev: "eth.dst", bits: 48, value: "02:00:00:00:00:11", description: "Caller's default gateway MAC. Rewritten at each L3 hop along the WAN path." }
+          - { name: "Source MAC",      abbrev: "eth.src", bits: 48, value: "02:00:00:00:00:01", description: "Caller MAC" }
+          - { name: "EtherType",       abbrev: "eth.type", bits: 16, value: "0x0800", description: "IPv4" }
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - { name: "Version | IHL",  abbrev: "ip.ver_ihl", bits: 8,  value: "0x45", description: "IPv4, 20-byte header (no options)" }
+          - { name: "DSCP | ECN",     abbrev: "ip.dsfield", bits: 8,  value: "0x00", description: "Default, Not-ECT" }
+          - { name: "Total Length",   abbrev: "ip.len",     bits: 16, value: 1356, description: "20 IP + 8 UDP + 16 SRT + 1312 payload" }
+          - { name: "Identification", abbrev: "ip.id",      bits: 16, value: "0x5d01", description: "Per-datagram unique" }
+          - { name: "Flags",          abbrev: "ip.flags",   bits: 3,  value: "0x2", description: "Don't Fragment" }
+          - { name: "TTL",            abbrev: "ip.ttl",     bits: 8,  value: 64, description: "Decremented at each router" }
+          - { name: "Protocol",       abbrev: "ip.proto",   bits: 8,  value: 17, description: "UDP" }
+          - { name: "Source IP",      abbrev: "ip.src",     bits: 32, value: "203.0.113.10", description: "" }
+          - { name: "Destination IP", abbrev: "ip.dst",     bits: 32, value: "198.51.100.20", description: "" }
+      - name: "UDP"
+        abbrev: "udp"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - { name: "Source Port",      abbrev: "udp.srcport", bits: 16, value: 49152, description: "Same ephemeral port used since handshake" }
+          - { name: "Destination Port", abbrev: "udp.dstport", bits: 16, value: 9000,  description: "Listener SRT port" }
+          - { name: "Length",           abbrev: "udp.len",     bits: 16, value: 1336,  description: "8 UDP header + 1328 SRT (16 header + 1312 payload)" }
+          - { name: "Checksum",         abbrev: "udp.checksum", bits: 16, value: "0x...", description: "UDP/IP pseudo-header checksum" }
+      - name: "SRT Data Header"
+        abbrev: "srt"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - { name: "F (Packet Type)", abbrev: "srt.f", bits: 1, value: 0, description: "Data packet (F=0)" }
+          - { name: "Sequence Number", abbrev: "srt.seq", bits: 31, value: 100, description: "First in our traced burst. Increments per data packet." }
+          - { name: "PP",  abbrev: "srt.pp",  bits: 2, value: "0b11 (solo)", description: "Solo: complete message in a single packet" }
+          - { name: "O",   abbrev: "srt.o",   bits: 1, value: 1, description: "In-order delivery (Live mode default)" }
+          - { name: "KK",  abbrev: "srt.kk",  bits: 2, value: "0b00 (none)", description: "Unencrypted (this scenario does not enable encryption — see SRT Encryption scenario)" }
+          - { name: "R",   abbrev: "srt.r",   bits: 1, value: 0, description: "Original transmission (not a retransmit)" }
+          - { name: "Message Number", abbrev: "srt.msgno", bits: 26, value: 1000050, description: "App-level message identifier — survives across PP-split packets" }
+          - { name: "Timestamp",      abbrev: "srt.timestamp", bits: 32, value: 1000000, description: "Microseconds since connection start. Receiver uses this as the base for TSBPD scheduling." }
+          - { name: "Destination Socket ID", abbrev: "srt.dst_socket_id", bits: 32, value: "0xDEF00002", description: "Listener-side socket ID" }
+      - name: "SRT Payload (1312 bytes media)"
+        abbrev: "srt.data"
+        layer: 5
+        total_bytes: 1312
+        fields:
+          - { name: "Payload bytes", bits: "1312 × 8", value: "...MPEG-TS chunks...", description: "Default SRT live-mode payload: 7 × 188 = 1316 (the SRT MTU). Net of 16-byte SRT header = 1300-1316 application bytes depending on encoder config." }
 
-  - id: data_101
-    name: "Data packet seq=101 (original)"
-    from: sender
-    to: receiver
-    total_bytes: 1316
+  - id: "data_seq_101"
+    name: "Data seq=101 (original)"
+    description: "Second data packet. Ethernet/IP/UDP fields effectively unchanged — only the SRT Sequence Number, Message Number, and Timestamp advance."
+    from: "caller"
+    to: "listener"
+    via: ["caller_gw"]
+    timestamp_ns: 4000000
+    total_bytes: 1370
+    color: "#10b981"
     headers:
-      - name: "SRT Data Header"
+      - name: "SRT Data Header (changes only)"
+        abbrev: "srt"
         layer: 5
+        total_bytes: 16
         fields:
-          - { name: "F | Seq", bits: 32, value: "0 | 101", description: "Next data packet" }
+          - { name: "F | Seq", abbrev: "srt.seq", bits: 32, value: "0 | 101", description: "Next sequence number" }
           - { name: "R", bits: 1, value: 0, description: "Original" }
-          - { name: "Timestamp", bits: 32, value: "1003000 µs", description: "~3ms after seq 100" }
+          - { name: "Message Number", bits: 26, value: 1000051, description: "Next message" }
+          - { name: "Timestamp", abbrev: "srt.timestamp", bits: 32, value: 1003000, description: "+3000 µs (~3 ms after seq 100, consistent with ~5 Mbps × 1316 bytes ≈ 2.1 ms inter-packet gap)" }
 
-  - id: data_102_dropped
-    name: "Data packet seq=102 (DROPPED on the wire)"
-    from: sender
-    to: net
-    total_bytes: 1316
+  - id: "data_seq_102_dropped"
+    name: "Data seq=102 (DROPPED in Internet path)"
+    description: "Caller emits seq=102 normally, but somewhere between caller_gw and listener the packet is dropped (single random Internet loss event). The receiver never sees this packet."
+    from: "caller"
+    to: "caller_gw"
+    timestamp_ns: 7000000
+    total_bytes: 1370
+    color: "#ef4444"
     headers:
       - name: "SRT Data Header"
+        abbrev: "srt"
         layer: 5
+        total_bytes: 16
         fields:
-          - { name: "F | Seq", bits: 32, value: "0 | 102", description: "Drops at the lossy link — never reaches the receiver" }
-          - { name: "Timestamp", bits: 32, value: "1006000 µs", description: "Sender-side timestamp at transmission" }
+          - { name: "F | Seq", bits: 32, value: "0 | 102", description: "Caller transmits normally — does not know the packet will be dropped" }
+          - { name: "R", bits: 1, value: 0, description: "Original transmission" }
+          - { name: "Timestamp", bits: 32, value: 1006000, description: "Original transmit time, captured BEFORE loss occurs. This timestamp will be reused on the retransmit." }
 
-  - id: data_103
-    name: "Data packet seq=103 (original) — arrives, exposes gap"
-    from: sender
-    to: receiver
-    total_bytes: 1316
+  - id: "data_seq_103"
+    name: "Data seq=103 (original — exposes the gap)"
+    description: "Caller continues streaming. When seq=103 arrives at the listener, the gap at seq=102 becomes visible."
+    from: "caller"
+    to: "listener"
+    via: ["caller_gw"]
+    timestamp_ns: 10000000
+    total_bytes: 1370
+    color: "#10b981"
     headers:
       - name: "SRT Data Header"
+        abbrev: "srt"
         layer: 5
+        total_bytes: 16
         fields:
-          - { name: "F | Seq", bits: 32, value: "0 | 103", description: "Arrival of 103 — receiver now sees gap [102 missing]" }
-          - { name: "Timestamp", bits: 32, value: "1009000 µs", description: "" }
+          - { name: "F | Seq", bits: 32, value: "0 | 103", description: "Arrives at the listener. rcv_next_expected was still 102 → gap detected." }
+          - { name: "R", bits: 1, value: 0, description: "Original" }
+          - { name: "Timestamp", bits: 32, value: 1009000, description: "+3 ms after seq 102" }
 
-  - id: nak_102
-    name: "NAK loss-list = [102]"
-    description: "Receiver detected the gap immediately and reports loss"
-    from: receiver
-    to: sender
-    total_bytes: 24
+  - id: "nak_loss_102"
+    name: "NAK — loss list = [102]"
+    description: "Receiver detected the gap and immediately emits a NAK control packet identifying the missing sequence. Compact loss-list encoding: single seq with high bit clear."
+    from: "listener"
+    to: "caller"
+    via: ["caller_gw"]
+    timestamp_ns: 12500000
+    total_bytes: 78
+    color: "#f59e0b"
     headers:
+      - name: "Ethernet II (listener-side LAN)"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - { name: "Destination MAC", bits: 48, value: "02:00:00:00:00:22", description: "Listener-side default gateway MAC (off-diagram). The listener's NIC sends to its own gateway; we collapse the route back to caller_gw in the visualization." }
+          - { name: "Source MAC",      bits: 48, value: "02:00:00:00:00:02", description: "Listener MAC" }
+          - { name: "EtherType",       bits: 16, value: "0x0800", description: "IPv4" }
+      - name: "IPv4"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - { name: "Source IP",      bits: 32, value: "198.51.100.20", description: "" }
+          - { name: "Destination IP", bits: 32, value: "203.0.113.10", description: "Back to caller" }
+          - { name: "Protocol",       bits: 8,  value: 17, description: "UDP" }
+          - { name: "TTL",            bits: 8,  value: 64, description: "" }
+      - name: "UDP"
+        layer: 4
+        total_bytes: 8
+        fields:
+          - { name: "Source Port",      bits: 16, value: 9000,  description: "" }
+          - { name: "Destination Port", bits: 16, value: 49152, description: "" }
+          - { name: "Length",           bits: 16, value: 28,    description: "8 UDP header + 16 SRT control + 4 loss entry" }
       - name: "SRT Control Header (NAK)"
+        abbrev: "srt"
         layer: 5
+        total_bytes: 16
         fields:
-          - { name: "F", bits: 1, value: 1, description: "Control packet" }
-          - { name: "Message Type", bits: 15, value: "0x0003 (NAK)", description: "Negative Acknowledgment" }
-          - { name: "Message Extended Type", bits: 16, value: 0, description: "Unused for NAK" }
+          - { name: "F",            abbrev: "srt.f", bits: 1, value: 1, description: "Control packet" }
+          - { name: "Message Type", abbrev: "srt.msg_type", bits: 15, value: "0x0003 (NAK)", description: "Negative Acknowledgment", spec_refs: [{ document: "Haivision/srt", section: "srtcore/packet.h UMSG_LOSSREPORT", title: "Control message types", url: "https://github.com/Haivision/srt/blob/master/srtcore/packet.h" }] }
+          - { name: "Message Extended Type", abbrev: "srt.msg_ext_type", bits: 16, value: 0, description: "Reserved for NAK" }
           - { name: "Additional Data", bits: 32, value: 0, description: "Reserved" }
-          - { name: "Timestamp", bits: 32, value: "1011500 µs (receiver-side)", description: "" }
-          - { name: "Destination Socket ID", bits: 32, value: "0xABCD0001", description: "Sender socket ID" }
-      - name: "NAK Loss List"
+          - { name: "Timestamp",       abbrev: "srt.timestamp", bits: 32, value: 12500, description: "Receiver-side timestamp" }
+          - { name: "Destination Socket ID", bits: 32, value: "0xABCD0001", description: "Caller socket ID" }
+      - name: "SRT NAK Loss List (1 entry)"
+        abbrev: "srt.nak"
         layer: 5
+        total_bytes: 4
         fields:
-          - { name: "Lost seq", bits: 32, value: "102 (high bit=0 → single)", description: "Single-packet loss entry. If high bit were set, this would mark the start of a range and the next 32-bit entry would mark the end." }
+          - { name: "Lost seq", abbrev: "srt.nak.entry", bits: 32, value: "102 (high bit=0)", description: "Single-value entry. High bit 0 = single missing seq; high bit 1 = start-of-range, followed by a 32-bit end-of-range entry. Multiple entries pack adjacent in the control payload." }
 
-  - id: data_102_retx
-    name: "Data packet seq=102 (RETRANSMIT, R=1)"
-    description: "Sender's retransmit path picks 102 from the send buffer and re-emits it"
-    from: sender
-    to: receiver
-    total_bytes: 1316
+  - id: "data_seq_102_retx"
+    name: "Data seq=102 (RETRANSMIT, R=1, original timestamp preserved)"
+    description: "Sender pulls seq=102 from its RexmitQueue and re-emits it. Sequence number unchanged. R bit set. Timestamp = ORIGINAL transmit time (not retransmit time)."
+    from: "caller"
+    to: "listener"
+    via: ["caller_gw"]
+    timestamp_ns: 32500000
+    total_bytes: 1370
+    color: "#a855f7"
     headers:
       - name: "SRT Data Header"
+        abbrev: "srt"
         layer: 5
+        total_bytes: 16
         fields:
           - { name: "F", bits: 1, value: 0, description: "Data packet" }
-          - { name: "Sequence Number", bits: 31, value: 102, description: "Same sequence number as the original" }
-          - { name: "R", bits: 1, value: 1, description: "RETRANSMIT — stats counter increments retx, not loss" }
-          - { name: "Timestamp", bits: 32, value: "1006000 µs", description: "ORIGINAL timestamp preserved — TSBPD must deliver at the original time, not the retransmit time" }
+          - { name: "Sequence Number", abbrev: "srt.seq", bits: 31, value: 102, description: "SAME sequence number as the original transmission" }
+          - { name: "R", abbrev: "srt.r", bits: 1, value: 1, description: "RETRANSMIT — receiver and sender both count this against the retransmit counter, not the original packet counter. Effective loss rate stats remain honest." }
+          - { name: "Timestamp", abbrev: "srt.timestamp", bits: 32, value: 1006000, description: "CRITICAL: original timestamp (when seq=102 was first transmitted, t=1006 ms). NOT the retransmit moment. This is what places the packet at its scheduled TSBPD playout slot rather than at the retransmit-arrival slot." }
+          - { name: "Destination Socket ID", bits: 32, value: "0xDEF00002", description: "" }
 
+  - id: "ack_104"
+    name: "Full ACK — cumulative ack up to seq=104"
+    description: "Receiver's periodic full ACK after the recovery completes — confirms all of 100, 101, 102 (retx), 103 received. Triggers sender to clear those packets from RexmitQueue."
+    from: "listener"
+    to: "caller"
+    via: ["caller_gw"]
+    timestamp_ns: 60000000
+    total_bytes: 102
+    color: "#3b82f6"
+    headers:
+      - name: "SRT Control Header (full ACK)"
+        abbrev: "srt"
+        layer: 5
+        total_bytes: 16
+        fields:
+          - { name: "F",            bits: 1, value: 1, description: "Control packet" }
+          - { name: "Message Type", bits: 15, value: "0x0002 (ACK)", description: "Acknowledgment" }
+          - { name: "Additional Data", bits: 32, value: "ACK sub-sequence number 42", description: "Identifies this ACK so the sender's ACKACK can refer back to it (for RTT estimation)" }
+          - { name: "Timestamp", bits: 32, value: 60000, description: "" }
+          - { name: "Destination Socket ID", bits: 32, value: "0xABCD0001", description: "Caller socket ID" }
+      - name: "SRT Full-ACK Body (24 bytes)"
+        abbrev: "srt.ack"
+        layer: 5
+        total_bytes: 24
+        fields:
+          - { name: "Last Acknowledged Packet Seq", bits: 32, value: 104, description: "Cumulative: 'I have everything up through 103; expect 104 next.'" }
+          - { name: "RTT",                bits: 32, value: 40000, description: "Smoothed round-trip time in µs (~40 ms here)" }
+          - { name: "RTT Variance",       bits: 32, value: 2500,  description: "Jitter estimate" }
+          - { name: "Available Buffer",   bits: 32, value: 8000,  description: "Packets free in receive buffer" }
+          - { name: "Receiving Rate",     bits: 32, value: 4250,  description: "Packets per second (instantaneous)" }
+          - { name: "Estimated Link Capacity", bits: 32, value: 1000000, description: "Packets per second the link can carry (bandwidth probe)" }
+
+# ─────────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────────
 timeline:
-  - id: evt_intro
-    type: note
-    annotation:
-      text: "Setup: 120ms TSBPD latency, ~40ms RTT, lossy link"
-      detail: >
-        The sender and receiver negotiated 120ms TSBPD latency during
-        the handshake. Round-trip time on the path is ~40ms. The
-        receiver's clock has been smoothed and aligned to the sender's
-        via the handshake's timestamp exchange. We're going to drop a
-        single packet on the wire and watch SRT recover it before the
-        receiver's TSBPD deadline.
-    from: sender
-    to: receiver
-
-  - id: evt_seq100
-    type: frame_tx
+  - id: "evt_intro"
+    type: "annotation"
     t_ns: 0
-    frame_id: data_100
+    from: "caller"
+    to: "listener"
     annotation:
-      text: "seq=100 arrives normally"
-
-  - id: evt_seq101
-    type: frame_tx
-    t_ns: 3000000
-    frame_id: data_101
-    annotation:
-      text: "seq=101 arrives normally"
-
-  - id: evt_seq102_drop
-    type: frame_tx
-    t_ns: 6000000
-    frame_id: data_102_dropped
-    annotation:
-      text: "seq=102 — DROPPED on the wire"
+      text: "Setup: connection already established, TSBPD = 120 ms, RTT ≈ 40 ms"
       detail: >
-        A single packet drop. At the receiver side, no notification
-        arrives. The receiver doesn't even know yet that 102 was lost —
-        it'll find out via the gap, not via a timeout.
+        Both peers are in SRT state CONNECTED. The handshake completed
+        earlier (see SRT Caller–Listener Handshake scenario). The
+        sender holds local_socket_id=0xABCD0001 and peer_socket_id=
+        0xDEF00002 (and vice versa on the receiver). TSBPD latency
+        negotiated at 120 ms. RTT smoothed at 40 ms from prior
+        ACK/ACKACK exchanges.
 
-  - id: evt_seq103_gap
-    type: frame_tx
-    t_ns: 9000000
-    frame_id: data_103
+        We're going to drop a single packet in the Internet path and
+        watch SRT recover it before the TSBPD deadline.
+
+  - id: "evt_data_100"
+    type: "frame_tx"
+    t_ns: 1000000
+    frame_id: "data_seq_100"
     annotation:
-      text: "seq=103 arrives → receiver detects gap [seq 102 missing]"
+      text: "seq=100 — original transmit, arrives normally"
       detail: >
-        The instant 103 arrives, the receiver's loss-detection logic
-        sees that 102 is missing from its receive buffer. In immediate-
-        NAK mode (default in live config), it doesn't wait for periodic
-        NAK reports — it fires a NAK right now.
+        Sender increments snd_next_seq from 100 to 101 and enqueues
+        the packet in its RexmitQueue. The packet will stay buffered
+        until a full ACK clears it (cleaned up at last_ack_seq
+        advance). Receiver's rcv_next_expected advances 100→101.
+    state_after:
+      - actor_id: "caller"
+        layers:
+          - layer: 5
+            state_fields:
+              snd_next_seq: 101
+              snd_buf_packets: 1
+              bytes_sent: 1316
+      - actor_id: "listener"
+        layers:
+          - layer: 5
+            state_fields:
+              rcv_next_expected: 101
+              rcv_buf_highest: 100
 
-  - id: evt_nak
-    type: frame_tx
-    t_ns: 11500000
-    frame_id: nak_102
+  - id: "evt_data_101"
+    type: "frame_tx"
+    t_ns: 4000000
+    frame_id: "data_seq_101"
     annotation:
-      text: "Receiver sends NAK with loss-list = [102]"
+      text: "seq=101 — original transmit, arrives normally"
       detail: >
-        The NAK loss list uses a compact encoding: each 32-bit entry is
-        either (a) a single lost seq with the high bit cleared, or
-        (b) when the high bit is set, the start of a contiguous range
-        followed by a 32-bit end-seq entry. Here it's a single value,
-        so just one 32-bit word: 0x00000066.
+        Same path, same outcome. Sender's snd_buf_packets now 2.
+        Receiver advances to expect 102.
+    state_after:
+      - actor_id: "caller"
+        layers:
+          - layer: 5
+            state_fields:
+              snd_next_seq: 102
+              snd_buf_packets: 2
+      - actor_id: "listener"
+        layers:
+          - layer: 5
+            state_fields:
+              rcv_next_expected: 102
+              rcv_buf_highest: 101
 
-  - id: evt_retx
-    type: frame_tx
-    t_ns: 31500000
-    frame_id: data_102_retx
+  - id: "evt_data_102_drop"
+    type: "error"
+    t_ns: 7000000
+    frame_id: "data_seq_102_dropped"
     annotation:
-      text: "Sender retransmits seq=102 with R=1"
+      text: "seq=102 — DROPPED in the Internet path"
       detail: >
-        On receiving the NAK, the sender's retransmit loop pulls seq=102
-        from its send buffer (which retains every packet until ACKed
-        beyond it) and re-emits it with the R bit set to 1. CRITICAL:
-        the timestamp stays as the ORIGINAL 1006000 µs — TSBPD must
-        play this packet at the slot it was originally scheduled for,
-        not the slot it arrived in.
+        The sender transmits seq=102 normally. somewhere between
+        caller_gw and the listener (could be queue overflow on a
+        congested transit router, transient L1 error, MPLS reroute,
+        etc.) the packet is dropped.
 
-  - id: evt_retx_arrival
-    type: note
-    t_ns: 51500000
+        Neither endpoint knows yet. The sender's RexmitQueue still
+        holds seq=102; the receiver's rcv_next_expected still points
+        at 102. Loss detection happens later — when seq=103 arrives.
+    state_after:
+      - actor_id: "caller"
+        layers:
+          - layer: 5
+            state_fields:
+              snd_next_seq: 103
+              snd_buf_packets: 3
+
+  - id: "evt_data_103"
+    type: "frame_tx"
+    t_ns: 10000000
+    frame_id: "data_seq_103"
     annotation:
-      text: "seq=102 arrives at receiver — ~51ms after the drop"
+      text: "seq=103 arrives — receiver detects gap at seq=102"
       detail: >
-        Total recovery time: 9ms (drop → gap detected) + ~2.5ms
-        (gap → NAK queued) + ~20ms (NAK in flight) + ~20ms (retransmit
-        in flight) = ~51ms. Comfortably inside the 120ms TSBPD budget.
-        The TSBPD engine queues seq=102 into the buffer at its slot;
-        playback hands seq=100, 101, 102, 103 to the application in
-        perfect order, on schedule.
-    from: receiver
-    to: receiver
+        The instant seq=103 arrives, the receiver compares its
+        sequence (103) against rcv_next_expected (102). The gap at
+        102 enters the loss_list. In immediate-NAK mode (live config
+        default), the receiver does NOT wait for the periodic NAK
+        timer — it emits a NAK right away.
 
-  - id: evt_tlpktdrop_note
-    type: note
+        rcv_buf_highest advances to 103; rcv_next_expected stays at
+        102 (the lowest gap).
+    state_after:
+      - actor_id: "listener"
+        layers:
+          - layer: 5
+            state_fields:
+              rcv_buf_highest: 103
+              rcv_next_expected: 102
+              loss_list: "[102]"
+
+  - id: "evt_nak"
+    type: "frame_tx"
+    t_ns: 12500000
+    frame_id: "nak_loss_102"
     annotation:
-      text: "What if 120ms wasn't enough?"
+      text: "NAK in flight — loss list contains a single value (102)"
       detail: >
-        Imagine the link RTT were 200ms instead of 40ms. The retransmit
-        couldn't possibly arrive before the TSBPD deadline. SRT's
-        TLPKTDROP feature kicks in: the receiver marks the packet as
-        permanently lost, hands the decoder a "frame gap" signal, and
-        moves on. Better than blocking the playout queue. The next
-        scenario (TSBPD Latency Trade-off) shows this directly.
-    from: receiver
-    to: receiver
+        The receiver assembles a NAK control packet (UMSG_LOSSREPORT,
+        type 0x0003) whose body carries a 4-byte loss-list entry:
+        0x00000066 = 102. High bit clear = single-value form.
 
+        If the receiver had detected multiple non-contiguous losses,
+        it would pack multiple 4-byte entries. For a contiguous range
+        (e.g., 102-105 missing), it would set the high bit on the
+        start entry (0x80000066 = range-start at 102) followed by
+        another 32-bit entry for the end (0x00000069 = 105).
+      spec_refs:
+        - document: "Haivision/srt"
+          section: "srtcore/packet.h UMSG_LOSSREPORT format"
+          url: "https://github.com/Haivision/srt/blob/master/srtcore/packet.h"
+    state_after:
+      - actor_id: "listener"
+        layers:
+          - layer: 5
+            state_fields:
+              nak_count: 1
+
+  - id: "evt_nak_arrival"
+    type: "annotation"
+    t_ns: 32000000
+    from: "caller"
+    to: "caller"
+    annotation:
+      text: "Caller receives NAK at t ≈ 32 ms — pulls seq=102 from RexmitQueue"
+      detail: >
+        The NAK traverses listener → listener_gw → Internet → caller_gw
+        → caller (one full one-way trip, ~20 ms here). The caller
+        parses the NAK loss list, looks up seq=102 in its RexmitQueue,
+        copies the original packet payload AND the original 32-bit
+        timestamp (1006000 µs), sets the R bit, and re-emits.
+
+        retransmits counter increments to 1.
+
+  - id: "evt_retx"
+    type: "frame_tx"
+    t_ns: 32500000
+    frame_id: "data_seq_102_retx"
+    annotation:
+      text: "Retransmit seq=102 (R=1) with original timestamp"
+      detail: >
+        The retransmitted packet looks identical to the original
+        EXCEPT:
+          1. R bit = 1 (retransmit indicator)
+          2. Packet is sent at t ≈ 32.5 ms (the retransmit moment),
+             but its SRT timestamp = 1006000 µs (the ORIGINAL
+             transmit moment).
+
+        That timestamp preservation is what lets TSBPD slot the
+        packet into its scheduled playout position. If the
+        retransmit carried its own retransmit timestamp, TSBPD
+        would deliver it ~32 ms late, the application would see
+        out-of-order arrival, and the recovery would be defeated.
+    state_after:
+      - actor_id: "caller"
+        layers:
+          - layer: 5
+            state_fields:
+              retransmits: 1
+
+  - id: "evt_retx_arrival"
+    type: "annotation"
+    t_ns: 52500000
+    from: "listener"
+    to: "listener"
+    annotation:
+      text: "Retransmit arrives at t ≈ 52.5 ms — within the 120 ms TSBPD budget"
+      detail: >
+        Recovery timing breakdown:
+
+          • 0 → 7 ms      Original seq=102 transmitted (and lost)
+          • 10 ms         seq=103 arrives, gap detected
+          • 12.5 ms       NAK enqueued
+          • 32 ms         NAK arrives at sender (20 ms NAK in-flight)
+          • 32.5 ms       Sender retransmits seq=102
+          • 52.5 ms       Retransmit arrives at receiver (20 ms in-flight)
+
+        TSBPD deadline for seq=102 = sender_timestamp(6 ms) +
+        tsbpd_latency(120 ms) = 126 ms (in connection-relative time
+        seen by the receiver). The retransmit at 52.5 ms is
+        comfortably inside the budget — ~73 ms of margin.
+
+        Receiver removes 102 from loss_list, advances
+        rcv_next_expected past 103 (since 102 and 103 are both now
+        in the buffer in order). TSBPD will deliver 100, 101, 102,
+        103 in order at their scheduled playout times.
+    state_after:
+      - actor_id: "listener"
+        layers:
+          - layer: 5
+            state_fields:
+              rcv_next_expected: 104
+              loss_list: "[]"
+
+  - id: "evt_ack"
+    type: "frame_tx"
+    t_ns: 60000000
+    frame_id: "ack_104"
+    annotation:
+      text: "Periodic full ACK — clears RexmitQueue and updates RTT"
+      detail: >
+        Live mode emits a full ACK every 10 ms (configurable via
+        SRTO_LATENCY-derived timers). This ACK says 'cumulative ack
+        up through 103.' The sender:
+
+          1. Removes seq=100..103 from RexmitQueue (snd_buf_packets
+             drops to 0).
+          2. Advances last_ack_seq to 104.
+          3. Sends an ACKACK back (not shown here) containing the
+             ACK sub-sequence number for RTT estimation.
+
+        If a future NAK arrives for a packet older than last_ack_seq,
+        the sender discards it — the packet is no longer in the
+        RexmitQueue. Either the receiver successfully consumed it
+        anyway, or it's already past its TSBPD deadline and is
+        irrelevant.
+    state_after:
+      - actor_id: "caller"
+        layers:
+          - layer: 5
+            state_fields:
+              last_ack_seq: 104
+              snd_buf_packets: 0
+              rtt_ms: 40.0
+
+  - id: "evt_summary"
+    type: "annotation"
+    t_ns: 65000000
+    from: "caller"
+    to: "listener"
+    annotation:
+      text: "What the application saw — and what would have happened on raw UDP"
+      detail: >
+        From the receiving application's perspective: seq 100, 101,
+        102, 103 delivered in order, at their scheduled playout times.
+        No glitch.
+
+        From the same application running on plain UDP: seq=102 would
+        be a permanent hole. MPEG-TS decoders typically respond with a
+        visible artifact (macroblocking, frozen frame).
+
+        From the network's perspective: ~1.5 KB of extra traffic
+        (one retransmit) plus a small NAK (~78 bytes), for a single
+        recovered packet. The price of resilient transport over a
+        best-effort path.
+
+        Failure modes (covered in adjacent scenarios):
+          • Latency too tight: TLPKTDROP (see SRT TSBPD Latency
+            Trade-off scenario).
+          • NAK itself lost: NAKREPORT timer re-emits NAKs on the
+            periodic schedule until the loss is recovered or
+            TLPKTDROP fires.
+          • Bursty loss: range-encoded NAK; sender retransmits
+            multiple seqs in one batch.
+
+# ─────────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────────
 glossary:
+  - term: "ARQ"
+    abbrev: "Automatic Repeat reQuest"
+    definition: "Loss-recovery family where the receiver reports missing data and the sender re-emits it. SRT's specific variant is NAK-based, immediate (live mode), with retransmits preserving original timestamps for TSBPD scheduling."
+
   - term: "NAK"
     abbrev: "Negative Acknowledgment"
-    definition: "Control message (type 0x0003) sent by the receiver listing missing sequence numbers. Triggers retransmission at the sender."
+    definition: "SRT control packet (type 0x0003, UMSG_LOSSREPORT). Body carries a loss list. Receiver emits one immediately on gap detection (default live config) and again periodically if NAKREPORT is enabled."
+
   - term: "Loss list encoding"
-    definition: "Each 32-bit entry. High bit 0 = single missing seq. High bit 1 = start of a contiguous loss range, followed by a 32-bit end-seq entry. Compact form for bursty drops."
+    definition: "Each 32-bit entry. High bit 0 = single missing seq. High bit 1 = start-of-range, followed by a 32-bit end-of-range entry. Compact for bursty drops without bloating control packet size."
+
   - term: "R bit"
-    definition: "Bit in the SRT data header indicating retransmission. Receivers use this to track effective loss rate (originals vs retx) and to keep stats honest."
+    definition: "Bit in the SRT data header (offset 31 within word 0 of the data variant). 0 = original, 1 = retransmit. Statistics counters use this to track effective loss rate honestly (originals vs retx)."
+
+  - term: "RexmitQueue / sender buffer"
+    definition: "libsrt's send-side packet buffer. Holds every transmitted packet until ACK advances past its sequence number. On NAK, the sender looks up the missing seq here and re-emits."
+
+  - term: "rcv_next_expected"
+    definition: "Receiver state variable: the lowest sequence number NOT yet received. Advances when contiguous packets arrive; stays put when there's a gap."
+
   - term: "Immediate NAK vs Periodic NAK"
-    definition: "Default live config fires a NAK the moment a gap is detected. If NAKREPORT is also enabled, the receiver re-emits NAKs for still-missing seqs on a timer (RTT-based) — covers cases where the first NAK or its retransmit also gets lost."
+    definition: "Default live config fires a NAK the moment a gap is detected. If NAKREPORT is also enabled, the receiver also fires periodic NAKs (RTT-based timer) for still-missing seqs — covers cases where the first NAK or its triggered retransmit also gets lost."
+
   - term: "TLPKTDROP"
     abbrev: "Too-Late Packet Drop"
-    definition: "Receiver-side feature: rather than block the playout buffer waiting for a packet that's going to miss its TSBPD deadline anyway, mark it as permanently lost and continue. Keeps live streams flowing under adverse conditions."
+    definition: "Receiver-side feature: if a missing packet's TSBPD deadline arrives before the retransmit, mark it permanently lost and continue. Prevents the playout queue from blocking on a doomed packet. Covered in the SRT TSBPD Latency Trade-off scenario."
+
+  - term: "TSBPD playout slot"
+    definition: "Each packet is scheduled for delivery at (sender_timestamp + clock_offset + tsbpd_latency). Retransmits MUST preserve the original timestamp so they end up at the same playout slot."
+
+  - term: "Full ACK vs Light ACK"
+    definition: "Full ACK (~30 bytes body) carries cumulative seq + RTT + RTT variance + receive rate + link capacity. Light ACK is the cumulative seq only — emitted on the every-packet path for fast window advance. SRT live mode periodically sends Full ACKs (every 10 ms by default) and Light ACKs continuously."
