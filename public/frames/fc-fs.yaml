@@ -238,20 +238,26 @@ link_variants:
     spec: "FC-PI-6"
   - id: 64gfc
     name: "64GFC"
-    line_rate_gbaud: 28.9
-    encoding: "256b/257b"
+    line_rate_gbaud: 28.05
+    encoding: "PAM4 + 256b/257b"
     encoding_ratio: 0.996109
     fec: "RS-FEC(528,514)"
     fec_ratio: 0.973485
     spec: "FC-PI-7"
+    notes: >
+      PAM-4 signaling at 28.05 GBd → 2 bits/symbol → ~56 Gbps post-FEC
+      user rate. The "64" in 64GFC is the FC tier name, not the line
+      rate. 256b/257b transcoding atop RS(528,514) FEC.
   - id: 128gfc
     name: "128GFC"
     line_rate_gbaud: 56.1
-    encoding: "256b/257b"
+    encoding: "PAM4 + 256b/257b"
     encoding_ratio: 0.996109
     fec: "RS-FEC(528,514)"
     fec_ratio: 0.973485
     spec: "FC-PI-8"
+    notes: >
+      PAM-4 at 56.1 GBd → ~109 Gbps post-FEC user rate.
 
 metadata:
   authors: ["Erik Smith"]

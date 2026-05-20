@@ -8,6 +8,7 @@ import {
   computeOverhead,
   formatBytes,
   effectiveUserRateGbps,
+  variantLanes,
 } from '../../utils/overheadCalc';
 
 const BASE = import.meta.env.BASE_URL;
@@ -85,6 +86,7 @@ export default function FramesPage() {
   const [frames, setFrames] = useState([]);
   const [selectedFrameId, setSelectedFrameId] = useState(null);
   const [variantId, setVariantId] = useState(null);
+  const [laneOptionId, setLaneOptionId] = useState(null);
   const [payloadBytes, setPayloadBytes] = useState(1460);
   const [messageBytes, setMessageBytes] = useState(1460);
   const [endianLE, setEndianLE] = useState(false);
@@ -124,6 +126,23 @@ export default function FramesPage() {
     [selectedFrame, variantId],
   );
 
+  // Selected lane option (e.g. 400GbE → "8×50 PAM-4" vs "4×100 PAM-4").
+  // When a variant has lane_options, the chosen entry's PHY fields override
+  // the variant's top-level fields downstream.
+  const selectedLaneOption = useMemo(() => {
+    const opts = selectedVariant?.lane_options;
+    if (!opts || opts.length === 0) return null;
+    return opts.find(o => o.id === laneOptionId) || opts[0];
+  }, [selectedVariant, laneOptionId]);
+
+  // Merge lane option onto variant for math + display. When no lane_options,
+  // the variant itself is used as-is.
+  const effectiveVariant = useMemo(() => {
+    if (!selectedVariant) return null;
+    if (!selectedLaneOption) return selectedVariant;
+    return { ...selectedVariant, ...selectedLaneOption };
+  }, [selectedVariant, selectedLaneOption]);
+
   // When switching frames, reset the variant to the new frame's default
   // and snap payload/frame to the new frame's max (or default_bytes if
   // declared). Users typically want to start at "fully loaded" and slide
@@ -140,17 +159,30 @@ export default function FramesPage() {
     setPayloadBytes(target);
   }, [selectedFrame]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // When switching variant, reset lane option to the variant's first option
+  // (or null if the variant has no lane_options at all).
+  useEffect(() => {
+    const opts = selectedVariant?.lane_options;
+    if (!opts || opts.length === 0) {
+      setLaneOptionId(null);
+      return;
+    }
+    if (!opts.find(o => o.id === laneOptionId)) {
+      setLaneOptionId(opts[0].id);
+    }
+  }, [selectedVariant]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const overhead = useMemo(() => {
-    if (!selectedFrame || !selectedVariant) return null;
+    if (!selectedFrame || !effectiveVariant) return null;
     const jumbo = payloadBytes > (selectedFrame.payload?.max_bytes ?? Infinity);
     return computeOverhead({
       frame: selectedFrame,
-      variant: selectedVariant,
+      variant: effectiveVariant,
       messageBytes,
       payloadPerFrame: payloadBytes,
       jumbo,
     });
-  }, [selectedFrame, selectedVariant, payloadBytes, messageBytes]);
+  }, [selectedFrame, effectiveVariant, payloadBytes, messageBytes]);
 
   function applyPreset(p) {
     const max = selectedFrame?.payload?.jumbo_max_bytes
@@ -266,12 +298,32 @@ export default function FramesPage() {
               >
                 {(selectedFrame?.link_variants || []).map(v => (
                   <option key={v.id} value={v.id}>
-                    {v.name} — {v.encoding}
-                    {v.fec ? ` + ${v.fec}` : ''}
+                    {v.name}
+                    {v.lane_options ? '' : ` — ${v.encoding}${v.fec ? ` + ${v.fec}` : ''}`}
                   </option>
                 ))}
               </select>
             </Field>
+
+            {selectedVariant?.lane_options?.length > 0 && (
+              <Field label="Lane Config">
+                <select
+                  value={laneOptionId || ''}
+                  onChange={(e) => setLaneOptionId(e.target.value)}
+                  style={{
+                    background: '#0f172a', color: '#e2e8f0',
+                    border: '1px solid #334155', borderRadius: 4,
+                    padding: '6px 8px', fontSize: 12,
+                  }}
+                >
+                  {selectedVariant.lane_options.map(o => (
+                    <option key={o.id} value={o.id}>
+                      {o.label || o.id}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )}
 
             {!isControlFrame && (
               <Field label={`Payload / Frame (${payloadBytes.toLocaleString()} B)`}>
@@ -384,6 +436,33 @@ export default function FramesPage() {
             </div>
           )}
 
+          {/* PHY summary (post-FEC, modulation, lanes) */}
+          {effectiveVariant && (
+            <div style={{
+              padding: '8px 14px', marginBottom: 12,
+              background: '#0a0f1a', border: '1px solid #1e293b', borderRadius: 6,
+              fontSize: 11, color: '#94a3b8',
+              display: 'flex', gap: 20, flexWrap: 'wrap',
+            }}>
+              <span><strong style={{ color: '#e2e8f0' }}>{selectedVariant.name}</strong>{selectedLaneOption ? ` · ${selectedLaneOption.label || selectedLaneOption.id}` : ''}</span>
+              <span>Modulation: <span style={{ color: '#a78bfa' }}>{(effectiveVariant.encoding || '').toLowerCase().includes('pam4') ? 'PAM-4 (2 bits/symbol)' : 'NRZ (1 bit/symbol)'}</span></span>
+              <span>Lanes: <span style={{ color: '#22d3ee' }}>{variantLanes(effectiveVariant)} × {effectiveVariant.line_rate_gbaud} GBd</span></span>
+              <span>Encoding: <span style={{ color: '#f59e0b' }}>{effectiveVariant.encoding}</span> ({(effectiveVariant.encoding_ratio * 100).toFixed(2)}%)</span>
+              {effectiveVariant.fec && (
+                <span>FEC: <span style={{ color: '#ec4899' }}>{effectiveVariant.fec}</span> ({(effectiveVariant.fec_ratio * 100).toFixed(2)}%)</span>
+              )}
+              <span>Post-FEC rate: <span style={{ color: '#10b981' }}>{effectiveUserRateGbps(effectiveVariant).toFixed(2)} Gbps</span></span>
+              {effectiveVariant.spec && (
+                <span style={{ color: '#475569' }}>per {effectiveVariant.spec}</span>
+              )}
+            </div>
+          )}
+
+          {/* Overhead waterfall */}
+          <div style={{ marginBottom: 16 }}>
+            <OverheadWaterfall result={overhead} variant={effectiveVariant} />
+          </div>
+
           {/* Diagram */}
           <div style={{
             padding: 16,
@@ -396,36 +475,13 @@ export default function FramesPage() {
             {selectedFrame && (
               <FrameDiagram
                 frame={selectedFrame}
-                variant={selectedVariant}
+                variant={effectiveVariant}
                 payloadBytes={payloadBytes}
                 endianLE={endianLE}
                 wireTime={wireTime}
               />
             )}
           </div>
-
-          {/* Link variant detail */}
-          {selectedVariant && (
-            <div style={{
-              padding: '8px 14px', marginBottom: 16,
-              background: '#0a0f1a', border: '1px solid #1e293b', borderRadius: 6,
-              fontSize: 11, color: '#94a3b8',
-              display: 'flex', gap: 20, flexWrap: 'wrap',
-            }}>
-              <span><strong style={{ color: '#e2e8f0' }}>{selectedVariant.name}</strong></span>
-              <span>Encoding: <span style={{ color: '#f59e0b' }}>{selectedVariant.encoding}</span> ({(selectedVariant.encoding_ratio * 100).toFixed(2)}%)</span>
-              {selectedVariant.fec && (
-                <span>FEC: <span style={{ color: '#ec4899' }}>{selectedVariant.fec}</span> ({(selectedVariant.fec_ratio * 100).toFixed(2)}%)</span>
-              )}
-              <span>User rate: <span style={{ color: '#10b981' }}>{effectiveUserRateGbps(selectedVariant).toFixed(2)} Gbps</span></span>
-              {selectedVariant.spec && (
-                <span style={{ color: '#475569' }}>per {selectedVariant.spec}</span>
-              )}
-            </div>
-          )}
-
-          {/* Overhead waterfall */}
-          <OverheadWaterfall result={overhead} variant={selectedVariant} />
         </div>
       )}
     </div>

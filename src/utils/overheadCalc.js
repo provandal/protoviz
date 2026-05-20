@@ -53,8 +53,28 @@ function bitsPerSymbol(variant) {
 }
 
 /**
- * Convert a link variant to a raw line-rate Gbps figure (post-encoding,
- * post-FEC user data rate).
+ * Number of physical SerDes lanes the variant uses. Explicit `lanes`
+ * field wins; otherwise inferred from the variant id (Ethernet naming
+ * convention: 40GbE=4×10, 100GbE=4×25, 200GbE=4×PAM4, 400GbE=8×PAM4,
+ * 800GbE=8×PAM4). FC tiers are single-lane through 128GFC.
+ */
+function laneCount(variant) {
+  if (variant.lanes) return variant.lanes;
+  const id = (variant.id || '').toLowerCase();
+  if (id === '40gbe') return 4;
+  if (id === '100gbe') return 4;
+  if (id === '200gbe') return 4;
+  if (id === '400gbe') return 8;
+  if (id === '800gbe') return 8;
+  return 1;
+}
+
+/**
+ * Post-FEC rate in Gbps — the aggregate bit rate that survives PHY-layer
+ * encoding and FEC overhead, across all SerDes lanes. This is the
+ * MAC-layer rate; it does NOT account for preamble/IFG, framing, or
+ * protocol headers. For end-to-end user data throughput, multiply this
+ * by `goodput` from computeOverhead().
  */
 export function effectiveUserRateGbps(variant) {
   if (!variant) return 0;
@@ -62,7 +82,15 @@ export function effectiveUserRateGbps(variant) {
   const bps = bitsPerSymbol(variant);
   const enc = variant.encoding_ratio ?? 1;
   const fec = variant.fec_ratio ?? 1;
-  return symbols * bps * enc * fec;
+  const lanes = laneCount(variant);
+  return symbols * bps * enc * fec * lanes;
+}
+
+/**
+ * Number of lanes used by the variant (1 for single-lane PHYs).
+ */
+export function variantLanes(variant) {
+  return variant ? laneCount(variant) : 1;
 }
 
 /**

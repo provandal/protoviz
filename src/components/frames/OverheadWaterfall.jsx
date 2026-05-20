@@ -1,4 +1,4 @@
-import { formatBytes, formatPct, formatTime } from '../../utils/overheadCalc';
+import { formatBytes, formatPct, formatTime, effectiveUserRateGbps } from '../../utils/overheadCalc';
 
 const SEG_COLORS = {
   payload:  { c: '#10b981', label: 'Payload' },
@@ -71,6 +71,7 @@ function Legend({ breakdown, totalLineBytes }) {
 export default function OverheadWaterfall({ result, variant }) {
   if (!result || !variant) return null;
   const { breakdown, totalLineBytes, goodput, timeSec, frameCount } = result;
+  const goodputGbps = effectiveUserRateGbps(variant) * goodput;
   return (
     <div style={{
       padding: 16,
@@ -92,6 +93,8 @@ export default function OverheadWaterfall({ result, variant }) {
           <div>
             Goodput:{' '}
             <span style={{ color: '#10b981', fontWeight: 700 }}>{formatPct(goodput)}</span>
+            <span style={{ color: '#475569' }}> · </span>
+            <span style={{ color: '#10b981', fontWeight: 700 }}>{goodputGbps.toFixed(2)} Gbps</span>
           </div>
           <div>
             Time on wire:{' '}

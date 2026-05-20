@@ -118,6 +118,7 @@ link_variants:
   - id: 1gbe
     name: "1GbE (1000BASE-X)"
     line_rate_gbaud: 1.25
+    lanes: 1
     encoding: "8b/10b"
     encoding_ratio: 0.8
     fec: null
@@ -126,6 +127,7 @@ link_variants:
   - id: 10gbe
     name: "10GbE (10GBASE-R)"
     line_rate_gbaud: 10.3125
+    lanes: 1
     encoding: "64b/66b"
     encoding_ratio: 0.969697
     fec: null
@@ -134,6 +136,7 @@ link_variants:
   - id: 25gbe
     name: "25GbE (25GBASE-R)"
     line_rate_gbaud: 25.78125
+    lanes: 1
     encoding: "64b/66b"
     encoding_ratio: 0.969697
     fec: "RS-FEC(528,514)"
@@ -142,56 +145,133 @@ link_variants:
   - id: 40gbe
     name: "40GbE (40GBASE-R)"
     line_rate_gbaud: 10.3125
+    lanes: 4
     encoding: "64b/66b"
     encoding_ratio: 0.969697
     fec: null
     fec_ratio: 1.0
     spec: "IEEE 802.3ba"
-    notes: "4 × 10.3125 GBd lanes"
+    notes: "4 × 10.3125 GBd NRZ"
   - id: 50gbe
     name: "50GbE (50GBASE-R)"
     line_rate_gbaud: 26.5625
+    lanes: 1
     encoding: "PAM4 + 256b/257b"
     encoding_ratio: 0.996109
     fec: "RS-FEC(544,514)"
     fec_ratio: 0.944853
     spec: "IEEE 802.3cd"
   - id: 100gbe
-    name: "100GbE (100GBASE-R, 4×25)"
-    line_rate_gbaud: 25.78125
-    encoding: "64b/66b"
-    encoding_ratio: 0.969697
-    fec: "RS-FEC(528,514)"
-    fec_ratio: 0.973485
-    spec: "IEEE 802.3bj"
-    notes: "4 × 25.78125 GBd NRZ"
+    name: "100GbE"
+    lane_options:
+      - id: 4x25
+        label: "4 × 25 GBd NRZ (100GBASE-CR4/SR4/LR4/KR4)"
+        line_rate_gbaud: 25.78125
+        lanes: 4
+        encoding: "64b/66b"
+        encoding_ratio: 0.969697
+        fec: "RS-FEC(528,514)"
+        fec_ratio: 0.973485
+        spec: "IEEE 802.3bj/bm"
+      - id: 2x50
+        label: "2 × 50 GBd PAM-4 (100GBASE-CR2/DR2)"
+        line_rate_gbaud: 26.5625
+        lanes: 2
+        encoding: "PAM4 + 256b/257b"
+        encoding_ratio: 0.996109
+        fec: "RS-FEC(544,514)"
+        fec_ratio: 0.944853
+        spec: "IEEE 802.3cd"
+      - id: 1x100
+        label: "1 × 100 GBd PAM-4 (100GBASE-CR1/DR/FR/LR)"
+        line_rate_gbaud: 53.125
+        lanes: 1
+        encoding: "PAM4 + 256b/257b"
+        encoding_ratio: 0.996109
+        fec: "RS-FEC(544,514)"
+        fec_ratio: 0.944853
+        spec: "IEEE 802.3ck"
   - id: 200gbe
-    name: "200GbE (200GBASE-R)"
-    line_rate_gbaud: 26.5625
-    encoding: "PAM4 + 256b/257b"
-    encoding_ratio: 0.996109
-    fec: "RS-FEC(544,514)"
-    fec_ratio: 0.944853
-    spec: "IEEE 802.3cd"
-    notes: "4 × 26.5625 GBd PAM4"
+    name: "200GbE"
+    lane_options:
+      - id: 4x50
+        label: "4 × 50 GBd PAM-4 (200GBASE-SR4/DR4/FR4/LR4)"
+        line_rate_gbaud: 26.5625
+        lanes: 4
+        encoding: "PAM4 + 256b/257b"
+        encoding_ratio: 0.996109
+        fec: "RS-FEC(544,514)"
+        fec_ratio: 0.944853
+        spec: "IEEE 802.3cd"
+      - id: 2x100
+        label: "2 × 100 GBd PAM-4 (200GBASE-DR2/FR2/LR2)"
+        line_rate_gbaud: 53.125
+        lanes: 2
+        encoding: "PAM4 + 256b/257b"
+        encoding_ratio: 0.996109
+        fec: "RS-FEC(544,514)"
+        fec_ratio: 0.944853
+        spec: "IEEE 802.3cu"
+      - id: 1x200
+        label: "1 × 200 GBd PAM-4 (200GBASE-CR1/DR1)"
+        line_rate_gbaud: 106.25
+        lanes: 1
+        encoding: "PAM4 + 256b/257b"
+        encoding_ratio: 0.996109
+        fec: "RS-FEC(544,514)"
+        fec_ratio: 0.944853
+        spec: "IEEE 802.3df"
   - id: 400gbe
-    name: "400GbE (400GBASE-R)"
-    line_rate_gbaud: 26.5625
-    encoding: "PAM4 + 256b/257b"
-    encoding_ratio: 0.996109
-    fec: "RS-FEC(544,514)"
-    fec_ratio: 0.944853
-    spec: "IEEE 802.3bs"
-    notes: "8 × 26.5625 GBd PAM4 (or 4 × 53.125)"
+    name: "400GbE"
+    lane_options:
+      - id: 8x50
+        label: "8 × 50 GBd PAM-4 (400GBASE-SR8/DR4)"
+        line_rate_gbaud: 26.5625
+        lanes: 8
+        encoding: "PAM4 + 256b/257b"
+        encoding_ratio: 0.996109
+        fec: "RS-FEC(544,514)"
+        fec_ratio: 0.944853
+        spec: "IEEE 802.3bs"
+      - id: 4x100
+        label: "4 × 100 GBd PAM-4 (400GBASE-SR4/DR4-2/FR4/LR4)"
+        line_rate_gbaud: 53.125
+        lanes: 4
+        encoding: "PAM4 + 256b/257b"
+        encoding_ratio: 0.996109
+        fec: "RS-FEC(544,514)"
+        fec_ratio: 0.944853
+        spec: "IEEE 802.3cu/ck"
+      - id: 2x200
+        label: "2 × 200 GBd PAM-4 (400GBASE-CR2/DR2)"
+        line_rate_gbaud: 106.25
+        lanes: 2
+        encoding: "PAM4 + 256b/257b"
+        encoding_ratio: 0.996109
+        fec: "RS-FEC(544,514)"
+        fec_ratio: 0.944853
+        spec: "IEEE 802.3df"
   - id: 800gbe
     name: "800GbE"
-    line_rate_gbaud: 53.125
-    encoding: "PAM4 + 256b/257b"
-    encoding_ratio: 0.996109
-    fec: "RS-FEC(544,514) + interleaving"
-    fec_ratio: 0.944853
-    spec: "IEEE 802.3df"
-    notes: "8 × 53.125 GBd PAM4"
+    lane_options:
+      - id: 8x100
+        label: "8 × 100 GBd PAM-4 (800GBASE-SR8/DR8/FR8)"
+        line_rate_gbaud: 53.125
+        lanes: 8
+        encoding: "PAM4 + 256b/257b"
+        encoding_ratio: 0.996109
+        fec: "RS-FEC(544,514) + interleaving"
+        fec_ratio: 0.944853
+        spec: "IEEE 802.3df"
+      - id: 4x200
+        label: "4 × 200 GBd PAM-4 (800GBASE-DR4/FR4)"
+        line_rate_gbaud: 106.25
+        lanes: 4
+        encoding: "PAM4 + 256b/257b"
+        encoding_ratio: 0.996109
+        fec: "RS-FEC(544,514) + interleaving"
+        fec_ratio: 0.944853
+        spec: "IEEE 802.3df"
 
 metadata:
   authors: ["Erik Smith"]
