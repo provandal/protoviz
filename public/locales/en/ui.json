@@ -290,6 +290,7 @@
     "suggestNext": "What should I check next?"
   },
   "helloChat": {
+    "nicknameHint": "Enter a nickname to start.",
     "title": "Hello World Chat",
     "subtitle": "Send a real message and watch every protocol layer animate as your data travels the network stack.",
     "modeSameMachine": "Same Machine",

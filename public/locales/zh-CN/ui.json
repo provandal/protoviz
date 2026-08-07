@@ -290,6 +290,7 @@
     "suggestNext": "接下来我应该检查什么？"
   },
   "helloChat": {
+    "nicknameHint": "输入昵称即可开始。",
     "title": "Hello World 聊天",
     "subtitle": "发送一条真实消息，观看每一层协议在数据穿越网络栈时实时动画。",
     "modeSameMachine": "同一台机器",
@@ -332,7 +333,17 @@
     "join": "加入聊天",
     "replayAnimation": "点击重播动画",
     "clickToReplay": "（点击重播）",
-    "relayTemporarilyUnavailable": "中继服务器暂时不可用。您仍然可以使用\u201c同一台电脑\u201d模式，或自行托管中继服务器。"
+    "relayTemporarilyUnavailable": "中继服务器暂时不可用。您仍然可以使用\u201c同一台电脑\u201d模式，或自行托管中继服务器。",
+    "shareUrlNetwork": "将此网址分享给你网络中的某人，即可进行点对点聊天。",
+    "shareUrlAnywhere": "将此网址分享给任何人，即可开始聊天。",
+    "requires": "需要",
+    "reqNone": "无需任何设置——打开两个标签页即可开始聊天。",
+    "reqWebRTC": "支持 WebRTC 的浏览器。先进行短暂的云端信令，然后直接进行 P2P 连接。",
+    "reqCloudRelay": "云端中继服务器。",
+    "relayOnline": "中继服务器在线",
+    "relayChecking": "正在检查中继服务器……",
+    "relayOffline": "中继服务器离线",
+    "setupViewSource": "在 GitHub 上查看中继服务器源代码"
   },
   "common": {
     "save": "保存",

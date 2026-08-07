@@ -98,6 +98,9 @@ export default function TopologySelector({ initialRoom = '', initialMode = null 
   const selectedModeConfig = MODES.find(m => m.id === selectedMode);
   const needsRelayButOffline = selectedModeConfig?.requiresRelay && relayStatus !== 'online';
   const canStart = selectedMode && name.trim() && !needsRelayButOffline;
+  // A mode is chosen and (for relay modes) the relay is up, but the nickname is
+  // still blank — the only thing keeping the button disabled. Tell the user why.
+  const needsNickname = !isJoining && selectedMode && !name.trim() && !needsRelayButOffline;
 
   const handleStart = () => {
     if (!canStart) return;
@@ -206,7 +209,7 @@ export default function TopologySelector({ initialRoom = '', initialMode = null 
             onChange={e => setName(e.target.value)}
             placeholder={t('helloChat.nicknamePlaceholder', 'e.g., Alice')}
             maxLength={20}
-            autoFocus={isJoining}
+            autoFocus
             style={{
               width: '100%', background: '#1e293b', border: '1px solid #334155',
               color: '#e2e8f0', borderRadius: 6, padding: '10px 14px',
@@ -349,6 +352,15 @@ export default function TopologySelector({ initialRoom = '', initialMode = null 
             ? t('helloChat.join', 'Join Chat')
             : t('helloChat.start', 'Start Chatting')}
         </button>
+
+        {/* Why the button is disabled: a mode is picked but the nickname is blank */}
+        {needsNickname && (
+          <div style={{
+            marginTop: 12, color: '#facc15', fontSize: 12, textAlign: 'center',
+          }}>
+            {t('helloChat.nicknameHint', 'Enter a nickname to start.')}
+          </div>
+        )}
 
         {/* Brief offline notice — relay is normally always online */}
         {!isJoining && needsRelayButOffline && (

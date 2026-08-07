@@ -238,6 +238,7 @@
     "suggestNext": "¿Qué debería verificar a continuación?"
   },
   "helloChat": {
+    "nicknameHint": "Escribe un apodo para empezar.",
     "title": "Chat Hola Mundo",
     "subtitle": "Envía un mensaje real y observa cómo cada capa de protocolo se anima mientras tus datos recorren la pila de red.",
     "modeSameMachine": "Misma máquina",
@@ -280,7 +281,17 @@
     "join": "Unirse al chat",
     "replayAnimation": "Haz clic para repetir la animación",
     "clickToReplay": "(clic para repetir)",
-    "relayTemporarilyUnavailable": "El servidor relay no está disponible temporalmente. Puedes usar el modo \"Misma Máquina\" o alojar el relay tú mismo."
+    "relayTemporarilyUnavailable": "El servidor relay no está disponible temporalmente. Puedes usar el modo \"Misma Máquina\" o alojar el relay tú mismo.",
+    "shareUrlNetwork": "Comparte esta URL con alguien de tu red para chatear de igual a igual.",
+    "shareUrlAnywhere": "Comparte esta URL con cualquier persona para empezar a chatear.",
+    "requires": "Requiere",
+    "reqNone": "No requiere configuración: abre dos pestañas y empieza a chatear.",
+    "reqWebRTC": "Navegador compatible con WebRTC. Breve señalización en la nube y luego P2P directo.",
+    "reqCloudRelay": "Servidor relay en la nube.",
+    "relayOnline": "Servidor relay en línea",
+    "relayChecking": "Comprobando el relay...",
+    "relayOffline": "Servidor relay sin conexión",
+    "setupViewSource": "Ver el código del relay en GitHub"
   },
   "protocolFamily": {
     "tcpIp": "Fundamentos de TCP/IP",

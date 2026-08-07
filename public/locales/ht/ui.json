@@ -238,6 +238,7 @@
     "suggestNext": "Kisa mwen ta dwe verifye apre?"
   },
   "helloChat": {
+    "nicknameHint": "Antre yon non jwèt pou kòmanse.",
     "title": "Chat Bonjou Mond",
     "subtitle": "Voye yon vrè mesaj epi gade chak kouch pwotokòl anime pandan done ou vwayaje nan pile rezo a.",
     "modeSameMachine": "Menm Machin",
@@ -280,7 +281,17 @@
     "join": "Jwenn Chat",
     "replayAnimation": "Klike pou rejwe animasyon an",
     "clickToReplay": "(klike pou rejwe)",
-    "relayTemporarilyUnavailable": "Sèvè relè a pa disponib pou kounye a. Ou ka toujou itilize mòd \"Menm Machin\" oswa héberger relè a ou menm."
+    "relayTemporarilyUnavailable": "Sèvè relè a pa disponib pou kounye a. Ou ka toujou itilize mòd \"Menm Machin\" oswa héberger relè a ou menm.",
+    "shareUrlNetwork": "Pataje URL sa a ak yon moun sou rezo ou pou nou pale dirèkteman (pè-a-pè).",
+    "shareUrlAnywhere": "Pataje URL sa a ak nenpòt moun pou kòmanse pale.",
+    "requires": "Egzije",
+    "reqNone": "Pa bezwen okenn konfigirasyon — louvri de onglè epi kòmanse pale.",
+    "reqWebRTC": "Navigatè ki sipòte WebRTC. Yon ti siyalizasyon nan nyaj la, apre sa P2P dirèk.",
+    "reqCloudRelay": "Sèvè relè nan nyaj la.",
+    "relayOnline": "Sèvè relè a anliy",
+    "relayChecking": "N ap tcheke relè a...",
+    "relayOffline": "Sèvè relè a pa anliy",
+    "setupViewSource": "Gade kòd sous relè a sou GitHub"
   },
   "protocolFamily": {
     "tcpIp": "Fondamantal TCP/IP",

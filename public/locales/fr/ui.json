@@ -238,6 +238,7 @@
     "suggestNext": "Que devrais-je vérifier ensuite ?"
   },
   "helloChat": {
+    "nicknameHint": "Saisissez un pseudo pour commencer.",
     "title": "Chat Hello World",
     "subtitle": "Envoyez un vrai message et regardez chaque couche protocolaire s'animer pendant que vos données traversent la pile réseau.",
     "modeSameMachine": "Même machine",
@@ -280,7 +281,17 @@
     "join": "Rejoindre le chat",
     "replayAnimation": "Cliquez pour rejouer l'animation",
     "clickToReplay": "(cliquez pour rejouer)",
-    "relayTemporarilyUnavailable": "Le serveur relais est temporairement indisponible. Vous pouvez utiliser le mode \"Même Machine\" ou héberger le relais vous-même."
+    "relayTemporarilyUnavailable": "Le serveur relais est temporairement indisponible. Vous pouvez utiliser le mode \"Même Machine\" ou héberger le relais vous-même.",
+    "shareUrlNetwork": "Partagez cette URL avec une personne de votre réseau pour discuter en pair-à-pair.",
+    "shareUrlAnywhere": "Partagez cette URL avec n'importe qui pour commencer à discuter.",
+    "requires": "Nécessite",
+    "reqNone": "Aucune configuration requise — ouvrez deux onglets et commencez à discuter.",
+    "reqWebRTC": "Navigateur compatible WebRTC. Brève signalisation dans le cloud, puis P2P direct.",
+    "reqCloudRelay": "Serveur relais dans le cloud.",
+    "relayOnline": "Serveur relais en ligne",
+    "relayChecking": "Vérification du relais...",
+    "relayOffline": "Serveur relais hors ligne",
+    "setupViewSource": "Voir le code source du relais sur GitHub"
   },
   "protocolFamily": {
     "tcpIp": "Fondamentaux TCP/IP",
