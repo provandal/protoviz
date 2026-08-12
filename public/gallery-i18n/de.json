@@ -110,5 +110,17 @@
   "nvme-tcp-vertical-stack-connect-write": {
     "title": "[DRAFT] NVMe/TCP: Vollständiger vertikaler Stack-Trace — Verbindung → Schreibvorgang",
     "description": "Alle anderen ProtoViz-Szenarien verfolgen Pakete horizontal — vom Initiator zum Ziel. Dieses Szenario geht vertikal: ein TCP-Verbindungsaufbau und ein 4-KB-NVMe-WRITE-Befehl, verfolgt vom User-Space-Systemaufruf durch jede Kernel-Schicht, über die Leitung und zurück durch den Ziel-Stack."
+  },
+  "tcp-syn-timeout-connection-refused": {
+    "title": "TCP-Fehler: SYN-Timeout vs. Connection Refused",
+    "description": "Zwei Arten, wie connect() fehlschlägt: Ein geschlossener Port antwortet sofort mit RST (ECONNREFUSED), während eine Firewall mit stillem DROP den Client SYNs mit exponentiellem Backoff wiederholen lässt, bis ETIMEDOUT eintritt. Schnelles Scheitern heißt: etwas hat geantwortet; langsames Scheitern heißt: Pakete werden verschluckt."
+  },
+  "tcp-retransmission-rto": {
+    "title": "TCP-Fehler: Retransmission — RTO vs. Fast Retransmit",
+    "description": "Derselbe Segmentverlust, zwei Wege der Wiederherstellung: ein 204-ms-Retransmission-Timeout, das das Congestion Window auf 1 kollabieren lässt, gegenüber drei Duplicate ACKs, die Fast Retransmit rund 1.500× früher auslösen. Mit SACK-Blöcken, Slow Start und Fast Recovery."
+  },
+  "tcp-rst-mid-connection": {
+    "title": "TCP-Fehler: RST mitten in der Verbindung vs. sauberes FIN",
+    "description": "Ein Server-Absturz beendet eine bestehende Verbindung mit RST — der Client sieht ECONNRESET. Im Kontrast dazu der geordnete 4-Wege-FIN-Abbau mit TIME_WAIT, plus die üblichen RST-Verdächtigen in Produktion: Neustarts, Firewalls und Idle-Timeouts von Load Balancern."
   }
 }

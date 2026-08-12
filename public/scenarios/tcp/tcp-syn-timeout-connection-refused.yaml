@@ -1,0 +1,1530 @@
+meta:
+  id: "tcp-syn-timeout-connection-refused"
+  title: "TCP Error: SYN Timeout vs Connection Refused"
+  protocol: "TCP"
+  protocol_family: "TCP/IP"
+  version: "1.0.0"
+  description: >
+    Error scenario: two ways a TCP connection attempt can fail before it ever
+    begins. Attempt #1 targets a closed port — the server's kernel answers the
+    SYN with an immediate RST and connect() fails fast with ECONNREFUSED.
+    Attempt #2 targets a port behind a firewall that silently discards the SYN —
+    the client retransmits with exponential backoff (1 s, 2 s, 4 s...) and only
+    gives up after ~127 seconds with ETIMEDOUT. Understanding the difference
+    between "refused" and "timed out" is the first branch in almost every
+    connectivity troubleshooting flowchart. Builds on the foundation scenario
+    "TCP: 3-Way Handshake → Data Transfer → FIN Teardown".
+
+  learning_objectives:
+    - "Distinguish the two classic connect() failures: ECONNREFUSED (fast, active refusal) vs ETIMEDOUT (slow, silence)"
+    - "See how a host with no listener on a port responds to a SYN with RST+ACK (RFC 9293 reset generation)"
+    - "Trace SYN retransmission with exponential backoff: 1 s, 2 s, 4 s, 8 s... governed by tcp_syn_retries"
+    - "Understand why firewalls that DROP (silently discard) produce slow failures while REJECT produces fast ones"
+    - "Read the RST segment's sequence/acknowledgment numbers and see why SEQ=0, ACK=ISN+1"
+    - "Learn what SYN_SENT state means and how long a client will wait in it"
+    - "Build the troubleshooting instinct: instant failure → something answered; hanging failure → something is eating your packets"
+
+  difficulty: "beginner"
+
+  authors:
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+
+  created: "2026-08-12"
+  updated: "2026-08-12"
+
+  tags:
+    - "TCP"
+    - "TCP/IP"
+    - "error"
+    - "troubleshooting"
+    - "SYN"
+    - "RST"
+    - "ECONNREFUSED"
+    - "ETIMEDOUT"
+    - "exponential backoff"
+    - "firewall"
+    - "beginner"
+    - "education"
+
+  primary_specs:
+    - document: "RFC 9293"
+      section: "3.5.2"
+      title: "Reset Generation"
+      url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5.2"
+      alt_url: "https://www.rfc-editor.org/rfc/rfc9293"
+    - document: "RFC 9293"
+      section: "3.3.2"
+      title: "TCP State Machine — SYN_SENT"
+      url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.3.2"
+      alt_url: ""
+    - document: "RFC 6298"
+      section: "5"
+      title: "Managing the RTO Timer"
+      url: "https://datatracker.ietf.org/doc/html/rfc6298#section-5"
+      alt_url: ""
+
+  content_disclaimer: >
+    Protocol descriptions in this scenario are based on open-source implementations
+    (Linux kernel, Wireshark dissectors) and public RFCs. No proprietary specification
+    text has been reproduced. RFC references are provided as citations for further reading.
+
+  source_references:
+    - repo: "torvalds/linux"
+      path: "net/ipv4/tcp_ipv4.c"
+      description: "tcp_v4_send_reset — RST generation for segments arriving at closed ports"
+    - repo: "torvalds/linux"
+      path: "net/ipv4/tcp_timer.c"
+      description: "tcp_retransmit_timer / tcp_write_timeout — SYN retransmission and backoff"
+    - repo: "torvalds/linux"
+      path: "net/ipv4/tcp_output.c"
+      description: "tcp_connect — SYN construction and initial timer arming"
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "client"
+      type: "host"
+      label: "Client"
+      description: "TCP client — calls connect() twice, with very different results"
+      hardware: "Generic 10GbE NIC"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "10.0.1.10"
+      mac: "00:11:22:33:44:01"
+      position: "left"
+
+    - id: "firewall"
+      type: "switch"
+      label: "Firewall"
+      description: "L2/L3 forwarding device with a filtering policy: forwards traffic to port 9090, silently drops traffic to port 8443"
+      hardware: "Generic filtering router"
+      position: "center"
+
+    - id: "server"
+      type: "host"
+      label: "Server"
+      description: "Server host — reachable, but nothing is listening on the target ports"
+      hardware: "Generic 10GbE NIC"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "10.0.1.20"
+      mac: "00:11:22:33:44:02"
+      position: "right"
+
+  links:
+    - id: "link-c-fw"
+      from: "client"
+      to: "firewall"
+      speed_gbps: 10
+      media: "copper_dac"
+      fec: "FC-FEC"
+      autoneg: true
+    - id: "link-fw-s"
+      from: "firewall"
+      to: "server"
+      speed_gbps: 10
+      media: "copper_dac"
+      fec: "FC-FEC"
+      autoneg: true
+
+# ─────────────────────────────────────────────────────────────────
+# OSI LAYER DEFINITIONS (per actor)
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  client:
+    - layer: 7
+      name: "Application"
+      components: ["user application", "libc socket API"]
+      state_schema:
+        app_state:
+          type: "string"
+          description: "Application-level state"
+          initial: "idle"
+        socket_fd:
+          type: "string"
+          description: "Socket file descriptor"
+          initial: "none"
+        errno:
+          type: "string"
+          description: "Last error returned by a socket call"
+          initial: "—"
+
+    - layer: 5
+      name: "Session / Socket"
+      components: ["net/socket.c", "net/ipv4/af_inet.c"]
+      state_schema:
+        socket_state:
+          type: "string"
+          description: "Kernel socket state"
+          initial: "SS_UNCONNECTED"
+        local_port:
+          type: "integer"
+          description: "Local (ephemeral) port number"
+          initial: 0
+        remote_port:
+          type: "integer"
+          description: "Remote port number"
+          initial: 0
+
+    - layer: 4
+      name: "TCP"
+      components: ["net/ipv4/tcp.c", "net/ipv4/tcp_output.c", "net/ipv4/tcp_timer.c"]
+      state_schema:
+        tcp_state:
+          type: "string"
+          description: "TCP state machine state (RFC 9293 §3.3.2)"
+          initial: "CLOSED"
+        seq_num:
+          type: "string"
+          description: "Next sequence number to send (SND.NXT)"
+          initial: "—"
+        syn_retries:
+          type: "integer"
+          description: "SYN retransmissions so far (limit: tcp_syn_retries = 6)"
+          initial: 0
+        retrans_timer:
+          type: "string"
+          description: "Current retransmission timeout for the SYN"
+          initial: "—"
+
+    - layer: 3
+      name: "IP / Routing"
+      components: ["net/ipv4/ip_output.c", "net/ipv4/route.c"]
+      state_schema:
+        src_ip:
+          type: "string"
+          description: "Source IP address"
+          initial: "10.0.1.10"
+        dst_ip:
+          type: "string"
+          description: "Destination IP address"
+          initial: "10.0.1.20"
+        ttl:
+          type: "integer"
+          initial: 64
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver", "IEEE 802.3"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+        mac_addr:
+          type: "string"
+          initial: "00:11:22:33:44:01"
+        arp_resolved:
+          type: "boolean"
+          description: "Destination MAC known via ARP"
+          initial: true
+
+    - layer: 1
+      name: "Physical (10GbE)"
+      components: ["IEEE 802.3", "10GBASE-CR"]
+      state_schema:
+        phy_state:
+          type: "string"
+          description: "Physical layer state"
+          initial: "up"
+        speed:
+          type: "string"
+          initial: "10 Gbps"
+
+  server:
+    - layer: 7
+      name: "Application"
+      components: ["(no process bound to 9090 or 8443)"]
+      state_schema:
+        app_state:
+          type: "string"
+          description: "Application-level state"
+          initial: "nothing bound to 9090/8443"
+        listeners:
+          type: "string"
+          description: "Ports with active listeners"
+          initial: "22 only"
+
+    - layer: 4
+      name: "TCP"
+      components: ["net/ipv4/tcp_ipv4.c"]
+      state_schema:
+        tcp_state:
+          type: "string"
+          description: "TCP state machine state for the probed ports"
+          initial: "CLOSED"
+        rst_sent:
+          type: "integer"
+          description: "RST segments generated for closed-port SYNs"
+          initial: 0
+
+    - layer: 3
+      name: "IP / Routing"
+      components: ["net/ipv4/ip_output.c"]
+      state_schema:
+        src_ip:
+          type: "string"
+          description: "Source IP address"
+          initial: "10.0.1.20"
+        dst_ip:
+          type: "string"
+          description: "Destination IP address"
+          initial: "null"
+        ttl:
+          type: "integer"
+          initial: 64
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver", "IEEE 802.3"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+        mac_addr:
+          type: "string"
+          initial: "00:11:22:33:44:02"
+        arp_resolved:
+          type: "boolean"
+          initial: true
+
+    - layer: 1
+      name: "Physical (10GbE)"
+      components: ["IEEE 802.3", "10GBASE-CR"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "up"
+        speed:
+          type: "string"
+          initial: "10 Gbps"
+
+# ─────────────────────────────────────────────────────────────────
+# FRAMES
+# ─────────────────────────────────────────────────────────────────
+frames:
+  # ── Attempt #1: closed port → RST ───────────────────────────────
+  - id: "tcp_refused_syn"
+    name: "TCP SYN (port 9090)"
+    description: "Client attempts to connect to port 9090 — a closed port with no listener"
+    from: "client"
+    to: "server"
+    via: ["firewall"]
+    timestamp_ns: 1000000000
+    total_bytes: 74
+    color: "#0f766e"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC (already in the neighbor cache)"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            value_hex: "0x0800"
+            description: "IPv4"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 60
+            description: "IP header (20) + TCP header with options (40)"
+          - name: "Identification"
+            abbrev: "ip.id"
+            bits: 16
+            value: "0xa1c0"
+            description: "Unique per datagram"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP (protocol number 6)"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client's IP address"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server's IP address"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 40
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49200
+            description: "Ephemeral port chosen by the kernel"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 9090
+            description: "Target port — the application the client expects here was never started"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 3100000
+            value_hex: "0x002f4d60"
+            description: "Client's Initial Sequence Number (ISN), chosen pseudo-randomly via SipHash"
+            spec_refs:
+              - document: "RFC 9293"
+                section: "3.4.1"
+                title: "Initial Sequence Number Selection"
+                url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.4.1"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 0
+            description: "Zero — ACK flag not set in a SYN-only segment"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x02"
+            description: "SYN=1 — connection request"
+            spec_refs:
+              - document: "RFC 9293"
+                section: "3.6"
+                title: "Header Format — Control Bits"
+                url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.6"
+            fields:
+              - name: "SYN"
+                abbrev: "tcp.flags.syn"
+                bits: 1
+                value: 1
+                description: "Synchronize sequence numbers — connection request"
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 0
+                description: "No acknowledgment yet"
+              - name: "RST"
+                abbrev: "tcp.flags.reset"
+                bits: 1
+                value: 0
+                description: "Not a reset"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Client's advertised receive window"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x8c11"
+            description: "TCP checksum over pseudo-header + TCP header"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 160
+            value: "MSS=1460, SACK-Permitted, Window Scale=7, Timestamps"
+            description: "Standard handshake options (20 bytes) — negotiation that will never complete"
+
+  - id: "tcp_refused_rst"
+    name: "TCP RST+ACK"
+    description: "Server's kernel answers the SYN to a closed port with an immediate reset — this is ECONNREFUSED on the wire"
+    from: "server"
+    to: "client"
+    via: ["firewall"]
+    timestamp_ns: 1000100000
+    total_bytes: 60
+    color: "#dc2626"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 40
+            description: "IP header (20) + bare TCP header (20) — resets carry no options and no data"
+          - name: "Identification"
+            abbrev: "ip.id"
+            bits: 16
+            value: "0x0000"
+            description: "Kernel-generated RSTs commonly use IP ID 0"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server's IP — the reset really comes from the target host"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client's IP"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 20
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 9090
+            description: "The closed port the client probed"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 49200
+            description: "Client's ephemeral port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 0
+            value_hex: "0x00000000"
+            description: "Zero — the incoming SYN carried no ACK, so the reset's sequence number is 0 per RFC 9293 reset-generation rules"
+            spec_refs:
+              - document: "RFC 9293"
+                section: "3.5.2"
+                title: "Reset Generation"
+                url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5.2"
+            kernel_ref:
+              file: "net/ipv4/tcp_ipv4.c"
+              function: "tcp_v4_send_reset"
+              notes: "Builds the RST for segments that match no socket"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 3100001
+            value_hex: "0x002f4d61"
+            description: "Client's ISN + 1 (the SYN consumes one sequence number) — this is what lets the client match the RST to its pending connection attempt"
+            spec_refs:
+              - document: "RFC 9293"
+                section: "3.5.2"
+                title: "Reset Generation"
+                url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5.2"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x14"
+            description: "RST=1, ACK=1 — active refusal of the connection attempt"
+            fields:
+              - name: "RST"
+                abbrev: "tcp.flags.reset"
+                bits: 1
+                value: 1
+                description: "Reset — there is no socket to deliver this SYN to"
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field is valid (it references the SYN's sequence number)"
+              - name: "SYN"
+                abbrev: "tcp.flags.syn"
+                bits: 1
+                value: 0
+                description: "Not a connection request"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 0
+            description: "Zero — meaningless in a reset; there will never be data"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x51b0"
+            description: "TCP checksum"
+
+  # ── Attempt #2: filtered port → silence ─────────────────────────
+  - id: "tcp_timeout_syn"
+    name: "TCP SYN (port 8443)"
+    description: "Client attempts to connect to port 8443 — the firewall's policy silently discards this segment; it never reaches the server"
+    from: "client"
+    to: "firewall"
+    via: []
+    timestamp_ns: 6000000000
+    total_bytes: 74
+    color: "#0f766e"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC — the client addresses the server; it has no idea a policy will eat the frame"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 60
+            description: "IP header (20) + TCP header with options (40)"
+          - name: "Identification"
+            abbrev: "ip.id"
+            bits: 16
+            value: "0xb200"
+            description: "Unique per datagram"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client's IP address"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server's IP address"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 40
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49201
+            description: "New ephemeral port for the second attempt"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 8443
+            description: "Target port — blocked by firewall policy (DROP, not REJECT)"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 3200000
+            value_hex: "0x0030d400"
+            description: "New ISN for this connection attempt"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 0
+            description: "Zero — ACK flag not set"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x02"
+            description: "SYN=1 — connection request"
+            fields:
+              - name: "SYN"
+                abbrev: "tcp.flags.syn"
+                bits: 1
+                value: 1
+                description: "Synchronize sequence numbers"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Client's advertised receive window"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x77a2"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 160
+            value: "MSS=1460, SACK-Permitted, Window Scale=7, Timestamps (TSval=100000)"
+            description: "Standard handshake options"
+
+  - id: "tcp_syn_retx_1"
+    name: "TCP SYN retransmit #1"
+    description: "1 second with no reply — the retransmission timer fires and the kernel resends the identical SYN"
+    from: "client"
+    to: "firewall"
+    via: []
+    timestamp_ns: 7000000000
+    total_bytes: 74
+    color: "#d97706"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Identification"
+            abbrev: "ip.id"
+            bits: 16
+            value: "0xb201"
+            description: "New IP ID — this is a new datagram even though the TCP content is identical"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client's IP address"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server's IP address"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 40
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49201
+            description: "Same ephemeral port — same connection attempt"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 8443
+            description: "Same target port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 3200000
+            value_hex: "0x0030d400"
+            description: "Identical ISN — a retransmission repeats the same sequence number; this is how you spot SYN retransmits in a capture"
+            spec_refs:
+              - document: "RFC 6298"
+                section: "5"
+                title: "Managing the RTO Timer"
+                url: "https://datatracker.ietf.org/doc/html/rfc6298#section-5"
+            kernel_ref:
+              file: "net/ipv4/tcp_timer.c"
+              function: "tcp_retransmit_timer"
+              notes: "Doubles the timeout and retransmits until tcp_syn_retries is exhausted"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x02"
+            description: "SYN=1 — identical to the original"
+            fields:
+              - name: "SYN"
+                abbrev: "tcp.flags.syn"
+                bits: 1
+                value: 1
+                description: "Synchronize sequence numbers"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Unchanged"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x76f1"
+            description: "Differs from the original only because the Timestamps option advanced"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 160
+            value: "MSS=1460, SACK-Permitted, Window Scale=7, Timestamps (TSval=101000)"
+            description: "TSval advances with the clock — the only thing that changes between SYN retransmits"
+
+  - id: "tcp_syn_retx_2"
+    name: "TCP SYN retransmit #2"
+    description: "2 more seconds of silence — the backoff interval has doubled"
+    from: "client"
+    to: "firewall"
+    via: []
+    timestamp_ns: 9000000000
+    total_bytes: 74
+    color: "#d97706"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Identification"
+            abbrev: "ip.id"
+            bits: 16
+            value: "0xb202"
+            description: "New IP ID"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client's IP address"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server's IP address"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 40
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49201
+            description: "Same connection attempt"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 8443
+            description: "Same target port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 3200000
+            description: "Still the same ISN"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x02"
+            description: "SYN=1"
+            fields:
+              - name: "SYN"
+                abbrev: "tcp.flags.syn"
+                bits: 1
+                value: 1
+                description: "Synchronize sequence numbers"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Unchanged"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x6f22"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 160
+            value: "MSS=1460, SACK-Permitted, Window Scale=7, Timestamps (TSval=103000)"
+            description: "TSval advanced by ~2 s of clock"
+
+  - id: "tcp_syn_retx_3"
+    name: "TCP SYN retransmit #3"
+    description: "4 more seconds of silence — backoff keeps doubling: next waits would be 8 s, 16 s, 32 s, 64 s"
+    from: "client"
+    to: "firewall"
+    via: []
+    timestamp_ns: 13000000000
+    total_bytes: 74
+    color: "#d97706"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Identification"
+            abbrev: "ip.id"
+            bits: 16
+            value: "0xb203"
+            description: "New IP ID"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client's IP address"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server's IP address"
+
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 40
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49201
+            description: "Same connection attempt"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 8443
+            description: "Same target port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 3200000
+            description: "Still the same ISN — after ~7 s the client has now sent this sequence number four times"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x02"
+            description: "SYN=1"
+            fields:
+              - name: "SYN"
+                abbrev: "tcp.flags.syn"
+                bits: 1
+                value: 1
+                description: "Synchronize sequence numbers"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Unchanged"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x5dc3"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 160
+            value: "MSS=1460, SACK-Permitted, Window Scale=7, Timestamps (TSval=107000)"
+            description: "TSval advanced by ~4 s more"
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+  # ── Phase: Connection Refused (closed port) ─────────────────────
+  - id: "evt_tcp_refused_setup"
+    type: "state_change"
+    t_ns: 0
+    annotation:
+      text: "Attempt #1 — connect() to a closed port (9090): nothing is listening there"
+      detail: >
+        The network path is healthy and MAC addresses are already resolved —
+        this scenario is purely about what happens above the wire. The client
+        application calls connect(10.0.1.20:9090). On the server, no process
+        has ever called listen() on port 9090 (the operator forgot to start
+        the service — the single most common cause of this failure). The
+        firewall's policy permits traffic to 9090, so the SYN will reach the
+        server unhindered. Watch how quickly the failure comes back.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              app_state: "calling connect()"
+              socket_fd: "fd=4"
+          - layer: 5
+            name: "Session / Socket"
+            state_fields:
+              socket_state: "SS_CONNECTING"
+              local_port: 49200
+              remote_port: 9090
+
+  - id: "evt_tcp_refused_syn"
+    type: "frame_tx"
+    t_ns: 1000000000
+    frame_id: "tcp_refused_syn"
+    annotation:
+      text: "TCP SYN → port 9090 — the client asks a closed port for a connection"
+      detail: >
+        The kernel builds a completely normal SYN: pseudo-random ISN (3100000),
+        MSS/Window-Scale/SACK/Timestamps options, and enters SYN_SENT. From the
+        client's perspective this is indistinguishable from any successful
+        connection attempt — the failure is entirely on the far end. The
+        retransmission timer is armed at 1 second in case nothing comes back
+        (it will not be needed in this attempt).
+      spec_refs:
+        - document: "RFC 9293"
+          section: "3.5"
+          title: "Establishing a Connection"
+          url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5"
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              tcp_state: "SYN_SENT"
+              seq_num: "3100001"
+              retrans_timer: "1000 ms"
+
+  - id: "evt_tcp_refused_rst"
+    type: "frame_tx"
+    t_ns: 1000100000
+    frame_id: "tcp_refused_rst"
+    annotation:
+      text: "TCP RST+ACK ← the server's kernel actively refuses: no socket on 9090"
+      detail: >
+        The server's TCP stack looks up the destination port, finds no listening
+        socket, and immediately generates a reset (tcp_v4_send_reset). Per
+        RFC 9293 §3.5.2, because the arriving SYN had no ACK field, the reset
+        carries SEQ=0 and ACK = client_ISN + 1 (3100001) — that ACK value is
+        what proves to the client that this RST answers its specific SYN, so an
+        attacker can't trivially forge it without knowing the ISN.
+
+        Note what did NOT happen: no application ever saw this packet. The
+        refusal comes from the kernel itself, in interrupt context, in
+        microseconds. An RST to a SYN is the wire-level meaning of
+        "Connection refused."
+      spec_refs:
+        - document: "RFC 9293"
+          section: "3.5.2"
+          title: "Reset Generation"
+          url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5.2"
+    state_after:
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              tcp_state: "CLOSED"
+              rst_sent: 1
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              tcp_state: "CLOSED"
+              seq_num: "—"
+              retrans_timer: "—"
+
+  - id: "evt_tcp_refused_errno"
+    type: "error"
+    t_ns: 1000200000
+    annotation:
+      text: "connect() fails in ~100 µs: errno = ECONNREFUSED"
+      detail: >
+        The client kernel matches the RST to the pending connection (via the
+        ACK number), destroys the incipient socket, and wakes the blocked
+        connect() call with ECONNREFUSED. Total elapsed time: about one
+        round-trip — 100 microseconds on this LAN, or a few dozen milliseconds
+        across the Internet.
+
+        Fast failure is a gift for troubleshooting: it tells you the host is
+        up, reachable, and answering — the problem is simply that the service
+        is not there (not started, wrong port, or bound to a different
+        interface). Check with: ss -tlnp on the server.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              app_state: "connect() failed"
+              errno: "ECONNREFUSED"
+          - layer: 5
+            name: "Session / Socket"
+            state_fields:
+              socket_state: "SS_UNCONNECTED"
+
+  # ── Phase: SYN Timeout (silently dropped) ───────────────────────
+  - id: "evt_tcp_timeout_setup"
+    type: "state_change"
+    t_ns: 5000000000
+    annotation:
+      text: "Attempt #2 — connect() to port 8443, which a firewall policy silently discards (DROP)"
+      detail: >
+        Now the client tries port 8443. This time a filtering rule on the
+        firewall matches the traffic and its action is DROP: discard the packet
+        and send nothing back. This is the recommended posture for
+        Internet-facing firewalls (it reveals nothing to port scanners), but it
+        produces the most frustrating failure mode for legitimate users —
+        silence. The client cannot tell the difference between "packet dropped
+        by policy", "host powered off", and "routing broken somewhere in the
+        middle" — all of them look like nothing.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              app_state: "calling connect()"
+              socket_fd: "fd=5"
+              errno: "—"
+          - layer: 5
+            name: "Session / Socket"
+            state_fields:
+              socket_state: "SS_CONNECTING"
+              local_port: 49201
+              remote_port: 8443
+
+  - id: "evt_tcp_timeout_syn"
+    type: "frame_tx"
+    t_ns: 6000000000
+    frame_id: "tcp_timeout_syn"
+    annotation:
+      text: "TCP SYN → port 8443 — the segment dies inside the firewall; the server never sees it"
+      detail: >
+        The SYN is perfectly formed and leaves the client normally. The
+        firewall matches it against its ruleset, hits the DROP rule for
+        8443, and discards the frame. No RST, no ICMP unreachable — the
+        packet simply ceases to exist. The client is now in SYN_SENT with
+        a 1-second retransmission timer running, waiting for a SYN-ACK
+        that will never come.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              tcp_state: "SYN_SENT"
+              seq_num: "3200001"
+              syn_retries: 0
+              retrans_timer: "1000 ms"
+
+  - id: "evt_tcp_timeout_drop"
+    type: "error"
+    t_ns: 6000100000
+    annotation:
+      text: "Dropped by firewall policy — no RST, no ICMP, nothing comes back"
+      detail: >
+        DROP versus REJECT is a deliberate firewall design choice. REJECT sends
+        an active answer (TCP RST or ICMP port-unreachable) so clients fail
+        fast; DROP sends nothing so scanners learn nothing. From the client's
+        SYN_SENT state, DROP is indistinguishable from a dead host, an unplugged
+        cable, or a routing black hole — which is exactly why "hangs, then times
+        out" is such a common (and diagnosable!) symptom.
+
+  - id: "evt_tcp_syn_retx_1"
+    type: "frame_tx"
+    t_ns: 7000000000
+    frame_id: "tcp_syn_retx_1"
+    annotation:
+      text: "SYN retransmit #1 after 1 s — identical segment, timer doubles to 2 s"
+      detail: >
+        The retransmission timer fires. Because nothing at all was received,
+        the kernel resends the identical SYN — same ISN 3200000, same options,
+        only the Timestamps value (TSval) has advanced. The retry timer doubles
+        to 2 seconds (binary exponential backoff, RFC 6298 §5.5). In a packet
+        capture, repeated SYNs with the same sequence number and no answer are
+        the signature of a filtered port or unreachable host.
+      spec_refs:
+        - document: "RFC 6298"
+          section: "5"
+          title: "Managing the RTO Timer"
+          url: "https://datatracker.ietf.org/doc/html/rfc6298#section-5"
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              syn_retries: 1
+              retrans_timer: "2000 ms"
+
+  - id: "evt_tcp_syn_retx_2"
+    type: "frame_tx"
+    t_ns: 9000000000
+    frame_id: "tcp_syn_retx_2"
+    annotation:
+      text: "SYN retransmit #2 after 2 s more — timer doubles to 4 s"
+      detail: >
+        Still silence. The kernel retransmits again and doubles the timer
+        again. The doubling protects the network: if the SYNs were vanishing
+        because of congestion rather than policy, aggressive retries would only
+        make the congestion worse. Backoff is TCP being a good citizen even
+        while failing.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              syn_retries: 2
+              retrans_timer: "4000 ms"
+
+  - id: "evt_tcp_syn_retx_3"
+    type: "frame_tx"
+    t_ns: 13000000000
+    frame_id: "tcp_syn_retx_3"
+    annotation:
+      text: "SYN retransmit #3 after 4 s more — and the pattern continues: 8 s, 16 s, 32 s, 64 s"
+      detail: >
+        Third retransmission, ~7 seconds in. Linux defaults to
+        net.ipv4.tcp_syn_retries = 6, so after this one there are three more
+        tries at 8 s, 16 s, and 32 s intervals, then a final 64-second wait.
+        The full sequence 1+2+4+8+16+32+64 ≈ 127 seconds — that is where the
+        famous "two minutes and change" connection hang comes from. Applications
+        that need faster failure must set their own connect timeout (or use
+        setsockopt TCP_SYNCNT); most production HTTP clients time out in
+        1–10 seconds instead of waiting for the kernel.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              syn_retries: 3
+              retrans_timer: "8000 ms"
+
+  - id: "evt_tcp_timeout_giveup"
+    type: "error"
+    t_ns: 133000000000
+    annotation:
+      text: "~127 s and 6 retransmits later, the kernel gives up: errno = ETIMEDOUT"
+      detail: >
+        After the last retry's 64-second wait expires with no answer, the
+        kernel abandons the attempt, destroys the socket, and wakes connect()
+        with ETIMEDOUT. Compare the two failures: ECONNREFUSED in one round
+        trip versus ETIMEDOUT after more than two minutes of silence.
+
+        The troubleshooting takeaway — silence means the packet is being eaten
+        somewhere. Work the path: is the host up (ping, if ICMP is allowed)?
+        Does a traceroute die at a policy boundary? Does tcpdump on the server
+        show the SYNs arriving (if yes, the drop is host-side, e.g. nftables)?
+        Fast refusal, in contrast, means the path is fine — go check the
+        service.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              app_state: "connect() failed"
+              errno: "ETIMEDOUT"
+          - layer: 5
+            name: "Session / Socket"
+            state_fields:
+              socket_state: "SS_UNCONNECTED"
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              tcp_state: "CLOSED"
+              seq_num: "—"
+              syn_retries: 6
+              retrans_timer: "—"
+
+  - id: "evt_summary"
+    type: "annotation"
+    t_ns: 134000000000
+    annotation:
+      text: "Scenario complete — fast failure vs slow failure, and what each one tells you"
+      detail: >
+        Same client, same server, two utterly different failures:
+
+        • Closed port (nothing listening) → RST comes back → ECONNREFUSED in
+          ~1 RTT. The host answered; the service is missing. Check the service.
+
+        • Filtered port (firewall DROP) → silence → SYN retransmits with
+          exponential backoff → ETIMEDOUT after ~127 s. Something is eating
+          packets. Check the path and the firewall policy.
+
+        A third variant completes the picture: a firewall configured to REJECT
+        answers with RST (or ICMP unreachable) and looks like ECONNREFUSED —
+        fast failure without the service being missing. This is why the errno
+        alone identifies the failure class, not the root cause; it tells you
+        where to start looking. nmap uses exactly these distinctions to
+        classify ports as closed (RST) versus filtered (silence).
+
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
+glossary:
+  - term: "ECONNREFUSED"
+    definition: "errno returned by connect() when the target host answers a SYN with RST — the host is reachable but no socket is listening on that port. Fails fast (~1 RTT)."
+    spec_refs:
+      - document: "RFC 9293"
+        section: "3.5.2"
+        title: "Reset Generation"
+        url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5.2"
+
+  - term: "ETIMEDOUT"
+    definition: "errno returned by connect() when every SYN (original + all retransmits) goes unanswered. On Linux with tcp_syn_retries=6 this takes ~127 seconds. Indicates packets are being silently discarded somewhere on the path."
+
+  - term: "Reset Flag"
+    abbrev: "RST"
+    definition: "TCP flag that aborts a connection (or refuses one). A SYN arriving at a port with no listener is answered with RST+ACK where ACK = ISN+1, generated by the kernel without any application involvement."
+    spec_refs:
+      - document: "RFC 9293"
+        section: "3.5.2"
+        title: "Reset Generation"
+        url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5.2"
+
+  - term: "Exponential Backoff"
+    definition: "Doubling the retransmission timeout after each unanswered attempt (1 s, 2 s, 4 s, 8 s...). Prevents a failing sender from flooding an already-troubled network. Applied to SYN retransmission per RFC 6298 §5.5."
+    spec_refs:
+      - document: "RFC 6298"
+        section: "5"
+        title: "Managing the RTO Timer"
+        url: "https://datatracker.ietf.org/doc/html/rfc6298#section-5"
+
+  - term: "tcp_syn_retries"
+    definition: "Linux sysctl (net.ipv4.tcp_syn_retries, default 6) controlling how many times a SYN is retransmitted before connect() fails with ETIMEDOUT. Six retries with doubling intervals ≈ 127 seconds total. Per-socket override: TCP_SYNCNT."
+
+  - term: "DROP vs REJECT"
+    definition: "The two firewall actions for blocked traffic. DROP discards the packet silently (client hangs, then ETIMEDOUT); REJECT answers with TCP RST or ICMP unreachable (client fails fast, like ECONNREFUSED). DROP hides information from scanners; REJECT is friendlier to legitimate clients."
+
+  - term: "SYN_SENT"
+    definition: "TCP state after sending a SYN, while waiting for the peer's SYN-ACK. A connection stuck in SYN_SENT (visible in ss/netstat) means the SYN or its answer is being lost — the on-host signature of a filtered path."
+    spec_refs:
+      - document: "RFC 9293"
+        section: "3.3.2"
+        title: "TCP State Machine"
+        url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.3.2"
+
+# ─────────────────────────────────────────────────────────────────
+# WALKTHROUGHS
+# ─────────────────────────────────────────────────────────────────
+walkthroughs:
+  - id: "default"
+    title: "Refused vs Timed Out — Two Failed Connections"
+    description: "Follow two connection attempts that never establish: one refused instantly by RST, one that dies slowly in a firewall's DROP rule"
+    steps:
+      - step: 0
+        narration: >
+          The stage: a healthy LAN, a client, and a server that is up and
+          reachable — but nobody ever started the service on port 9090. The
+          client application calls connect(). Everything below TCP works
+          perfectly in this scenario; both failures live entirely in the
+          transport layer and above.
+        highlight_fields: []
+
+      - step: 1
+        narration: >
+          The client's kernel sends a textbook SYN to port 9090: random initial
+          sequence number, the usual MSS / window-scale / SACK / timestamp
+          options, state SYN_SENT. Nothing about this packet hints at failure —
+          the client cannot know in advance whether anyone is listening.
+        highlight_fields: ["tcp.dstport", "tcp.seq", "tcp.flags"]
+
+      - step: 2
+        narration: >
+          The server's kernel checks its socket table for a listener on port
+          9090, finds none, and fires back RST+ACK — in microseconds, from
+          interrupt context, without any application involvement. Look at the
+          numbers: SEQ=0 (the SYN carried no ACK to echo) and ACK=3100001,
+          the client's ISN+1. That ACK value ties the reset to this exact
+          connection attempt.
+        highlight_fields: ["tcp.flags", "tcp.seq", "tcp.ack"]
+
+      - step: 3
+        narration: >
+          The client matches the RST to its pending attempt and connect()
+          returns -1 with errno ECONNREFUSED — about 100 microseconds after the
+          SYN left. Fast failure is diagnostic gold: the host answered, so the
+          network path works. The service is simply not there. First command to
+          run on the server: ss -tlnp | grep 9090.
+        highlight_fields: []
+
+      - step: 4
+        narration: >
+          Attempt two targets port 8443 — and this time a firewall rule matches,
+          with action DROP: discard silently, answer nothing. This is standard
+          hardening for exposed networks (port scanners learn nothing), but
+          watch what it does to the client experience compared to the instant
+          RST of attempt one.
+        highlight_fields: []
+
+      - step: 5
+        narration: >
+          The SYN leaves the client and is discarded inside the firewall. The
+          server never sees it — notice the arrow stops at the firewall. The
+          client sits in SYN_SENT with a 1-second retransmission timer running,
+          completely unaware. From its point of view the packet may still be
+          in flight.
+        highlight_fields: ["tcp.dstport", "tcp.seq"]
+
+      - step: 6
+        narration: >
+          Nothing came back — no SYN-ACK, no RST, no ICMP error. Silence is the
+          defining property of DROP. The client cannot distinguish a firewall
+          eating its packets from a powered-off host or a broken route. All it
+          can do is retry.
+        highlight_fields: []
+
+      - step: 7
+        narration: >
+          One second elapses, the timer fires, and the kernel retransmits the
+          SYN — byte-for-byte identical except the timestamp option. Same
+          sequence number 3200000: repeated identical SYNs in a capture are the
+          classic signature of a filtered port. The timer doubles to 2 seconds.
+        highlight_fields: ["tcp.seq", "tcp.options"]
+
+      - step: 8
+        narration: >
+          Retransmits #2 and #3 follow at 2 s and 4 s intervals — exponential
+          backoff. If the loss were congestion instead of policy, hammering
+          faster would only make things worse, so TCP backs off politely even
+          when it's dying. Linux will try 6 times in total: 1+2+4+8+16+32, then
+          wait a final 64 seconds.
+        highlight_fields: ["tcp.seq"]
+
+      - step: 10
+        narration: >
+          Roughly 127 seconds after connect() was called, the kernel gives up
+          and returns ETIMEDOUT. That's the "hangs for two minutes, then fails"
+          symptom every operator recognizes. Real applications should not wait
+          this long — set a connect timeout in the application or shrink
+          TCP_SYNCNT for the socket.
+        highlight_fields: []
+
+      - step: 11
+        narration: >
+          The comparison in one line: RST means "answered: no" (~1 RTT,
+          ECONNREFUSED — go check the service); silence means "no answer at
+          all" (~127 s, ETIMEDOUT — go check the path and firewall policy).
+          One nuance: a REJECT firewall rule also produces an RST, so fast
+          refusal doesn't always mean you reached the host — but slow timeout
+          always means your packets are vanishing. This is the first branch in
+          every connectivity troubleshooting flowchart, and it's also exactly
+          how nmap tells "closed" from "filtered".
+        highlight_fields: []

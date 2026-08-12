@@ -110,5 +110,17 @@
   "nvme-tcp-vertical-stack-connect-write": {
     "title": "[DRAFT] NVMe/TCP: Traza vertical completa de la pila — Conexión → Escritura",
     "description": "Todos los demás escenarios ProtoViz siguen los paquetes horizontalmente — del iniciador al destino. Este escenario va verticalmente: una conexión TCP y un comando NVMe WRITE de 4 KB, trazados desde la llamada al sistema en espacio de usuario a través de cada capa del kernel, a través del cable y subiendo la pila del destino."
+  },
+  "tcp-syn-timeout-connection-refused": {
+    "title": "Error TCP: SYN Timeout vs Conexión Rechazada",
+    "description": "Dos formas en que connect() falla: un puerto cerrado responde al instante con RST (ECONNREFUSED), mientras que el DROP silencioso de un firewall deja al cliente retransmitiendo SYNs con backoff exponencial hasta ETIMEDOUT. Fallo rápido: algo respondió; fallo lento: algo se está comiendo los paquetes."
+  },
+  "tcp-retransmission-rto": {
+    "title": "Error TCP: Retransmisión — RTO vs Fast Retransmit",
+    "description": "La misma pérdida de segmento recuperada de dos maneras: un timeout de retransmisión de 204 ms que colapsa la ventana de congestión a 1, frente a tres ACKs duplicados que disparan fast retransmit unas 1.500 veces antes. Con bloques SACK, slow start y fast recovery."
+  },
+  "tcp-rst-mid-connection": {
+    "title": "Error TCP: RST en plena conexión vs FIN ordenado",
+    "description": "Un crash del servidor mata una conexión establecida con RST — el cliente ve ECONNRESET. En contraste, el cierre ordenado de 4 vías con FIN y TIME_WAIT, más los sospechosos habituales de RST en producción: reinicios, firewalls y timeouts de inactividad de balanceadores de carga."
   }
 }

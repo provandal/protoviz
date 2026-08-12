@@ -110,5 +110,17 @@
   "nvme-tcp-vertical-stack-connect-write": {
     "title": "[DRAFT] NVMe/TCP：完全な垂直スタックトレース — 接続 → 書き込み",
     "description": "他のすべてのProtoVizシナリオはパケットを水平に追跡します — イニシエータからターゲットへ。このシナリオは垂直に進みます：1つのTCP接続と1つの4KB NVMe WRITEコマンドを、ユーザースペースのシステムコールからすべてのカーネル層を通り、ワイヤを越え、ターゲットスタックを遡ってトレースします。"
+  },
+  "tcp-syn-timeout-connection-refused": {
+    "title": "TCPエラー: SYNタイムアウト vs 接続拒否",
+    "description": "connect() が失敗する2つの形: 閉じたポートは即座に RST で応答し (ECONNREFUSED)、ファイアウォールのサイレント DROP はクライアントに指数バックオフで SYN を再送させ続け、最後は ETIMEDOUT に至ります。速い失敗は「何かが応答した」、遅い失敗は「何かがパケットを食べている」ことを意味します。"
+  },
+  "tcp-retransmission-rto": {
+    "title": "TCPエラー: 再送 — RTO vs 高速再転送",
+    "description": "同じセグメント損失を2通りで回復: 204 ms の再送タイムアウトは輻輳ウィンドウを1まで崩壊させ、一方3つの重複 ACK は約1,500倍速く高速再転送を発動します。SACK ブロック、スロースタート、高速リカバリを解説します。"
+  },
+  "tcp-rst-mid-connection": {
+    "title": "TCPエラー: 接続中の RST vs 正常な FIN",
+    "description": "サーバープロセスのクラッシュが確立済み接続を RST で破壊し、クライアントは ECONNRESET を受け取ります。対比として4ウェイ FIN による正常な切断と TIME_WAIT、さらに本番環境での RST の常連: 再起動、ファイアウォール、ロードバランサーのアイドルタイムアウトを扱います。"
   }
 }

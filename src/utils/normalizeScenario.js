@@ -193,6 +193,15 @@ function inferPhase(event, lastPhase) {
   if (/scenario complete|summary|end of scenario/i.test(text)
       || /^evt_done$|^evt_complete$|^evt_summary$/.test(id)) return 'Summary';
 
+  // TCP error-scenario phases. Matched on event ids only (never annotation
+  // text): text patterns like "retransmission timeout" appear in unrelated
+  // scenarios (e.g. the IPv6 PMTUD black hole) and would reclassify them.
+  // Checked early because ids like tcp_syn_retx and tcp_dupack contain
+  // substrings the generic handshake/RDMA rules below would otherwise steal.
+  if (/tcp_dupack|tcp_fast_retx/.test(id)) return 'TCP Fast Retransmit';
+  if (/tcp_rto|tcp_syn_retx|tcp_timeout/.test(id)) return 'TCP Timeout';
+  if (/tcp_refused/.test(id)) return 'TCP Refused';
+
   // io_uring phases (vertical stack)
   if (/\bio_uring\b|\bsqe\b.*submit|\bkiocb\b|io_uring_enter/i.test(text)
       || /sqe_|kiocb_/.test(id)) return 'io_uring';

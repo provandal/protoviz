@@ -110,5 +110,17 @@
   "nvme-tcp-vertical-stack-connect-write": {
     "title": "[DRAFT] NVMe/TCP: 전체 수직 스택 추적 — 연결 → 쓰기",
     "description": "다른 모든 ProtoViz 시나리오는 패킷을 수평으로 추적합니다 — 이니시에이터에서 대상까지. 이 시나리오는 수직으로 진행합니다: 하나의 TCP 연결과 하나의 4KB NVMe WRITE 명령을, 사용자 공간 시스템 호출에서 모든 커널 계층을 거쳐, 와이어를 넘어, 대상 스택을 올라가며 추적합니다."
+  },
+  "tcp-syn-timeout-connection-refused": {
+    "title": "TCP 오류: SYN 타임아웃 vs 연결 거부",
+    "description": "connect()가 실패하는 두 가지 방식: 닫힌 포트는 즉시 RST로 응답하고 (ECONNREFUSED), 방화벽의 조용한 DROP은 클라이언트가 지수 백오프로 SYN을 재전송하다 ETIMEDOUT에 이르게 합니다. 빠른 실패는 무언가 응답했다는 뜻이고, 느린 실패는 무언가 패킷을 삼키고 있다는 뜻입니다."
+  },
+  "tcp-retransmission-rto": {
+    "title": "TCP 오류: 재전송 — RTO vs 빠른 재전송",
+    "description": "같은 세그먼트 손실의 두 가지 복구: 204 ms 재전송 타임아웃은 혼잡 윈도우를 1로 붕괴시키고, 세 개의 중복 ACK는 약 1,500배 빠르게 빠른 재전송을 발동합니다. SACK 블록, 슬로 스타트, 빠른 복구를 다룹니다."
+  },
+  "tcp-rst-mid-connection": {
+    "title": "TCP 오류: 연결 중 RST vs 정상적인 FIN",
+    "description": "서버 프로세스 크래시가 설정된 연결을 RST로 끊고, 클라이언트는 ECONNRESET을 받습니다. 대비로 4-way FIN 정상 종료와 TIME_WAIT, 그리고 운영 환경의 흔한 RST 원인인 재시작, 방화벽, 로드밸런서 유휴 타임아웃을 다룹니다."
   }
 }

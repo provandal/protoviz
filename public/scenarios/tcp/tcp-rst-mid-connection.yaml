@@ -1,0 +1,1966 @@
+meta:
+  id: "tcp-rst-mid-connection"
+  title: "TCP Error: RST Mid-Connection vs Graceful FIN"
+  protocol: "TCP"
+  protocol_family: "TCP/IP"
+  version: "1.0.0"
+  description: >
+    Error scenario: a healthy, established connection is killed by a reset.
+    A monitoring client polls a server over a long-lived connection; mid-poll,
+    the server process crashes with 120 unread bytes stranded in its socket
+    buffer, and the kernel aborts the connection with RST — the client's next
+    read fails with ECONNRESET. The scenario then rewinds and shows the same
+    session ending the polite way: the 4-way FIN teardown with TIME_WAIT.
+    Along the way: who really sends RSTs in production (crashed apps,
+    restarted servers, firewalls, load-balancer idle timeouts), and why
+    "Connection reset by peer" and a broken-pipe error are two views of the
+    same event.
+
+  learning_objectives:
+    - "See what an in-connection RST looks like on the wire and how it differs from a FIN"
+    - "Understand why closing a socket with unread data triggers RST instead of FIN (RFC 1122 §4.2.2.13)"
+    - "Trace how a crashed process leads to 'Connection reset by peer' (ECONNRESET) on the other side"
+    - "Learn the difference between ECONNRESET (read after RST) and EPIPE/SIGPIPE (send after RST)"
+    - "Contrast the abortive close with the graceful 4-way FIN teardown and TIME_WAIT"
+    - "Recognize the other common RST sources in production: server restarts, stateful firewalls, and load-balancer idle timeouts"
+    - "Know why a FIN promises delivery of everything sent, while an RST guarantees nothing"
+
+  difficulty: "beginner"
+
+  authors:
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+
+  created: "2026-08-12"
+  updated: "2026-08-12"
+
+  tags:
+    - "TCP"
+    - "TCP/IP"
+    - "error"
+    - "troubleshooting"
+    - "RST"
+    - "ECONNRESET"
+    - "FIN"
+    - "TIME_WAIT"
+    - "connection teardown"
+    - "load balancer"
+    - "beginner"
+    - "education"
+
+  primary_specs:
+    - document: "RFC 9293"
+      section: "3.5.2"
+      title: "Reset Generation"
+      url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5.2"
+      alt_url: "https://www.rfc-editor.org/rfc/rfc9293"
+    - document: "RFC 1122"
+      section: "4.2.2.13"
+      title: "Closing a Connection — data pending means RST"
+      url: "https://datatracker.ietf.org/doc/html/rfc1122#section-4.2.2.13"
+      alt_url: ""
+    - document: "RFC 9293"
+      section: "3.6"
+      title: "Closing a Connection"
+      url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.6"
+      alt_url: ""
+
+  content_disclaimer: >
+    Protocol descriptions in this scenario are based on open-source implementations
+    (Linux kernel, Wireshark dissectors) and public RFCs. No proprietary specification
+    text has been reproduced. RFC references are provided as citations for further reading.
+
+  source_references:
+    - repo: "torvalds/linux"
+      path: "net/ipv4/tcp.c"
+      description: "tcp_close — sends RST when the receive queue still holds unread data"
+    - repo: "torvalds/linux"
+      path: "net/ipv4/tcp_output.c"
+      description: "tcp_send_active_reset — abortive close RST generation"
+    - repo: "torvalds/linux"
+      path: "net/ipv4/tcp_input.c"
+      description: "tcp_reset — handling a received RST, setting sk_err to ECONNRESET"
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "client"
+      type: "host"
+      label: "Monitoring Client"
+      description: "Polls the server's /status endpoint every 2 seconds over one long-lived TCP connection"
+      hardware: "Generic 10GbE NIC"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "10.0.1.10"
+      mac: "00:11:22:33:44:01"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "10GbE Switch"
+      description: "Layer-2 Ethernet switch — an innocent bystander in this scenario"
+      hardware: "Generic 10GbE switch"
+      position: "center"
+
+    - id: "server"
+      type: "host"
+      label: "Server"
+      description: "Runs the status service — until the process crashes mid-poll"
+      hardware: "Generic 10GbE NIC"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "10.0.1.20"
+      mac: "00:11:22:33:44:02"
+      position: "right"
+
+  links:
+    - id: "link-c-sw"
+      from: "client"
+      to: "switch"
+      speed_gbps: 10
+      media: "copper_dac"
+      fec: "FC-FEC"
+      autoneg: true
+    - id: "link-sw-s"
+      from: "switch"
+      to: "server"
+      speed_gbps: 10
+      media: "copper_dac"
+      fec: "FC-FEC"
+      autoneg: true
+
+# ─────────────────────────────────────────────────────────────────
+# OSI LAYER DEFINITIONS (per actor)
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  client:
+    - layer: 7
+      name: "Application"
+      components: ["monitoring agent", "libc socket API"]
+      state_schema:
+        app_state:
+          type: "string"
+          description: "Application-level state"
+          initial: "polling every 2 s"
+        errno:
+          type: "string"
+          description: "Last error returned by a socket call"
+          initial: "—"
+
+    - layer: 4
+      name: "TCP"
+      components: ["net/ipv4/tcp.c", "net/ipv4/tcp_input.c"]
+      state_schema:
+        tcp_state:
+          type: "string"
+          description: "TCP state machine state (RFC 9293 §3.3.2)"
+          initial: "ESTABLISHED"
+        snd_nxt:
+          type: "string"
+          description: "Next sequence number to send (SND.NXT)"
+          initial: "6000001"
+        rcv_nxt:
+          type: "string"
+          description: "Next sequence number expected (RCV.NXT)"
+          initial: "9000001"
+
+    - layer: 3
+      name: "IP / Routing"
+      components: ["net/ipv4/ip_output.c"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "10.0.1.10"
+        dst_ip:
+          type: "string"
+          initial: "10.0.1.20"
+        ttl:
+          type: "integer"
+          initial: 64
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver", "IEEE 802.3"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+        mac_addr:
+          type: "string"
+          initial: "00:11:22:33:44:01"
+
+    - layer: 1
+      name: "Physical (10GbE)"
+      components: ["IEEE 802.3", "10GBASE-CR"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "up"
+        speed:
+          type: "string"
+          initial: "10 Gbps"
+
+  server:
+    - layer: 7
+      name: "Application"
+      components: ["status service (PID 4242)", "libc socket API"]
+      state_schema:
+        app_state:
+          type: "string"
+          description: "Application-level state"
+          initial: "serving /status"
+        process:
+          type: "string"
+          description: "The process owning the connected socket"
+          initial: "PID 4242, running"
+
+    - layer: 4
+      name: "TCP"
+      components: ["net/ipv4/tcp.c", "net/ipv4/tcp_output.c"]
+      state_schema:
+        tcp_state:
+          type: "string"
+          description: "TCP state machine state (RFC 9293 §3.3.2)"
+          initial: "ESTABLISHED"
+        snd_nxt:
+          type: "string"
+          description: "Next sequence number to send (SND.NXT)"
+          initial: "9000001"
+        rcv_nxt:
+          type: "string"
+          description: "Next sequence number expected (RCV.NXT)"
+          initial: "6000001"
+        recv_queue:
+          type: "string"
+          description: "Bytes received by the kernel but not yet read by the application"
+          initial: "empty"
+
+    - layer: 3
+      name: "IP / Routing"
+      components: ["net/ipv4/ip_output.c"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "10.0.1.20"
+        dst_ip:
+          type: "string"
+          initial: "10.0.1.10"
+        ttl:
+          type: "integer"
+          initial: 64
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver", "IEEE 802.3"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+        mac_addr:
+          type: "string"
+          initial: "00:11:22:33:44:02"
+
+    - layer: 1
+      name: "Physical (10GbE)"
+      components: ["IEEE 802.3", "10GBASE-CR"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "up"
+        speed:
+          type: "string"
+          initial: "10 Gbps"
+
+# ─────────────────────────────────────────────────────────────────
+# FRAMES
+# ─────────────────────────────────────────────────────────────────
+frames:
+  # ── Healthy poll ─────────────────────────────────────────────────
+  - id: "tcp_data_req1"
+    name: "TCP Poll (GET /status)"
+    description: "The monitoring client's periodic health poll — 120 bytes over the long-lived connection"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    timestamp_ns: 100000000
+    total_bytes: 186
+    color: "#0369a1"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 172
+            description: "IP header (20) + TCP header with timestamps (32) + payload (120)"
+          - name: "Identification"
+            abbrev: "ip.id"
+            bits: 16
+            value: "0xd201"
+            description: "Unique per datagram"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client's IP"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server's IP"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49400
+            description: "Client's ephemeral port — the same one for hours; this connection is long-lived"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 80
+            description: "Server's service port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 6000001
+            value_hex: "0x005b8d81"
+            description: "First byte of this poll; carries bytes 6000001–6000120"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 9000001
+            description: "All of the server's previous data acknowledged"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x18"
+            description: "PSH+ACK — a complete application message, deliver promptly"
+            fields:
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field valid"
+              - name: "PSH"
+                abbrev: "tcp.flags.push"
+                bits: 1
+                value: 1
+                description: "Deliver to the application without buffering delay"
+              - name: "RST"
+                abbrev: "tcp.flags.reset"
+                bits: 1
+                value: 0
+                description: "Not a reset"
+              - name: "FIN"
+                abbrev: "tcp.flags.fin"
+                bits: 1
+                value: 0
+                description: "Not closing"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Client's receive window"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0xe1f2"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 96
+            value: "Timestamps (TSval=500000, TSecr=610000)"
+            description: "Timestamps as usual"
+          - name: "Payload"
+            abbrev: "tcp.payload"
+            bits: 960
+            value: "GET /status HTTP/1.1 ..."
+            description: "The 120-byte poll: method line plus Host and keep-alive headers"
+
+  - id: "tcp_data_resp1"
+    name: "TCP 200 OK"
+    description: "The status service answers: 310 bytes, all systems healthy"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    timestamp_ns: 100150000
+    total_bytes: 376
+    color: "#0369a1"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 362
+            description: "IP header (20) + TCP header (32) + payload (310)"
+          - name: "Identification"
+            abbrev: "ip.id"
+            bits: 16
+            value: "0x7301"
+            description: "Unique per datagram"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server's IP"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client's IP"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 80
+            description: "Server's service port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 49400
+            description: "Client's ephemeral port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 9000001
+            value_hex: "0x00895441"
+            description: "First byte of the answer; carries bytes 9000001–9000310"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 6000121
+            description: "The 120-byte poll fully received (6000001 + 120)"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x18"
+            description: "PSH+ACK"
+            fields:
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field valid"
+              - name: "PSH"
+                abbrev: "tcp.flags.push"
+                bits: 1
+                value: 1
+                description: "Complete answer — deliver promptly"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Server's receive window"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0xf203"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 96
+            value: "Timestamps (TSval=610150, TSecr=500000)"
+            description: "Timestamps as usual"
+          - name: "Payload"
+            abbrev: "tcp.payload"
+            bits: 2480
+            value: "HTTP/1.1 200 OK ... {\"status\":\"healthy\"}"
+            description: "310 bytes: status line, headers, and a small JSON body"
+
+  - id: "tcp_data_ack1"
+    name: "TCP ACK 9000311"
+    description: "Poll complete — the connection stays open, waiting for the next cycle"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    timestamp_ns: 100200000
+    total_bytes: 66
+    color: "#0369a1"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 52
+            description: "Header-only ACK"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client's IP"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server's IP"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49400
+            description: "Client's ephemeral port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 80
+            description: "Server's service port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 6000121
+            description: "No new data"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 9000311
+            value_hex: "0x00895577"
+            description: "The 310-byte answer fully received (9000001 + 310)"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x10"
+            description: "ACK"
+            fields:
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field valid"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Client's receive window"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x0314"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 96
+            value: "Timestamps (TSval=500200, TSecr=610150)"
+            description: "Timestamps as usual"
+
+  # ── The crash and the reset ──────────────────────────────────────
+  - id: "tcp_data_req2"
+    name: "TCP Poll #2 (GET /status)"
+    description: "Two seconds later, the next scheduled poll — it will reach a kernel whose application is about to die"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    timestamp_ns: 2000000000
+    total_bytes: 186
+    color: "#0369a1"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 172
+            description: "IP header (20) + TCP header (32) + payload (120)"
+          - name: "Identification"
+            abbrev: "ip.id"
+            bits: 16
+            value: "0xd202"
+            description: "Unique per datagram"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client's IP"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server's IP"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49400
+            description: "Same long-lived connection"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 80
+            description: "Server's service port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 6000121
+            value_hex: "0x005b8df9"
+            description: "Bytes 6000121–6000240 — the second poll"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 9000311
+            description: "Unchanged since the last answer"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x18"
+            description: "PSH+ACK — an ordinary poll, identical to the last one"
+            fields:
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field valid"
+              - name: "PSH"
+                abbrev: "tcp.flags.push"
+                bits: 1
+                value: 1
+                description: "Deliver promptly"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Client's receive window"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x14a5"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 96
+            value: "Timestamps (TSval=502000, TSecr=610150)"
+            description: "Timestamps as usual"
+          - name: "Payload"
+            abbrev: "tcp.payload"
+            bits: 960
+            value: "GET /status HTTP/1.1 ..."
+            description: "The same 120-byte poll — the kernel will ACK-and-queue it, but no application will ever read it"
+
+  - id: "tcp_rst_frame"
+    name: "TCP RST+ACK"
+    description: "The kernel closes a socket that still holds 120 unread bytes — per RFC 1122 that means abort: RST, not FIN"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    timestamp_ns: 2000100000
+    total_bytes: 60
+    color: "#dc2626"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 40
+            description: "IP header (20) + bare TCP header (20) — resets carry no options and no data"
+          - name: "Identification"
+            abbrev: "ip.id"
+            bits: 16
+            value: "0x0000"
+            description: "Kernel-generated RSTs commonly use IP ID 0"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server's IP"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client's IP"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 20
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 80
+            description: "The service port whose process just died"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 49400
+            description: "Client's ephemeral port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 9000311
+            value_hex: "0x00895577"
+            description: "SND.NXT — exactly where the server's byte stream stood. A reset must be in-window to be accepted; this prevents blind off-path reset injection"
+            spec_refs:
+              - document: "RFC 9293"
+                section: "3.5.3"
+                title: "Reset Processing"
+                url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5.3"
+            kernel_ref:
+              file: "net/ipv4/tcp_output.c"
+              function: "tcp_send_active_reset"
+              notes: "Abortive close — called from tcp_close() when unread data remains"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 6000241
+            description: "Acknowledges the second poll (6000121 + 120) even while destroying the connection — the data was received by the kernel; it just has nowhere to go"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x14"
+            description: "RST=1, ACK=1 — abortive close"
+            spec_refs:
+              - document: "RFC 1122"
+                section: "4.2.2.13"
+                title: "Closing a Connection"
+                url: "https://datatracker.ietf.org/doc/html/rfc1122#section-4.2.2.13"
+            fields:
+              - name: "RST"
+                abbrev: "tcp.flags.reset"
+                bits: 1
+                value: 1
+                description: "Reset — the connection ceases to exist, immediately, in both directions"
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field valid"
+              - name: "FIN"
+                abbrev: "tcp.flags.fin"
+                bits: 1
+                value: 0
+                description: "Not a graceful close — that is the whole point"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 0
+            description: "Zero — meaningless in a reset"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x25b6"
+            description: "TCP checksum"
+
+  # ── Contrast: the graceful ending ────────────────────────────────
+  - id: "tcp_fin_client"
+    name: "TCP FIN+ACK (client)"
+    description: "Alternate ending, step 1: the client is done and says so — half-close, everything sent will still be delivered"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    timestamp_ns: 3000000000
+    total_bytes: 66
+    color: "#64748b"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 52
+            description: "Header-only segment"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client's IP"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server's IP"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49400
+            description: "Client's ephemeral port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 80
+            description: "Server's service port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 6000121
+            description: "The FIN occupies sequence number 6000121 — like SYN, FIN consumes one sequence number so it can be reliably acknowledged"
+            spec_refs:
+              - document: "RFC 9293"
+                section: "3.6"
+                title: "Closing a Connection"
+                url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.6"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 9000311
+            description: "All server data acknowledged"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x11"
+            description: "FIN+ACK — 'I have nothing more to send' (but I can still receive)"
+            fields:
+              - name: "FIN"
+                abbrev: "tcp.flags.fin"
+                bits: 1
+                value: 1
+                description: "Finish — half-close of the client→server direction"
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field valid"
+              - name: "RST"
+                abbrev: "tcp.flags.reset"
+                bits: 1
+                value: 0
+                description: "Not an abort"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Still receiving"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x36c7"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 96
+            value: "Timestamps (TSval=503000, TSecr=610150)"
+            description: "Timestamps as usual"
+
+  - id: "tcp_fin_ack_server"
+    name: "TCP ACK (of client FIN)"
+    description: "Alternate ending, step 2: the server acknowledges the FIN and enters CLOSE_WAIT"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    timestamp_ns: 3000060000
+    total_bytes: 66
+    color: "#64748b"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 52
+            description: "Header-only ACK"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server's IP"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client's IP"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 80
+            description: "Server's service port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 49400
+            description: "Client's ephemeral port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 9000311
+            description: "No data"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 6000122
+            description: "6000121 + 1 — the FIN consumed one sequence number, and this ACK covers it"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x10"
+            description: "ACK — the client's direction is now closed; the server may still send"
+            fields:
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field valid"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Server's receive window"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x47d8"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 96
+            value: "Timestamps (TSval=613000, TSecr=503000)"
+            description: "Timestamps as usual"
+
+  - id: "tcp_fin_server"
+    name: "TCP FIN+ACK (server)"
+    description: "Alternate ending, step 3: the server finishes its side — both directions now closing"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    timestamp_ns: 3000120000
+    total_bytes: 66
+    color: "#64748b"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 52
+            description: "Header-only segment"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server's IP"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client's IP"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 80
+            description: "Server's service port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 49400
+            description: "Client's ephemeral port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 9000311
+            description: "The server's FIN occupies sequence 9000311"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 6000122
+            description: "Unchanged"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x11"
+            description: "FIN+ACK — the server has flushed everything and is done"
+            fields:
+              - name: "FIN"
+                abbrev: "tcp.flags.fin"
+                bits: 1
+                value: 1
+                description: "Finish — server→client direction closing"
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field valid"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Server's receive window"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x58e9"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 96
+            value: "Timestamps (TSval=613060, TSecr=503000)"
+            description: "Timestamps as usual"
+
+  - id: "tcp_fin_ack_client"
+    name: "TCP ACK (final)"
+    description: "Alternate ending, step 4: the final ACK — server frees the connection; client holds TIME_WAIT"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    timestamp_ns: 3000180000
+    total_bytes: 66
+    color: "#64748b"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 52
+            description: "Header-only ACK"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client's IP"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server's IP"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49400
+            description: "Client's ephemeral port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 80
+            description: "Server's service port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 6000122
+            description: "After its own FIN"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 9000312
+            description: "9000311 + 1 — acknowledging the server's FIN"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x10"
+            description: "ACK — teardown complete"
+            fields:
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field valid"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Client's receive window"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x69fa"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 96
+            value: "Timestamps (TSval=503120, TSecr=613060)"
+            description: "Timestamps as usual"
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+  # ── Phase: healthy long-lived connection ─────────────────────────
+  - id: "evt_tcp_data_setup"
+    type: "state_change"
+    t_ns: 0
+    annotation:
+      text: "A long-lived connection: the monitoring client polls the server's status endpoint every 2 seconds"
+      detail: >
+        The connection was established hours ago (see the foundation scenario
+        for the handshake) and reused for thousands of polls — connection
+        reuse avoids paying the handshake latency on every poll. Client and
+        server both sit in ESTABLISHED with their sequence numbers deep into
+        the megabytes. The status service runs as PID 4242 on the server.
+        Everything works — until it doesn't.
+
+  - id: "evt_tcp_data_req1"
+    type: "frame_tx"
+    t_ns: 100000000
+    frame_id: "tcp_data_req1"
+    annotation:
+      text: "TCP PSH+ACK → poll #1: GET /status (120 bytes)"
+      detail: >
+        An ordinary poll: 120 bytes of HTTP carried in one segment, PSH set so
+        the server's stack hands it to the application immediately. Sequence
+        accounting: bytes 6000001–6000120 of the client's stream.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              snd_nxt: "6000121"
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              rcv_nxt: "6000121"
+              recv_queue: "empty (read by app)"
+
+  - id: "evt_tcp_data_resp1"
+    type: "frame_tx"
+    t_ns: 100150000
+    frame_id: "tcp_data_resp1"
+    annotation:
+      text: "TCP PSH+ACK ← 200 OK (310 bytes): all systems healthy"
+      detail: >
+        The status service reads the poll, checks its internals, and answers
+        with a small JSON body. The ACK number (6000121) confirms the poll;
+        the payload occupies bytes 9000001–9000310 of the server's stream.
+        Round trip: 150 µs. This is poll number ~3,600 on this connection.
+    state_after:
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              snd_nxt: "9000311"
+          - layer: 7
+            name: "Application"
+            state_fields:
+              app_state: "answered poll, idle"
+
+  - id: "evt_tcp_data_ack1"
+    type: "frame_tx"
+    t_ns: 100200000
+    frame_id: "tcp_data_ack1"
+    annotation:
+      text: "TCP ACK → 9000311: poll complete, connection idles until the next cycle"
+      detail: >
+        The client acknowledges the answer and goes back to sleep for 2
+        seconds. Note what "idle" means for TCP: nothing. No keepalives at
+        this timescale, no probes — an idle TCP connection exchanges zero
+        packets. Both endpoints simply remember their state. This silence is
+        why half-dead connections can linger undetected, and why the crash
+        coming next needs the *next* poll to reveal itself.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              rcv_nxt: "9000311"
+          - layer: 7
+            name: "Application"
+            state_fields:
+              app_state: "sleeping until next poll"
+
+  # ── Phase: the crash and the reset ───────────────────────────────
+  - id: "evt_tcp_data_req2"
+    type: "frame_tx"
+    t_ns: 2000000000
+    frame_id: "tcp_data_req2"
+    annotation:
+      text: "TCP PSH+ACK → poll #2 leaves on schedule — 120 bytes headed for a process with microseconds to live"
+      detail: >
+        Two seconds later, the next poll goes out, byte-identical in structure
+        to thousands before it. The server's kernel receives it, ACKs it
+        internally, and queues the 120 bytes in the socket's receive buffer
+        for the application to read. The application never will.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              snd_nxt: "6000241"
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              rcv_nxt: "6000241"
+              recv_queue: "120 bytes, unread"
+
+  - id: "evt_tcp_rst_crash"
+    type: "state_change"
+    t_ns: 2000050000
+    annotation:
+      text: "The status service crashes (SIGSEGV) — the kernel must now dispose of a socket holding 120 unread bytes"
+      detail: >
+        A bug fires: PID 4242 dereferences a bad pointer and dies with
+        SIGSEGV. The kernel cleans up everything the process owned, including
+        the connected socket. Here is the fork in the road: if the socket's
+        receive queue were empty, the kernel would close gracefully with a
+        FIN. But 120 bytes sit unread in the queue — and RFC 1122 §4.2.2.13
+        is explicit: closing with received data still pending must send a
+        reset, because a FIN would falsely promise the peer that everything
+        it sent was delivered to the application. It wasn't.
+      spec_refs:
+        - document: "RFC 1122"
+          section: "4.2.2.13"
+          title: "Closing a Connection"
+          url: "https://datatracker.ietf.org/doc/html/rfc1122#section-4.2.2.13"
+    state_after:
+      - actor_id: "server"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              app_state: "CRASHED"
+              process: "PID 4242, dead (SIGSEGV)"
+
+  - id: "evt_tcp_rst_frame"
+    type: "frame_tx"
+    t_ns: 2000100000
+    frame_id: "tcp_rst_frame"
+    annotation:
+      text: "TCP RST+ACK ← abort, not goodbye: the connection ceases to exist immediately"
+      detail: >
+        tcp_send_active_reset() builds the abort: RST+ACK with SEQ = SND.NXT
+        (9000311, so the client will accept it as in-window) and ACK = 6000241
+        (the kernel did receive the poll — it just has nowhere to deliver it).
+        Unlike FIN, a reset is not negotiated and not acknowledged. There is
+        no half-close, no waiting, no TIME_WAIT: one segment, and the
+        connection is gone in both directions.
+
+        The in-window requirement is TCP's defense against off-path attackers
+        blindly injecting resets — a wrong sequence number and the RST is
+        ignored (RFC 9293 §3.5.3, born from the RST-injection attacks
+        catalogued in RFC 5961).
+      spec_refs:
+        - document: "RFC 9293"
+          section: "3.5.3"
+          title: "Reset Processing"
+          url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5.3"
+    state_after:
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              tcp_state: "CLOSED"
+              recv_queue: "discarded"
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              tcp_state: "CLOSED"
+
+  - id: "evt_tcp_rst_econnreset"
+    type: "error"
+    t_ns: 2000150000
+    annotation:
+      text: "Client's recv() fails: ECONNRESET — 'Connection reset by peer'"
+      detail: >
+        The client kernel validates the RST (in-window: yes), destroys its
+        side of the connection, and marks the socket with sk_err =
+        ECONNRESET. The blocked recv() wakes with the famous error. Had the
+        application tried to send instead, it would get EPIPE plus SIGPIPE —
+        same event, different syscall, which is why the same outage produces
+        different error strings in different services' logs.
+
+        The other usual suspects for mid-connection RSTs, when nothing
+        crashed: a server that restarted (all TCP state lost — anything
+        arriving for the old connection draws a reset), a stateful firewall
+        whose session entry expired, and load balancers enforcing idle
+        timeouts (the classic: cloud LBs reset flows idle longer than ~350 s).
+        If polls fail every N minutes on the dot, suspect an idle timer —
+        the fix is TCP keepalives or application-level pings shorter than the
+        timeout.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 7
+            name: "Application"
+            state_fields:
+              app_state: "poll failed"
+              errno: "ECONNRESET"
+
+  # ── Phase: contrast — the graceful ending ────────────────────────
+  - id: "evt_tcp_fin_intro"
+    type: "annotation"
+    t_ns: 2900000000
+    annotation:
+      text: "Contrast — rewind to the healthy poll and end the same session gracefully with FIN"
+      detail: >
+        Now the alternate ending. Rewind to just after poll #1 completed:
+        both sides ESTABLISHED, client at sequence 6000121, server at
+        9000311, nothing unread anywhere. This time the monitoring agent is
+        being decommissioned cleanly: it calls close() with empty buffers,
+        and TCP performs the 4-way FIN teardown — the polite way for both
+        sides to prove that every last byte arrived.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              tcp_state: "ESTABLISHED"
+          - layer: 7
+            name: "Application"
+            state_fields:
+              app_state: "shutting down cleanly"
+              errno: "—"
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              tcp_state: "ESTABLISHED"
+              recv_queue: "empty"
+          - layer: 7
+            name: "Application"
+            state_fields:
+              app_state: "serving /status"
+              process: "PID 4242, running"
+
+  - id: "evt_tcp_fin_client"
+    type: "frame_tx"
+    t_ns: 3000000000
+    frame_id: "tcp_fin_client"
+    annotation:
+      text: "TCP FIN+ACK → 'no more data from me' — a half-close, not a hang-up"
+      detail: >
+        close() with clean buffers sends FIN. Like SYN, the FIN occupies one
+        sequence number (6000121) so its delivery can be confirmed. The client
+        enters FIN_WAIT_1. Note the asymmetry with RST: a FIN only closes the
+        client→server direction; the server could keep sending for as long as
+        it wants, and the client would still receive it.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              tcp_state: "FIN_WAIT_1"
+              snd_nxt: "6000122"
+
+  - id: "evt_tcp_fin_ack_server"
+    type: "frame_tx"
+    t_ns: 3000060000
+    frame_id: "tcp_fin_ack_server"
+    annotation:
+      text: "TCP ACK ← the FIN is acknowledged; server enters CLOSE_WAIT"
+      detail: >
+        The server ACKs 6000122 (FIN consumed one number) and enters
+        CLOSE_WAIT: "the peer is done; I should finish up too." The client
+        moves to FIN_WAIT_2. In production, connections stuck in CLOSE_WAIT
+        are a classic symptom of an application that forgot to call close() —
+        the kernel is waiting on the app, and will wait forever.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              tcp_state: "FIN_WAIT_2"
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              tcp_state: "CLOSE_WAIT"
+              rcv_nxt: "6000122"
+
+  - id: "evt_tcp_fin_server"
+    type: "frame_tx"
+    t_ns: 3000120000
+    frame_id: "tcp_fin_server"
+    annotation:
+      text: "TCP FIN+ACK ← the server finishes its side"
+      detail: >
+        The status service notices EOF on its read, finishes its own cleanup,
+        and calls close(). The server's FIN occupies sequence 9000311 and
+        moves it to LAST_ACK — waiting for one final acknowledgment before it
+        can free the connection entirely.
+    state_after:
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              tcp_state: "LAST_ACK"
+              snd_nxt: "9000312"
+
+  - id: "evt_tcp_fin_ack_client"
+    type: "frame_tx"
+    t_ns: 3000180000
+    frame_id: "tcp_fin_ack_client"
+    annotation:
+      text: "TCP ACK → teardown complete; the client holds TIME_WAIT for 60 s"
+      detail: >
+        The final ACK (9000312) releases the server, which frees all state
+        for this connection immediately. The client — as the side that closed
+        first — enters TIME_WAIT for 2×MSL (60 s on Linux). TIME_WAIT is not
+        a bug or a leak: it guarantees this last ACK can be retransmitted if
+        the server's FIN reappears, and it shields the port pair from stale
+        segments leaking into a future connection. Every byte both sides ever
+        sent has been provably delivered and acknowledged — that is the
+        promise the RST path could not make.
+      spec_refs:
+        - document: "RFC 9293"
+          section: "3.5.4"
+          title: "TIME-WAIT State"
+          url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5.4"
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              tcp_state: "TIME_WAIT (60 s)"
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              tcp_state: "CLOSED"
+
+  - id: "evt_summary"
+    type: "annotation"
+    t_ns: 3100000000
+    annotation:
+      text: "Scenario complete — RST vs FIN: abort vs proof of delivery"
+      detail: >
+        The same connection, two endings:
+
+        • RST — one unnegotiated segment; the connection vanishes in both
+          directions instantly; unread data is discarded; the peer learns via
+          ECONNRESET (on read) or EPIPE/SIGPIPE (on send); no TIME_WAIT.
+          A reset says: something broke, and delivery of your data is not
+          guaranteed.
+
+        • FIN — a four-segment negotiation; each direction closes separately;
+          every byte is acknowledged before state is freed; the first closer
+          pays 60 s of TIME_WAIT. A FIN says: we are done, and everything
+          arrived.
+
+        When you see mid-connection RSTs in a capture, line up the suspects
+        by pattern: RST immediately after your data → the peer application
+        died or was restarted; RST after exactly N minutes of idleness → a
+        firewall or load-balancer idle timeout (add keepalives shorter than
+        N); RSTs on connections that worked seconds ago from a rebooted host
+        → lost TCP state. The reset itself is identical in all three — the
+        timing tells you who sent it and why.
+
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
+glossary:
+  - term: "ECONNRESET"
+    definition: "errno delivered when a read/recv follows a received RST: 'Connection reset by peer.' The connection was destroyed by the other side without a graceful close."
+    spec_refs:
+      - document: "RFC 9293"
+        section: "3.5.3"
+        title: "Reset Processing"
+        url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5.3"
+
+  - term: "EPIPE / SIGPIPE"
+    definition: "What a send/write into a reset connection produces: the EPIPE errno plus the SIGPIPE signal (which kills the process unless handled — the classic cause of silently dying scripts). Same underlying RST as ECONNRESET; different syscall direction."
+
+  - term: "Abortive Close"
+    definition: "Terminating a connection with RST instead of FIN. Happens when a socket is closed with unread data pending (RFC 1122 §4.2.2.13), when SO_LINGER is set to zero, or when a host has no state for an arriving segment (e.g. after a restart)."
+    spec_refs:
+      - document: "RFC 1122"
+        section: "4.2.2.13"
+        title: "Closing a Connection"
+        url: "https://datatracker.ietf.org/doc/html/rfc1122#section-4.2.2.13"
+
+  - term: "Half-Close"
+    definition: "A FIN closes only the sender's direction. The peer may continue transmitting indefinitely; the FIN sender must keep receiving. This is why graceful teardown takes four segments — each direction is closed independently."
+    spec_refs:
+      - document: "RFC 9293"
+        section: "3.6"
+        title: "Closing a Connection"
+        url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.6"
+
+  - term: "CLOSE_WAIT"
+    definition: "The state after receiving (and ACKing) the peer's FIN, before the local application calls close(). Connections piling up in CLOSE_WAIT indicate an application that isn't closing its sockets — the kernel will wait indefinitely."
+
+  - term: "TIME_WAIT"
+    definition: "Held for 2×MSL (60 s on Linux) by whichever side sent the first FIN, after teardown completes. Guarantees the final ACK can be resent and prevents stale segments from contaminating a new connection on the same port pair. The RST path skips it — one reason aborts are 'cheaper' but dirtier."
+    spec_refs:
+      - document: "RFC 9293"
+        section: "3.5.4"
+        title: "TIME-WAIT State"
+        url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.5.4"
+
+  - term: "In-Window Reset Validation"
+    definition: "A receiver only accepts an RST whose sequence number falls inside the current receive window — the defense against blind off-path reset injection. RFC 5961 tightened this further after practical attacks."
+    spec_refs:
+      - document: "RFC 5961"
+        section: "3"
+        title: "Blind Reset Attack Using the RST Bit"
+        url: "https://datatracker.ietf.org/doc/html/rfc5961#section-3"
+
+  - term: "Idle Timeout Reset"
+    definition: "Stateful middleboxes (firewalls, load balancers, NAT gateways) drop or reset flows that stay idle past a threshold (commonly 5–60 minutes). Long-lived quiet connections need TCP keepalives or application-level pings shorter than the smallest timeout on the path."
+
+# ─────────────────────────────────────────────────────────────────
+# WALKTHROUGHS
+# ─────────────────────────────────────────────────────────────────
+walkthroughs:
+  - id: "default"
+    title: "How Connections Die: RST vs FIN"
+    description: "Watch a server crash turn into an ECONNRESET on the client, then rewind and see the same session end gracefully with the 4-way FIN teardown"
+    steps:
+      - step: 0
+        narration: >
+          The setup: a monitoring agent polls a status service every two
+          seconds over one long-lived TCP connection — established hours ago,
+          reused thousands of times. Connection reuse is standard practice
+          (handshakes cost latency), but it means the connection's health and
+          the application's health are two different things, as we're about
+          to see.
+        highlight_fields: []
+
+      - step: 1
+        narration: >
+          Poll number ~3,600: a 120-byte GET /status. PSH tells the server's
+          stack to deliver it to the application immediately. Sequence
+          numbers track every byte — this poll occupies 6000001 through
+          6000120 of the client's stream.
+        highlight_fields: ["tcp.seq", "tcp.flags"]
+
+      - step: 2
+        narration: >
+          The service answers 200 OK with a small JSON body — 310 bytes,
+          150 microseconds round trip. Everything about this exchange is
+          routine. Savor it; it's the last healthy poll this connection will
+          ever complete.
+        highlight_fields: ["tcp.seq", "tcp.ack"]
+
+      - step: 3
+        narration: >
+          The client ACKs and sleeps for two seconds. Important detail: an
+          idle TCP connection is pure silence — no packets, no probes, just
+          two kernels remembering state. If something happens to one end
+          during the silence, the other end has no way to know until it next
+          transmits.
+        highlight_fields: ["tcp.ack"]
+
+      - step: 4
+        narration: >
+          Poll #2 leaves on schedule. The server's kernel receives it, ACKs
+          internally, and queues 120 bytes into the socket's receive buffer
+          for the application to read. Keep your eye on those 120 bytes —
+          they're about to decide how this connection dies.
+        highlight_fields: ["tcp.seq"]
+
+      - step: 5
+        narration: >
+          The status service dereferences a bad pointer and dies — SIGSEGV.
+          The kernel now owns a connected socket whose process is gone, with
+          120 unread bytes in the queue. RFC 1122 §4.2.2.13 leaves no choice:
+          closing with pending received data must abort with RST. A FIN would
+          lie — it would tell the client "everything you sent was delivered,"
+          and it wasn't.
+        highlight_fields: []
+
+      - step: 6
+        narration: >
+          The reset: RST+ACK, sequence 9000311 — exactly SND.NXT, so the
+          client will accept it as genuine (out-of-window resets are ignored;
+          that's the defense against blind injection attacks). Notice the ACK
+          number still acknowledges the poll: the kernel got the bytes, they
+          just had nowhere to go. One segment, no negotiation, no reply —
+          the connection is gone in both directions.
+        highlight_fields: ["tcp.flags", "tcp.seq", "tcp.ack"]
+
+      - step: 7
+        narration: >
+          The client's blocked recv() wakes with ECONNRESET — "Connection
+          reset by peer." Had it been writing instead, it would have gotten
+          EPIPE and a SIGPIPE. Same event, two different error messages
+          depending on which direction the application was facing — worth
+          remembering when correlating logs across services. And a crashed
+          app is only one RST source: restarted servers, firewall session
+          expiry, and load-balancer idle timeouts all produce the same
+          segment.
+        highlight_fields: []
+
+      - step: 8
+        narration: >
+          Now the alternate ending. Rewind to just after poll #1: both sides
+          ESTABLISHED, buffers empty. This time the agent is decommissioned
+          cleanly and calls close() — and TCP gets to show off its polite
+          side: the 4-way FIN teardown.
+        highlight_fields: []
+
+      - step: 9
+        narration: >
+          FIN+ACK from the client: "I have nothing more to send." The FIN
+          occupies one sequence number so it can be acknowledged reliably —
+          same trick as SYN. And it's only a half-close: the server could
+          keep sending data, and the client would still receive it. Compare
+          that with the RST, which killed both directions at once.
+        highlight_fields: ["tcp.flags", "tcp.seq"]
+
+      - step: 10
+        narration: >
+          The server ACKs the FIN (6000122 — the FIN consumed one number) and
+          enters CLOSE_WAIT: "peer is done, I should wrap up." Ops note: if
+          you ever see hundreds of connections parked in CLOSE_WAIT, the
+          application above them forgot to call close(). The kernel will wait
+          politely forever.
+        highlight_fields: ["tcp.ack"]
+
+      - step: 11
+        narration: >
+          The service finishes its cleanup and closes its side: FIN sequence
+          9000311, state LAST_ACK. Both directions have now said "done" —
+          one acknowledgment remains.
+        highlight_fields: ["tcp.flags", "tcp.seq"]
+
+      - step: 12
+        narration: >
+          The final ACK. The server frees everything instantly; the client, as
+          first closer, holds TIME_WAIT for 60 seconds — insurance that the
+          last ACK can be resent and that stale segments can't haunt a future
+          connection on the same ports. The scoreboard: every byte sent by
+          either side was provably delivered. That's what the four segments
+          buy you.
+        highlight_fields: ["tcp.ack"]
+
+      - step: 13
+        narration: >
+          Final comparison: RST = one segment, instant, bidirectional,
+          data may be lost, no TIME_WAIT — an abort. FIN = four segments,
+          negotiated, per-direction, everything acknowledged, TIME_WAIT held —
+          a receipt. When you find mid-connection resets in a capture, date
+          them: right after your data → dead or restarted peer application;
+          exactly N minutes idle → middlebox timeout, add keepalives; after a
+          host reboot → lost state. Same flag, three different culprits,
+          separable by timing alone.
+        highlight_fields: []

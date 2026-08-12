@@ -110,5 +110,17 @@
   "nvme-tcp-vertical-stack-connect-write": {
     "title": "[DRAFT] NVMe/TCP : Trace verticale complète de la pile — Connexion → Écriture",
     "description": "Tous les autres scénarios ProtoViz suivent les paquets horizontalement — de l'initiateur à la cible. Ce scénario va verticalement : un établissement de connexion TCP et une commande NVMe WRITE de 4 Ko, tracés depuis l'appel système en espace utilisateur à travers chaque couche du noyau, à travers le fil et remontant la pile cible."
+  },
+  "tcp-syn-timeout-connection-refused": {
+    "title": "Erreur TCP : SYN Timeout vs Connexion Refusée",
+    "description": "Deux façons pour connect() d'échouer : un port fermé répond aussitôt par RST (ECONNREFUSED), tandis que le DROP silencieux d'un pare-feu laisse le client retransmettre ses SYN avec backoff exponentiel jusqu'à ETIMEDOUT. Échec rapide : quelque chose a répondu ; échec lent : quelque chose mange les paquets."
+  },
+  "tcp-retransmission-rto": {
+    "title": "Erreur TCP : Retransmission — RTO vs Fast Retransmit",
+    "description": "La même perte de segment, deux récupérations : un timeout de retransmission de 204 ms qui effondre la fenêtre de congestion à 1, contre trois ACK dupliqués déclenchant le fast retransmit environ 1 500 fois plus tôt. Avec blocs SACK, slow start et fast recovery."
+  },
+  "tcp-rst-mid-connection": {
+    "title": "Erreur TCP : RST en pleine connexion vs FIN propre",
+    "description": "Un crash du serveur tue une connexion établie par RST — le client voit ECONNRESET. En contraste, la fermeture propre en 4 étapes par FIN avec TIME_WAIT, plus les suspects habituels du RST en production : redémarrages, pare-feux et timeouts d'inactivité des load balancers."
   }
 }

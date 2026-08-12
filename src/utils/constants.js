@@ -42,6 +42,10 @@ export const PHASE_COLORS = {
   'TCP Data': '#0369a1',
   'TCP Teardown': '#64748b',
   'TCP Reset': '#dc2626',
+  // TCP error-scenario phases
+  'TCP Refused': '#be123c',
+  'TCP Timeout': '#d97706',
+  'TCP Fast Retransmit': '#c2410c',
   'UDP': '#1e40af',
   'RoCE': '#7c3aed',
   'RDMA Send': '#1d4ed8',

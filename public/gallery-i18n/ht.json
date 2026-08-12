@@ -110,5 +110,17 @@
   "nvme-tcp-vertical-stack-connect-write": {
     "title": "[DRAFT] NVMe/TCP: Tras Pile Vètikal Konplè — Koneksyon → Ekriti",
     "description": "Chak lòt senaryo ProtoViz suiv pakè orizontalman — soti nan inisyatè rive nan sib atravè fil la. Senaryo sa a ale vètikalman: yon sèl koneksyon TCP ak yon sèl kòmand NVMe WRITE 4 KB, trase depi apèl sistèm espas itilizatè atravè chak kouch kernel, atravè fil la, epi remonte pile sib la jiska achèvman."
+  },
+  "tcp-syn-timeout-connection-refused": {
+    "title": "Erè TCP: SYN Timeout kont Koneksyon Refize",
+    "description": "De fason connect() ka echwe: yon pò fèmen reponn touswit ak RST (ECONNREFUSED), tandiske yon firewall ki fè DROP an silans kite kliyan an ap voye SYN ankò ak backoff eksponansyèl jiskaske ETIMEDOUT rive. Echèk rapid vle di yon bagay te reponn; echèk dousman vle di yon bagay ap vale pakè yo."
+  },
+  "tcp-retransmission-rto": {
+    "title": "Erè TCP: Retransmisyon — RTO kont Fast Retransmit",
+    "description": "Menm pèt segman an, de fason pou refè: yon timeout retransmisyon 204 ms ki fè fenèt konjesyon an tonbe a 1, kont twa ACK doub ki deklanche fast retransmit apeprè 1,500 fwa pi vit. Avèk blòk SACK, slow start ak fast recovery."
+  },
+  "tcp-rst-mid-connection": {
+    "title": "Erè TCP: RST nan mitan koneksyon kont FIN pwòp",
+    "description": "Yon kach sèvè touye yon koneksyon etabli ak RST — kliyan an resevwa ECONNRESET. An kontras, fèmen pwòp la ak 4 etap FIN ak TIME_WAIT, plis sous RST ki pi komen nan pwodiksyon: redemaraj, firewall, ak timeout inaktivite load balancer."
   }
 }

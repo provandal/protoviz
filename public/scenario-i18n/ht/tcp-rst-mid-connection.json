@@ -1,0 +1,172 @@
+{
+  "meta": {
+    "title": "Erè TCP: RST nan Mitan Koneksyon an kont FIN Pwòp",
+    "description": "Senaryo erè: yon reset touye yon koneksyon an sante ki deja etabli. Yon kliyan siveyans ap sonde yon sèvè sou yon koneksyon ki dire lontan; nan mitan yon sondaj, pwosesis sèvè a kraze ak 120 oktè ki pa li ki rete kwoke nan tanpon socket li a, epi kernel la avòte koneksyon an ak yon RST — pwochen lekti kliyan an echwe ak ECONNRESET. Apre sa senaryo a tounen dèyè epi li montre menm sesyon an k ap fini nan fason ki gen bon manyè: fèmti 4 etap ak FIN ak TIME_WAIT. Sou wout la: kiyès ki vrèman voye RST nan pwodiksyon (aplikasyon ki kraze, sèvè ki rekòmanse, firewall, delè inaktivite ekilibrè chaj), epi poukisa «Koneksyon reset pa parèy la» ak yon erè tiyo kase se de fason pou w gade menm evènman an.",
+    "learning_objectives": [
+      "Wè kijan yon RST anndan yon koneksyon parèt sou fil la epi kijan li diferan ak yon FIN",
+      "Konprann poukisa fèmen yon socket ki gen done ki poko li deklanche RST olye FIN (RFC 1122 §4.2.2.13)",
+      "Swiv kijan yon pwosesis ki kraze mennen nan «Koneksyon reset pa parèy la» (ECONNRESET) sou lòt bò a",
+      "Aprann diferans ant ECONNRESET (lekti apre yon RST) ak EPIPE/SIGPIPE (voye apre yon RST)",
+      "Konpare fèmti brital la ak fèmti pwòp 4 etap ak FIN ak TIME_WAIT",
+      "Rekonèt lòt sous RST komen nan pwodiksyon: sèvè ki rekòmanse, firewall ki gen eta, ak delè inaktivite ekilibrè chaj",
+      "Konnen poukisa yon FIN pwomèt livrezon tout sa ki voye, pandan yon RST pa garanti anyen"
+    ]
+  },
+  "actors": {
+    "client": {
+      "label": "Kliyan Siveyans",
+      "description": "Li sonde pwen final /status sèvè a chak 2 segond sou yon sèl koneksyon TCP ki dire lontan"
+    },
+    "switch": {
+      "label": "Switch 10GbE",
+      "description": "Switch Ethernet kouch 2 — yon senp temwen inosan nan senaryo sa a"
+    },
+    "server": {
+      "label": "Sèvè",
+      "description": "Li fè sèvis estati a mache — jiskaske pwosesis la kraze nan mitan yon sondaj"
+    }
+  },
+  "frames": {
+    "tcp_data_req1": {
+      "name": "Sondaj TCP (GET /status)"
+    },
+    "tcp_data_resp1": {
+      "name": "TCP 200 OK"
+    },
+    "tcp_data_ack1": {
+      "name": "TCP ACK 9000311"
+    },
+    "tcp_data_req2": {
+      "name": "Sondaj TCP #2 (GET /status)"
+    },
+    "tcp_rst_frame": {
+      "name": "TCP RST+ACK"
+    },
+    "tcp_fin_client": {
+      "name": "TCP FIN+ACK (kliyan)"
+    },
+    "tcp_fin_ack_server": {
+      "name": "TCP ACK (pou FIN kliyan an)"
+    },
+    "tcp_fin_server": {
+      "name": "TCP FIN+ACK (sèvè)"
+    },
+    "tcp_fin_ack_client": {
+      "name": "TCP ACK (final)"
+    }
+  },
+  "timeline": {
+    "0": {
+      "text": "Yon koneksyon ki dire lontan: kliyan siveyans lan sonde pwen final estati sèvè a chak 2 segond",
+      "detail": "Yo te etabli koneksyon an gen plizyè èdtan (gade senaryo fondasyon an pou salitasyon an) epi yo reitilize l pou dè milye sondaj — reitilizasyon koneksyon evite peye latans salitasyon an pou chak sondaj. Kliyan ak sèvè toude chita nan ESTABLISHED ak nimewo sekans yo byen fon nan megaoktè. Sèvis estati a ap mache kòm PID 4242 sou sèvè a. Tout bagay ap mache — jiskaske li sispann mache."
+    },
+    "1": {
+      "text": "TCP PSH+ACK → sondaj #1: GET /status (120 oktè)",
+      "detail": "Yon sondaj òdinè: 120 oktè HTTP pote nan yon sèl segman, ak PSH mete pou pil sèvè a remèt li bay aplikasyon an touswit. Kontablite sekans: oktè 6000001–6000120 nan flo kliyan an."
+    },
+    "2": {
+      "text": "TCP PSH+ACK ← 200 OK (310 oktè): tout sistèm yo an sante",
+      "detail": "Sèvis estati a li sondaj la, verifye anndan l, epi li reponn ak yon ti kò JSON. Nimewo ACK la (6000121) konfime sondaj la; chaj itil la okipe oktè 9000001–9000310 nan flo sèvè a. Ale-retou: 150 µs. Sa a se sondaj nimewo ~3,600 sou koneksyon sa a."
+    },
+    "3": {
+      "text": "TCP ACK → 9000311: sondaj fini, koneksyon an poze jiska pwochen sik la",
+      "detail": "Kliyan an konfime repons lan epi li tounen dòmi pou 2 segond. Remake sa «poze» vle di pou TCP: anyen. Pa gen keepalive nan echèl tan sa a, pa gen sonn — yon koneksyon TCP ki poze pa echanje okenn pakè. Toude bout yo senpleman sonje eta yo. Silans sa a se rezon ki fè koneksyon ki demi-mouri ka rete la san yo pa detekte, epi rezon ki fè aksidan k ap vini an bezwen *pwochen* sondaj la pou l revele tèt li."
+    },
+    "4": {
+      "text": "TCP PSH+ACK → sondaj #2 pati alè — 120 oktè k ap ale jwenn yon pwosesis ki gen kèk mikwosegond pou l viv",
+      "detail": "De segond apre, pwochen sondaj la soti, ak menm estrikti egzak ak dè milye anvan l. Kernel sèvè a resevwa l, li konfime l anndan, epi li mete 120 oktè yo nan fil nan tanpon resepsyon socket la pou aplikasyon an li. Aplikasyon an p ap janm fè sa."
+    },
+    "5": {
+      "text": "Sèvis estati a kraze (SIGSEGV) — kernel la dwe kounye a debarase l de yon socket ki kenbe 120 oktè ki poko li",
+      "detail": "Yon bug tire: PID 4242 dereferans yon move pwentè epi li mouri ak SIGSEGV. Kernel la netwaye tout sa pwosesis la te posede, ki gen ladan socket ki konekte a. Men kalfou a: si fil atant resepsyon socket la te vid, kernel la ta fèmen pwòpman ak yon FIN. Men 120 oktè chita san yo pa li nan fil la — epi RFC 1122 §4.2.2.13 klè: fèmen ak done resevwa ki toujou an atant dwe voye yon reset, paske yon FIN ta bay parèy la yon fo pwomès ke tout sa li te voye te livre. Se pa t vre."
+    },
+    "6": {
+      "text": "TCP RST+ACK ← avòtman, pa orevwa: koneksyon an sispann egziste touswit",
+      "detail": "tcp_send_active_reset() konstwi avòtman an: RST+ACK ak SEQ = SND.NXT (9000311, konsa kliyan an ap aksepte l kòm nan fenèt la) epi ACK = 6000241 (kernel la te vrèman resevwa sondaj la — li jis pa gen kote pou l livre l). Kontrèman ak FIN, yo pa negosye yon reset epi li pa jwenn konfimasyon. Pa gen demi-fèmti, pa gen atant, pa gen TIME_WAIT: yon sèl segman, epi koneksyon an disparèt nan toude direksyon.\n\nEgzijans pou reset la nan fenèt la se defans TCP kont atakè ki pa sou chemen an k ap enjekte reset avèg — yon move nimewo sekans epi yo inyore RST la (RFC 9293 §3.5.3, ki fèt apre atak enjeksyon RST RFC 5961 katalòg yo)."
+    },
+    "7": {
+      "text": "recv() kliyan an echwe: ECONNRESET — «Koneksyon reset pa parèy la»",
+      "detail": "Kernel kliyan an valide RST la (nan fenèt la: wi), detwi bò pa l nan koneksyon an, epi li make socket la ak sk_err = ECONNRESET. recv() ki te bloke a reveye ak erè fanmè a. Si aplikasyon an te eseye voye olye sa, li t ap jwenn EPIPE plis SIGPIPE — menm evènman an, yon lòt apèl sistèm, se poutèt sa menm pàn nan pwodui diferan mesaj erè nan jounal diferan sèvis.\n\nLòt sispèk abityèl yo pou RST nan mitan koneksyon, lè anyen pa kraze: yon sèvè ki rekòmanse (tout eta TCP pèdi — nenpòt bagay ki rive pou ansyen koneksyon an atire yon reset), yon firewall ki gen eta kote antre sesyon an ekspire, ak ekilibrè chaj k ap aplike delè inaktivite (klasik la: ekilibrè chaj nan nyaj la reset flo ki rete san aktivite plis pase ~350 s). Si sondaj yo echwe chak N minit egzakteman, sispèk yon revèy inaktivite — remèd la se keepalive TCP oswa ping nan nivo aplikasyon ki pi kout pase delè a."
+    },
+    "8": {
+      "text": "Kontras — tounen dèyè nan sondaj an sante a epi fini menm sesyon an pwòpman ak FIN",
+      "detail": "Kounye a lòt fen an. Tounen dèyè jis apre sondaj #1 te fini: toude bò yo nan ESTABLISHED, kliyan an nan sekans 6000121, sèvè a nan 9000311, pa gen anyen ki pa li okenn kote. Fwa sa a y ap retire ajan siveyans lan pwòpman: li rele close() ak tanpon vid, epi TCP fè fèmti 4 etap ak FIN nan — fason ki gen bon manyè pou toude bò yo pwouve chak dènye oktè te rive."
+    },
+    "9": {
+      "text": "TCP FIN+ACK → «pa gen plis done nan men m» — yon demi-fèmti, pa yon rakwoche",
+      "detail": "close() ak tanpon pwòp voye FIN. Tankou SYN, FIN nan okipe yon nimewo sekans (6000121) pou yo ka konfime livrezon li. Kliyan an antre nan FIN_WAIT_1. Remake asimetri a ak RST: yon FIN fèmen sèlman direksyon kliyan→sèvè a; sèvè a ta ka kontinye voye tout tan li vle, epi kliyan an ta toujou resevwa l."
+    },
+    "10": {
+      "text": "TCP ACK ← FIN nan jwenn konfimasyon; sèvè a antre nan CLOSE_WAIT",
+      "detail": "Sèvè a konfime 6000122 (FIN nan konsome yon nimewo) epi li antre nan CLOSE_WAIT: «parèy la fini; mwen ta dwe fini tou.» Kliyan an deplase nan FIN_WAIT_2. Nan pwodiksyon, koneksyon ki kwoke nan CLOSE_WAIT se yon sentòm klasik pou yon aplikasyon ki bliye rele close() — kernel la ap tann aplikasyon an, epi l ap tann pou tout tan."
+    },
+    "11": {
+      "text": "TCP FIN+ACK ← sèvè a fini bò pa l",
+      "detail": "Sèvis estati a wè EOF sou lekti li, li fini pwòp netwayaj pa l, epi li rele close(). FIN sèvè a okipe sekans 9000311 epi li deplase l nan LAST_ACK — l ap tann yon dènye konfimasyon anvan li ka libere koneksyon an nèt."
+    },
+    "12": {
+      "text": "TCP ACK → fèmti a fini; kliyan an kenbe TIME_WAIT pou 60 s",
+      "detail": "Dènye ACK la (9000312) libere sèvè a, ki libere tout eta pou koneksyon sa a touswit. Kliyan an — kòm bò ki te fèmen anvan an — antre nan TIME_WAIT pou 2×MSL (60 s sou Linux). TIME_WAIT se pa yon bug ni yon fuit: li garanti dènye ACK sa a ka retransmèt si FIN sèvè a reparèt, epi li pwoteje pè pò a kont ansyen segman k ap koule antre nan yon koneksyon fiti. Chak oktè toude bò yo te janm voye jwenn prèv li te livre epi konfime — se pwomès sa a chemen RST la pa t ka fè."
+    },
+    "13": {
+      "text": "Senaryo fini — RST kont FIN: avòtman kont prèv livrezon",
+      "detail": "Menm koneksyon an, de fen:\n\n• RST — yon sèl segman san negosyasyon; koneksyon an disparèt nan toude direksyon touswit; yo jete done ki pa li yo; parèy la aprann sa atravè ECONNRESET (sou lekti) oswa EPIPE/SIGPIPE (sou voye); pa gen TIME_WAIT. Yon reset di: yon bagay kase, epi livrezon done ou yo pa garanti.\n\n• FIN — yon negosyasyon kat segman; chak direksyon fèmen apa; chak oktè jwenn konfimasyon anvan eta a libere; premye moun ki fèmen an peye 60 s TIME_WAIT. Yon FIN di: nou fini, epi tout bagay rive.\n\nLè w wè RST nan mitan koneksyon nan yon kapti, aliyen sispèk yo dapre modèl: RST touswit apre done ou → aplikasyon parèy la mouri oswa yo te rekòmanse l; RST apre egzakteman N minit inaktivite → yon delè inaktivite firewall oswa ekilibrè chaj (ajoute keepalive ki pi kout pase N); RST sou koneksyon ki t ap mache kèk segond anvan, ki soti nan yon machin ki fèk rebòte → eta TCP pèdi. Reset la li menm idantik nan tout twa ka yo — se moman an ki di w kiyès ki voye l ak poukisa."
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "Kijan Koneksyon Mouri: RST kont FIN",
+      "description": "Gade yon aksidan sèvè tounen yon ECONNRESET sou kliyan an, epi apre sa tounen dèyè epi wè menm sesyon an fini pwòpman ak fèmti 4 etap ak FIN",
+      "steps": {
+        "0": "Konfigirasyon an: yon ajan siveyans ap sonde yon sèvis estati chak de segond sou yon sèl koneksyon TCP ki dire lontan — etabli gen plizyè èdtan, reitilize dè milye fwa. Reitilizasyon koneksyon se pratik estanda (salitasyon koute latans), men sa vle di sante koneksyon an ak sante aplikasyon an se de bagay diferan, jan nou pral wè l.",
+        "1": "Sondaj nimewo ~3,600: yon GET /status 120 oktè. PSH di pil sèvè a livre l bay aplikasyon an touswit. Nimewo sekans yo swiv chak oktè — sondaj sa a okipe 6000001 jiska 6000120 nan flo kliyan an.",
+        "2": "Sèvis la reponn 200 OK ak yon ti kò JSON — 310 oktè, 150 mikwosegond ale-retou. Tout bagay nan echanj sa a woutin. Savoure l; se dènye sondaj an sante koneksyon sa a ap janm konplete.",
+        "3": "Kliyan an konfime epi li dòmi pou de segond. Detay enpòtan: yon koneksyon TCP ki poze se silans pi rèd — pa gen pakè, pa gen sonn, jis de kernel k ap sonje eta yo. Si yon bagay rive yon bò pandan silans lan, lòt bò a pa gen okenn mwayen pou l konnen jiskaske li voye yon bagay ankò.",
+        "4": "Sondaj #2 pati alè. Kernel sèvè a resevwa l, li konfime anndan, epi li mete 120 oktè nan fil nan tanpon resepsyon socket la pou aplikasyon an li. Kenbe je w sou 120 oktè sa yo — yo sou pwen deside kijan koneksyon sa a pral mouri.",
+        "5": "Sèvis estati a dereferans yon move pwentè epi li mouri — SIGSEGV. Kernel la kounye a posede yon socket ki konekte kote pwosesis la disparèt, ak 120 oktè ki pa li nan fil la. RFC 1122 §4.2.2.13 pa kite okenn chwa: fèmen ak done resevwa an atant dwe avòte ak RST. Yon FIN ta bay manti — li ta di kliyan an «tout sa ou voye te livre», epi se pa t vre.",
+        "6": "Reset la: RST+ACK, sekans 9000311 — egzakteman SND.NXT, konsa kliyan an ap aksepte l kòm otantik (yo inyore reset ki deyò fenèt la; se defans lan kont atak enjeksyon avèg). Remake nimewo ACK la toujou konfime sondaj la: kernel la te jwenn oktè yo, yo jis pa t gen kote pou yo ale. Yon sèl segman, pa gen negosyasyon, pa gen repons — koneksyon an disparèt nan toude direksyon.",
+        "7": "recv() kliyan an ki te bloke a reveye ak ECONNRESET — «Koneksyon reset pa parèy la». Si li te nan ekri olye, li t ap jwenn EPIPE ak yon SIGPIPE. Menm evènman an, de mesaj erè diferan selon ki direksyon aplikasyon an t ap gade — bon pou w sonje lè w ap konpare jounal atravè plizyè sèvis. Epi yon aplikasyon ki kraze se yon sèl sous RST: sèvè ki rekòmanse, sesyon firewall ki ekspire, ak delè inaktivite ekilibrè chaj tout pwodui menm segman an.",
+        "8": "Kounye a lòt fen an. Tounen dèyè jis apre sondaj #1: toude bò yo nan ESTABLISHED, tanpon yo vid. Fwa sa a y ap retire ajan an pwòpman epi li rele close() — epi TCP jwenn chans montre bèl bò pa l: fèmti 4 etap ak FIN nan.",
+        "9": "FIN+ACK soti nan kliyan an: «Mwen pa gen plis anyen pou voye.» FIN nan okipe yon nimewo sekans pou yo ka konfime l fyabman — menm ti riz ak SYN. Epi se sèlman yon demi-fèmti: sèvè a ta ka kontinye voye done, epi kliyan an ta toujou resevwa yo. Konpare sa ak RST la, ki te touye toude direksyon yon sèl kou.",
+        "10": "Sèvè a konfime FIN nan (6000122 — FIN nan konsome yon nimewo) epi li antre nan CLOSE_WAIT: «parèy la fini, mwen ta dwe boukle.» Nòt operasyon: si w janm wè dè santèn koneksyon pake nan CLOSE_WAIT, aplikasyon ki anwo yo a bliye rele close(). Kernel la ap tann ak politès pou tout tan.",
+        "11": "Sèvis la fini netwayaj li epi li fèmen bò pa l: FIN nan sekans 9000311, eta LAST_ACK. Toude direksyon yo di «fini» kounye a — yon sèl konfimasyon ki rete.",
+        "12": "Dènye ACK la. Sèvè a libere tout bagay touswit; kliyan an, kòm premye moun ki te fèmen, kenbe TIME_WAIT pou 60 segond — asirans ke dènye ACK la ka voye ankò epi ke ansyen segman pa ka vin ante yon koneksyon fiti sou menm pò yo. Rezilta a: chak oktè nenpòt bò te voye jwenn prèv li te livre. Se sa kat segman yo achte pou ou.",
+        "13": "Konparezon final: RST = yon sèl segman, imedya, nan toude direksyon, done ka pèdi, pa gen TIME_WAIT — yon avòtman. FIN = kat segman, negosye, pou chak direksyon, tout bagay konfime, TIME_WAIT kenbe — yon resi. Lè w jwenn reset nan mitan koneksyon nan yon kapti, gade lè yo rive: jis apre done ou → aplikasyon parèy la mouri oswa yo rekòmanse l; egzakteman N minit inaktivite → delè yon aparèy ki nan mitan, ajoute keepalive; apre yon machin rebòte → eta pèdi. Menm drapo a, twa koupab diferan, ou ka separe yo sèlman ak moman an."
+      }
+    }
+  },
+  "glossary": {
+    "ECONNRESET": {
+      "term": "ECONNRESET",
+      "definition": "errno yo livre lè yon lekti/recv swiv yon RST yo resevwa: «Koneksyon reset pa parèy la». Lòt bò a te detwi koneksyon an san yon fèmti pwòp."
+    },
+    "EPIPE / SIGPIPE": {
+      "term": "EPIPE / SIGPIPE",
+      "definition": "Sa yon send/write nan yon koneksyon ki reset pwodui: errno EPIPE plis siyal SIGPIPE (ki touye pwosesis la si w pa jere l — kòz klasik pou script k ap mouri an silans). Menm RST anba a ak ECONNRESET; se direksyon apèl sistèm nan ki diferan."
+    },
+    "Abortive Close": {
+      "term": "Fèmti Brital",
+      "definition": "Fini yon koneksyon ak RST olye FIN. Sa rive lè yo fèmen yon socket ki gen done ki poko li an atant (RFC 1122 §4.2.2.13), lè SO_LINGER mete nan zewo, oswa lè yon machin pa gen okenn eta pou yon segman k ap rive (pa egzanp apre yon rekòmansman)."
+    },
+    "Half-Close": {
+      "term": "Demi-Fèmti",
+      "definition": "Yon FIN fèmen sèlman direksyon ekspeditè a. Parèy la ka kontinye transmèt endefiniman; moun ki voye FIN nan dwe kontinye resevwa. Se poutèt sa fèmti pwòp la pran kat segman — chak direksyon fèmen endepandaman."
+    },
+    "CLOSE_WAIT": {
+      "term": "CLOSE_WAIT",
+      "definition": "Eta a apre yo resevwa (epi konfime) FIN parèy la, anvan aplikasyon lokal la rele close(). Koneksyon k ap anpile nan CLOSE_WAIT endike yon aplikasyon ki pa fèmen socket li yo — kernel la ap tann endefiniman."
+    },
+    "TIME_WAIT": {
+      "term": "TIME_WAIT",
+      "definition": "Kenbe pou 2×MSL (60 s sou Linux) pa bò ki te voye premye FIN nan, apre fèmti a fini. Li garanti dènye ACK la ka voye ankò epi li anpeche ansyen segman kontamine yon nouvo koneksyon sou menm pè pò a. Chemen RST la sote l — yon rezon ki fè avòtman «mwens chè» men pi sal."
+    },
+    "In-Window Reset Validation": {
+      "term": "Validasyon RST nan Fenèt la",
+      "definition": "Yon reseptè aksepte sèlman yon RST ki gen nimewo sekans li anndan fenèt resepsyon aktyèl la — se defans lan kont enjeksyon reset avèg ki soti deyò chemen an. RFC 5961 sere règ sa a pi plis apre atak reyèl."
+    },
+    "Idle Timeout Reset": {
+      "term": "RST akoz Delè Inaktivite",
+      "definition": "Aparèy ki nan mitan ki gen eta (firewall, ekilibrè chaj, pasrèl NAT) jete oswa reset flo ki rete san aktivite pi lontan pase yon sèy (souvan 5–60 minit). Koneksyon trankil ki dire lontan bezwen keepalive TCP oswa ping nan nivo aplikasyon ki pi kout pase pi piti delè a sou chemen an."
+    }
+  }
+}

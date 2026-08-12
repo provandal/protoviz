@@ -36,15 +36,18 @@ ProtoViz is an open-source, browser-based platform that turns protocol exchanges
 - **Scenario Gallery** — Browse, filter, and search available scenarios
 - **MCP Server** — Protocol knowledge tools for AI agents via Model Context Protocol
 
-### Scenarios (23)
+### Scenarios (26)
 
-The library spans 6 protocol families across 3 difficulty levels (5 beginner, 6 intermediate, 12 advanced).
+The library spans 6 protocol families across 3 difficulty levels (8 beginner, 6 intermediate, 12 advanced).
 
 #### Networking Fundamentals
 
 | Scenario | Protocol | Difficulty |
 |----------|----------|------------|
 | TCP: 3-Way Handshake → Data Transfer → FIN Teardown | TCP | Beginner |
+| TCP Error: SYN Timeout vs Connection Refused | TCP | Beginner |
+| TCP Error: Retransmission — RTO vs Fast Retransmit | TCP | Beginner |
+| TCP Error: RST Mid-Connection vs Graceful FIN | TCP | Beginner |
 | ARP & NDP: IPv4 Address Resolution and IPv6 Neighbor Discovery | ARP / NDP | Beginner |
 | Checking Your Email: What Really Happens When You Click Inbox | DNS, TCP, TLS 1.3, HTTP/2 | Beginner |
 | TLS 1.3: Full Handshake → Encrypted Application Data → Alert Close | TLS 1.3 | Intermediate |
@@ -221,12 +224,12 @@ protoviz/
 │   ├── utils/               # Constants, state engine, normalizer, translation overlays
 │   └── styles/              # Global CSS with RTL overrides and CJK font stacks
 ├── public/
-│   ├── scenarios/           # YAML scenario files + index.json manifest (23 scenarios)
+│   ├── scenarios/           # YAML scenario files + index.json manifest (26 scenarios)
 │   ├── locales/             # UI chrome translations (14 languages × 193+ keys)
 │   ├── gallery-i18n/        # Gallery card translations (title, description per scenario)
 │   ├── scenario-i18n/       # Scenario content overlays (timeline, walkthroughs, meta)
-│   │   ├── ar-LB/           #   Lebanese Arabic (23 scenarios)
-│   │   ├── ht/              #   Haitian Creole (23 scenarios)
+│   │   ├── ar-LB/           #   Lebanese Arabic (26 scenarios)
+│   │   ├── ht/              #   Haitian Creole (26 scenarios)
 │   │   ├── zh-CN/           #   Mandarin Simplified (23 scenarios)
 │   │   ├── he/              #   Hebrew (23 scenarios)
 │   │   ├── ...              #   + 9 more languages (es, fr, de, hi, pt-BR, ja, ru, ko, uk)

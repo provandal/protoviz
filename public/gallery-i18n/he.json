@@ -110,5 +110,17 @@
   "nvme-tcp-vertical-stack-connect-write": {
     "title": "[DRAFT] NVMe/TCP: מעקב ערימה אנכי מלא — חיבור → כתיבה",
     "description": "כל תרחיש אחר ב-ProtoViz עוקב אחר חבילות אופקית — מיוזם ליעד. תרחיש זה הולך אנכית: חיבור TCP אחד ופקודת NVMe WRITE של 4 KB, נעקבים מקריאת מערכת במרחב המשתמש דרך כל שכבת kernel, דרך הכבל, ובחזרה למעלה בערימת היעד."
+  },
+  "tcp-syn-timeout-connection-refused": {
+    "title": "שגיאת TCP: פסק זמן SYN מול Connection Refused",
+    "description": "שתי דרכים שבהן connect() נכשל: פורט סגור עונה מיד ב-RST‏ (ECONNREFUSED), בעוד DROP שקט של חומת אש משאיר את הלקוח משדר SYN שוב ושוב עם backoff מעריכי עד ETIMEDOUT. כישלון מהיר — משהו ענה; כישלון איטי — משהו בולע את החבילות."
+  },
+  "tcp-retransmission-rto": {
+    "title": "שגיאת TCP: שידור חוזר — RTO מול Fast Retransmit",
+    "description": "אותו אובדן מקטע, שתי התאוששויות: פסק זמן שידור חוזר של 204 מילישניות שממוטט את חלון הגודש ל-1, מול שלושה ACK כפולים שמפעילים fast retransmit מהר פי כ-1,500. כולל בלוקי SACK‏, slow start ו-fast recovery."
+  },
+  "tcp-rst-mid-connection": {
+    "title": "שגיאת TCP: RST באמצע חיבור מול FIN מסודר",
+    "description": "קריסת תהליך השרת הורגת חיבור פעיל עם RST — הלקוח מקבל ECONNRESET. לעומת זאת, סגירה מסודרת בארבעה שלבים עם FIN ו-TIME_WAIT, ובנוסף החשודים הרגילים ב-RST בסביבת ייצור: אתחולים, חומות אש ו-idle timeouts של מאזני עומס."
   }
 }

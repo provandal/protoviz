@@ -1,0 +1,216 @@
+{
+  "meta": {
+    "title": "Erè TCP: Retransmisyon — Delè RTO kont Retransmisyon Rapid",
+    "description": "Senaryo erè: yon segman done pèdi nan mitan yon transfè — de fwa — epi TCP rekipere nan de fason ki byen diferan. Premye pèt la rive san anyen lòt nan wout, donk ekspeditè a ka sèlman tann delè retransmisyon an (RTO): ~200 ms tan mouri sou yon rezo ki gen yon ale-retou 120 µs, swiv pa yon efondreman fenèt konjesyon an rive nan 1 segman. Dezyèm pèt la rive anndan yon rafal, donk segman ki dèyè l yo jenere ACK diplike, epi twazyèm dupACK la deklanche retransmisyon rapid anviwon 1,500× pi bonè — ak fenèt konjesyon an senpleman koupe an de. Sa a se machin nan ki fè TCP fyab, epi se rezon ki fè pèt fè debi a plis mal pase latans.",
+    "learning_objectives": [
+      "Wè sa k ap pase sou fil la lè yon switch konjesyone jete yon segman done TCP an silans",
+      "Konprann delè retransmisyon an (RTO): kijan yo kalkile l (SRTT + 4×RTTVAR, ak yon planche 200 ms sou Linux) epi poukisa li pridan espre",
+      "Gade fenèt konjesyon an tonbe rive nan 1 MSS apre yon RTO epi rebati atravè demaraj dousman",
+      "Konprann ACK diplike yo: poukisa reseptè a repete menm nimewo ACK la lè li kenbe done andezòd",
+      "Wè sèy twa dupACK la deklanche retransmisyon rapid byen lontan anvan RTO a ta sonnen",
+      "Li blòk SACK yo epi wè kijan yo di ekspeditè a egzakteman ki oktè ki siviv",
+      "Konpare de rekiperasyon yo: RTO → cwnd = 1 + demaraj dousman; retransmisyon rapid → cwnd koupe an de + evitman konjesyon"
+    ]
+  },
+  "actors": {
+    "client": {
+      "label": "Kliyan (ekspeditè)",
+      "description": "Ekspeditè TCP — l ap voye yon fichye 1 MB; se li ki gen revèy retransmisyon yo ak fenèt konjesyon an"
+    },
+    "switch": {
+      "label": "Switch 10GbE",
+      "description": "Switch kouch 2 ak yon fil atant sòti ki konjesyone yon ti moman — se la toude pèt yo rive"
+    },
+    "server": {
+      "label": "Sèvè (reseptè)",
+      "description": "Reseptè TCP — li jenere ACK, ACK diplike, ak blòk SACK"
+    }
+  },
+  "frames": {
+    "tcp_data_seg1": {
+      "name": "Done TCP (seg 1)"
+    },
+    "tcp_data_ack1": {
+      "name": "TCP ACK 5001461"
+    },
+    "tcp_data_seg2": {
+      "name": "Done TCP (seg 2) — PÈDI"
+    },
+    "tcp_rto_retx_seg2": {
+      "name": "Retransmisyon TCP RTO (seg 2)"
+    },
+    "tcp_rto_ack": {
+      "name": "TCP ACK 5002921"
+    },
+    "tcp_data_seg3": {
+      "name": "Done TCP (seg 3) — PÈDI"
+    },
+    "tcp_data_seg4": {
+      "name": "Done TCP (seg 4)"
+    },
+    "tcp_data_seg5": {
+      "name": "Done TCP (seg 5)"
+    },
+    "tcp_data_seg6": {
+      "name": "Done TCP (seg 6, PSH)"
+    },
+    "tcp_dupack_1": {
+      "name": "ACK Diplike #1"
+    },
+    "tcp_dupack_2": {
+      "name": "ACK Diplike #2"
+    },
+    "tcp_dupack_3": {
+      "name": "ACK Diplike #3"
+    },
+    "tcp_fast_retx_seg3": {
+      "name": "Retransmisyon Rapid TCP (seg 3)"
+    },
+    "tcp_fast_retx_ack": {
+      "name": "TCP ACK 5008761"
+    }
+  },
+  "timeline": {
+    "0": {
+      "text": "Nan mitan yon transfè: koneksyon TCP a nan ESTABLISHED epi kliyan an ap voye yon fichye 1 MB",
+      "detail": "Nou rantre nan yon koneksyon ki deja monte (gade senaryo fondasyon an pou salitasyon an) epi ki okipe: kliyan an ap voye yon fichye 1 MB nan segman 1460 oktè. Tan ale-retou sou LAN sa a se ~120 µs, fenèt konjesyon an se 10 segman, epi delè retransmisyon an chita sou planche pratik li — Linux mare RTO a nan yon minimòm ~200 ms kèlkeswa vitès rezo a. Kenbe asimetri sa a nan tèt ou: revèy ki pwoteje transfè sa a ~1,700× pi dousman pase rezo l ap pwoteje a."
+    },
+    "1": {
+      "text": "Segman done TCP → oktè 5000001–5001460: baz an sante a",
+      "detail": "Yon segman gwosè MSS konplè kite kliyan an. Anyen espesyal — se konsa dè milyon segman anvan l te sanble. Opsyon tanstanp lan (TSval) make lè li pati; eko a nan ACK la ap bay ekspeditè a yon nouvo echantiyon RTT, ki alimante kalkil RTT lise a ak RTO a."
+    },
+    "2": {
+      "text": "TCP ACK ← 5001461 apre 120 µs — men kijan sante sanble",
+      "detail": "Reseptè a livre oktè yo bay aplikasyon an epi li konfime. SND.UNA avanse; tanpon retransmisyon an libere segman an; echantiyon RTT la (120 µs) kenbe SRTT sere. Chak mekanis nan senaryo sa a deja ame epi l ap mache pandan transfè an sante a — revèy, tanpon, kontè — se sèlman lè yon bagay kase ou remake yo."
+    },
+    "3": {
+      "text": "Segman done TCP seq 5001461 — sa a mouri nan fil atant sòti switch la ki debòde",
+      "detail": "Aplikasyon an fè yon poz apre li mete 1460 oktè sa yo nan fil (l ap tann pwòp I/O disk pa l), donk segman sa a vwayaje pou kont li — anyen pa swiv li. Nan switch la, yon rafal trafik ki soti nan yon lòt pò fin plen fil atant sòti a: tail-drop. Yo jete segman an an silans. Ethernet pa gen retransmisyon epi li pa gen notifikasyon — rekiperasyon pèt se travay TCP nèt, depi nan yon bout rive nan lòt la."
+    },
+    "4": {
+      "text": "Segman jete — tail-drop nan fil atant sòti ki konjesyone a",
+      "detail": "Ti tanpon switch la debòde pandan kèk mikwosegond — ase pou touye segman sa a. Ni yon bò ni lòt pa konnen anyen ankò. Revèy retransmisyon kliyan an (ame nan 204 ms lè segman an te voye) kounye a se sèl mekanis ki ka detekte pèt sa a, paske san okenn segman nan wout dèyè sa ki pèdi a, reseptè a pa gen okenn mwayen pou l remake gen yon bagay ki manke: nan pwen de vi li, ekspeditè a senpleman vin an silans."
+    },
+    "5": {
+      "text": "Tan mouri — pa gen okenn ACK diplike ki posib, donk se sèlman revèy RTO a ki ka sove transfè sa a",
+      "detail": "Se pi move ka a pou rekiperasyon pèt nan TCP: segman ki pèdi a se te dènye a ki te nan wout. ACK diplike — mekanis deteksyon rapid la — mande pou segman ki vin apre yo rive epi pouse reseptè a repete ACK li. San anyen dèyè pèt la, pa gen anyen pou deklanche yo. Koneksyon an chita san fè anyen pandan toude bò yo ap tann: reseptè a pou oktè 5001461, ekspeditè a pou yon ACK ki p ap janm vini. Se sèlman revèy pridan 204 ms lan k ap tike vè rekiperasyon."
+    },
+    "6": {
+      "text": "RTO a fini apre 204 ms — yon etènite sou yon rezo 120 µs",
+      "detail": "Revèy retransmisyon an sonnen: 204 ms silans pou yon rezo ki reponn nan 120 µs — apeprè 1,700 ale-retou tan mouri. Poukisa li tèlman pridan? Yo kalkile RTO a kòm SRTT + 4×RTTVAR (RFC 6298) ak yon planche (200 ms sou Linux, ajistab pou chak wout ak rto_min). Yon delè fo ta retransmèt san rezon epi li ta efondre fenèt konjesyon an pou anyen, donk revèy la panche byen lwen sou bò pasyans lan. TCP trete yon RTO kòm prèv gwo pwoblèm — epi li reyaji dramatikman."
+    },
+    "7": {
+      "text": "Retransmisyon RTO → seq 5001461 ankò; cwnd tonbe 10 → 1, ssthresh mete nan 2",
+      "detail": "Kernel la voye ankò pi ansyen segman ki pa konfime a epi li pran penalite RTO a RFC 5681 preskri a: ssthresh tonbe nan mwatye done ki te nan wout la (ak yon planche 2 segman — isit la vòl la se te yon sèl segman, donk planche a aplike), epi cwnd tonbe nèt rive nan 1 segman. Transfè a rekòmanse ak demaraj dousman kòm si koneksyon an te fèk fèt. Revèy RTO a li menm double (204 → 408 ms) si retransmisyon sa a ta disparèt tou — menm atant eksponansyèl senaryo delè SYN nan montre a."
+    },
+    "8": {
+      "text": "TCP ACK ← 5002921: rekipere — men tiyo a dwe rebati depi nan cwnd = 1",
+      "detail": "Retransmisyon an rive, reseptè a livre oktè yo, epi ACK la konfime rekiperasyon an. Domaj total: 204 ms transfè bloke plis yon fenèt konjesyon nan 1 segman. Apati la, cwnd grandi ak demaraj dousman jiska ssthresh (1 → 2), epi apre sa evitman konjesyon ajoute apeprè yon segman pou chak RTT. Sou LAN 120 µs sa a, rebati sa a pran sèlman youn oswa de milisegond; sou yon chemen Entènèt 80 ms menm rebati a ta pran plis pase yon demi segond. Pèt + RTO se konsa debi a mouri sou lyen long distans."
+    },
+    "9": {
+      "text": "~100 ms apre: cwnd remonte rive nan 10 epi aplikasyon an mete yon rafal 4 segman nan fil",
+      "detail": "Poz disk aplikasyon an fini epi done yo ap sikile ankò. Nan ~100 ms depi RTO a (dè santèn RTT sou LAN sa a), fenèt konjesyon an rebati: demaraj dousman double l rive nan ssthresh (2), epi evitman konjesyon ajoute ~1 segman pou chak RTT jiskaske li tounen nan 10. Kounye a aplikasyon an bay socket la 5840 oktè yon sèl kou — kat segman konplè ki pral voye youn dèyè lòt. Rafal sa a pral rankontre menm fil atant konjesyone a, ak yon rezilta byen diferan."
+    },
+    "10": {
+      "text": "Done TCP seq 5002921 — pèdi ankò, men fwa sa a twa segman swiv jis dèyè l",
+      "detail": "Premye segman rafal la — epi malchans lan tonbe sou li: fil atant switch la vin plen ankò epi li tail-drop. Diferans kle ak premye pèt la: segman 4, 5, ak 6 kèk mikwosegond dèyè l, epi yo pral siviv. Gade sa reseptè a fè ak yo."
+    },
+    "11": {
+      "text": "Segman jete — menm fil atant konjesyone a; rès rafal la fofile pase",
+      "detail": "Yon lòt tail-drop, epi apre sa fil la vide jis ase. Pèt owaza anndan yon rafal se ka ki pi komen an sou vrè rezo — epi se egzakteman ka retransmisyon rapid TCP a te fèt pou li."
+    },
+    "12": {
+      "text": "Done TCP seq 5004381 rive andezòd — reseptè a wè twou a touswit",
+      "detail": "Reseptè a t ap tann oktè 5002921 men li jwenn 5004381 — yon twou 1460 oktè. Li mete oktè sa yo nan tanpon fil atant andezòd la (yo p ap livre yo bay aplikasyon an ankò) epi touswit li voye ACK li pou 5002921 ankò, kounye a ak yon blòk SACK ki anonse egzakteman sa li kenbe. ACK diplike sa a se siyal pèt nimewo en."
+    },
+    "13": {
+      "text": "Done TCP seq 5005841 — zile andezòd la ap grandi",
+      "detail": "Segman 5 rejwenn tanpon an bò kote segman 4. Twou a nan 5002921 pa chanje, donk reseptè a ap tire yon lòt ACK diplike ak yon blòk SACK ki pi laj."
+    },
+    "14": {
+      "text": "Done TCP seq 5007301 (PSH) — fen rafal la; twa segman kounye a ap tann dèyè twou a",
+      "detail": "Dènye segman rafal la ateri. Reseptè a kounye a kenbe 4380 oktè li pa ka livre bay aplikasyon an — livrezon nan lòd se kontra TCP a, epi oktè 5002921 toujou manke. Tout bagay kounye a depann de ekspeditè a aprann twou a vit."
+    },
+    "15": {
+      "text": "ACK Diplike #1 ← ack jele nan 5002921; SACK di «Mwen kenbe 5004381–5005840»",
+      "detail": "Konfimasyon kimilatif pa ka avanse pi lwen pase yon twou — donk nimewo ACK la repete. Repetisyon sa a se enfòmasyon: li di ekspeditè a «done ki vin apre yo rive, men pa oktè mwen te mande a». Opsyon SACK la fè l vin pi presi tankou yon kat: bò goch la (5004381) mwens nimewo ACK la (5002921) se egzakteman yon sèl segman ki manke. Yon sèl diplike ta ka toujou se dezòd nan rezo a, donk ekspeditè a jis konte l epi li tann."
+    },
+    "16": {
+      "text": "ACK Diplike #2 ← blòk SACK la vin pi laj rive nan 5004381–5007300",
+      "detail": "Dezyèm repetisyon. Dezòd nan rezo a mwens pwobab kounye a — vrè dezòd anjeneral rezoud nan yon pakè oswa de. Kontè dupACK ekspeditè a chita nan 2, yon sèl anba sèy la."
+    },
+    "17": {
+      "text": "ACK Diplike #3 ← sèy la rive: retransmisyon rapid tire, pa bezwen okenn revèy",
+      "detail": "Twa ACK diplike se liy RFC 5681 trase ant «pwobableman andezòd» ak «prèske sèten pèdi». Ekspeditè a sispann tann: li pral voye segman ki manke a touswit, san li pa okipe 204 ms pasyans RTO a. Li pran penalite konjesyon ki pi dou nan rekiperasyon rapid tou — ssthresh = mwatye done ki nan wout la (planche 2 segman; kat segman te nan wout, donk 2), epi cwnd degonfle vè ssthresh olye li tonbe nan 1. Entwisyon an: ACK diplike yo pwouve rezo a toujou ap livre pakè, donk pwoblèm nan se yon sèl pèt, pa yon pàn total."
+    },
+    "18": {
+      "text": "Retransmisyon rapid → seq 5002921 voye ankò ~135 µs apre orijinal la — ~1,500× pi bonè pase chemen RTO a",
+      "detail": "Konpare de rekiperasyon yo dirèkteman: chemen RTO a te tann 204 ms (204,000 µs) pou l voye ankò; chemen retransmisyon rapid la te tann ~135 µs. Menm rezo, menm kalite pèt — sèl diferans lan se ke pèt sa a te gen temwen. Segman ki te dèyè l yo transfòme reseptè a an yon rapòtè aktif olye yon moun k ap tann an silans. Se poutèt sa TCP modèn fè si tèlman pi byen anba chaj pase TCP kòmansman ane 1980 yo: rekiperasyon vin gouvène pa ACK olye pa revèy."
+    },
+    "19": {
+      "text": "TCP ACK ← 5008761: yon sèl retransmisyon bouche twou a epi ACK la sote 5840 oktè yon sèl kou",
+      "detail": "Segman ki retransmèt la antre nan twou a, fil atant andezòd reseptè a fizyone, epi tout kat segman yo livre bay aplikasyon an yon sèl kou. ACK kimilatif la sote soti nan 5002921 dirèk rive nan 5008761. Rekiperasyon rapid fini: cwnd degonfle rive nan ssthresh (2 segman) epi li reprann kwasans evitman konjesyon apati la — redwi, men pa janm efondre, epi transfè a pa janm vin an silans. Tan rekiperasyon total: ~250 µs kont 204,000+ µs pou chemen RTO a."
+    },
+    "20": {
+      "text": "Senaryo fini — menm pèt la, de rekiperasyon: 204 ms kont 250 µs",
+      "detail": "Toude pèt yo te idantik: yon segman konplè, tail-drop pa menm fil atant switch konjesyone a. Rekiperasyon yo pa t ka pi diferan:\n\n• Pèt san anyen nan wout dèyè l → pa gen ACK diplike posib → tann RTO a nèt (204 ms) → cwnd tonbe nan 1 → demaraj dousman depi zewo.\n\n• Pèt anndan yon rafal → 3 ACK diplike nan ~130 µs → retransmisyon rapid → cwnd koupe an de (planche 2), transfè a kontinye sikile.\n\nLeson depanaj: nan yon kapti, retransmisyon RTO parèt apre yon long entèval silans, pandan retransmisyon rapid swiv yon tren ACK diplike ou ka wè. Wireshark make yo kòrèkteman. RTO souvan vle di pèt ou yo ap frape segman ki apa oswa ki nan bout yon rafal (oswa ACK yo ap pèdi) — modèl sa a devaste debi a. Epi tout dans sa a fèt pou chak RTT: plis chemen an long, plis chak rekiperasyon koute, se poutèt sa menm to pèt ki envizib sou yon LAN ka koupe debi a an de atravè yon kontinan."
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "Yon Sèl Pèt, De Rekiperasyon",
+      "description": "Gade menm pèt segman an rekipere de fason: yon delè retransmisyon 204 ms ak efondreman fenèt konjesyon an, epi apre sa yon retransmisyon rapid 250 µs ACK diplike deklanche",
+      "steps": {
+        "0": "Nou rantre nan yon transfè an sante k ap fèt: koneksyon ESTABLISHED, fenèt konjesyon nan 10 segman, ale-retou 120 mikwosegond. Yon nimewo pou w kenbe: delè retransmisyon an se 204 milisegond — Linux p ap kite l desann anba ~200 ms kèlkeswa vitès rezo a. Revèy sa a pral gen anpil enpòtans.",
+        "1": "Yon segman done 1460 oktè nòmal soti, ki pote oktè 5000001–5001460. Opsyon tanstanp lan make lè li pati; lè ACK la reflete l tounen, ekspeditè a jwenn yon nouvo echantiyon RTT. Kontablite fyabilite a mache sou chak grenn segman, kit gen pèt kit pa genyen.",
+        "2": "Pwochen segman an pa gen menm chans. Aplikasyon an rive fè yon poz apre sa a — pa gen plis done nan fil pou yon ti tan — donk oktè 5001461–5002920 vwayaje pou kont yo. Nan switch la, yon mikwo-rafal ki soti nan yon lòt pò fin plen fil atant sòti a: tail-drop. Flèch la kanpe nan switch la. Ni yon bò ni lòt pa konnen anyen ankò.",
+        "3": "Kounye a pyèj la: ACK diplike — detektè pèt rapid TCP a — bezwen segman ki vin apre pou pouse reseptè a repete tèt li. Pa gen okenn segman ki vin apre. Reseptè a ap tann an silans pou oktè 5001461; ekspeditè a ap tann yon ACK. Sèl bagay k ap deplase se revèy retransmisyon 204 ms lan.",
+        "4": "Revèy la finalman sonnen: 204 milisegond — apeprè 1,700 ale-retou — tan mouri. RTO a pridan espre paske yon delè fo ta retransmèt san rezon epi li ta pini fenèt konjesyon an pou anyen. Pasyans se pri sètitid la.",
+        "5": "Retransmisyon an soti: menm nimewo sekans 5001461 — repetisyon sa a se kijan ou repere retransmisyon nan nenpòt kapti. Epi penalite a tonbe: cwnd efondre soti nan 10 segman rive nan 1, ssthresh desann nan 2, epi RTO a double rive nan 408 ms si kopi sa a mouri tou. TCP trete yon delè kòm prèv gwo pwoblèm.",
+        "6": "ACK la rive 120 µs apre — rekiperasyon fini, ak yon pri 204 ms blokaj plis yon fenèt konjesyon ki rebati depi zewo. Sou LAN sa a rebati a pran yon milisegond; sou yon chemen Entènèt 80 ms menm pèt la ta koute plis pase yon demi segond debi degrade.",
+        "7": "Avanse 100 ms: cwnd remonte rive nan 10 (demaraj dousman jiska ssthresh, epi yon segman pou chak ale-retou), epi aplikasyon an bay TCP kat segman done yon sèl kou. Menm fil atant konjesyone a ap tann — men fwa sa a pèt la ap gen temwen.",
+        "8": "Premye segman rafal la — oktè 5002921–5004380 — tail-drop nan switch la, egzakteman tankou anvan. Diferans lan: segman 4, 5, ak 6 kèk mikwosegond dèyè l, epi yo pase.",
+        "9": "Segman 4 ateri nan reseptè a, ki t ap tann oktè 5002921 men ki jwenn 5004381. Li mete oktè yo nan tanpon fil atant andezòd li (livrezon nan lòd se kontra TCP ak aplikasyon an) epi touswit li repete ACK li pou 5002921 — kounye a ak yon blòk SACK ki di egzakteman ki oktè li kenbe. Yo repere twou a nan kèk mikwosegond.",
+        "10": "ACK Diplike #1: nimewo ACK la jele nan 5002921, epi blòk SACK la li 5004381–5005841. Soustrè: egzakteman yon sèl segman ki manke. Yon sèl diplike ta ka toujou se dezòd, donk ekspeditè a jis konte l. Segman 5 ak 6 pral pwodwi diplike #2 ak #3 nan 20 mikwosegond ki vin apre yo.",
+        "11": "ACK Diplike #3 — sèy RFC 5681 lan. Twa repetisyon vle di pèdi, pa andezòd. Ekspeditè a pran penalite ki pi dou nan rekiperasyon rapid: ssthresh = mwatye sa ki nan wout la (planche 2), cwnd degonfle vè li, men pa gen efondreman rive nan 1 epi pa gen demaraj dousman — ACK diplike yo li menm pwouve rezo a toujou ap livre pakè.",
+        "12": "Retransmisyon rapid: nimewo sekans 5002921 soti ankò, anviwon 135 mikwosegond apre orijinal la — kont 204,000 mikwosegond pou chemen RTO a. Menm rezo, menm kalite pèt, rekiperasyon ~1,500× pi vit, senpleman paske pèt la te rive anndan yon rafal olye nan bout youn.",
+        "13": "Oktè ki retransmèt yo antre nan twou a epi tout sa ki te nan tanpon dèyè l vin livrab yon sèl kou: ACK la sote soti nan 5002921 dirèk rive nan 5008761 — 5,840 oktè konfime paske yon sèl segman rive. cwnd chita nan ssthresh epi li reprann kwasans lineyè. Pàn total: ~250 µs, epi transfè a pa janm vin an silans.",
+        "14": "Tablo leson an: rekiperasyon RTO = yon long entèval silans nan kapti a, cwnd rive nan 1, demaraj dousman depi zewo. Retransmisyon rapid = yon tren ACK diplike ou ka wè, cwnd koupe an de, transfè a kontinye deplase. Lè w wè RTO souvan nan yon tras, mande kisa k ap touye segman ki apa oswa ACK yo; lè w wè tren dupACK, w ap gade TCP k ap travay jan yo te fè l la. Nan toude ka yo, pri pèt la miltipliye ak tan ale-retou a — LAN nan pa menm santi sa ki ta kraze yon lyen transkontinantal."
+      }
+    }
+  },
+  "glossary": {
+    "Retransmission Timeout": {
+      "term": "Delè Retransmisyon",
+      "definition": "Revèy ki veye chak segman TCP ki pa konfime. Yo kalkile l kòm SRTT + 4×RTTVAR ak yon planche (~200 ms sou Linux). Lè li fini, pi ansyen segman ki pa konfime a voye ankò, cwnd tonbe nan 1, epi revèy la double. Se dènye rekou rekiperasyon TCP."
+    },
+    "Duplicate ACK": {
+      "term": "ACK Diplike",
+      "definition": "Yon ACK ki repete nimewo ACK anvan an, voye lè done andezòd rive. Konfimasyon kimilatif pa ka avanse pi lwen pase yon twou, donk chak segman ki vin apre deklanche yon lòt diplike — sa transfòme reseptè a an yon rapòtè pèt."
+    },
+    "Fast Retransmit": {
+      "term": "Retransmisyon Rapid",
+      "definition": "Sou twazyèm ACK diplike konsekitif la, ekspeditè a retransmèt segman ki manke a touswit olye li tann RTO a. Twa se sèy la paske youn oswa de diplike ka soti nan yon senp dezòd rezo ki pa grav."
+    },
+    "Fast Recovery": {
+      "term": "Rekiperasyon Rapid",
+      "definition": "Repons konjesyon ki pi dou ki mache ak retransmisyon rapid: ssthresh = mwatye done ki nan wout la (planche 2 segman), cwnd degonfle rive nan ssthresh olye li tonbe nan 1, epi yo sote demaraj dousman — paske ACK diplike k ap rive yo pwouve rezo a toujou ap livre."
+    },
+    "Selective Acknowledgment": {
+      "term": "Konfimasyon Selektif",
+      "definition": "Opsyon TCP ki pote jiska 3–4 blòk plaj oktè ki resevwa men ki andezòd. Li transfòme «gen yon bagay ki manke» an «se egzakteman oktè X–Y ki manke», sa ki pèmèt ekspeditè a voye sèlman twou a ankò."
+    },
+    "Congestion Window": {
+      "term": "Fenèt Konjesyon",
+      "definition": "Limit bò ekspeditè a sou kantite done ki pa konfime ki ka nan wout. Li grandi sou ACK (demaraj dousman double l pou chak RTT; evitman konjesyon ajoute ~1 segman pou chak RTT), li retresi sou pèt (RTO → 1 segman; retransmisyon rapid → ssthresh)."
+    },
+    "Slow Start Threshold": {
+      "term": "Sèy Demaraj Dousman",
+      "definition": "Nivo cwnd ki separe demaraj dousman (kwasans eksponansyèl) ak evitman konjesyon (kwasans lineyè). Yo mete l nan mwatye gwosè vòl la sou chak evènman pèt, ak yon planche 2 segman — se memwa koneksyon an sou konbyen chemen an te ka pote."
+    },
+    "Karn's Algorithm": {
+      "term": "Algoritm Karn",
+      "definition": "Yo pa dwe pran echantiyon RTT sou segman ki retransmèt (ACK la anbigi — èske se orijinal la oswa retransmisyon an?). Tanstanp TCP retire anbigwite a, ki se youn nan rezon ki fè pil modèn yo negosye yo sou chak koneksyon."
+    }
+  }
+}

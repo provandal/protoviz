@@ -1,0 +1,2718 @@
+meta:
+  id: "tcp-retransmission-rto"
+  title: "TCP Error: Retransmission — RTO Timeout vs Fast Retransmit"
+  protocol: "TCP"
+  protocol_family: "TCP/IP"
+  version: "1.0.0"
+  description: >
+    Error scenario: a data segment is lost mid-transfer — twice — and TCP
+    recovers two very different ways. The first loss happens with nothing else
+    in flight, so the sender can only wait for the retransmission timeout
+    (RTO): ~200 ms of dead air on a network with a 120 µs round trip, followed
+    by a congestion-window collapse to 1 segment. The second loss happens
+    inside a burst, so the segments behind it generate duplicate ACKs, and the
+    third dupACK triggers fast retransmit about 1,500× sooner — with the
+    congestion window merely halved. This is the machinery that makes TCP
+    reliable, and the reason loss hurts throughput far more than latency does.
+
+  learning_objectives:
+    - "See what happens on the wire when a TCP data segment is silently dropped by a congested switch"
+    - "Understand the retransmission timeout (RTO): how it is computed (SRTT + 4×RTTVAR, floored at 200 ms on Linux) and why it is deliberately conservative"
+    - "Watch the congestion window collapse to 1 MSS after an RTO and rebuild through slow start"
+    - "Understand duplicate ACKs: why the receiver repeats the same ACK number when it holds out-of-order data"
+    - "See the three-dupACK threshold trigger fast retransmit long before the RTO would fire"
+    - "Read SACK blocks and see how they tell the sender exactly which bytes survived"
+    - "Contrast the two recoveries: RTO → cwnd = 1 + slow start; fast retransmit → cwnd halved + congestion avoidance"
+
+  difficulty: "beginner"
+
+  authors:
+    - name: "ProtoViz Community"
+      org: "proto-viz"
+      github: "proto-viz"
+
+  created: "2026-08-12"
+  updated: "2026-08-12"
+
+  tags:
+    - "TCP"
+    - "TCP/IP"
+    - "error"
+    - "troubleshooting"
+    - "retransmission"
+    - "RTO"
+    - "fast retransmit"
+    - "duplicate ACK"
+    - "SACK"
+    - "congestion control"
+    - "beginner"
+    - "education"
+
+  primary_specs:
+    - document: "RFC 6298"
+      section: "2"
+      title: "Computing TCP's Retransmission Timer"
+      url: "https://datatracker.ietf.org/doc/html/rfc6298#section-2"
+      alt_url: ""
+    - document: "RFC 5681"
+      section: "3.2"
+      title: "Fast Retransmit / Fast Recovery"
+      url: "https://datatracker.ietf.org/doc/html/rfc5681#section-3.2"
+      alt_url: ""
+    - document: "RFC 2018"
+      section: "3"
+      title: "SACK Option Format"
+      url: "https://datatracker.ietf.org/doc/html/rfc2018"
+      alt_url: ""
+
+  content_disclaimer: >
+    Protocol descriptions in this scenario are based on open-source implementations
+    (Linux kernel, Wireshark dissectors) and public RFCs. No proprietary specification
+    text has been reproduced. RFC references are provided as citations for further reading.
+
+  source_references:
+    - repo: "torvalds/linux"
+      path: "net/ipv4/tcp_timer.c"
+      description: "tcp_retransmit_timer — RTO expiry handling"
+    - repo: "torvalds/linux"
+      path: "net/ipv4/tcp_input.c"
+      description: "tcp_fastretrans_alert — dupACK counting and fast retransmit"
+    - repo: "torvalds/linux"
+      path: "net/ipv4/tcp_output.c"
+      description: "tcp_retransmit_skb — segment retransmission"
+
+# ─────────────────────────────────────────────────────────────────
+# TOPOLOGY
+# ─────────────────────────────────────────────────────────────────
+topology:
+  actors:
+    - id: "client"
+      type: "host"
+      label: "Client (sender)"
+      description: "TCP sender — uploading a 1 MB file; owns the retransmission timers and the congestion window"
+      hardware: "Generic 10GbE NIC"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "10.0.1.10"
+      mac: "00:11:22:33:44:01"
+      position: "left"
+
+    - id: "switch"
+      type: "switch"
+      label: "10GbE Switch"
+      description: "Layer-2 switch with a briefly congested egress queue — where both losses happen"
+      hardware: "Generic 10GbE switch, shallow buffers"
+      position: "center"
+
+    - id: "server"
+      type: "host"
+      label: "Server (receiver)"
+      description: "TCP receiver — generates ACKs, duplicate ACKs, and SACK blocks"
+      hardware: "Generic 10GbE NIC"
+      os: "Linux 6.x"
+      kernel_version: "6.8"
+      ip: "10.0.1.20"
+      mac: "00:11:22:33:44:02"
+      position: "right"
+
+  links:
+    - id: "link-c-sw"
+      from: "client"
+      to: "switch"
+      speed_gbps: 10
+      media: "copper_dac"
+      fec: "FC-FEC"
+      autoneg: true
+    - id: "link-sw-s"
+      from: "switch"
+      to: "server"
+      speed_gbps: 10
+      media: "copper_dac"
+      fec: "FC-FEC"
+      autoneg: true
+
+# ─────────────────────────────────────────────────────────────────
+# OSI LAYER DEFINITIONS (per actor)
+# ─────────────────────────────────────────────────────────────────
+osi_layers:
+  client:
+    - layer: 7
+      name: "Application"
+      components: ["file upload client", "libc socket API"]
+      state_schema:
+        app_state:
+          type: "string"
+          description: "Application-level state"
+          initial: "uploading"
+        bytes_queued:
+          type: "string"
+          description: "Data queued in the socket send buffer"
+          initial: "~1 MB"
+
+    - layer: 4
+      name: "TCP"
+      components: ["net/ipv4/tcp_output.c", "net/ipv4/tcp_timer.c", "net/ipv4/tcp_input.c"]
+      state_schema:
+        tcp_state:
+          type: "string"
+          description: "TCP state machine state"
+          initial: "ESTABLISHED"
+        snd_nxt:
+          type: "string"
+          description: "Next sequence number to send (SND.NXT)"
+          initial: "5000001"
+        snd_una:
+          type: "string"
+          description: "Oldest unacknowledged byte (SND.UNA)"
+          initial: "5000001"
+        cwnd:
+          type: "string"
+          description: "Congestion window (segments of 1460 B)"
+          initial: "10"
+        ssthresh:
+          type: "string"
+          description: "Slow start threshold (segments)"
+          initial: "—"
+        rto_ms:
+          type: "string"
+          description: "Current retransmission timeout"
+          initial: "204"
+        dup_acks_rcvd:
+          type: "integer"
+          description: "Consecutive duplicate ACKs for SND.UNA"
+          initial: 0
+
+    - layer: 3
+      name: "IP / Routing"
+      components: ["net/ipv4/ip_output.c"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "10.0.1.10"
+        dst_ip:
+          type: "string"
+          initial: "10.0.1.20"
+        ttl:
+          type: "integer"
+          initial: 64
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver", "IEEE 802.3"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+        mac_addr:
+          type: "string"
+          initial: "00:11:22:33:44:01"
+
+    - layer: 1
+      name: "Physical (10GbE)"
+      components: ["IEEE 802.3", "10GBASE-CR"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "up"
+        speed:
+          type: "string"
+          initial: "10 Gbps"
+
+  server:
+    - layer: 7
+      name: "Application"
+      components: ["file upload service"]
+      state_schema:
+        app_state:
+          type: "string"
+          description: "Application-level state"
+          initial: "receiving"
+        bytes_received:
+          type: "integer"
+          description: "In-order bytes delivered to the application"
+          initial: 0
+
+    - layer: 4
+      name: "TCP"
+      components: ["net/ipv4/tcp_input.c"]
+      state_schema:
+        tcp_state:
+          type: "string"
+          description: "TCP state machine state"
+          initial: "ESTABLISHED"
+        rcv_nxt:
+          type: "string"
+          description: "Next expected sequence number (RCV.NXT)"
+          initial: "5000001"
+        ooo_queue:
+          type: "string"
+          description: "Out-of-order bytes held, waiting for the hole to fill"
+          initial: "empty"
+        dup_acks_sent:
+          type: "integer"
+          description: "Duplicate ACKs sent for the current hole"
+          initial: 0
+
+    - layer: 3
+      name: "IP / Routing"
+      components: ["net/ipv4/ip_input.c"]
+      state_schema:
+        src_ip:
+          type: "string"
+          initial: "10.0.1.20"
+        dst_ip:
+          type: "string"
+          initial: "10.0.1.10"
+        ttl:
+          type: "integer"
+          initial: 64
+
+    - layer: 2
+      name: "Ethernet"
+      components: ["NIC driver", "IEEE 802.3"]
+      state_schema:
+        link_state:
+          type: "string"
+          initial: "up"
+        mac_addr:
+          type: "string"
+          initial: "00:11:22:33:44:02"
+
+    - layer: 1
+      name: "Physical (10GbE)"
+      components: ["IEEE 802.3", "10GBASE-CR"]
+      state_schema:
+        phy_state:
+          type: "string"
+          initial: "up"
+        speed:
+          type: "string"
+          initial: "10 Gbps"
+
+# ─────────────────────────────────────────────────────────────────
+# FRAMES
+# ─────────────────────────────────────────────────────────────────
+frames:
+  # ── Healthy baseline ─────────────────────────────────────────────
+  - id: "tcp_data_seg1"
+    name: "TCP Data (seg 1)"
+    description: "A healthy 1460-byte data segment — the baseline this scenario measures failure against"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    timestamp_ns: 100000000
+    total_bytes: 1526
+    color: "#0369a1"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 1512
+            description: "IP header (20) + TCP header with timestamps (32) + payload (1460)"
+          - name: "Identification"
+            abbrev: "ip.id"
+            bits: 16
+            value: "0xc101"
+            description: "Unique per datagram"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client (sender)"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server (receiver)"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49300
+            description: "Client's ephemeral port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 80
+            description: "Server's service port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 5000001
+            value_hex: "0x004c4b41"
+            description: "First byte of this segment; carries bytes 5000001–5001460"
+            spec_refs:
+              - document: "RFC 9293"
+                section: "3.4"
+                title: "Sequence Numbers"
+                url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.4"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 8000001
+            description: "Nothing new expected from the server — this direction is a one-way upload"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x10"
+            description: "ACK only — a mid-stream data segment"
+            fields:
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field valid (always set after the handshake)"
+              - name: "PSH"
+                abbrev: "tcp.flags.push"
+                bits: 1
+                value: 0
+                description: "More data follows immediately"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Client's receive window (unused direction)"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x1a2b"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 96
+            value: "Timestamps (TSval=200000, TSecr=310000)"
+            description: "Timestamps on every segment enable per-segment RTT measurement — the input to the RTO calculation"
+          - name: "Payload"
+            abbrev: "tcp.payload"
+            bits: 11680
+            value: "1460 bytes of file data"
+            description: "Bytes 5000001–5001460 of the upload"
+
+  - id: "tcp_data_ack1"
+    name: "TCP ACK 5001461"
+    description: "Receiver acknowledges segment 1 — the healthy round trip takes ~120 µs"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    timestamp_ns: 100120000
+    total_bytes: 66
+    color: "#0369a1"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 52
+            description: "IP header (20) + TCP header with timestamps (32), no payload"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server (receiver)"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client (sender)"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 80
+            description: "Server's service port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 49300
+            description: "Client's ephemeral port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 8000001
+            description: "Server sends no data of its own"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 5001461
+            value_hex: "0x004c5115"
+            description: "Cumulative ACK: every byte through 5001460 received; byte 5001461 expected next"
+            spec_refs:
+              - document: "RFC 9293"
+                section: "3.4"
+                title: "Sequence Numbers"
+                url: "https://datatracker.ietf.org/doc/html/rfc9293#section-3.4"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x10"
+            description: "ACK"
+            fields:
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field valid"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Receiver has ample buffer space"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x3c4d"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 96
+            value: "Timestamps (TSval=310060, TSecr=200000)"
+            description: "TSecr echoes the segment's TSval — this is how the sender measures RTT per segment"
+
+  # ── Loss #1: nothing in flight behind it → RTO ───────────────────
+  - id: "tcp_data_seg2"
+    name: "TCP Data (seg 2) — LOST"
+    description: "Bytes 5001461–5002920 — discarded by the switch's overflowing egress queue; the arrow stops at the switch because the segment never gets past it"
+    from: "client"
+    to: "switch"
+    via: []
+    timestamp_ns: 100200000
+    total_bytes: 1526
+    color: "#0369a1"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Addressed to the server — the client has no idea this frame is doomed"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 1512
+            description: "IP header (20) + TCP header (32) + payload (1460)"
+          - name: "Identification"
+            abbrev: "ip.id"
+            bits: 16
+            value: "0xc102"
+            description: "Unique per datagram"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client (sender)"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server (receiver) — never reached"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49300
+            description: "Client's ephemeral port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 80
+            description: "Server's service port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 5001461
+            value_hex: "0x004c5115"
+            description: "Bytes 5001461–5002920 — this sequence number will appear again in the retransmission"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 8000001
+            description: "Unchanged"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x10"
+            description: "ACK only"
+            fields:
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field valid"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Unchanged"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x2b3c"
+            description: "TCP checksum — valid; the loss has nothing to do with corruption"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 96
+            value: "Timestamps (TSval=200200, TSecr=310060)"
+            description: "Timestamps present as always"
+          - name: "Payload"
+            abbrev: "tcp.payload"
+            bits: 11680
+            value: "1460 bytes of file data"
+            description: "Bytes 5001461–5002920 — these bytes exist only in the client's retransmit buffer now"
+
+  - id: "tcp_rto_retx_seg2"
+    name: "TCP RTO Retransmission (seg 2)"
+    description: "The same 1460 bytes, resent 204 ms later when the retransmission timer finally expired"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    timestamp_ns: 304400000
+    total_bytes: 1526
+    color: "#d97706"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 1512
+            description: "Same size as the lost original"
+          - name: "Identification"
+            abbrev: "ip.id"
+            bits: 16
+            value: "0xc103"
+            description: "New IP ID — a new datagram carrying the same TCP bytes"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client (sender)"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server (receiver)"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49300
+            description: "Same connection"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 80
+            description: "Same connection"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 5001461
+            value_hex: "0x004c5115"
+            description: "Identical to the lost segment — a retransmission is recognizable in a capture precisely because the sequence number repeats"
+            spec_refs:
+              - document: "RFC 6298"
+                section: "5"
+                title: "Managing the RTO Timer"
+                url: "https://datatracker.ietf.org/doc/html/rfc6298#section-5"
+            kernel_ref:
+              file: "net/ipv4/tcp_output.c"
+              function: "tcp_retransmit_skb"
+              notes: "Rebuilds and resends the segment at the head of the retransmit queue"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 8000001
+            description: "Unchanged"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x10"
+            description: "ACK only — retransmissions carry no special flag; only the repeated sequence number gives them away"
+            fields:
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field valid"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Unchanged"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x2f88"
+            description: "Differs from the original only via the advanced timestamp option"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 96
+            value: "Timestamps (TSval=204400, TSecr=310060)"
+            description: "TSval has advanced 204 ms — Karn's algorithm excludes retransmitted segments from RTT sampling unless timestamps disambiguate them"
+          - name: "Payload"
+            abbrev: "tcp.payload"
+            bits: 11680
+            value: "1460 bytes of file data (identical)"
+            description: "Bytes 5001461–5002920, from the retransmit buffer"
+
+  - id: "tcp_rto_ack"
+    name: "TCP ACK 5002921"
+    description: "The retransmission got through — recovery complete, 204 ms after the original send"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    timestamp_ns: 304520000
+    total_bytes: 66
+    color: "#d97706"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 52
+            description: "Header-only ACK"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server (receiver)"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client (sender)"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 80
+            description: "Server's service port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 49300
+            description: "Client's ephemeral port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 8000001
+            description: "No data from the server"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 5002921
+            value_hex: "0x004c56c9"
+            description: "Bytes through 5002920 received — the hole is filled"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x10"
+            description: "ACK"
+            fields:
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field valid"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Unchanged"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x4d5e"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 96
+            value: "Timestamps (TSval=310270, TSecr=204400)"
+            description: "TSecr echoes the retransmission's TSval, cleanly restarting RTT measurement"
+
+  # ── Loss #2: burst in flight → fast retransmit ───────────────────
+  - id: "tcp_data_seg3"
+    name: "TCP Data (seg 3) — LOST"
+    description: "Bytes 5002921–5004380 — dropped at the switch again, but this time three more segments are right behind it"
+    from: "client"
+    to: "switch"
+    via: []
+    timestamp_ns: 400000000
+    total_bytes: 1526
+    color: "#0369a1"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Addressed to the server — discarded at the switch"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 1512
+            description: "Full-size data segment"
+          - name: "Identification"
+            abbrev: "ip.id"
+            bits: 16
+            value: "0xc110"
+            description: "Unique per datagram"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client (sender)"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server — never reached"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49300
+            description: "Client's ephemeral port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 80
+            description: "Server's service port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 5002921
+            value_hex: "0x004c56c9"
+            description: "Bytes 5002921–5004380 — the hole the next three segments will expose"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 8000001
+            description: "Unchanged"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x10"
+            description: "ACK only"
+            fields:
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field valid"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Unchanged"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x5f60"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 96
+            value: "Timestamps (TSval=200500, TSecr=310270)"
+            description: "Timestamps present"
+          - name: "Payload"
+            abbrev: "tcp.payload"
+            bits: 11680
+            value: "1460 bytes of file data"
+            description: "Bytes 5002921–5004380"
+
+  - id: "tcp_data_seg4"
+    name: "TCP Data (seg 4)"
+    description: "Bytes 5004381–5005840 — arrives fine, but out of order from the receiver's point of view"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    timestamp_ns: 400050000
+    total_bytes: 1526
+    color: "#0369a1"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 1512
+            description: "Full-size data segment"
+          - name: "Identification"
+            abbrev: "ip.id"
+            bits: 16
+            value: "0xc111"
+            description: "Unique per datagram"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client (sender)"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server (receiver)"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49300
+            description: "Client's ephemeral port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 80
+            description: "Server's service port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 5004381
+            value_hex: "0x004c5c5d"
+            description: "Bytes 5004381–5005840 — the receiver expected 5002921; this lands in the out-of-order queue"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 8000001
+            description: "Unchanged"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x10"
+            description: "ACK only"
+            fields:
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field valid"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Unchanged"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x6071"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 96
+            value: "Timestamps (TSval=200550, TSecr=310270)"
+            description: "Timestamps present"
+          - name: "Payload"
+            abbrev: "tcp.payload"
+            bits: 11680
+            value: "1460 bytes of file data"
+            description: "Bytes 5004381–5005840"
+
+  - id: "tcp_data_seg5"
+    name: "TCP Data (seg 5)"
+    description: "Bytes 5005841–5007300 — also delivered; the out-of-order queue grows"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    timestamp_ns: 400060000
+    total_bytes: 1526
+    color: "#0369a1"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 1512
+            description: "Full-size data segment"
+          - name: "Identification"
+            abbrev: "ip.id"
+            bits: 16
+            value: "0xc112"
+            description: "Unique per datagram"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client (sender)"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server (receiver)"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49300
+            description: "Client's ephemeral port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 80
+            description: "Server's service port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 5005841
+            value_hex: "0x004c6211"
+            description: "Bytes 5005841–5007300 — still ahead of the hole at 5002921"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 8000001
+            description: "Unchanged"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x10"
+            description: "ACK only"
+            fields:
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field valid"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Unchanged"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x7182"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 96
+            value: "Timestamps (TSval=200560, TSecr=310270)"
+            description: "Timestamps present"
+          - name: "Payload"
+            abbrev: "tcp.payload"
+            bits: 11680
+            value: "1460 bytes of file data"
+            description: "Bytes 5005841–5007300"
+
+  - id: "tcp_data_seg6"
+    name: "TCP Data (seg 6, PSH)"
+    description: "Bytes 5007301–5008760 — last segment of the burst, PSH set"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    timestamp_ns: 400070000
+    total_bytes: 1526
+    color: "#0369a1"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 1512
+            description: "Full-size data segment"
+          - name: "Identification"
+            abbrev: "ip.id"
+            bits: 16
+            value: "0xc113"
+            description: "Unique per datagram"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client (sender)"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server (receiver)"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49300
+            description: "Client's ephemeral port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 80
+            description: "Server's service port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 5007301
+            value_hex: "0x004c67c5"
+            description: "Bytes 5007301–5008760 — third segment to sail past the hole"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 8000001
+            description: "Unchanged"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x18"
+            description: "PSH+ACK — end of the application's burst; deliver promptly"
+            fields:
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field valid"
+              - name: "PSH"
+                abbrev: "tcp.flags.push"
+                bits: 1
+                value: 1
+                description: "Push — hand buffered bytes to the application without waiting for more"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Unchanged"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x8293"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 96
+            value: "Timestamps (TSval=200570, TSecr=310270)"
+            description: "Timestamps present"
+          - name: "Payload"
+            abbrev: "tcp.payload"
+            bits: 11680
+            value: "1460 bytes of file data"
+            description: "Bytes 5007301–5008760"
+
+  - id: "tcp_dupack_1"
+    name: "Duplicate ACK #1"
+    description: "Segment 4 arrived out of order — the receiver re-sends ACK 5002921 with a SACK block describing what it holds"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    timestamp_ns: 400110000
+    total_bytes: 78
+    color: "#c2410c"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 64
+            description: "IP header (20) + TCP header with timestamps and one SACK block (44)"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server (receiver)"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client (sender)"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 44
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 80
+            description: "Server's service port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 49300
+            description: "Client's ephemeral port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 8000001
+            description: "No data from the server"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 5002921
+            value_hex: "0x004c56c9"
+            description: "Same ACK number as before — cumulative ACK cannot advance past the hole at 5002921, no matter how much later data arrives"
+            spec_refs:
+              - document: "RFC 5681"
+                section: "3.2"
+                title: "Fast Retransmit"
+                url: "https://datatracker.ietf.org/doc/html/rfc5681#section-3.2"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x10"
+            description: "ACK"
+            fields:
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field valid"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Unchanged"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0x93a4"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 192
+            value: "Timestamps + SACK"
+            description: "Timestamps plus one SACK block (24 bytes of options total)"
+            fields:
+              - name: "SACK Block 1"
+                abbrev: "tcp.options.sack"
+                bits: 64
+                value: "5004381–5005841"
+                description: "Left edge 5004381, right edge 5005841: 'I hold bytes 5004381 through 5005840.' The gap between the ACK number and the left edge is exactly the missing segment."
+                spec_refs:
+                  - document: "RFC 2018"
+                    section: "3"
+                    title: "SACK Option Format"
+                    url: "https://datatracker.ietf.org/doc/html/rfc2018"
+
+  - id: "tcp_dupack_2"
+    name: "Duplicate ACK #2"
+    description: "Segment 5 arrived — same ACK number again, SACK block wider"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    timestamp_ns: 400120000
+    total_bytes: 78
+    color: "#c2410c"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 64
+            description: "Header-only ACK with SACK"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server (receiver)"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client (sender)"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 44
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 80
+            description: "Server's service port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 49300
+            description: "Client's ephemeral port"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 5002921
+            description: "Still 5002921 — second duplicate"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x10"
+            description: "ACK"
+            fields:
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field valid"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Unchanged"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0xa4b5"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 192
+            value: "Timestamps + SACK"
+            description: "One SACK block, now wider"
+            fields:
+              - name: "SACK Block 1"
+                abbrev: "tcp.options.sack"
+                bits: 64
+                value: "5004381–5007301"
+                description: "The out-of-order island has grown to cover segments 4 and 5; the hole is unchanged"
+
+  - id: "tcp_dupack_3"
+    name: "Duplicate ACK #3"
+    description: "Segment 6 arrived — third duplicate ACK: this is the fast-retransmit trigger"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    timestamp_ns: 400130000
+    total_bytes: 78
+    color: "#c2410c"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 64
+            description: "Header-only ACK with SACK"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server (receiver)"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client (sender)"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 44
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 80
+            description: "Server's service port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 49300
+            description: "Client's ephemeral port"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 5002921
+            value_hex: "0x004c56c9"
+            description: "Third consecutive duplicate — RFC 5681's threshold. The sender now knows segment 5002921 is almost certainly gone, not merely delayed."
+            spec_refs:
+              - document: "RFC 5681"
+                section: "3.2"
+                title: "Fast Retransmit"
+                url: "https://datatracker.ietf.org/doc/html/rfc5681#section-3.2"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x10"
+            description: "ACK"
+            fields:
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field valid"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Unchanged"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0xb5c6"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 192
+            value: "Timestamps + SACK"
+            description: "SACK block now covers the whole surviving burst"
+            fields:
+              - name: "SACK Block 1"
+                abbrev: "tcp.options.sack"
+                bits: 64
+                value: "5004381–5008761"
+                description: "Everything from 5004381 through 5008760 is held — only 5002921–5004380 is missing. The sender knows exactly what to resend."
+
+  - id: "tcp_fast_retx_seg3"
+    name: "TCP Fast Retransmission (seg 3)"
+    description: "Segment 5002921 resent ~135 µs after the original — no timer involved, purely ACK-driven"
+    from: "client"
+    to: "server"
+    via: ["switch"]
+    timestamp_ns: 400135000
+    total_bytes: 1526
+    color: "#c2410c"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 1512
+            description: "Full-size data segment"
+          - name: "Identification"
+            abbrev: "ip.id"
+            bits: 16
+            value: "0xc114"
+            description: "New IP ID"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client (sender)"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server (receiver)"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 49300
+            description: "Client's ephemeral port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 80
+            description: "Server's service port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 5002921
+            value_hex: "0x004c56c9"
+            description: "The missing bytes, resent because three duplicate ACKs said so — compare with the RTO retransmission earlier, which needed 204 ms of silence"
+            spec_refs:
+              - document: "RFC 5681"
+                section: "3.2"
+                title: "Fast Retransmit"
+                url: "https://datatracker.ietf.org/doc/html/rfc5681#section-3.2"
+            kernel_ref:
+              file: "net/ipv4/tcp_input.c"
+              function: "tcp_fastretrans_alert"
+              notes: "Enters fast retransmit when the dupACK/SACK evidence crosses the reordering threshold"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 8000001
+            description: "Unchanged"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x10"
+            description: "ACK only — again, nothing marks it as a retransmission except the repeated sequence number"
+            fields:
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field valid"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Unchanged"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0xc6d7"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 96
+            value: "Timestamps (TSval=200635, TSecr=310300)"
+            description: "Timestamps present"
+          - name: "Payload"
+            abbrev: "tcp.payload"
+            bits: 11680
+            value: "1460 bytes of file data (identical to lost seg 3)"
+            description: "Bytes 5002921–5004380, from the retransmit buffer"
+
+  - id: "tcp_fast_retx_ack"
+    name: "TCP ACK 5008761"
+    description: "One retransmission plugs the hole and the ACK jumps over the entire SACK'd island — recovery in ~250 µs total"
+    from: "server"
+    to: "client"
+    via: ["switch"]
+    timestamp_ns: 400255000
+    total_bytes: 66
+    color: "#c2410c"
+    headers:
+      - name: "Ethernet II"
+        abbrev: "eth"
+        layer: 2
+        total_bytes: 14
+        fields:
+          - name: "Destination MAC"
+            abbrev: "eth.dst"
+            bits: 48
+            value: "00:11:22:33:44:01"
+            description: "Client's MAC"
+          - name: "Source MAC"
+            abbrev: "eth.src"
+            bits: 48
+            value: "00:11:22:33:44:02"
+            description: "Server's MAC"
+          - name: "EtherType"
+            abbrev: "eth.type"
+            bits: 16
+            value: "0x0800"
+            description: "IPv4"
+      - name: "IPv4"
+        abbrev: "ip"
+        layer: 3
+        total_bytes: 20
+        fields:
+          - name: "Total Length"
+            abbrev: "ip.len"
+            bits: 16
+            value: 52
+            description: "Header-only ACK — no SACK needed anymore"
+          - name: "TTL"
+            abbrev: "ip.ttl"
+            bits: 8
+            value: 64
+            description: "Time To Live"
+          - name: "Protocol"
+            abbrev: "ip.proto"
+            bits: 8
+            value: 6
+            description: "TCP"
+          - name: "Source IP"
+            abbrev: "ip.src"
+            bits: 32
+            value: "10.0.1.20"
+            description: "Server (receiver)"
+          - name: "Destination IP"
+            abbrev: "ip.dst"
+            bits: 32
+            value: "10.0.1.10"
+            description: "Client (sender)"
+      - name: "TCP"
+        abbrev: "tcp"
+        layer: 4
+        total_bytes: 32
+        fields:
+          - name: "Source Port"
+            abbrev: "tcp.srcport"
+            bits: 16
+            value: 80
+            description: "Server's service port"
+          - name: "Destination Port"
+            abbrev: "tcp.dstport"
+            bits: 16
+            value: 49300
+            description: "Client's ephemeral port"
+          - name: "Sequence Number"
+            abbrev: "tcp.seq"
+            bits: 32
+            value: 8000001
+            description: "No data from the server"
+          - name: "Acknowledgment Number"
+            abbrev: "tcp.ack"
+            bits: 32
+            value: 5008761
+            value_hex: "0x004c6d79"
+            description: "The cumulative ACK leaps from 5002921 to 5008761 in one step — the retransmitted segment joined the three buffered ones and all four were delivered to the application at once"
+          - name: "Flags"
+            abbrev: "tcp.flags"
+            bits: 8
+            value: "0x10"
+            description: "ACK"
+            fields:
+              - name: "ACK"
+                abbrev: "tcp.flags.ack"
+                bits: 1
+                value: 1
+                description: "Acknowledgment field valid"
+          - name: "Window Size"
+            abbrev: "tcp.window_size"
+            bits: 16
+            value: 65535
+            description: "Buffer drained to the application"
+          - name: "Checksum"
+            abbrev: "tcp.checksum"
+            bits: 16
+            value: "0xd7e8"
+            description: "TCP checksum"
+          - name: "Options"
+            abbrev: "tcp.options"
+            bits: 96
+            value: "Timestamps (TSval=310390, TSecr=200635)"
+            description: "No SACK block — there is nothing out of order anymore"
+
+# ─────────────────────────────────────────────────────────────────
+# TIMELINE
+# ─────────────────────────────────────────────────────────────────
+timeline:
+  # ── Phase: healthy data flow ─────────────────────────────────────
+  - id: "evt_tcp_data_setup"
+    type: "state_change"
+    t_ns: 0
+    annotation:
+      text: "Mid-transfer: the TCP connection is ESTABLISHED and the client is sending a 1 MB upload"
+      detail: >
+        We join a connection that is already up (see the foundation scenario
+        for the handshake) and busy: the client is uploading a 1 MB file in
+        1460-byte segments. Round-trip time on this LAN is ~120 µs, the
+        congestion window is 10 segments, and the retransmission timeout is
+        sitting at its practical floor — Linux clamps the RTO to a minimum of
+        ~200 ms no matter how fast the network is. Keep that asymmetry in
+        mind: the timer that protects this transfer is ~1,700× slower than
+        the network it protects.
+      spec_refs:
+        - document: "RFC 6298"
+          section: "2"
+          title: "Computing TCP's Retransmission Timer"
+          url: "https://datatracker.ietf.org/doc/html/rfc6298#section-2"
+
+  - id: "evt_tcp_data_seg1"
+    type: "frame_tx"
+    t_ns: 100000000
+    frame_id: "tcp_data_seg1"
+    annotation:
+      text: "TCP data segment → bytes 5000001–5001460: the healthy baseline"
+      detail: >
+        A full-MSS segment leaves the client. Nothing special — this is what
+        millions of segments before it looked like. The timestamp option
+        (TSval) stamps its departure; the echo in the ACK will give the sender
+        a fresh RTT sample, which feeds the smoothed RTT and RTO calculation.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              snd_nxt: "5001461"
+              snd_una: "5000001"
+
+  - id: "evt_tcp_data_ack1"
+    type: "frame_tx"
+    t_ns: 100120000
+    frame_id: "tcp_data_ack1"
+    annotation:
+      text: "TCP ACK ← 5001461 after 120 µs — this is what health looks like"
+      detail: >
+        The receiver delivers the bytes to the application and acknowledges.
+        SND.UNA advances; the retransmit buffer releases the segment; the RTT
+        sample (120 µs) keeps SRTT tight. Every mechanism in this scenario is
+        already armed and running during healthy transfer — timers, buffers,
+        counters — you only notice them when something breaks.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              snd_una: "5001461"
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              rcv_nxt: "5001461"
+          - layer: 7
+            name: "Application"
+            state_fields:
+              bytes_received: 1460
+
+  # ── Phase: loss with nothing behind it → RTO ─────────────────────
+  - id: "evt_tcp_data_seg2"
+    type: "frame_tx"
+    t_ns: 100200000
+    frame_id: "tcp_data_seg2"
+    annotation:
+      text: "TCP data segment seq 5001461 — this one dies in the switch's overflowing egress queue"
+      detail: >
+        The application pauses after queueing these 1460 bytes (waiting on its
+        own disk I/O), so this segment travels alone — nothing follows it.
+        At the switch, a traffic burst from another port has filled the egress
+        queue: tail-drop. The segment is discarded silently. Ethernet has no
+        retransmission and no notification — loss recovery is entirely TCP's
+        job, end to end.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              snd_nxt: "5002921"
+
+  - id: "evt_tcp_data_seg2_dropped"
+    type: "error"
+    t_ns: 100210000
+    annotation:
+      text: "Segment dropped — tail-drop in the congested egress queue"
+      detail: >
+        The switch's shallow buffer overflowed for a few microseconds — long
+        enough to kill this segment. Neither endpoint knows yet. The client's
+        retransmission timer (armed at 204 ms when the segment was sent) is
+        now the only mechanism that can detect this loss, because with no
+        segments in flight behind the lost one, the receiver has no way to
+        notice anything is missing: from its perspective, the sender simply
+        went quiet.
+
+  - id: "evt_tcp_rto_wait"
+    type: "state_change"
+    t_ns: 150000000
+    annotation:
+      text: "Dead air — no duplicate ACKs are possible, so only the RTO timer can save this transfer"
+      detail: >
+        This is the worst case for TCP loss recovery: the lost segment was the
+        last one in flight. Duplicate ACKs — the fast detection mechanism —
+        require later segments to arrive and jog the receiver into repeating
+        its ACK. With nothing behind the loss, there is nothing to trigger
+        them. The connection sits idle while both sides wait: the receiver for
+        byte 5001461, the sender for an ACK that will never come. Only the
+        conservative 204 ms timer ticks toward recovery.
+
+  - id: "evt_tcp_rto_expired"
+    type: "error"
+    t_ns: 304400000
+    annotation:
+      text: "RTO expires after 204 ms — an eternity on a 120 µs network"
+      detail: >
+        The retransmission timer fires: 204 ms of silence for a network that
+        answers in 120 µs — about 1,700 round trips of dead time. Why so
+        conservative? The RTO is computed as SRTT + 4×RTTVAR (RFC 6298) with a
+        floor (200 ms on Linux, tunable per route with rto_min). A spurious
+        timeout would retransmit needlessly and collapse the congestion window
+        for nothing, so the timer errs far on the side of patience. TCP treats
+        an RTO as evidence of serious trouble — and reacts drastically.
+      spec_refs:
+        - document: "RFC 6298"
+          section: "5"
+          title: "Managing the RTO Timer"
+          url: "https://datatracker.ietf.org/doc/html/rfc6298#section-5"
+
+  - id: "evt_tcp_rto_retx"
+    type: "frame_tx"
+    t_ns: 304400000
+    frame_id: "tcp_rto_retx_seg2"
+    annotation:
+      text: "RTO retransmission → seq 5001461 again; cwnd collapses 10 → 1, ssthresh set to 2"
+      detail: >
+        The kernel resends the oldest unacknowledged segment and takes the
+        RTO penalty prescribed by RFC 5681: ssthresh drops to half the data
+        in flight (with a floor of 2 segments — here the flight was a single
+        segment, so the floor applies), and cwnd collapses all the way to
+        1 segment. The transfer restarts from slow start as if the connection
+        were newborn. The RTO timer itself doubles (204 → 408 ms) in case
+        this retransmission also vanishes — the same exponential backoff the
+        SYN-timeout scenario shows.
+      spec_refs:
+        - document: "RFC 5681"
+          section: "3.1"
+          title: "Slow Start and Congestion Avoidance"
+          url: "https://datatracker.ietf.org/doc/html/rfc5681#section-3.1"
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              cwnd: "1"
+              ssthresh: "2"
+              rto_ms: "408"
+
+  - id: "evt_tcp_rto_ack"
+    type: "frame_tx"
+    t_ns: 304520000
+    frame_id: "tcp_rto_ack"
+    annotation:
+      text: "TCP ACK ← 5002921: recovered — but the pipeline must rebuild from cwnd = 1"
+      detail: >
+        The retransmission arrives, the receiver delivers the bytes, and the
+        ACK confirms recovery. Total damage: 204 ms of stalled transfer plus a
+        congestion window at 1 segment. From here cwnd grows by slow start to
+        ssthresh (1 → 2), then congestion avoidance adds roughly one segment
+        per RTT. On this 120 µs LAN that rebuild takes only a millisecond or
+        two; on an 80 ms Internet path the same rebuild would take over half a
+        second. Loss + RTO is how throughput dies on long-distance links.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              snd_una: "5002921"
+              rto_ms: "204"
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              rcv_nxt: "5002921"
+          - layer: 7
+            name: "Application"
+            state_fields:
+              bytes_received: 2920
+
+  # ── Phase: loss inside a burst → fast retransmit ─────────────────
+  - id: "evt_tcp_data_burst"
+    type: "state_change"
+    t_ns: 399000000
+    annotation:
+      text: "~100 ms later: cwnd has climbed back to 10 and the application queues a 4-segment burst"
+      detail: >
+        The application's disk stall is over and data is flowing again. In the
+        ~100 ms since the RTO (hundreds of RTTs on this LAN), the congestion
+        window rebuilt: slow start doubled it to ssthresh (2), then congestion
+        avoidance added ~1 segment per RTT back to 10. Now the application
+        hands the socket 5840 bytes at once — four full segments that will be
+        sent back-to-back. This burst is about to meet the same congested
+        queue, with a very different outcome.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              cwnd: "10"
+              ssthresh: "2"
+
+  - id: "evt_tcp_data_seg3"
+    type: "frame_tx"
+    t_ns: 400000000
+    frame_id: "tcp_data_seg3"
+    annotation:
+      text: "TCP data seq 5002921 — lost again, but this time three segments follow right behind"
+      detail: >
+        First segment of the burst — and the unlucky one: the switch queue
+        blips again and it is tail-dropped. The crucial difference from the
+        first loss: segments 4, 5, and 6 are microseconds behind it, and they
+        will survive. Watch what the receiver does with them.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              snd_nxt: "5004381"
+
+  - id: "evt_tcp_data_seg3_dropped"
+    type: "error"
+    t_ns: 400010000
+    annotation:
+      text: "Segment dropped — same congested queue; the rest of the burst squeaks through"
+      detail: >
+        One more tail-drop, then the queue drains just enough. Random loss
+        inside a burst is the common case on real networks — and it is
+        exactly the case TCP's fast retransmit was designed for.
+
+  - id: "evt_tcp_data_seg4"
+    type: "frame_tx"
+    t_ns: 400050000
+    frame_id: "tcp_data_seg4"
+    annotation:
+      text: "TCP data seq 5004381 arrives out of order — the receiver spots the hole instantly"
+      detail: >
+        The receiver expected byte 5002921 but got 5004381 — a 1460-byte hole.
+        It buffers these bytes in the out-of-order queue (they will not be
+        delivered to the application yet) and immediately re-sends its ACK for
+        5002921, now with a SACK block advertising exactly what it holds. That
+        duplicate ACK is loss signal number one.
+    state_after:
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              ooo_queue: "5004381–5005840"
+
+  - id: "evt_tcp_data_seg5"
+    type: "frame_tx"
+    t_ns: 400060000
+    frame_id: "tcp_data_seg5"
+    annotation:
+      text: "TCP data seq 5005841 — the out-of-order island grows"
+      detail: >
+        Segment 5 joins the buffer next to segment 4. The hole at 5002921 is
+        unchanged, so the receiver will fire another duplicate ACK with a
+        wider SACK block.
+    state_after:
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              ooo_queue: "5004381–5007300"
+
+  - id: "evt_tcp_data_seg6"
+    type: "frame_tx"
+    t_ns: 400070000
+    frame_id: "tcp_data_seg6"
+    annotation:
+      text: "TCP data seq 5007301 (PSH) — end of the burst; three segments now wait behind the hole"
+      detail: >
+        The last segment of the burst lands. The receiver now holds 4380 bytes
+        it cannot deliver to the application — in-order delivery is TCP's
+        contract, and byte 5002921 is still missing. Everything now depends on
+        the sender learning about the hole quickly.
+    state_after:
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              ooo_queue: "5004381–5008760"
+
+  - id: "evt_tcp_dupack_1"
+    type: "frame_tx"
+    t_ns: 400110000
+    frame_id: "tcp_dupack_1"
+    annotation:
+      text: "Duplicate ACK #1 ← ack frozen at 5002921; SACK says 'I hold 5004381–5005840'"
+      detail: >
+        Cumulative acknowledgment cannot advance past a hole — so the ACK
+        number repeats. That repetition is information: it tells the sender
+        "later data arrived, but not the byte I asked for." The SACK option
+        sharpens it into a map: the left edge (5004381) minus the ACK number
+        (5002921) is exactly one missing segment. One duplicate could still be
+        network reordering, so the sender only counts it and waits.
+      spec_refs:
+        - document: "RFC 2018"
+          section: "3"
+          title: "SACK Option Format"
+          url: "https://datatracker.ietf.org/doc/html/rfc2018"
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              dup_acks_rcvd: 1
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              dup_acks_sent: 1
+
+  - id: "evt_tcp_dupack_2"
+    type: "frame_tx"
+    t_ns: 400120000
+    frame_id: "tcp_dupack_2"
+    annotation:
+      text: "Duplicate ACK #2 ← the SACK block widens to 5004381–5007300"
+      detail: >
+        Second repetition. Reordering is now less likely — real reordering
+        usually resolves within a packet or two. The sender's dupACK counter
+        sits at 2, one short of the threshold.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              dup_acks_rcvd: 2
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              dup_acks_sent: 2
+
+  - id: "evt_tcp_dupack_3"
+    type: "frame_tx"
+    t_ns: 400130000
+    frame_id: "tcp_dupack_3"
+    annotation:
+      text: "Duplicate ACK #3 ← threshold reached: fast retransmit fires, no timer needed"
+      detail: >
+        Three duplicate ACKs is RFC 5681's line between "probably reordered"
+        and "almost certainly lost." The sender stops waiting: it will resend
+        the missing segment immediately, 204 ms of RTO patience be damned.
+        It also takes the milder congestion penalty of fast recovery —
+        ssthresh = half the data in flight (floor 2 segments; four segments
+        were in flight, so 2), and cwnd deflates toward ssthresh instead of
+        collapsing to 1. The intuition: duplicate ACKs prove the network is
+        still delivering packets, so the trouble is a single loss, not a
+        blackout.
+      spec_refs:
+        - document: "RFC 5681"
+          section: "3.2"
+          title: "Fast Retransmit / Fast Recovery"
+          url: "https://datatracker.ietf.org/doc/html/rfc5681#section-3.2"
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              dup_acks_rcvd: 3
+              ssthresh: "2"
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              dup_acks_sent: 3
+
+  - id: "evt_tcp_fast_retx"
+    type: "frame_tx"
+    t_ns: 400135000
+    frame_id: "tcp_fast_retx_seg3"
+    annotation:
+      text: "Fast retransmit → seq 5002921 resent ~135 µs after the original — ~1,500× sooner than the RTO path"
+      detail: >
+        Compare the two recoveries directly: the RTO path waited 204 ms
+        (204,000 µs) to resend; the fast-retransmit path waited ~135 µs.
+        Same network, same kind of loss — the only difference is that this
+        loss had witnesses. The segments behind it turned the receiver into
+        an active reporter instead of a silent waiter. This is why modern
+        TCP performs so much better under load than early-1980s TCP: recovery
+        became ACK-driven instead of timer-driven.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              cwnd: "5"
+
+  - id: "evt_tcp_fast_retx_ack"
+    type: "frame_tx"
+    t_ns: 400255000
+    frame_id: "tcp_fast_retx_ack"
+    annotation:
+      text: "TCP ACK ← 5008761: one retransmission fills the hole and the ACK jumps 5840 bytes at once"
+      detail: >
+        The retransmitted segment slots into the hole, the receiver's
+        out-of-order queue merges, and all four segments are delivered to the
+        application in one go. The cumulative ACK leaps from 5002921 straight
+        to 5008761. Fast recovery ends: cwnd deflates to ssthresh (2 segments)
+        and resumes congestion-avoidance growth from there — reduced, but
+        never collapsed, and the transfer never went silent. Total recovery
+        time: ~250 µs versus 204,000+ µs for the RTO path.
+    state_after:
+      - actor_id: "client"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              snd_una: "5008761"
+              cwnd: "2"
+              dup_acks_rcvd: 0
+      - actor_id: "server"
+        layers:
+          - layer: 4
+            name: "TCP"
+            state_fields:
+              rcv_nxt: "5008761"
+              ooo_queue: "empty"
+              dup_acks_sent: 0
+          - layer: 7
+            name: "Application"
+            state_fields:
+              bytes_received: 8760
+
+  - id: "evt_summary"
+    type: "annotation"
+    t_ns: 401000000
+    annotation:
+      text: "Scenario complete — the same loss, two recoveries: 204 ms vs 250 µs"
+      detail: >
+        Both losses were identical: one full segment, tail-dropped by the same
+        congested switch queue. The recoveries could hardly be more different:
+
+        • Loss with nothing in flight behind it → no duplicate ACKs possible →
+          wait out the full RTO (204 ms) → cwnd collapses to 1 → slow start
+          from scratch.
+
+        • Loss inside a burst → 3 duplicate ACKs in ~130 µs → fast retransmit
+          → cwnd halved (floor 2), transfer keeps flowing.
+
+        Troubleshooting takeaways: in a capture, RTO retransmissions appear
+        after a long silent gap, while fast retransmissions follow a visible
+        train of duplicate ACKs. Wireshark labels them accordingly. Frequent
+        RTOs mean your losses are hitting tail-of-burst or lone segments
+        (or ACKs are being lost) — that pattern devastates throughput.
+        And this whole dance is per-RTT: the longer the path, the more each
+        recovery costs, which is why the same loss rate that is invisible on
+        a LAN can halve throughput across a continent.
+
+# ─────────────────────────────────────────────────────────────────
+# GLOSSARY
+# ─────────────────────────────────────────────────────────────────
+glossary:
+  - term: "Retransmission Timeout"
+    abbrev: "RTO"
+    definition: "The timer that guards every unacknowledged TCP segment. Computed as SRTT + 4×RTTVAR with a floor (~200 ms on Linux). When it expires, the oldest unacked segment is resent, cwnd collapses to 1, and the timer doubles. TCP's recovery of last resort."
+    spec_refs:
+      - document: "RFC 6298"
+        section: "2"
+        title: "Computing TCP's Retransmission Timer"
+        url: "https://datatracker.ietf.org/doc/html/rfc6298#section-2"
+
+  - term: "Duplicate ACK"
+    abbrev: "dupACK"
+    definition: "An ACK repeating the previous ACK number, sent when out-of-order data arrives. Cumulative ACKs cannot advance past a hole, so each later segment triggers another duplicate — turning the receiver into a loss reporter."
+    spec_refs:
+      - document: "RFC 5681"
+        section: "2"
+        title: "Definitions"
+        url: "https://datatracker.ietf.org/doc/html/rfc5681#section-2"
+
+  - term: "Fast Retransmit"
+    definition: "On the third consecutive duplicate ACK, the sender retransmits the missing segment immediately instead of waiting for the RTO. Three is the threshold because one or two duplicates can be caused by benign reordering."
+    spec_refs:
+      - document: "RFC 5681"
+        section: "3.2"
+        title: "Fast Retransmit / Fast Recovery"
+        url: "https://datatracker.ietf.org/doc/html/rfc5681#section-3.2"
+
+  - term: "Fast Recovery"
+    definition: "The milder congestion response paired with fast retransmit: ssthresh = half the data in flight (floor 2 segments), cwnd deflates to ssthresh instead of collapsing to 1, and slow start is skipped — because arriving duplicate ACKs prove the network is still delivering."
+    spec_refs:
+      - document: "RFC 5681"
+        section: "3.2"
+        title: "Fast Retransmit / Fast Recovery"
+        url: "https://datatracker.ietf.org/doc/html/rfc5681#section-3.2"
+
+  - term: "Selective Acknowledgment"
+    abbrev: "SACK"
+    definition: "TCP option carrying up to 3–4 blocks of received-but-out-of-order byte ranges. Turns 'something is missing' into 'exactly bytes X–Y are missing', letting the sender resend only the hole."
+    spec_refs:
+      - document: "RFC 2018"
+        section: "3"
+        title: "SACK Option Format"
+        url: "https://datatracker.ietf.org/doc/html/rfc2018"
+
+  - term: "Congestion Window"
+    abbrev: "cwnd"
+    definition: "Sender-side limit on unacknowledged data in flight. Grows on ACKs (slow start doubles per RTT; congestion avoidance adds ~1 segment per RTT), shrinks on loss (RTO → 1 segment; fast retransmit → ssthresh)."
+    spec_refs:
+      - document: "RFC 5681"
+        section: "3.1"
+        title: "Slow Start and Congestion Avoidance"
+        url: "https://datatracker.ietf.org/doc/html/rfc5681#section-3.1"
+
+  - term: "Slow Start Threshold"
+    abbrev: "ssthresh"
+    definition: "The cwnd level separating slow start (exponential growth) from congestion avoidance (linear growth). Set to half the flight size on each loss event, with a floor of 2 segments — the connection's memory of how much the path could carry."
+
+  - term: "Karn's Algorithm"
+    definition: "RTT samples must not be taken from retransmitted segments (the ACK is ambiguous — original or retransmission?). TCP timestamps remove the ambiguity, which is one reason modern stacks negotiate them on every connection."
+    spec_refs:
+      - document: "RFC 6298"
+        section: "3"
+        title: "Taking RTT Samples"
+        url: "https://datatracker.ietf.org/doc/html/rfc6298#section-3"
+
+# ─────────────────────────────────────────────────────────────────
+# WALKTHROUGHS
+# ─────────────────────────────────────────────────────────────────
+walkthroughs:
+  - id: "default"
+    title: "One Loss, Two Recoveries"
+    description: "Watch the same segment loss recovered two ways: a 204 ms retransmission timeout with congestion-window collapse, then a 250 µs fast retransmit triggered by duplicate ACKs"
+    steps:
+      - step: 0
+        narration: >
+          We join a healthy upload in progress: connection ESTABLISHED,
+          congestion window at 10 segments, round trips of 120 microseconds.
+          One number to hold onto: the retransmission timeout is 204
+          milliseconds — Linux won't let it drop below ~200 ms no matter how
+          fast the network. That timer is about to matter enormously.
+        highlight_fields: []
+
+      - step: 1
+        narration: >
+          A normal 1460-byte data segment goes out, carrying bytes
+          5000001–5001460. The timestamp option stamps its departure time;
+          when the ACK echoes it back, the sender gets a fresh RTT sample.
+          Reliability bookkeeping runs on every single segment, loss or no
+          loss.
+        highlight_fields: ["tcp.seq", "tcp.options"]
+
+      - step: 3
+        narration: >
+          The next segment isn't so lucky. The application happens to pause
+          after this one — no more data queued for a while — so bytes
+          5001461–5002920 travel alone. At the switch, a microburst from
+          another port has filled the egress queue: tail-drop. The arrow stops
+          at the switch. Neither endpoint knows anything yet.
+        highlight_fields: ["tcp.seq"]
+
+      - step: 5
+        narration: >
+          Now the trap: duplicate ACKs — TCP's fast loss detector — need later
+          segments to jog the receiver into repeating itself. There are no
+          later segments. The receiver waits silently for byte 5001461; the
+          sender waits for an ACK. The only thing moving is the 204 ms
+          retransmission timer.
+        highlight_fields: []
+
+      - step: 6
+        narration: >
+          The timer finally expires: 204 milliseconds — roughly 1,700 round
+          trips — of dead air. The RTO is deliberately conservative because a
+          spurious timeout would retransmit needlessly and punish the
+          congestion window for nothing. Patience is the price of certainty.
+        highlight_fields: []
+
+      - step: 7
+        narration: >
+          The retransmission goes out: identical sequence number 5001461 —
+          that repetition is how you spot retransmits in any capture. And the
+          penalty lands: cwnd collapses from 10 segments to 1, ssthresh drops
+          to 2, and the RTO doubles to 408 ms in case this copy dies too.
+          TCP treats a timeout as evidence of serious trouble.
+        highlight_fields: ["tcp.seq", "tcp.options"]
+
+      - step: 8
+        narration: >
+          The ACK arrives 120 µs later — recovery complete, at a cost of 204 ms
+          of stall plus a congestion window rebuilt from scratch. On this LAN
+          the rebuild takes a millisecond; on an 80 ms Internet path the
+          identical loss would cost over half a second of degraded throughput.
+        highlight_fields: ["tcp.ack"]
+
+      - step: 9
+        narration: >
+          Fast forward 100 ms: cwnd has climbed back to 10 (slow start to
+          ssthresh, then one segment per round trip), and the application hands
+          TCP four segments' worth of data at once. The same congested queue is
+          waiting — but this time the loss will have witnesses.
+        highlight_fields: []
+
+      - step: 10
+        narration: >
+          First segment of the burst — bytes 5002921–5004380 — is tail-dropped
+          at the switch, exactly like before. The difference: segments 4, 5,
+          and 6 are microseconds behind it, and they get through.
+        highlight_fields: ["tcp.seq"]
+
+      - step: 12
+        narration: >
+          Segment 4 lands at the receiver, which expected byte 5002921 but got
+          5004381. It buffers the bytes in its out-of-order queue (in-order
+          delivery is TCP's contract with the application) and immediately
+          repeats its ACK for 5002921 — now with a SACK block saying exactly
+          which bytes it holds. The hole has been spotted within microseconds.
+        highlight_fields: ["tcp.seq"]
+
+      - step: 15
+        narration: >
+          Duplicate ACK #1: the ACK number is frozen at 5002921, and the SACK
+          block reads 5004381–5005841. Subtract: exactly one segment is
+          missing. One duplicate could still be reordering, so the sender just
+          counts it. Segments 5 and 6 will produce duplicates #2 and #3 within
+          the next 20 microseconds.
+        highlight_fields: ["tcp.ack", "tcp.options.sack"]
+
+      - step: 17
+        narration: >
+          Duplicate ACK #3 — the threshold from RFC 5681. Three repetitions
+          means lost, not reordered. The sender takes the milder penalty of
+          fast recovery: ssthresh = half the flight (floor of 2), cwnd deflates
+          toward it, but no collapse to 1 and no slow start — the duplicate
+          ACKs themselves prove the network is still delivering packets.
+        highlight_fields: ["tcp.ack", "tcp.options.sack"]
+
+      - step: 18
+        narration: >
+          Fast retransmit: sequence 5002921 goes out again, about 135
+          microseconds after the original — versus 204,000 microseconds for
+          the RTO path. Same network, same kind of loss, ~1,500× faster
+          recovery, purely because the loss happened inside a burst instead of
+          at the end of one.
+        highlight_fields: ["tcp.seq"]
+
+      - step: 19
+        narration: >
+          The retransmitted bytes slot into the hole and everything buffered
+          behind it becomes deliverable at once: the ACK leaps from 5002921
+          straight to 5008761 — 5,840 bytes acknowledged by one segment's
+          arrival. cwnd settles at ssthresh and resumes linear growth. Total
+          outage: ~250 µs, and the transfer never went quiet.
+        highlight_fields: ["tcp.ack"]
+
+      - step: 20
+        narration: >
+          The takeaway table: RTO recovery = long silent gap in the capture,
+          cwnd to 1, slow start from scratch. Fast retransmit = a visible train
+          of duplicate ACKs, cwnd halved, transfer keeps moving. When you see
+          frequent RTOs in a trace, ask what is killing lone segments or
+          ACKs; when you see dupACK trains, you are watching TCP work as
+          designed. Either way, loss costs multiply with round-trip time —
+          the LAN shrugs off what would cripple a transcontinental link.
+        highlight_fields: []

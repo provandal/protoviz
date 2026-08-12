@@ -110,5 +110,17 @@
   "nvme-tcp-vertical-stack-connect-write": {
     "title": "[DRAFT] NVMe/TCP：完整垂直协议栈追踪 — 连接 → 写入",
     "description": "ProtoViz的所有其他场景都水平追踪数据包 — 从发起方到目标。本场景垂直进行：一个TCP连接和一个4KB NVMe WRITE命令，从用户空间系统调用追踪，穿过每一层内核，跨越线缆，再沿目标协议栈返回。"
+  },
+  "tcp-syn-timeout-connection-refused": {
+    "title": "TCP 错误:SYN 超时 vs 连接被拒绝",
+    "description": "connect() 失败的两种方式:关闭的端口立即以 RST 应答(ECONNREFUSED),而防火墙的静默 DROP 让客户端以指数退避不断重传 SYN,直到 ETIMEDOUT。快速失败说明有东西应答了;缓慢失败说明有东西在吞掉数据包。"
+  },
+  "tcp-retransmission-rto": {
+    "title": "TCP 错误:重传 — RTO vs 快速重传",
+    "description": "同一次报文段丢失的两种恢复方式:204 ms 的重传超时使拥塞窗口坍缩到 1,而三个重复 ACK 触发快速重传,约快 1,500 倍。涵盖 SACK 块、慢启动与快速恢复。"
+  },
+  "tcp-rst-mid-connection": {
+    "title": "TCP 错误:连接中途 RST vs 优雅的 FIN",
+    "description": "服务器进程崩溃用 RST 杀死已建立的连接——客户端收到 ECONNRESET。与之对比的是 4 次挥手的优雅 FIN 关闭和 TIME_WAIT,以及生产环境中常见的 RST 来源:重启、防火墙、负载均衡器空闲超时。"
   }
 }

@@ -1,0 +1,148 @@
+{
+  "meta": {
+    "title": "Erè TCP: Delè SYN kont Koneksyon Refize",
+    "description": "Senaryo erè: de fason yon tantativ koneksyon TCP ka echwe anvan menm li kòmanse. Tantativ #1 vize yon pò fèmen — kernel sèvè a reponn SYN nan ak yon RST touswit epi connect() echwe vit ak ECONNREFUSED. Tantativ #2 vize yon pò dèyè yon firewall ki jete SYN nan an silans — kliyan an retransmèt ak atant eksponansyèl (1 s, 2 s, 4 s...) epi li kite sa sèlman apre ~127 segond ak ETIMEDOUT. Konprann diferans ki genyen ant «refize» ak «delè fini» se premye branch nan prèske tout dyagram depanaj koneksyon. Li bati sou senaryo fondasyon an «TCP: Salitasyon 3 Etap → Transfè Done → Fèmti ak FIN».",
+    "learning_objectives": [
+      "Distenge de echèk klasik connect() yo: ECONNREFUSED (rapid, yon refi aktif) kont ETIMEDOUT (dousman, silans)",
+      "Wè kijan yon machin ki pa gen anyen k ap koute sou yon pò reponn yon SYN ak RST+ACK (jenerasyon reset RFC 9293)",
+      "Swiv retransmisyon SYN ak atant eksponansyèl: 1 s, 2 s, 4 s, 8 s... ki gouvène pa tcp_syn_retries",
+      "Konprann poukisa firewall ki fè DROP (jete an silans) bay echèk dousman pandan REJECT bay echèk rapid",
+      "Li nimewo sekans/konfimasyon segman RST la epi wè poukisa SEQ=0, ACK=ISN+1",
+      "Aprann sa eta SYN_SENT vle di ak konbyen tan yon kliyan ap rete ladan l",
+      "Devlope enstenk depanaj la: echèk imedya → yon bagay reponn; echèk ki pandye → yon bagay ap manje pakè ou yo"
+    ]
+  },
+  "actors": {
+    "client": {
+      "label": "Kliyan",
+      "description": "Kliyan TCP — li rele connect() de fwa, ak rezilta ki byen diferan"
+    },
+    "firewall": {
+      "label": "Firewall",
+      "description": "Aparèy transmisyon L2/L3 ak yon règleman filtraj: li voye trafik ale nan pò 9090, li jete trafik pou pò 8443 an silans"
+    },
+    "server": {
+      "label": "Sèvè",
+      "description": "Machin sèvè a — aksesib, men pa gen anyen k ap koute sou pò yo vize yo"
+    }
+  },
+  "frames": {
+    "tcp_refused_syn": {
+      "name": "TCP SYN (pò 9090)"
+    },
+    "tcp_refused_rst": {
+      "name": "TCP RST+ACK"
+    },
+    "tcp_timeout_syn": {
+      "name": "TCP SYN (pò 8443)"
+    },
+    "tcp_syn_retx_1": {
+      "name": "Retransmisyon TCP SYN #1"
+    },
+    "tcp_syn_retx_2": {
+      "name": "Retransmisyon TCP SYN #2"
+    },
+    "tcp_syn_retx_3": {
+      "name": "Retransmisyon TCP SYN #3"
+    }
+  },
+  "timeline": {
+    "0": {
+      "text": "Tantativ #1 — connect() sou yon pò fèmen (9090): pa gen anyen k ap koute la",
+      "detail": "Chemen rezo a an sante epi adrès MAC yo deja rezoud — senaryo sa a konsantre sèlman sou sa k ap pase pi wo pase fil la. Aplikasyon kliyan an rele connect(10.0.1.20:9090). Sou sèvè a, okenn pwosesis pa janm rele listen() sou pò 9090 (operatè a bliye demare sèvis la — kòz nimewo en pou echèk sa a). Règleman firewall la pèmèt trafik pou 9090, donk SYN nan ap rive nan sèvè a san anpechman. Gade ak ki vitès echèk la tounen."
+    },
+    "1": {
+      "text": "TCP SYN → pò 9090 — kliyan an mande yon pò fèmen yon koneksyon",
+      "detail": "Kernel la konstwi yon SYN konplètman nòmal: yon ISN pseudo-owaza (3100000), opsyon MSS/Echèl Fenèt/SACK/Tanstanp, epi li antre nan SYN_SENT. Nan pwen de vi kliyan an, sa a pa diferan menm ak nenpòt tantativ koneksyon ki reyisi — echèk la antyèman sou lòt bò a. Revèy retransmisyon an ame nan 1 segond si anyen pa tounen (nou p ap bezwen l nan tantativ sa a)."
+    },
+    "2": {
+      "text": "TCP RST+ACK ← kernel sèvè a refize aktivman: pa gen socket sou 9090",
+      "detail": "Pile TCP sèvè a chèche pò destinasyon an, li pa jwenn okenn socket k ap koute, epi touswit li jenere yon reset (tcp_v4_send_reset). Dapre RFC 9293 §3.5.2, paske SYN ki rive a pa t gen chan ACK, reset la pote SEQ=0 ak ACK = ISN_kliyan + 1 (3100001) — se valè ACK sa a ki pwouve bay kliyan an ke RST sa a reponn SYN espesifik pa l la, konsa yon atakè pa ka fabrike l fasil san li konnen ISN nan.\n\nRemake sa ki PA t rive: okenn aplikasyon pa janm wè pakè sa a. Refi a soti nan kernel la li menm, nan kontèks entèripsyon, an mikwosegond. Yon RST ki reponn yon SYN se sans «Koneksyon refize» a nan nivo fil la."
+    },
+    "3": {
+      "text": "connect() echwe nan ~100 µs: errno = ECONNREFUSED",
+      "detail": "Kernel kliyan an makonnen RST la ak koneksyon k ap tann nan (atravè nimewo ACK la), detwi socket la ki t ap fòme a, epi li reveye apèl connect() ki te bloke a ak ECONNREFUSED. Tan total ki pase: apeprè yon sèl ale-retou — 100 mikwosegond sou LAN sa a, oswa kèk dizèn milisegond atravè Entènèt.\n\nYon echèk rapid se yon kado pou depanaj: li di w machin nan monte, aksesib, epi l ap reponn — pwoblèm nan senpleman se ke sèvis la pa la (li pa demare, move pò, oswa li mare sou yon lòt entèfas). Verifye ak: ss -tlnp sou sèvè a."
+    },
+    "4": {
+      "text": "Tantativ #2 — connect() sou pò 8443, ke yon règleman firewall jete an silans (DROP)",
+      "detail": "Kounye a kliyan an eseye pò 8443. Fwa sa a yon règ filtraj sou firewall la koresponn ak trafik la epi aksyon li se DROP: jete pakè a epi pa voye anyen tounen. Sa a se pozisyon yo rekòmande pou firewall ki bay sou Entènèt (li pa revele anyen bay eskanè pò), men li bay mòd echèk ki pi frustran an pou itilizatè lejitim yo — silans. Kliyan an pa ka fè diferans ant «pakè jete pa règleman», «machin nan etenn», ak «woutaj kase yon kote nan mitan» — tout sanble ak anyen."
+    },
+    "5": {
+      "text": "TCP SYN → pò 8443 — segman an mouri anndan firewall la; sèvè a pa janm wè l",
+      "detail": "SYN nan byen fòme epi li kite kliyan an nòmalman. Firewall la konpare l ak ansanm règ li yo, li tonbe sou règ DROP la pou 8443, epi li jete fram nan. Pa gen RST, pa gen ICMP unreachable — pakè a senpleman sispann egziste. Kliyan an kounye a nan SYN_SENT ak yon revèy retransmisyon 1 segond k ap mache, l ap tann yon SYN-ACK ki p ap janm vini."
+    },
+    "6": {
+      "text": "Jete pa règleman firewall la — pa gen RST, pa gen ICMP, anyen pa tounen",
+      "detail": "DROP kont REJECT se yon chwa konsepsyon firewall ki fèt espre. REJECT voye yon repons aktif (TCP RST oswa ICMP port-unreachable) pou kliyan yo echwe vit; DROP pa voye anyen pou eskanè yo pa aprann anyen. Depi nan eta SYN_SENT kliyan an, DROP pa diferan ak yon machin ki mouri, yon kab debranche, oswa yon twou nwa nan woutaj la — se egzakteman poutèt sa «li pandye, epi delè a fini» se yon sentòm si komen (epi si dyagnostikab!)."
+    },
+    "7": {
+      "text": "Retransmisyon SYN #1 apre 1 s — segman idantik, revèy la double rive nan 2 s",
+      "detail": "Revèy retransmisyon an sonnen. Paske absoliman anyen pa t resevwa, kernel la voye menm SYN nan ankò — menm ISN 3200000, menm opsyon yo, se sèlman valè Tanstanp lan (TSval) ki avanse. Revèy reseye a double rive nan 2 segond (atant eksponansyèl binè, RFC 6298 §5.5). Nan yon kapti pakè, SYN repete ak menm nimewo sekans lan epi san repons se siyati yon pò filtre oswa yon machin ki pa aksesib."
+    },
+    "8": {
+      "text": "Retransmisyon SYN #2 apre 2 s anplis — revèy la double rive nan 4 s",
+      "detail": "Toujou silans. Kernel la retransmèt ankò epi li double revèy la ankò. Doubleman an pwoteje rezo a: si SYN yo t ap disparèt akoz konjesyon olye règleman, reseye agresif ta sèlman fè konjesyon an vin pi mal. Atant se TCP k ap rete yon bon sitwayen menm pandan l ap echwe."
+    },
+    "9": {
+      "text": "Retransmisyon SYN #3 apre 4 s anplis — epi modèl la kontinye: 8 s, 16 s, 32 s, 64 s",
+      "detail": "Twazyèm retransmisyon, ~7 segond apre. Linux gen net.ipv4.tcp_syn_retries = 6 pa defo, donk apre sa a gen twa lòt eseye nan entèval 8 s, 16 s, ak 32 s, epi yon dènye atant 64 segond. Sekans konplè a 1+2+4+8+16+32+64 ≈ 127 segond — se la fanmè «de minit ak kèk» koneksyon ki pandye a soti. Aplikasyon ki bezwen echwe pi vit dwe mete pwòp delè koneksyon pa yo (oswa itilize setsockopt TCP_SYNCNT); pifò kliyan HTTP nan pwodiksyon fikse delè yo nan 1–10 segond olye yo tann kernel la."
+    },
+    "10": {
+      "text": "~127 s ak 6 retransmisyon apre, kernel la kite sa: errno = ETIMEDOUT",
+      "detail": "Apre dènye atant 64 segond lan fini san repons, kernel la abandone tantativ la, detwi socket la, epi li reveye connect() ak ETIMEDOUT. Konpare de echèk yo: ECONNREFUSED nan yon sèl ale-retou kont ETIMEDOUT apre plis pase de minit silans.\n\nLeson depanaj la — silans vle di gen yon bagay k ap manje pakè a yon kote. Travay chemen an: èske machin nan monte (ping, si ICMP pèmèt)? Èske yon traceroute mouri nan yon fwontyè règleman? Èske tcpdump sou sèvè a montre SYN yo ap rive (si wi, jete a fèt sou machin nan menm, pa egzanp nftables)? Yon refi rapid, okontrè, vle di chemen an bon — al verifye sèvis la."
+    },
+    "11": {
+      "text": "Senaryo fini — echèk rapid kont echèk dousman, ak sa chak youn di w",
+      "detail": "Menm kliyan, menm sèvè, de echèk ki konplètman diferan:\n\n• Pò fèmen (pa gen anyen k ap koute) → yon RST tounen → ECONNREFUSED nan ~1 RTT. Machin nan reponn; se sèvis la ki manke. Verifye sèvis la.\n\n• Pò filtre (DROP firewall) → silans → SYN retransmèt ak atant eksponansyèl → ETIMEDOUT apre ~127 s. Gen yon bagay k ap manje pakè yo. Verifye chemen an ak règleman firewall la.\n\nYon twazyèm varyant konplete tablo a: yon firewall yo konfigire ak REJECT reponn ak yon RST (oswa ICMP unreachable) epi li sanble ak ECONNREFUSED — echèk rapid san sèvis la manke. Se poutèt sa errno a pou kont li idantifye klas echèk la, pa kòz rasin nan; li di w kote pou w kòmanse chèche. nmap itilize egzakteman distenksyon sa yo pou l klase pò kòm fèmen (RST) kont filtre (silans)."
+    }
+  },
+  "walkthroughs": {
+    "default": {
+      "title": "Refize kont Delè Fini — De Koneksyon ki Echwe",
+      "description": "Swiv de tantativ koneksyon ki pa janm etabli: youn refize touswit pa yon RST, youn ki mouri dousman nan règ DROP yon firewall",
+      "steps": {
+        "0": "Sèn nan: yon LAN an sante, yon kliyan, ak yon sèvè ki monte epi aksesib — men pèsonn pa janm demare sèvis la sou pò 9090. Aplikasyon kliyan an rele connect(). Tout bagay anba TCP mache pafètman nan senaryo sa a; toude echèk yo viv antyèman nan kouch transpò a ak pi wo.",
+        "1": "Kernel kliyan an voye yon SYN klasik sou pò 9090: nimewo sekans inisyal owaza, opsyon MSS / echèl fenèt / SACK / tanstanp abityèl yo, eta SYN_SENT. Anyen nan pakè sa a pa endike yon echèk — kliyan an pa ka konnen davans si gen yon moun k ap koute.",
+        "2": "Kernel sèvè a verifye tab socket li pou yon moun k ap koute sou pò 9090, li pa jwenn okenn, epi li tire yon RST+ACK tounen — an mikwosegond, depi nan kontèks entèripsyon, san okenn aplikasyon patisipe. Gade nimewo yo: SEQ=0 (SYN nan pa t pote okenn ACK pou reflete) epi ACK=3100001, ki se ISN kliyan an + 1. Valè ACK sa a mare reset la ak tantativ koneksyon egzak sa a.",
+        "3": "Kliyan an makonnen RST la ak tantativ li k ap tann nan epi connect() retounen -1 ak errno ECONNREFUSED — apeprè 100 mikwosegond apre SYN nan te pati. Yon echèk rapid se lò pou dyagnostik: machin nan reponn, donk chemen rezo a mache. Se sèvis la ki senpleman pa la. Premye kòmand pou w kouri sou sèvè a: ss -tlnp | grep 9090.",
+        "4": "Dezyèm tantativ la vize pò 8443 — epi fwa sa a yon règ firewall koresponn, ak aksyon DROP: jete an silans, pa reponn anyen. Sa a se sekirizasyon estanda pou rezo ki ekspoze (eskanè pò pa aprann anyen), men gade sa li fè eksperyans kliyan an konpare ak RST imedya premye tantativ la.",
+        "5": "SYN nan kite kliyan an epi yo jete l anndan firewall la. Sèvè a pa janm wè l — remake flèch la kanpe nan firewall la. Kliyan an chita nan SYN_SENT ak yon revèy retransmisyon 1 segond k ap mache, san li pa konnen anyen. Nan pwen de vi li, pakè a ka toujou nan wout.",
+        "6": "Anyen pa tounen — pa gen SYN-ACK, pa gen RST, pa gen erè ICMP. Silans se pwopriyete ki defini DROP. Kliyan an pa ka fè diferans ant yon firewall k ap manje pakè li yo, yon machin ki etenn, oswa yon wout ki kase. Sèl bagay li ka fè se reseye.",
+        "7": "Yon segond pase, revèy la sonnen, epi kernel la retransmèt SYN nan — oktè pa oktè idantik sof opsyon tanstanp lan. Menm nimewo sekans 3200000: SYN idantik repete nan yon kapti se siyati klasik yon pò filtre. Revèy la double rive nan 2 segond.",
+        "8": "Retransmisyon #2 ak #3 swiv nan entèval 2 s ak 4 s — atant eksponansyèl. Si pèt la te konjesyon olye règleman, frape pi vit ta sèlman fè bagay yo vin pi mal, donk TCP rale kò l ak politès menm lè l ap mouri. Linux ap eseye 6 fwa antou: 1+2+4+8+16+32, epi li tann yon dènye 64 segond.",
+        "9": "Apeprè 127 segond apre connect() te rele, kernel la kite sa epi li retounen ETIMEDOUT. Se sentòm «li pandye pandan de minit, epi li echwe» ke tout operatè rekonèt. Vrè aplikasyon pa ta dwe tann konsa lontan — mete yon delè koneksyon nan aplikasyon an oswa diminye TCP_SYNCNT pou socket la.",
+        "10": "Konparezon an nan yon sèl liy: RST vle di «yo reponn: non» (~1 RTT, ECONNREFUSED — al verifye sèvis la); silans vle di «pa gen okenn repons ditou» (~127 s, ETIMEDOUT — al verifye chemen an ak règleman firewall la). Yon nuans: yon règ firewall REJECT bay yon RST tou, donk yon refi rapid pa toujou vle di w rive jwenn machin nan — men yon delè ki long toujou vle di pakè ou yo ap disparèt. Sa a se premye branch nan tout dyagram depanaj koneksyon, epi se egzakteman konsa tou nmap fè diferans ant «fèmen» ak «filtre»."
+      }
+    }
+  },
+  "glossary": {
+    "ECONNREFUSED": {
+      "term": "ECONNREFUSED",
+      "definition": "errno connect() retounen lè machin sib la reponn yon SYN ak yon RST — machin nan aksesib men pa gen okenn socket k ap koute sou pò sa a. Li echwe vit (~1 RTT)."
+    },
+    "ETIMEDOUT": {
+      "term": "ETIMEDOUT",
+      "definition": "errno connect() retounen lè chak SYN (orijinal la plis tout retransmisyon yo) rete san repons. Sou Linux ak tcp_syn_retries=6 sa pran ~127 segond. Li endike pakè yo ap jete an silans yon kote sou chemen an."
+    },
+    "Reset Flag": {
+      "term": "Drapo RST",
+      "definition": "Drapo TCP ki avòte yon koneksyon (oswa ki refize youn). Yon SYN ki rive nan yon pò kote pa gen anyen k ap koute jwenn yon RST+ACK kòm repons kote ACK = ISN+1, jenere pa kernel la san okenn aplikasyon patisipe."
+    },
+    "Exponential Backoff": {
+      "term": "Atant Eksponansyèl",
+      "definition": "Doubleman delè retransmisyon an apre chak tantativ ki rete san repons (1 s, 2 s, 4 s, 8 s...). Sa anpeche yon ekspeditè k ap echwe inonde yon rezo ki deja an difikilte. Yo aplike l sou retransmisyon SYN dapre RFC 6298 §5.5."
+    },
+    "tcp_syn_retries": {
+      "term": "tcp_syn_retries",
+      "definition": "Sysctl Linux (net.ipv4.tcp_syn_retries, 6 pa defo) ki kontwole konbyen fwa yon SYN retransmèt anvan connect() echwe ak ETIMEDOUT. Sis reseye ak entèval ki double ≈ 127 segond antou. Ranplasman pou chak socket: TCP_SYNCNT."
+    },
+    "DROP vs REJECT": {
+      "term": "DROP kont REJECT",
+      "definition": "De aksyon firewall pou trafik ki bloke. DROP jete pakè a an silans (kliyan an pandye, epi ETIMEDOUT); REJECT reponn ak yon TCP RST oswa ICMP unreachable (kliyan an echwe vit, tankou ECONNREFUSED). DROP kache enfòmasyon anba eskanè yo; REJECT pi janti ak kliyan lejitim yo."
+    },
+    "SYN_SENT": {
+      "term": "SYN_SENT",
+      "definition": "Eta TCP apre yon SYN voye, pandan l ap tann SYN-ACK parèy la. Yon koneksyon ki kwoke nan SYN_SENT (vizib nan ss/netstat) vle di SYN nan oswa repons li a ap pèdi — siyati sou machin nan pou yon chemen filtre."
+    }
+  }
+}
