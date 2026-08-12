@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { PAYLOAD_FIELD_KEYS } from '../../utils/sensitiveDataDetector';
+import { PAYLOAD_FIELD_KEYS, redactSensitiveString } from '../../utils/sensitiveDataDetector';
 
 const MODELS = [
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
@@ -8,7 +8,39 @@ const MODELS = [
   { id: 'claude-opus-4-6', label: 'Opus 4.6' },
 ];
 
-function buildTraceSummary(packets, findings, selectedPacketIndex) {
+// Full layer detail is sent for this many packets of the selected exchanges;
+// packets beyond it get one summary line each, up to SUMMARY_PACKET_CAP.
+const DETAIL_PACKET_CAP = 400;
+const SUMMARY_PACKET_CAP = 2000;
+// Prompts above this many input tokens require an explicit confirmation.
+const WARN_INPUT_TOKENS = 20000;
+// Rough chars-per-token ratio for the live local estimate (exact count comes
+// from the count_tokens endpoint at send time).
+const CHARS_PER_TOKEN = 3.5;
+
+function packetDetailLines(pkt, index, t0) {
+  const ts = pkt.timestamp != null && t0 != null ? ` t=+${(pkt.timestamp - t0).toFixed(6)}s` : '';
+  const lines = [`Packet #${index + 1}${ts}`];
+  lines.push(`  Summary: ${redactSensitiveString(pkt.summary)}`);
+  for (const layer of pkt.layers) {
+    // Remove hex_dump, ascii, and other raw payload fields from API context,
+    // and redact credential/PII spans in the rest — protocol dissectors
+    // surface payload-derived strings (request lines, cookies, names) as
+    // ordinary fields that the payload-key strip doesn't cover.
+    const sanitizedFields = {};
+    for (const [k, v] of Object.entries(layer.fields)) {
+      if (PAYLOAD_FIELD_KEYS.has(k)) continue;
+      sanitizedFields[k] = typeof v === 'string' ? redactSensitiveString(v) : v;
+    }
+    lines.push(`  L${layer.layer} ${layer.name}: ${JSON.stringify(sanitizedFields)}`);
+    if (layer._sensitive) {
+      lines.push(`  ⚠ Sensitive data detected: ${layer._sensitive.map(m => m.name).join(', ')}`);
+    }
+  }
+  return lines;
+}
+
+function buildTraceSummary(packets, findings) {
   const lines = [];
   lines.push(`PCAP trace: ${packets.length} packets`);
 
@@ -53,43 +85,51 @@ function buildTraceSummary(packets, findings, selectedPacketIndex) {
   }
   if (qps.size > 0) lines.push(`RoCE QPs: ${[...qps].join(', ')}`);
 
-  // Findings
+  // Findings — these carry original capture indexes; translate to positions
+  // in the selected-exchange listing below so packet numbers agree everywhere
+  // in the prompt.
+  const posByOrig = new Map(packets.map((p, i) => [p.index, i]));
   if (findings && findings.length > 0) {
     lines.push(`\nFindings (${findings.length}):`);
     for (const f of findings) {
-      lines.push(`  [${f.severity.toUpperCase()}] Pkt #${f.packetIndex + 1}: ${f.description}${f.spec_ref ? ` (${f.spec_ref})` : ''}`);
+      const pos = posByOrig.get(f.packetIndex);
+      lines.push(`  [${f.severity.toUpperCase()}] Pkt #${(pos ?? f.packetIndex) + 1}: ${f.description}${f.spec_ref ? ` (${f.spec_ref})` : ''}`);
     }
   }
 
-  // Selected packet detail — strip raw payload bytes before sending to API
-  if (selectedPacketIndex != null && packets[selectedPacketIndex]) {
-    const pkt = packets[selectedPacketIndex];
-    lines.push(`\nUser is looking at packet #${selectedPacketIndex + 1}:`);
-    lines.push(`  Summary: ${pkt.summary}`);
-    for (const layer of pkt.layers) {
-      // Remove hex_dump, ascii, and other raw payload fields from API context
-      const sanitizedFields = {};
-      for (const [k, v] of Object.entries(layer.fields)) {
-        if (!PAYLOAD_FIELD_KEYS.has(k)) {
-          sanitizedFields[k] = v;
-        }
-      }
-      lines.push(`  L${layer.layer} ${layer.name}: ${JSON.stringify(sanitizedFields)}`);
-      if (layer._sensitive) {
-        lines.push(`  ⚠ Sensitive data detected: ${layer._sensitive.map(m => m.name).join(', ')}`);
-      }
+  // Per-packet detail for every packet of the selected exchanges (bounded).
+  // Raw payload bytes are stripped per packet in packetDetailLines.
+  const t0 = packets[0]?.timestamp ?? null;
+  const detailCount = Math.min(packets.length, DETAIL_PACKET_CAP);
+  if (detailCount > 0) {
+    lines.push(`\nPacket detail (${detailCount} of ${packets.length} packets in full):`);
+    for (let i = 0; i < detailCount; i++) {
+      lines.push(...packetDetailLines(packets[i], i, t0));
+    }
+  }
+  if (packets.length > DETAIL_PACKET_CAP) {
+    const rest = packets.slice(DETAIL_PACKET_CAP, DETAIL_PACKET_CAP + SUMMARY_PACKET_CAP);
+    lines.push(`\nRemaining packets (summaries only):`);
+    rest.forEach((pkt, i) => lines.push(`#${DETAIL_PACKET_CAP + i + 1} ${redactSensitiveString(pkt.summary)}`));
+    const omitted = packets.length - DETAIL_PACKET_CAP - rest.length;
+    if (omitted > 0) {
+      lines.push(`…and ${omitted} more packets omitted. If you need them, ask the user to narrow the exchange selection.`);
     }
   }
 
   return lines.join('\n');
 }
 
-function buildSystemPrompt(packets, findings, selectedPacketIndex) {
-  const summary = buildTraceSummary(packets, findings, selectedPacketIndex);
+// Returns the system prompt as content blocks: a stable block carrying the
+// full trace context (marked as a prompt-cache breakpoint, so follow-up
+// questions re-read it at ~0.1x cost instead of re-billing the whole trace)
+// followed by a small volatile block that changes as the user clicks packets.
+function buildSystemBlocks(packets, findings, selectedPacketIndex) {
+  const summary = buildTraceSummary(packets, findings);
 
-  return `You are a network protocol troubleshooting expert embedded in ProtoViz's PCAP Troubleshooter.
+  const stable = `You are a network protocol troubleshooting expert embedded in ProtoViz's PCAP Troubleshooter.
 
-The user has uploaded a PCAP trace for analysis. Here is the trace summary:
+The user has uploaded a PCAP trace and selected the exchanges below for analysis:
 
 ${summary}
 
@@ -100,6 +140,20 @@ Help the user understand what is happening in their trace. Focus on:
 - Referencing relevant RFCs or IB specs when applicable
 
 Be concise but thorough. If the user asks about a specific packet, explain its role in the overall exchange.`;
+
+  const blocks = [{ type: 'text', text: stable, cache_control: { type: 'ephemeral' } }];
+
+  if (selectedPacketIndex != null && packets[selectedPacketIndex]) {
+    const pkt = packets[selectedPacketIndex];
+    const lines = [`The user is currently viewing packet #${selectedPacketIndex + 1}: ${redactSensitiveString(pkt.summary)}`];
+    if (selectedPacketIndex >= DETAIL_PACKET_CAP) {
+      // Not covered by the detailed listing above — include its full detail here
+      lines.push(...packetDetailLines(pkt, selectedPacketIndex, packets[0]?.timestamp ?? null));
+    }
+    blocks.push({ type: 'text', text: lines.join('\n') });
+  }
+
+  return blocks;
 }
 
 export default function TraceChatPanel({ packets, findings, selectedPacketIndex }) {
@@ -111,10 +165,32 @@ export default function TraceChatPanel({ packets, findings, selectedPacketIndex 
   const [showSettings, setShowSettings] = useState(false);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
+  const [counting, setCounting] = useState(false);
+  const [pendingSend, setPendingSend] = useState(null); // { messages, tokens, exact }
   const [error, setError] = useState(null);
   const messagesEndRef = useRef(null);
   const abortRef = useRef(null);
   const inputRef = useRef(null);
+
+  const systemBlocks = useMemo(
+    () => buildSystemBlocks(packets, findings, selectedPacketIndex),
+    [packets, findings, selectedPacketIndex]
+  );
+
+  // Live rough estimate of the full request size (system + history + draft).
+  const estimatedTokens = useMemo(() => {
+    let chars = 0;
+    for (const b of systemBlocks) chars += b.text.length;
+    for (const m of messages) chars += m.content.length;
+    chars += input.length;
+    return Math.ceil(chars / CHARS_PER_TOKEN);
+  }, [systemBlocks, messages, input]);
+
+  // A pending confirmation is priced against a specific prompt and model —
+  // drop it if either changes underneath it.
+  useEffect(() => {
+    setPendingSend(null);
+  }, [systemBlocks, model]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -142,11 +218,15 @@ export default function TraceChatPanel({ packets, findings, selectedPacketIndex 
     setStreaming(false);
   }, []);
 
-  const sendMessage = useCallback(async () => {
-    if (!input.trim() || streaming || !apiKey) return;
+  const apiHeaders = useMemo(() => ({
+    'Content-Type': 'application/json',
+    'x-api-key': apiKey,
+    'anthropic-version': '2023-06-01',
+    'anthropic-dangerous-direct-browser-access': 'true',
+  }), [apiKey]);
 
-    const userMessage = { role: 'user', content: input.trim() };
-    const newMessages = [...messages, userMessage];
+  const doSend = useCallback(async (newMessages) => {
+    setPendingSend(null);
     setMessages([...newMessages, { role: 'assistant', content: '' }]);
     setInput('');
     setError(null);
@@ -154,20 +234,14 @@ export default function TraceChatPanel({ packets, findings, selectedPacketIndex 
 
     try {
       abortRef.current = new AbortController();
-      const systemPrompt = buildSystemPrompt(packets, findings, selectedPacketIndex);
 
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true',
-        },
+        headers: apiHeaders,
         body: JSON.stringify({
           model,
           max_tokens: 2048,
-          system: systemPrompt,
+          system: systemBlocks,
           messages: newMessages,
           stream: true,
         }),
@@ -219,7 +293,65 @@ export default function TraceChatPanel({ packets, findings, selectedPacketIndex 
     } finally {
       setStreaming(false);
     }
-  }, [input, streaming, apiKey, packets, findings, selectedPacketIndex, messages, model]);
+  }, [apiHeaders, model, systemBlocks]);
+
+  const sendMessage = useCallback(async () => {
+    if (!input.trim() || streaming || counting || !apiKey) return;
+
+    const newMessages = [...messages, { role: 'user', content: input.trim() }];
+    setError(null);
+    setPendingSend(null);
+
+    let chars = systemBlocks.reduce((n, b) => n + b.text.length, 0);
+    for (const m of newMessages) chars += m.content.length;
+    const localEstimate = Math.ceil(chars / CHARS_PER_TOKEN);
+
+    // Exact count from the (free) count_tokens endpoint — but only when the
+    // local estimate is close enough to the warning threshold to matter;
+    // below that, skip the extra round trip (it re-uploads the whole prompt).
+    let tokens = null;
+    let exact = false;
+    if (localEstimate >= WARN_INPUT_TOKENS / 2) {
+      setCounting(true);
+      try {
+        const resp = await fetch('https://api.anthropic.com/v1/messages/count_tokens', {
+          method: 'POST',
+          headers: apiHeaders,
+          body: JSON.stringify({ model, system: systemBlocks, messages: newMessages }),
+          signal: AbortSignal.timeout(15000),
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          if (typeof data.input_tokens === 'number') {
+            tokens = data.input_tokens;
+            exact = true;
+          }
+        } else if (resp.status === 401 || resp.status === 403) {
+          // Auth problems would otherwise hide behind the fallback estimate
+          // until after the user confirms the token warning — surface now.
+          const errText = await resp.text();
+          setError(`API ${resp.status}: ${errText.slice(0, 200)}`);
+          return;
+        }
+        // Other statuses (429, 5xx): fall through to the local estimate.
+      } catch {
+        // Network error or timeout — fall back to the local estimate.
+      } finally {
+        setCounting(false);
+      }
+    }
+
+    if (tokens == null) {
+      tokens = localEstimate;
+    }
+
+    if (tokens > WARN_INPUT_TOKENS) {
+      setPendingSend({ messages: newMessages, tokens, exact });
+      return;
+    }
+
+    await doSend(newMessages);
+  }, [input, streaming, counting, apiKey, messages, model, systemBlocks, apiHeaders, doSend]);
 
   const handleKeyDown = useCallback((e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -383,14 +515,46 @@ export default function TraceChatPanel({ packets, findings, selectedPacketIndex 
         padding: 8, borderTop: '1px solid #1e293b', background: '#0f172a',
         flexShrink: 0,
       }}>
+        {pendingSend && (
+          <div style={{
+            padding: '8px 10px', background: '#451a03', border: '1px solid #d97706',
+            borderRadius: 6, marginBottom: 8,
+          }}>
+            <div style={{ color: '#fcd34d', fontSize: 11, marginBottom: 6 }}>
+              {t(pendingSend.exact ? 'traceChat.tokenWarningExact' : 'traceChat.tokenWarning', {
+                tokens: pendingSend.tokens.toLocaleString(),
+              })}
+            </div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button
+                onClick={() => doSend(pendingSend.messages)}
+                style={{
+                  background: '#b45309', border: 'none', color: '#fff',
+                  fontSize: 10, padding: '4px 10px', borderRadius: 4, cursor: 'pointer',
+                }}
+              >
+                {t('traceChat.sendAnyway')}
+              </button>
+              <button
+                onClick={() => setPendingSend(null)}
+                style={{
+                  background: 'none', border: '1px solid #78716c', color: '#d6d3d1',
+                  fontSize: 10, padding: '4px 10px', borderRadius: 4, cursor: 'pointer',
+                }}
+              >
+                {t('traceChat.cancel')}
+              </button>
+            </div>
+          </div>
+        )}
         <div style={{ display: 'flex', gap: 4 }}>
           <textarea
             ref={inputRef}
             value={input}
-            onChange={e => setInput(e.target.value)}
+            onChange={e => { setInput(e.target.value); setPendingSend(null); }}
             onKeyDown={handleKeyDown}
             placeholder={needsApiKey ? t('traceChat.setKeyPlaceholder') : t('traceChat.inputPlaceholder')}
-            disabled={needsApiKey || streaming}
+            disabled={needsApiKey || streaming || counting}
             rows={2}
             style={{
               flex: 1, background: '#1e293b', border: '1px solid #334155', color: '#e2e8f0',
@@ -402,20 +566,32 @@ export default function TraceChatPanel({ packets, findings, selectedPacketIndex 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <button
               onClick={streaming ? stopStreaming : sendMessage}
-              disabled={needsApiKey || (!streaming && !input.trim())}
+              disabled={needsApiKey || counting || (!streaming && !input.trim())}
               style={{
                 background: streaming ? '#991b1b' : '#1e40af',
                 border: 'none', color: '#fff',
                 fontSize: 11, padding: '0 12px', borderRadius: 6,
                 cursor: needsApiKey ? 'not-allowed' : 'pointer',
-                opacity: (needsApiKey || (!streaming && !input.trim())) ? 0.4 : 1,
+                opacity: (needsApiKey || counting || (!streaming && !input.trim())) ? 0.4 : 1,
                 flex: 1,
               }}
             >
-              {streaming ? t('traceChat.stop') : t('traceChat.send')}
+              {streaming ? t('traceChat.stop') : counting ? t('traceChat.counting') : t('traceChat.send')}
             </button>
           </div>
         </div>
+        {packets.length > 0 && (
+          <div style={{ color: '#475569', fontSize: 9, marginTop: 4, textAlign: 'right' }}>
+            {t('traceChat.contextStats', {
+              packets: packets.length.toLocaleString(),
+              findings: (findings?.length || 0).toLocaleString(),
+              tokens: estimatedTokens.toLocaleString(),
+            })}
+            {packets.length > DETAIL_PACKET_CAP && (
+              <> · {t('traceChat.contextTruncated', { cap: DETAIL_PACKET_CAP.toLocaleString() })}</>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

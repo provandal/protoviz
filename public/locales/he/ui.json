@@ -235,7 +235,14 @@
     "suggestWrong": "מה השתבש במעקב הזה?",
     "suggestRst": "למה יש TCP RST?",
     "suggestPsn": "הסבר את פער RoCE PSN",
-    "suggestNext": "מה עליי לבדוק עכשיו?"
+    "suggestNext": "מה עליי לבדוק עכשיו?",
+    "contextStats": "{{packets}} חבילות · {{findings}} ממצאים · ~{{tokens}} טוקנים",
+    "contextTruncated": "{{cap}} הראשונות בפירוט מלא",
+    "tokenWarning": "הודעה זו תשלח כ-{{tokens}} טוקני קלט.",
+    "tokenWarningExact": "הודעה זו תשלח {{tokens}} טוקני קלט.",
+    "sendAnyway": "שלח בכל זאת",
+    "cancel": "ביטול",
+    "counting": "סופר טוקנים..."
   },
   "helloChat": {
     "nicknameHint": "הזינו כינוי כדי להתחיל.",

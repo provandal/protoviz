@@ -235,7 +235,14 @@
     "suggestWrong": "Que s'est-il passé dans cette trace ?",
     "suggestRst": "Pourquoi y a-t-il un TCP RST ?",
     "suggestPsn": "Expliquez l'écart de RoCE PSN",
-    "suggestNext": "Que devrais-je vérifier ensuite ?"
+    "suggestNext": "Que devrais-je vérifier ensuite ?",
+    "contextStats": "{{packets}} paquets · {{findings}} constatations · ~{{tokens}} tokens",
+    "contextTruncated": "les {{cap}} premiers en détail complet",
+    "tokenWarning": "Ce message enverra environ {{tokens}} tokens d'entrée.",
+    "tokenWarningExact": "Ce message enverra {{tokens}} tokens d'entrée.",
+    "sendAnyway": "Envoyer quand même",
+    "cancel": "Annuler",
+    "counting": "Comptage des tokens..."
   },
   "helloChat": {
     "nicknameHint": "Saisissez un pseudo pour commencer.",

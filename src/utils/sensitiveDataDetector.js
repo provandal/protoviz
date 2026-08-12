@@ -64,6 +64,23 @@ export function detectSensitiveString(text) {
 }
 
 /**
+ * Replace any sensitive spans in a string with [REDACTED: <name>] markers.
+ * Applied to packet-derived text (dissector fields, packet summaries) before
+ * it is sent to external APIs — the payload-key strip alone doesn't cover
+ * payload-derived strings that dissectors surface as ordinary fields.
+ * @param {string} text
+ * @returns {string}
+ */
+export function redactSensitiveString(text) {
+  let out = text;
+  for (const pat of PATTERNS) {
+    const flags = pat.re.flags.includes('g') ? pat.re.flags : pat.re.flags + 'g';
+    out = out.replace(new RegExp(pat.re.source, flags), `[REDACTED: ${pat.name}]`);
+  }
+  return out;
+}
+
+/**
  * List of field keys that contain raw payload content and should be
  * stripped before sending to external APIs.
  */

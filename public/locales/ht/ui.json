@@ -235,7 +235,14 @@
     "suggestWrong": "Kisa ki mal nan tras sa a?",
     "suggestRst": "Poukisa gen yon TCP RST?",
     "suggestPsn": "Eksplike diferans PSN RoCE la",
-    "suggestNext": "Kisa mwen ta dwe verifye apre?"
+    "suggestNext": "Kisa mwen ta dwe verifye apre?",
+    "contextStats": "{{packets}} pakè · {{findings}} dekouvèt · ~{{tokens}} token",
+    "contextTruncated": "premye {{cap}} yo ak tout detay",
+    "tokenWarning": "Mesaj sa a pral voye anviwon {{tokens}} token antre.",
+    "tokenWarningExact": "Mesaj sa a pral voye {{tokens}} token antre.",
+    "sendAnyway": "Voye kanmenm",
+    "cancel": "Anile",
+    "counting": "Ap konte token yo..."
   },
   "helloChat": {
     "nicknameHint": "Antre yon non jwèt pou kòmanse.",

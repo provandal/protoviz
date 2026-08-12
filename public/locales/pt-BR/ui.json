@@ -287,7 +287,14 @@
     "suggestWrong": "O que deu errado neste trace?",
     "suggestRst": "Por que há um TCP RST?",
     "suggestPsn": "Explique o gap de RoCE PSN",
-    "suggestNext": "O que devo verificar em seguida?"
+    "suggestNext": "O que devo verificar em seguida?",
+    "contextStats": "{{packets}} pacotes · {{findings}} achados · ~{{tokens}} tokens",
+    "contextTruncated": "primeiros {{cap}} em detalhe completo",
+    "tokenWarning": "Esta mensagem enviará cerca de {{tokens}} tokens de entrada.",
+    "tokenWarningExact": "Esta mensagem enviará {{tokens}} tokens de entrada.",
+    "sendAnyway": "Enviar mesmo assim",
+    "cancel": "Cancelar",
+    "counting": "Contando tokens..."
   },
   "helloChat": {
     "nicknameHint": "Digite um apelido para começar.",

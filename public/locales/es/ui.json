@@ -235,7 +235,14 @@
     "suggestWrong": "¿Qué salió mal en esta traza?",
     "suggestRst": "¿Por qué hay un TCP RST?",
     "suggestPsn": "Explica el desfase de RoCE PSN",
-    "suggestNext": "¿Qué debería verificar a continuación?"
+    "suggestNext": "¿Qué debería verificar a continuación?",
+    "contextStats": "{{packets}} paquetes · {{findings}} hallazgos · ~{{tokens}} tokens",
+    "contextTruncated": "primeros {{cap}} con detalle completo",
+    "tokenWarning": "Este mensaje enviará unos {{tokens}} tokens de entrada.",
+    "tokenWarningExact": "Este mensaje enviará {{tokens}} tokens de entrada.",
+    "sendAnyway": "Enviar de todos modos",
+    "cancel": "Cancelar",
+    "counting": "Contando tokens..."
   },
   "helloChat": {
     "nicknameHint": "Escribe un apodo para empezar.",

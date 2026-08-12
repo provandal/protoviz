@@ -235,7 +235,14 @@
     "suggestWrong": "इस ट्रेस में क्या गलत हुआ?",
     "suggestRst": "TCP RST क्यों है?",
     "suggestPsn": "RoCE PSN गैप समझाएँ",
-    "suggestNext": "आगे मुझे क्या जाँचना चाहिए?"
+    "suggestNext": "आगे मुझे क्या जाँचना चाहिए?",
+    "contextStats": "{{packets}} पैकेट · {{findings}} खोजें · ~{{tokens}} टोकन",
+    "contextTruncated": "पहले {{cap}} पूर्ण विवरण के साथ",
+    "tokenWarning": "यह संदेश लगभग {{tokens}} इनपुट टोकन भेजेगा।",
+    "tokenWarningExact": "यह संदेश {{tokens}} इनपुट टोकन भेजेगा।",
+    "sendAnyway": "फिर भी भेजें",
+    "cancel": "रद्द करें",
+    "counting": "टोकन गिने जा रहे हैं..."
   },
   "helloChat": {
     "nicknameHint": "शुरू करने के लिए एक उपनाम दर्ज करें।",

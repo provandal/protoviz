@@ -287,7 +287,14 @@
     "suggestWrong": "このトレースで何が問題でしたか？",
     "suggestRst": "なぜTCP RSTがあるのですか？",
     "suggestPsn": "RoCE PSNギャップを説明して",
-    "suggestNext": "次に何を確認すべきですか？"
+    "suggestNext": "次に何を確認すべきですか？",
+    "contextStats": "パケット {{packets}} · 発見事項 {{findings}} · 約{{tokens}}トークン",
+    "contextTruncated": "先頭{{cap}}件は完全な詳細付き",
+    "tokenWarning": "このメッセージは約{{tokens}}入力トークンを送信します。",
+    "tokenWarningExact": "このメッセージは{{tokens}}入力トークンを送信します。",
+    "sendAnyway": "それでも送信",
+    "cancel": "キャンセル",
+    "counting": "トークンを計算中..."
   },
   "helloChat": {
     "nicknameHint": "ニックネームを入力して開始します。",

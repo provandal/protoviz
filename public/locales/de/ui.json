@@ -235,7 +235,14 @@
     "suggestWrong": "Was ist in diesem Trace schiefgelaufen?",
     "suggestRst": "Warum gibt es ein TCP RST?",
     "suggestPsn": "Erkläre die RoCE PSN-Lücke",
-    "suggestNext": "Was sollte ich als Nächstes prüfen?"
+    "suggestNext": "Was sollte ich als Nächstes prüfen?",
+    "contextStats": "{{packets}} Pakete · {{findings}} Befunde · ~{{tokens}} Token",
+    "contextTruncated": "erste {{cap}} vollständig detailliert",
+    "tokenWarning": "Diese Nachricht sendet etwa {{tokens}} Eingabe-Token.",
+    "tokenWarningExact": "Diese Nachricht sendet {{tokens}} Eingabe-Token.",
+    "sendAnyway": "Trotzdem senden",
+    "cancel": "Abbrechen",
+    "counting": "Token werden gezählt..."
   },
   "helloChat": {
     "nicknameHint": "Gib einen Spitznamen ein, um zu starten.",
@@ -332,7 +339,7 @@
     "devSetup": "Entwicklungsumgebung einrichten",
     "addScenarios": "Szenarien hinzufügen",
     "scenarioCreator": "Szenario-Ersteller (empfohlen)",
-    "scenarioCreatorDesc": "Klicken Sie auf der Startseite auf \u201ESzenario erstellen\u201C, geben Sie einen Anthropic API-Schl\u00FCssel ein, beschreiben Sie den Protokollaustausch in einfachem Englisch und generieren Sie ein vollst\u00E4ndiges YAML-Szenario.",
+    "scenarioCreatorDesc": "Klicken Sie auf der Startseite auf „Szenario erstellen“, geben Sie einen Anthropic API-Schlüssel ein, beschreiben Sie den Protokollaustausch in einfachem Englisch und generieren Sie ein vollständiges YAML-Szenario.",
     "fromPcap": "Aus einer PCAP-Datei",
     "fromPcapDesc": "Verwenden Sie den Python-Konverter: python tools/converter.py capture.pcap --out public/scenarios/my-protocol/scenario.yaml",
     "yamlStructure": "YAML-Struktur des Szenarios",

@@ -191,9 +191,22 @@ export default function TroubleshooterPage() {
     if (fileRef.current) fileRef.current.value = '';
   }, []);
 
+  // Packets filtered by selected flows — used for display and scenario generation
+  const displayPackets = useMemo(() => {
+    if (!packets) return [];
+    if (selectedFlowIds && flowResult?.packetFlowMap) {
+      return filterPacketsByFlows(packets, selectedFlowIds, flowResult.packetFlowMap);
+    }
+    return packets;
+  }, [packets, selectedFlowIds, flowResult]);
+
   const handleFindingClick = useCallback((packetIndex) => {
-    setSelectedPacketIndex(packetIndex);
-  }, []);
+    // Findings carry the packet's original capture index; the packet list and
+    // chat panel index positionally into the flow-filtered array — translate
+    // at this boundary so both stay consistent under a flow selection.
+    const pos = displayPackets.findIndex(p => p.index === packetIndex);
+    setSelectedPacketIndex(pos >= 0 ? pos : null);
+  }, [displayPackets]);
 
   const handleConversationView = useCallback((endpointA, endpointB) => {
     if (!packets) return;
@@ -205,15 +218,6 @@ export default function TroubleshooterPage() {
     useViewerStore.setState({ scenario, currentSlug: slug, step: 0, playing: false, error: null, loading: false });
     navigate(`/${slug}`);
   }, [packets, navigate]);
-
-  // Packets filtered by selected flows — used for display and scenario generation
-  const displayPackets = useMemo(() => {
-    if (!packets) return [];
-    if (selectedFlowIds && flowResult?.packetFlowMap) {
-      return filterPacketsByFlows(packets, selectedFlowIds, flowResult.packetFlowMap);
-    }
-    return packets;
-  }, [packets, selectedFlowIds, flowResult]);
 
   const getEffectivePackets = useCallback(() => {
     return displayPackets.length > 0 ? displayPackets : null;

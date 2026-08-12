@@ -287,7 +287,14 @@
     "suggestWrong": "Что пошло не так в этой трассировке?",
     "suggestRst": "Почему здесь TCP RST?",
     "suggestPsn": "Объясни разрыв RoCE PSN",
-    "suggestNext": "Что мне проверить дальше?"
+    "suggestNext": "Что мне проверить дальше?",
+    "contextStats": "Пакетов: {{packets}} · Находок: {{findings}} · ~{{tokens}} токенов",
+    "contextTruncated": "первые {{cap}} с полной детализацией",
+    "tokenWarning": "Это сообщение отправит около {{tokens}} входных токенов.",
+    "tokenWarningExact": "Это сообщение отправит {{tokens}} входных токенов.",
+    "sendAnyway": "Всё равно отправить",
+    "cancel": "Отмена",
+    "counting": "Подсчёт токенов..."
   },
   "helloChat": {
     "nicknameHint": "Введите псевдоним, чтобы начать.",

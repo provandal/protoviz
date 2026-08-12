@@ -287,7 +287,14 @@
     "suggestWrong": "이 트레이스에서 무엇이 잘못되었나요?",
     "suggestRst": "왜 TCP RST가 있나요?",
     "suggestPsn": "RoCE PSN 갭을 설명해 주세요",
-    "suggestNext": "다음에 무엇을 확인해야 하나요?"
+    "suggestNext": "다음에 무엇을 확인해야 하나요?",
+    "contextStats": "패킷 {{packets}} · 발견 사항 {{findings}} · 약 {{tokens}} 토큰",
+    "contextTruncated": "처음 {{cap}}개는 전체 상세 포함",
+    "tokenWarning": "이 메시지는 약 {{tokens}}개의 입력 토큰을 전송합니다.",
+    "tokenWarningExact": "이 메시지는 {{tokens}}개의 입력 토큰을 전송합니다.",
+    "sendAnyway": "그래도 전송",
+    "cancel": "취소",
+    "counting": "토큰 계산 중..."
   },
   "helloChat": {
     "nicknameHint": "시작하려면 닉네임을 입력하세요.",

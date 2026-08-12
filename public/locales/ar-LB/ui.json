@@ -235,7 +235,14 @@
     "suggestWrong": "ما الخطأ في هذا التتبع؟",
     "suggestRst": "لماذا يوجد TCP RST؟",
     "suggestPsn": "اشرح فجوة RoCE PSN",
-    "suggestNext": "ما الذي يجب أن أتحقق منه بعد ذلك؟"
+    "suggestNext": "ما الذي يجب أن أتحقق منه بعد ذلك؟",
+    "contextStats": "{{packets}} حزمة · {{findings}} نتيجة · ~{{tokens}} توكن",
+    "contextTruncated": "أول {{cap}} بالتفصيل الكامل",
+    "tokenWarning": "سترسل هذه الرسالة حوالي {{tokens}} توكن إدخال.",
+    "tokenWarningExact": "سترسل هذه الرسالة {{tokens}} توكن إدخال.",
+    "sendAnyway": "أرسل على أي حال",
+    "cancel": "إلغاء",
+    "counting": "جارٍ عدّ التوكنات..."
   },
   "helloChat": {
     "nicknameHint": "حطّ اسم مستعار لتبلّش.",
